@@ -1,0 +1,12 @@
+.envs/
+ckpts/
+data_samples/
+outputs/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.DS_Store
+nohup.out
+*.log
+UniMapGen.pdf

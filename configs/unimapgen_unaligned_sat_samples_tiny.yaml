@@ -1,0 +1,62 @@
+seed: 42
+output_dir: outputs/unimapgen_unaligned_sat_samples_tiny
+
+data:
+  source: opensatmap
+  opensatmap_root: ${UNALIGNED_SAMPLES_ROOT:-/mnt/data/project/jn/UniMapGen/data_samples/unaligned_sat_examples}
+  opensatmap_ann_json: ${UNALIGNED_SAMPLES_ANN_JSON:-/mnt/data/project/jn/UniMapGen/data_samples/unaligned_sat_examples/annotations.json}
+  opensatmap_split_dir: ${UNALIGNED_SAMPLES_SPLIT_DIR:-/mnt/data/project/jn/UniMapGen/data_samples/unaligned_sat_examples}
+  train_split: train
+  val_split: val
+  max_train_samples: 18
+  max_val_samples: 6
+  image_size: 512
+  meter_per_pixel: 0.15
+  use_pv: false
+  use_text_prompt: false
+  use_state_update: false
+  state_update_mode: sample_prev
+  state_prefix_mode: all
+  pv_camera: CAM_FRONT
+  pv_num_frames: 1
+  pv_image_size: [224, 400]
+  num_workers: 0
+  train_augment: true
+  aug_rot90_prob: 0.25
+  aug_hflip_prob: 0.25
+  aug_vflip_prob: 0.1
+
+serialization:
+  sample_interval_meter: 6.0
+  max_lines: 64
+  max_points_per_line: 48
+  max_seq_len: 640
+  coord_num_bins: 10000
+  angle_num_bins: 10000
+  categories:
+    - curb
+    - lane_line
+    - virtual_line
+
+model:
+  arch: paper
+  bev_encoder_name: facebook/dinov2-large
+  llm_name: Qwen/Qwen2.5-1.5B-Instruct
+  local_files_only: true
+  use_fallback: true
+  d_model_fallback: 256
+  cnn_channels: [32, 64, 128]
+  pv_cnn_channels: [32, 64, 128]
+  pv_memory_tokens_hw: [2, 4]
+  num_prompt_types: 4
+
+train:
+  batch_size: 2
+  epochs: 2
+  lr: 0.00002
+  weight_decay: 0.01
+  warmup_steps: 4
+  grad_clip_norm: 1.0
+  amp: false
+  log_every: 1
+  save_every: 1

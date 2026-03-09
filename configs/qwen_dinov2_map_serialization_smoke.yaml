@@ -1,0 +1,62 @@
+seed: 42
+output_dir: outputs/qwen_dinov2_map_serialization_smoke
+
+data:
+  opensatmap_root: ${UNALIGNED_SAMPLES_ROOT:-/mnt/data/project/jn/UniMapGen/data_samples/unaligned_sat_examples}
+  opensatmap_ann_json: ${UNALIGNED_SAMPLES_ANN_JSON:-/mnt/data/project/jn/UniMapGen/data_samples/unaligned_sat_examples/annotations.json}
+  opensatmap_split_dir: ${UNALIGNED_SAMPLES_SPLIT_DIR:-/mnt/data/project/jn/UniMapGen/data_samples/unaligned_sat_examples}
+  train_split: train
+  val_split: val
+  max_train_samples: 2
+  max_val_samples: 1
+  image_size: 224
+  meter_per_pixel: 0.15
+  num_workers: 0
+  train_augment: false
+  aug_rot90_prob: 0.0
+  aug_hflip_prob: 0.0
+  aug_vflip_prob: 0.0
+  prompt_template: >
+    You are given a satellite image embedding.
+    Generate the serialized vector map using only reserved map tokens.
+    Represent {categories}. Output at most {max_lines} polylines and at most {max_points_per_line} points per polyline.
+
+serialization:
+  sample_interval_meter: 6.0
+  max_lines: 32
+  max_points_per_line: 24
+  max_seq_len: 192
+  coord_num_bins: 224
+  angle_num_bins: 360
+  categories:
+    - curb
+    - lane_line
+    - virtual_line
+
+model:
+  dino_model_path: ${DINOV2_BACKBONE_PATH:-/mnt/data/project/jn/UniMapGen/ckpts/dinov2_vitl14/models--facebook--dinov2-large}
+  qwen_model_path: ${QWEN_MODEL_PATH:-/mnt/data/project/jn/UniMapGen/ckpts/qwen2.5/models--Qwen--Qwen2.5-1.5B}
+  local_files_only: true
+  freeze_satellite: true
+  freeze_llm: false
+  sat_token_hw: [4, 4]
+  sat_patch_size: 14
+  sat_drop_cls_token: true
+  sat_normalize_input: true
+  gradient_checkpointing: false
+
+train:
+  batch_size: 1
+  epochs: 1
+  lr: 0.00001
+  weight_decay: 0.01
+  warmup_steps: 1
+  grad_clip_norm: 1.0
+  amp: false
+  init_checkpoint: ""
+
+decode:
+  max_new_tokens: 128
+  min_new_tokens: 8
+  temperature: 1.0
+  top_k: 1

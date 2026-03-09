@@ -1,0 +1,51 @@
+seed: 42
+output_dir: outputs/unimapgen_v1
+
+data:
+  nuscenes_root: /media/winkness/data/nuscenes
+  nuscenes_map_pkl_dir: /media/winkness/data/nuscenes/maptrv2_pkl
+  satmap_root: /media/winkness/code/jn/HRMapNet/data/opensatmap_nuscenes_cropped
+  train_split: train
+  val_split: val
+  max_train_samples: 12000
+  max_val_samples: 2000
+  image_size: 512
+  use_pv: false
+  use_state_update: false
+  state_update_mode: sample_prev
+  state_prefix_mode: all
+  pv_camera: CAM_FRONT
+  pv_num_frames: 1
+  pv_image_size: [224, 400]
+  num_workers: 8
+
+serialization:
+  sample_interval_meter: 6.0
+  max_lines: 96
+  max_points_per_line: 64
+  max_seq_len: 1024
+  categories:
+    - divider
+    - boundary
+    - ped_crossing
+    - centerline
+
+model:
+  d_model: 256
+  num_heads: 8
+  num_decoder_layers: 6
+  ff_dim: 1024
+  dropout: 0.1
+  cnn_channels: [64, 128, 256]
+  memory_tokens_hw: [8, 8]
+
+train:
+  batch_size: 8
+  epochs: 8
+  lr: 0.0002
+  weight_decay: 0.01
+  warmup_steps: 100
+  grad_clip_norm: 1.0
+  amp: true
+  log_every: 20
+  save_every: 1

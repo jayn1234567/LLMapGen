@@ -1,0 +1,57 @@
+seed: 42
+output_dir: outputs/unimapgen_v1_aug_smoke
+
+data:
+  nuscenes_root: /media/winkness/data/nuscenes
+  nuscenes_map_pkl_dir: /media/winkness/data/nuscenes/maptrv2_pkl
+  satmap_root: /media/winkness/code/jn/HRMapNet/data/opensatmap_nuscenes_cropped
+  train_split: val
+  val_split: val
+  max_train_samples: 16
+  max_val_samples: 8
+  image_size: 512
+  use_pv: false
+  use_text_prompt: false
+  text_prompt_mode: full_map
+  use_state_update: false
+  state_update_mode: sample_prev
+  state_prefix_mode: all
+  pv_camera: CAM_FRONT
+  pv_num_frames: 1
+  pv_image_size: [224, 400]
+  num_workers: 0
+  train_augment: true
+  aug_rot90_prob: 0.75
+  aug_hflip_prob: 0.5
+  aug_vflip_prob: 0.5
+
+serialization:
+  sample_interval_meter: 6.0
+  max_lines: 64
+  max_points_per_line: 48
+  max_seq_len: 512
+  categories:
+    - divider
+    - boundary
+    - ped_crossing
+    - centerline
+
+model:
+  d_model: 128
+  num_heads: 4
+  num_decoder_layers: 3
+  ff_dim: 512
+  dropout: 0.1
+  cnn_channels: [32, 64, 128]
+  memory_tokens_hw: [6, 6]
+
+train:
+  batch_size: 2
+  epochs: 1
+  lr: 0.0002
+  weight_decay: 0.01
+  warmup_steps: 10
+  grad_clip_norm: 1.0
+  amp: false
+  log_every: 2
+  save_every: 1

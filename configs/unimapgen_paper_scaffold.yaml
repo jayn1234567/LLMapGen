@@ -1,0 +1,70 @@
+seed: 42
+output_dir: outputs/unimapgen_paper_scaffold
+
+data:
+  nuscenes_root: ${NUSCENES_ROOT:-/media/winkness/data/nuscenes}
+  nuscenes_map_pkl_dir: ${NUSCENES_MAP_PKL_DIR:-/media/winkness/data/nuscenes/maptrv2_pkl}
+  satmap_root: ${SATMAP_ROOT:-/media/winkness/code/jn/HRMapNet/data/opensatmap_nuscenes_cropped}
+  train_split: val
+  val_split: val
+  max_train_samples: 16
+  max_val_samples: 8
+  image_size: 512
+  use_pv: true
+  use_text_prompt: true
+  text_prompt_mode: trace_points
+  text_num_trace_points: 8
+  use_state_update: false
+  state_update_mode: sample_prev
+  state_prefix_mode: all
+  pv_camera: CAM_FRONT
+  pv_num_frames: 1
+  pv_image_size: [224, 400]
+  num_workers: 0
+  train_augment: false
+  aug_rot90_prob: 0.0
+  aug_hflip_prob: 0.0
+  aug_vflip_prob: 0.0
+
+serialization:
+  sample_interval_meter: 6.0
+  max_lines: 64
+  max_points_per_line: 48
+  max_seq_len: 640
+  # Paper tokenization: coordinates/angles quantized into 10k bins.
+  coord_num_bins: 10000
+  angle_num_bins: 10000
+  categories:
+    - divider
+    - boundary
+    - ped_crossing
+    - centerline
+
+model:
+  arch: paper
+  # Paper target backbone names:
+  bev_encoder_name: facebook/dinov2-large
+  llm_name: Qwen/Qwen2.5-1.5B-Instruct
+  local_files_only: true
+  use_fallback: true
+  d_model_fallback: 256
+  # PV branch keeps lightweight temporal encoder in this stage.
+  cnn_channels: [32, 64, 128]
+  pv_cnn_channels: [32, 64, 128]
+  pv_memory_tokens_hw: [2, 4]
+  num_prompt_types: 4
+
+train:
+  batch_size: 1
+  epochs: 1
+  lr: 0.00002
+  weight_decay: 0.01
+  warmup_steps: 10
+  grad_clip_norm: 1.0
+  amp: false
+  log_every: 1
+  save_every: 1
+  modality_mask:
+    enable: false
+    bev_drop_prob: 0.0
+    pv_drop_prob: 0.0

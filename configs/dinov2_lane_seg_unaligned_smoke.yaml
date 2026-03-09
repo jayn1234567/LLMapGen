@@ -1,0 +1,37 @@
+seed: 42
+output_dir: outputs/dinov2_lane_seg_unaligned_smoke
+
+data:
+  dataset_root: ${LANE_SEG_ROOT:-/mnt/data/project/jn/UniMapGen/data_samples/unaligned_sat_examples}
+  annotation_json: ${LANE_SEG_ANN_JSON:-/mnt/data/project/jn/UniMapGen/data_samples/unaligned_sat_examples/annotations.json}
+  train_split: train
+  val_split: val
+  max_train_samples: 8
+  max_val_samples: 4
+  image_size: 224
+  positive_categories:
+    - lane_line
+  mask_line_width: 6
+  num_workers: 0
+  aug_rot90_prob: 0.25
+  aug_hflip_prob: 0.25
+  aug_vflip_prob: 0.1
+
+model:
+  backbone_path: ${DINOV2_BACKBONE_PATH:-/mnt/data/project/jn/UniMapGen/ckpts/dinov2_vitl14/models--facebook--dinov2-large}
+  freeze_backbone: true
+  local_files_only: true
+  normalize_input: true
+  decoder_dim: 256
+
+train:
+  batch_size: 1
+  epochs: 1
+  lr: 0.0002
+  weight_decay: 0.0001
+  warmup_steps: 2
+  grad_clip_norm: 1.0
+  amp: false
+  log_every: 1
+  bce_weight: 1.0
+  dice_weight: 1.0

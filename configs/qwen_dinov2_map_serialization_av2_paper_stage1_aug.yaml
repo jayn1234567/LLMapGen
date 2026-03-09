@@ -1,0 +1,74 @@
+seed: 42
+output_dir: outputs/qwen_dinov2_map_serialization_av2_paper_stage1_aug
+
+data:
+  source: opensatmap
+  opensatmap_root: ${AV2_PAPER_AUG_ROOT:-/mnt/data/project/jn/UniMapGen/data_samples/av2_opensatmap_paper_aug_partial}
+  opensatmap_ann_json: ${AV2_PAPER_AUG_ANN_JSON:-/mnt/data/project/jn/UniMapGen/data_samples/av2_opensatmap_paper_aug_partial/annotations.json}
+  opensatmap_split_dir: ${AV2_PAPER_AUG_SPLIT_DIR:-/mnt/data/project/jn/UniMapGen/data_samples/av2_opensatmap_paper_aug_partial}
+  splits_meta_path: ${AV2_PAPER_AUG_SPLITS_META:-/mnt/data/project/jn/UniMapGen/data_samples/av2_opensatmap_paper_aug_partial/splits_meta.json}
+  train_split: train
+  val_split: val
+  max_train_samples: null
+  max_val_samples: null
+  image_size: 224
+  meter_per_pixel: 0.15
+  num_workers: 0
+  train_augment: false
+  aug_rot90_prob: 0.0
+  aug_hflip_prob: 0.0
+  aug_vflip_prob: 0.0
+  prompt_template: >
+    You are given a satellite image embedding.
+    Generate the serialized vector map using only reserved map tokens.
+    Represent {categories}. Output at most {max_lines} polylines and at most {max_points_per_line} points per polyline.
+
+serialization:
+  sample_interval_meter: 6.0
+  max_lines: 48
+  max_points_per_line: 24
+  max_seq_len: 384
+  coord_num_bins: 224
+  angle_num_bins: 360
+  categories:
+    - curb
+    - lane_line
+    - virtual_line
+  line_types:
+    - solid
+    - thick_solid
+    - dashed
+    - short_dashed
+    - others
+
+model:
+  dino_model_path: ${DINOV2_BACKBONE_PATH:-/mnt/data/project/jn/UniMapGen/ckpts/dinov2_vitl14/models--facebook--dinov2-large}
+  qwen_model_path: ${QWEN_MODEL_PATH:-/mnt/data/project/jn/UniMapGen/ckpts/qwen2.5/models--Qwen--Qwen2.5-1.5B}
+  local_files_only: true
+  freeze_satellite: true
+  freeze_llm: false
+  sat_token_hw: [4, 4]
+  sat_patch_size: 14
+  sat_drop_cls_token: true
+  sat_normalize_input: true
+  gradient_checkpointing: false
+
+train:
+  batch_size: 1
+  epochs: 3
+  lr: 0.00001
+  weight_decay: 0.01
+  warmup_steps: 16
+  grad_clip_norm: 1.0
+  amp: false
+  init_checkpoint: ""
+
+decode:
+  max_new_tokens: 192
+  min_new_tokens: 8
+  temperature: 1.0
+  top_k: 1
+  repetition_penalty: 1.05
+  use_grammar_constraint: true
+  grammar_min_points_per_line: 2
+  grammar_max_lines: 48

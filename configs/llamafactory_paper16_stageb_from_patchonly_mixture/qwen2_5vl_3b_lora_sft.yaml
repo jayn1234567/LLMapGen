@@ -1,0 +1,50 @@
+### model
+model_name_or_path: ${BASE_MODEL_PATH:-/mnt/data/project/jn/UniMapGen/ckpts/modelscope/Qwen/Qwen2___5-VL-3B-Instruct}
+adapter_name_or_path: ${STAGEA_ADAPTER_PATH:-/mnt/data/project/jn/unimapgen-v1.0/outputs/llamafactory_qwen2_5vl_3b_paper16_patch_only_100img_lora}
+trust_remote_code: true
+image_max_pixels: 802816
+video_max_pixels: 16384
+
+### method
+stage: sft
+do_train: true
+finetuning_type: lora
+lora_rank: 16
+lora_alpha: 32
+lora_dropout: 0.05
+lora_target: all
+
+### dataset
+dataset_dir: ${PROJECT_ROOT:-/mnt/data/project/jn/unimapgen-v1.0}/configs/llamafactory_paper16_stageb_from_patchonly_mixture
+media_dir: ${PROJECT_ROOT:-/mnt/data/project/jn/unimapgen-v1.0}/outputs/paper16_sft_100img_system_paper_serialized_neighborfix_mixture
+dataset: unimapgen_paper16_state_mixture_100img_train
+template: qwen2_vl
+cutoff_len: 8192
+val_size: 0.02
+overwrite_cache: true
+preprocessing_num_workers: 16
+dataloader_num_workers: 4
+
+### output
+output_dir: ${PROJECT_ROOT:-/mnt/data/project/jn/unimapgen-v1.0}/outputs/llamafactory_qwen2_5vl_3b_paper16_stageb_from_patchonly_mixture_lora
+logging_steps: 10
+save_steps: 200
+plot_loss: true
+overwrite_output_dir: true
+save_only_model: false
+report_to: none
+
+### train
+per_device_train_batch_size: 1
+per_device_eval_batch_size: 1
+gradient_accumulation_steps: 8
+learning_rate: 5.0e-5
+num_train_epochs: 2.0
+lr_scheduler_type: cosine
+warmup_ratio: 0.03
+bf16: true
+ddp_timeout: 180000000
+
+### eval
+eval_strategy: steps
+eval_steps: 200

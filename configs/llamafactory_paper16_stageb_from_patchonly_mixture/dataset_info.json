@@ -1,0 +1,17 @@
+{
+  "unimapgen_paper16_state_mixture_100img_train": {
+    "file_name": "../../outputs/paper16_sft_100img_system_paper_serialized_neighborfix_mixture/train.jsonl",
+    "formatting": "sharegpt",
+    "columns": {
+      "messages": "messages",
+      "images": "images"
+    },
+    "tags": {
+      "role_tag": "role",
+      "content_tag": "content",
+      "user_tag": "user",
+      "assistant_tag": "assistant",
+      "system_tag": "system"
+    }
+  }
+}

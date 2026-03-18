@@ -146,6 +146,10 @@ Or use the supervisor script after Stage A and Stage B are ready:
 bash scripts/run_patchonly_stageb_rollout_pipeline.sh
 ```
 
+## Dataset field reference
+
+See `docs/stagea_stageb_dataset_fields.md` for a field-by-field explanation of the Stage A and Stage B fine-tuning datasets.
+
 ## Notes
 
 - This repository does not include datasets, training outputs, or model weights.

@@ -1,0 +1,49 @@
+### model
+model_name_or_path: /mnt/data/project/jn/UniMapGen/ckpts/modelscope/Qwen/Qwen2___5-VL-3B-Instruct
+trust_remote_code: true
+image_max_pixels: 802816
+video_max_pixels: 16384
+
+### method
+stage: sft
+do_train: true
+finetuning_type: lora
+lora_rank: 16
+lora_alpha: 32
+lora_dropout: 0.05
+lora_target: all
+
+### dataset
+dataset_dir: /mnt/data/project/jn/UniMapGen/configs/llamafactory_paper16_patch_only_100img_system
+media_dir: /mnt/data/project/jn/UniMapGen/outputs/paper16_patch_only_100img_system
+dataset: unimapgen_paper16_patch_only_100img_train
+template: qwen2_vl
+cutoff_len: 8192
+val_size: 0.02
+overwrite_cache: true
+preprocessing_num_workers: 16
+dataloader_num_workers: 4
+
+### output
+output_dir: /mnt/data/project/jn/UniMapGen/outputs/llamafactory_qwen2_5vl_3b_paper16_patch_only_100img_lora
+logging_steps: 10
+save_steps: 200
+plot_loss: true
+overwrite_output_dir: true
+save_only_model: false
+report_to: none
+
+### train
+per_device_train_batch_size: 1
+per_device_eval_batch_size: 1
+gradient_accumulation_steps: 8
+learning_rate: 1.0e-4
+num_train_epochs: 3.0
+lr_scheduler_type: cosine
+warmup_ratio: 0.03
+bf16: true
+ddp_timeout: 180000000
+
+### eval
+eval_strategy: steps
+eval_steps: 200

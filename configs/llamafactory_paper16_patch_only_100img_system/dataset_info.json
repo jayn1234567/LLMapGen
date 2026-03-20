@@ -1,0 +1,17 @@
+{
+  "unimapgen_paper16_patch_only_100img_train": {
+    "file_name": "/mnt/data/project/jn/UniMapGen/outputs/paper16_patch_only_100img_system/train.jsonl",
+    "formatting": "sharegpt",
+    "columns": {
+      "messages": "messages",
+      "images": "images"
+    },
+    "tags": {
+      "role_tag": "role",
+      "content_tag": "content",
+      "user_tag": "user",
+      "assistant_tag": "assistant",
+      "system_tag": "system"
+    }
+  }
+}

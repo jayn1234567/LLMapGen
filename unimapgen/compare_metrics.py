@@ -2,15 +2,52 @@ import argparse
 import json
 import math
 import os
-from typing import Dict, List, Tuple
+from typing import Any, Dict, List, Tuple
 
 import numpy as np
 
 from unimapgen.utils import ensure_dir
 
 
+def _coerce_point(raw: Any) -> List[float] | None:
+    if not isinstance(raw, (list, tuple)) or len(raw) < 2:
+        return None
+    try:
+        x = float(raw[0])
+        y = float(raw[1])
+    except (TypeError, ValueError):
+        return None
+    if not np.isfinite(x) or not np.isfinite(y):
+        return None
+    return [x, y]
+
+
+def _sanitize_points(raw_points: Any) -> np.ndarray:
+    if isinstance(raw_points, np.ndarray):
+        try:
+            pts = np.asarray(raw_points, dtype=np.float32)
+        except (TypeError, ValueError):
+            pts = np.zeros((0, 2), dtype=np.float32)
+        if pts.ndim == 2 and pts.shape[0] > 0 and pts.shape[1] == 2:
+            return pts
+        return np.zeros((0, 2), dtype=np.float32)
+
+    if isinstance(raw_points, (list, tuple)):
+        if len(raw_points) >= 2 and not isinstance(raw_points[0], (list, tuple, np.ndarray)):
+            pt = _coerce_point(raw_points)
+            return np.asarray([pt], dtype=np.float32) if pt is not None else np.zeros((0, 2), dtype=np.float32)
+        cleaned = []
+        for raw in raw_points:
+            pt = _coerce_point(raw)
+            if pt is not None:
+                cleaned.append(pt)
+        return np.asarray(cleaned, dtype=np.float32) if cleaned else np.zeros((0, 2), dtype=np.float32)
+
+    return np.zeros((0, 2), dtype=np.float32)
+
+
 def _to_np_points(line: Dict) -> np.ndarray:
-    pts = np.asarray(line.get("points", []), dtype=np.float32)
+    pts = _sanitize_points(line.get("points", []))
     if pts.ndim != 2 or pts.shape[0] == 0 or pts.shape[1] != 2:
         return np.zeros((0, 2), dtype=np.float32)
     return pts

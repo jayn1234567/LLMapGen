@@ -1,5 +1,9 @@
 # UniMapGen-StageA 可迁移说明
 
+如果你要使用全量 `fixed16` 非离散 token `LoRA` 线的 `checkpoint-157182` 最小集，请看：
+
+- `STAGEA_FIXED16_CHECKPOINT_157182_USAGE.md`
+
 在开始训练或推理前，请先把下面这些资源放到仓库根目录下的固定相对位置：
 
 - `ckpts/modelscope/Qwen/Qwen2___5-VL-3B-Instruct/`

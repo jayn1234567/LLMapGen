@@ -1,0 +1,51 @@
+### model
+model_name_or_path: /file_storage01/home/mingli/data/ckpts/Qwen2___5-VL-3B-Instruct
+trust_remote_code: true
+image_max_pixels: 802816
+video_max_pixels: 16384
+
+### method
+stage: sft
+do_train: true
+finetuning_type: lora
+lora_rank: 16
+lora_alpha: 32
+lora_dropout: 0.05
+lora_target: all
+
+### dataset
+dataset_dir: /file_storage01/home/mingli/project/jn/UniMapGen/configs/llamafactory_paper16_patch_only_full_trainval_geomdedup_fixed16_empty10_system
+media_dir: /file_storage01/home/mingli/data/paper16_patch_only_full_trainval_geomdedup_fixed16_empty10_system
+dataset: unimapgen_paper16_patch_only_full_trainval_geomdedup_fixed16_empty10_train
+eval_dataset: unimapgen_paper16_patch_only_full_trainval_geomdedup_fixed16_empty10_val
+template: qwen2_vl
+cutoff_len: 8192
+overwrite_cache: true
+preprocessing_num_workers: 16
+dataloader_num_workers: 2
+
+### output
+output_dir: /file_storage01/home/mingli/data/outputs/llamafactory_qwen2_5vl_3b_paper16_patch_only_full_trainval_geomdedup_fixed16_empty10_stdce_8gpu_e10
+logging_steps: 10
+save_strategy: epoch
+plot_loss: true
+overwrite_output_dir: false
+save_only_model: false
+report_to: none
+save_total_limit: 16
+
+### train
+per_device_train_batch_size: 1
+per_device_eval_batch_size: 1
+gradient_accumulation_steps: 1
+learning_rate: 1.0e-4
+num_train_epochs: 10.0
+lr_scheduler_type: cosine
+warmup_ratio: 0.03
+bf16: true
+ddp_timeout: 180000000
+ddp_find_unused_parameters: false
+seed: 42
+
+### eval
+eval_strategy: epoch

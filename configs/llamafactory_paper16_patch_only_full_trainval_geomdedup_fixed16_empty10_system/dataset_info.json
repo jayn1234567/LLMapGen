@@ -1,0 +1,32 @@
+{
+  "unimapgen_paper16_patch_only_full_trainval_geomdedup_fixed16_empty10_train": {
+    "file_name": "/file_storage01/home/mingli/data/paper16_patch_only_full_trainval_geomdedup_fixed16_empty10_system/train.jsonl",
+    "formatting": "sharegpt",
+    "columns": {
+      "messages": "messages",
+      "images": "images"
+    },
+    "tags": {
+      "role_tag": "role",
+      "content_tag": "content",
+      "user_tag": "user",
+      "assistant_tag": "assistant",
+      "system_tag": "system"
+    }
+  },
+  "unimapgen_paper16_patch_only_full_trainval_geomdedup_fixed16_empty10_val": {
+    "file_name": "/file_storage01/home/mingli/data/paper16_patch_only_full_trainval_geomdedup_fixed16_empty10_system/val.jsonl",
+    "formatting": "sharegpt",
+    "columns": {
+      "messages": "messages",
+      "images": "images"
+    },
+    "tags": {
+      "role_tag": "role",
+      "content_tag": "content",
+      "user_tag": "user",
+      "assistant_tag": "assistant",
+      "system_tag": "system"
+    }
+  }
+}

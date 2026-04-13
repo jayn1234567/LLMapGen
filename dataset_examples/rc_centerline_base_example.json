@@ -1,0 +1,35 @@
+{
+  "dataset_name": "rc_centerline_base",
+  "dataset_jsonl_example": {
+    "id": "winter_patch_0001",
+    "images": ["samples/winter_patch_0001.png"],
+    "messages": [
+      {
+        "role": "system",
+        "content": "You are a road-centerline reconstruction assistant."
+      },
+      {
+        "role": "user",
+        "content": "Please construct the road centerline map in the current patch."
+      },
+      {
+        "role": "assistant",
+        "content": "{\"lines\":[{\"points\":[[40,256],[140,256],[260,256],[380,256],[470,256]]}]}"
+      }
+    ]
+  },
+  "dataset_meta_jsonl_example": {
+    "id": "winter_patch_0001",
+    "image": "samples/winter_patch_0001.png",
+    "target_lines": [
+      {
+        "category": "centerline",
+        "points": [[40, 256], [140, 256], [260, 256], [380, 256], [470, 256]]
+      }
+    ],
+    "structure_json": "dataset_examples/auxiliary_structure_lines_example.json",
+    "centerline_json": "dataset_examples/auxiliary_centerline_lines_example.json",
+    "seg_binary": "masks/winter_patch_0001_seg_binary.png",
+    "seg_structure_multiclass": "masks/winter_patch_0001_seg_structure_multiclass.png"
+  }
+}

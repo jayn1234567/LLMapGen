@@ -1,0 +1,33 @@
+{
+  "dataset_name": "rc_caption_short_dataset",
+  "dataset_jsonl_example": {
+    "id": "winter_patch_0001",
+    "images": ["samples/winter_patch_0001.png"],
+    "messages": [
+      {
+        "role": "system",
+        "content": "You are a structured BEV road-scene captioning assistant."
+      },
+      {
+        "role": "user",
+        "content": "Predict Scene and GridStates."
+      },
+      {
+        "role": "assistant",
+        "content": "Scene=straight\nGridStates=[background,background,background,background,background,background,background,background,background,background,background,background,background,background,background,background,background,lane_boundary,lane_divider,lane_boundary,background,background,background,background,background,lane_boundary,lane_divider,lane_boundary,background,background,background,background,background,lane_boundary,lane_divider,lane_boundary,background,background,background,background,background,lane_boundary,lane_divider,lane_boundary,background,background,background,background,background,background,background,background,background,background,background,background,background,background,background,background,background,background,background,background]"
+      }
+    ]
+  },
+  "dataset_meta_jsonl_example": {
+    "id": "winter_patch_0001",
+    "image": "samples/winter_patch_0001.png",
+    "caption_label": "straight",
+    "caption_short": "Scene=straight\nGridStates=[background,background,background,background,background,background,background,background,background,background,background,background,background,background,background,background,background,lane_boundary,lane_divider,lane_boundary,background,background,background,background,background,lane_boundary,lane_divider,lane_boundary,background,background,background,background,background,lane_boundary,lane_divider,lane_boundary,background,background,background,background,background,lane_boundary,lane_divider,lane_boundary,background,background,background,background,background,background,background,background,background,background,background,background,background,background,background,background,background,background,background,background]",
+    "caption_schema_version": "scene_grid_states_v1",
+    "caption_grid_rows": 8,
+    "caption_grid_cols": 8,
+    "seg_structure_multiclass": "masks/winter_patch_0001_seg_structure_multiclass.png",
+    "structure_json": "dataset_examples/auxiliary_structure_lines_example.json",
+    "centerline_json": "dataset_examples/auxiliary_centerline_lines_example.json"
+  }
+}

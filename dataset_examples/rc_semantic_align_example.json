@@ -1,0 +1,24 @@
+{
+  "dataset_name": "rc_semantic_align_dataset",
+  "dataset_jsonl_example": {
+    "id": "winter_patch_0001",
+    "images": ["samples/winter_patch_0001.png"],
+    "text": "This is a black-background BEV road-structure patch showing a straight road scene. Visible road structure reaches the left and right sides."
+  },
+  "dataset_meta_jsonl_example": {
+    "id": "winter_patch_0001",
+    "image": "samples/winter_patch_0001.png",
+    "semantic_text": "This is a black-background BEV road-structure patch showing a straight road scene. Visible road structure reaches the left and right sides.",
+    "semantic_scene_label": "straight",
+    "semantic_visible_sides": ["left", "right"],
+    "semantic_group_key": "straight|left,right",
+    "semantic_group_id": 10240001,
+    "structure_json": "dataset_examples/auxiliary_structure_lines_example.json",
+    "target_lines": [
+      {
+        "category": "centerline",
+        "points": [[40, 256], [140, 256], [260, 256], [380, 256], [470, 256]]
+      }
+    ]
+  }
+}

@@ -1,0 +1,13 @@
+{
+  "dataset_name": "rc_structure_seg_dataset",
+  "dataset_jsonl_example": {
+    "id": "winter_patch_0001",
+    "images": ["samples/winter_patch_0001.png"]
+  },
+  "dataset_meta_jsonl_example": {
+    "id": "winter_patch_0001",
+    "image": "samples/winter_patch_0001.png",
+    "seg_binary": "masks/winter_patch_0001_seg_binary.png",
+    "seg_structure_multiclass": "masks/winter_patch_0001_seg_structure_multiclass.png"
+  }
+}

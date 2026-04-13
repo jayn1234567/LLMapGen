@@ -1,0 +1,31 @@
+{
+  "dataset_name": "rc_centerline_json_sft_dataset",
+  "dataset_jsonl_example": {
+    "id": "winter_patch_0001",
+    "images": ["samples/winter_patch_0001.png"],
+    "messages": [
+      {
+        "role": "system",
+        "content": "You are an expert road-centerline reconstruction assistant."
+      },
+      {
+        "role": "user",
+        "content": "Predict the road centerlines for this patch and return only raw JSON."
+      },
+      {
+        "role": "assistant",
+        "content": "{\"lines\":[{\"points\":[[40,256],[140,256],[260,256],[380,256],[470,256]]}]}"
+      }
+    ]
+  },
+  "dataset_meta_jsonl_example": {
+    "id": "winter_patch_0001",
+    "image": "samples/winter_patch_0001.png",
+    "target_lines": [
+      {
+        "category": "centerline",
+        "points": [[40, 256], [140, 256], [260, 256], [380, 256], [470, 256]]
+      }
+    ]
+  }
+}

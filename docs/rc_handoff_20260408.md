@@ -4284,6 +4284,15 @@ Minimal files added:
     - `coord_reg_loss`
     - `coord_reg_mae`
 
+GitHub push note for this repo on the supercomputer:
+
+- the working GitHub SSH key is:
+  - `/persist_data/home/mingli/.ssh/jiangnan`
+- the supercomputer `HOME` is:
+  - `/persist_data/home/mingli`
+- when plain `git push` does not pick up the right key, use:
+  - `GIT_SSH_COMMAND="ssh -i /persist_data/home/mingli/.ssh/jiangnan -o IdentitiesOnly=yes -o StrictHostKeyChecking=no" git push -u origin <branch>`
+
 Current design choice:
 
 - assistant target text is still JSON-shaped

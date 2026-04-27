@@ -497,6 +497,7 @@ conv_templates = {
     "vicuna_v1": conv_vicuna_v1,
     "qwen_2": conv_qwen_2,
     "qwen_2_centerline_coord": conv_qwen_2_centerline_coord,
+    "conv_qwen_2_Dinov2_huawei": conv_qwen_2_Dinov2_huawei,
     "llama_2": conv_llama_2,
     "mistral_instruct": conv_mistral_instruct,
     "chatml_direct": conv_chatml_direct,

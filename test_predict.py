@@ -15,16 +15,17 @@ from llava.constants import IMAGE_TOKEN_INDEX, DEFAULT_IMAGE_TOKEN, DEFAULT_IM_S
 def predict(model_path, image_file, prompt, conv_mode="qwen_2_centerline_coord", output_file=None):
     disable_torch_init()
     model_name = get_model_name_from_path(model_path)
-    tokenizer, model, _, context_len = load_pretrained_model(model_path, None, model_name, device_map={"": "cuda:0"}, device="cuda:0")
-    
+    device = "cuda" if torch.cuda.is_available() else "npu" if hasattr(torch, 'npu') and torch.npu.is_available() else "cpu"
+    tokenizer, model, _, context_len = load_pretrained_model(model_path, None, model_name, device_map={"": device}, device=device)
+
     vision_tower = model.get_vision_tower()
     if not vision_tower.is_loaded:
-        vision_tower.load_model(device_map={"": "cuda:0"})
-    vision_tower.to(device="cuda:0", dtype=torch.float16)
+        vision_tower.load_model(device_map={"": device})
+    vision_tower.to(device=device, dtype=torch.float16)
     image_processor = vision_tower.image_processor
-    
+
     model.generation_config.pad_token_id = tokenizer.pad_token_id
-    
+
     qs = prompt
     if model.config.mm_use_im_start_end:
         qs = DEFAULT_IM_START_TOKEN + DEFAULT_IMAGE_TOKEN + DEFAULT_IM_END_TOKEN + '\n' + qs
@@ -34,16 +35,16 @@ def predict(model_path, image_file, prompt, conv_mode="qwen_2_centerline_coord",
     conv.append_message(conv.roles[0], qs)
     conv.append_message(conv.roles[1], None)
     prompt_text = conv.get_prompt()
-    
-    input_ids = tokenizer_image_token(prompt_text, tokenizer, IMAGE_TOKEN_INDEX, return_tensors='pt').unsqueeze(0).cuda()
-    
+
+    input_ids = tokenizer_image_token(prompt_text, tokenizer, IMAGE_TOKEN_INDEX, return_tensors='pt').unsqueeze(0).to(device)
+
     image = Image.open(image_file).convert('RGB')
     image_tensor = process_images([image], image_processor, model.config)[0]
-    
+
     with torch.inference_mode():
         output_ids = model.generate(
             input_ids,
-            images=image_tensor.unsqueeze(0).half().cuda(),
+            images=image_tensor.unsqueeze(0).half().to(device),
             image_sizes=[image.size],
             do_sample=False,
             temperature=0.0,

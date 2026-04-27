@@ -12,19 +12,19 @@ from llava.mm_utils import tokenizer_image_token, process_images, get_model_name
 from llava.constants import IMAGE_TOKEN_INDEX, DEFAULT_IMAGE_TOKEN, DEFAULT_IM_START_TOKEN, DEFAULT_IM_END_TOKEN
 
 
-def predict(model_path, image_file, conv_mode="qwen_2_centerline_coord"):
+def predict(model_path, image_file, conv_mode="qwen_2_centerline_coord", device="cuda"):
     disable_torch_init()
     model_name = get_model_name_from_path(model_path)
-    tokenizer, model, _, context_len = load_pretrained_model(model_path, None, model_name, device_map={"": "cuda:0"}, device="cuda:0")
-    
+    tokenizer, model, _, context_len = load_pretrained_model(model_path, None, model_name, device_map={"": device}, device=device)
+
     vision_tower = model.get_vision_tower()
     if not vision_tower.is_loaded:
-        vision_tower.load_model(device_map={"": "cuda:0"})
-    vision_tower.to(device="cuda:0", dtype=torch.float16)
+        vision_tower.load_model(device_map={"": device})
+    vision_tower.to(device=device, dtype=torch.float16)
     image_processor = vision_tower.image_processor
-    
+
     model.generation_config.pad_token_id = tokenizer.pad_token_id
-    
+
     qs = "Extract centerline coordinates from the image. Return as JSON."
     if model.config.mm_use_im_start_end:
         qs = DEFAULT_IM_START_TOKEN + DEFAULT_IMAGE_TOKEN + DEFAULT_IM_END_TOKEN + '\n' + qs
@@ -34,16 +34,16 @@ def predict(model_path, image_file, conv_mode="qwen_2_centerline_coord"):
     conv.append_message(conv.roles[0], qs)
     conv.append_message(conv.roles[1], None)
     prompt_text = conv.get_prompt()
-    
-    input_ids = tokenizer_image_token(prompt_text, tokenizer, IMAGE_TOKEN_INDEX, return_tensors='pt').unsqueeze(0).cuda()
-    
+
+    input_ids = tokenizer_image_token(prompt_text, tokenizer, IMAGE_TOKEN_INDEX, return_tensors='pt').unsqueeze(0).to(device)
+
     image = Image.open(image_file).convert('RGB')
     image_tensor = process_images([image], image_processor, model.config)[0]
-    
+
     with torch.inference_mode():
         output_ids = model.generate(
             input_ids,
-            images=image_tensor.unsqueeze(0).half().cuda(),
+            images=image_tensor.unsqueeze(0).half().to(device),
             image_sizes=[image.size],
             do_sample=False,
             temperature=0.0,
@@ -61,6 +61,7 @@ if __name__ == "__main__":
     parser.add_argument("--image-dir", type=str, required=True)
     parser.add_argument("--num-samples", type=int, default=10)
     parser.add_argument("--output-dir", type=str, default="outputs/batch_results")
+    parser.add_argument("--device", type=str, default="cuda")
     args = parser.parse_args()
     
     os.makedirs(args.output_dir, exist_ok=True)
@@ -72,7 +73,7 @@ if __name__ == "__main__":
     
     for i, img_file in enumerate(tqdm(image_files)):
         try:
-            outputs, image = predict(args.model_path, img_file)
+            outputs, image = predict(args.model_path, img_file, device=args.device)
             
             text = outputs.strip()
             

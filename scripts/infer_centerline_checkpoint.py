@@ -165,12 +165,9 @@ def _load_full_finetune_model(checkpoint_dir: Path, device: str):
     if unexpected:
         print(f"[WARN] Unexpected keys after full-finetune load: {unexpected[:20]}")
 
-    dtype = torch.float16 if device == "cuda" else torch.float32
+    dtype = torch.float16 if device in ("cuda", "npu") else torch.float32
     model = model.to(dtype=dtype)
-    if device == "cuda":
-        model = model.to("cuda")
-    else:
-        model = model.to(device)
+    model = model.to(device)
     model.eval()
 
     image_processor = model.get_model().get_vision_tower().image_processor
@@ -187,7 +184,7 @@ def load_model_components(checkpoint_dir: Path, manifest: dict, device: str):
         model_path=str(checkpoint_dir),
         model_base=model_base,
         model_name=model_name,
-        device_map="auto" if device == "cuda" else {"": device},
+        device_map="auto" if device in ("cuda", "npu") else {"": device},
         device=device,
     )
     model.eval()

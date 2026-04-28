@@ -160,6 +160,10 @@ echo "DATASET_PATH: $DATASET_PATH"
 echo "TRAIN_PATH: $TRAIN_PATH"
 echo ">>>>>>>>>>>>>>>>>>>>>>>>>>>>>>> finish moxing >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>"
 
+# ====================== DeepSpeed config ======================
+DEEPSPEED_CONFIG=${DEEPSPEED_CONFIG:-configs/deepspeed_zero3.json}
+echo ">>> DeepSpeed config: ${DEEPSPEED_CONFIG}"
+
 # ====================== auto gradient accumulation ======================
 tar_equal_batch_size=128
 per_device_train_batch_size=1
@@ -219,7 +223,6 @@ torchrun \
     --save_total_limit 10 \
     --logging_steps 10 \
     --report_to none \
-    --ddp_find_unused_parameters False \
-    --ddp_backend hccl
+    --deepspeed "${DEEPSPEED_CONFIG}"
 
 echo "=== Training finished ==="

@@ -121,6 +121,9 @@ class LlavaMetaModel:
 
             self.mm_projector.load_state_dict(get_w(mm_projector_weights, 'mm_projector'))
 
+        if hasattr(self.get_vision_tower(), 'set_llm_hidden_size'):
+            self.get_vision_tower().set_llm_hidden_size(self.config.hidden_size)
+
 
 def unpad_image(tensor, original_size):
     """
@@ -163,9 +166,13 @@ class LlavaMetaForCausalLM(ABC):
         return self.get_model().get_vision_tower()
 
     def encode_images(self, images):
-        image_features = self.get_model().get_vision_tower()(images)
-        image_features = self.get_model().mm_projector(image_features)
-        return image_features
+        output = self.get_model().get_vision_tower()(images)
+        if isinstance(output, (tuple, list)) and len(output) == 2:
+            main_features, deepstack_features = output
+        else:
+            main_features, deepstack_features = output, None
+        main_features = self.get_model().mm_projector(main_features)
+        return main_features, deepstack_features
 
     def prepare_inputs_labels_for_multimodal(
         self, input_ids, position_ids, attention_mask, past_key_values, labels,
@@ -173,13 +180,18 @@ class LlavaMetaForCausalLM(ABC):
     ):
         vision_tower = self.get_vision_tower()
         if vision_tower is None or images is None or input_ids.shape[1] == 1:
-            return input_ids, position_ids, attention_mask, past_key_values, None, labels
+            return input_ids, position_ids, attention_mask, past_key_values, None, labels, None, None
 
+        all_deepstack_features = None
         if type(images) is list or images.ndim == 5:
             if type(images) is list:
                 images = [x.unsqueeze(0) if x.ndim == 3 else x for x in images]
             concat_images = torch.cat([image for image in images], dim=0)
-            image_features = self.encode_images(concat_images)
+            encoded = self.encode_images(concat_images)
+            if isinstance(encoded, tuple) and len(encoded) == 2:
+                image_features, all_deepstack_features = encoded
+            else:
+                image_features = encoded
             split_sizes = [image.shape[0] for image in images]
             image_features = torch.split(image_features, split_sizes, dim=0)
             mm_patch_merge_type = getattr(self.config, 'mm_patch_merge_type', 'flat')
@@ -232,6 +244,8 @@ class LlavaMetaForCausalLM(ABC):
                 raise ValueError(f"Unexpected mm_patch_merge_type: {self.config.mm_patch_merge_type}")
         else:
             image_features = self.encode_images(images)
+            if isinstance(image_features, tuple) and len(image_features) == 2:
+                image_features, all_deepstack_features = image_features
 
         # TODO: image start / end is not implemented here to support pretraining.
         if getattr(self.config, 'tune_mm_mlp_adapter', False) and getattr(self.config, 'mm_use_im_start_end', False):
@@ -353,7 +367,11 @@ class LlavaMetaForCausalLM(ABC):
         if _position_ids is None:
             position_ids = None
 
-        return None, position_ids, attention_mask, past_key_values, new_input_embeds, new_labels
+        visual_pos_mask = None
+        if all_deepstack_features is not None and new_labels is not None:
+            visual_pos_mask = (new_labels_padded == IGNORE_INDEX)
+
+        return None, position_ids, attention_mask, past_key_values, new_input_embeds, new_labels, visual_pos_mask, all_deepstack_features
 
     def initialize_vision_tokenizer(self, model_args, tokenizer):
         if model_args.mm_use_im_patch_token:

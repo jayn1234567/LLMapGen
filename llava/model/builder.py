@@ -29,12 +29,10 @@ def load_pretrained_model(model_path, model_base, model_name, load_8bit=False, l
 
     if is_qwen3vl_checkpoint(model_path) and not is_llava_checkpoint(model_path):
         cache_path = get_extracted_path(model_path)
-        if not os.path.exists(cache_path):
+        if not os.path.exists(os.path.join(cache_path, 'model.safetensors')):
             print(f"Extracting LLM from Qwen3-VL checkpoint: {model_path}")
             extract_llm_from_qwen3vl(model_path, cache_path)
             print(f"Extracted LLM to: {cache_path}")
-        else:
-            print(f"Using cached extracted LLM: {cache_path}")
         model_path = cache_path
 
     if device != "cuda":

@@ -45,6 +45,10 @@ pip install torch_npu==2.7.1rc1
 python -c "import moxing as mox; mox.file.copy_parallel('obs://yw-ads-training-gy1/data/external/personal/w00886412/llm4drive_utils/torch_npu/whl/torch_npu-2.7.1.dev20250724-cp311-cp311-manylinux_2_28_aarch64.whl', '/home/ma-user/torch_npu-2.7.1.dev20250724-cp311-cp311-manylinux_2_28_aarch64.whl')"
 pip install --force-reinstall /home/ma-user/torch_npu-2.7.1.dev20250724-cp311-cp311-manylinux_2_28_aarch64.whl
 
+# -------------------- tokenizer prerequisites (before transformers) --------------------
+pip install sentencepiece
+pip install tiktoken
+
 # -------------------- core ML (step.sh) --------------------
 pip install "transformers>=4.48.3"
 pip install "tokenizers>=0.21"
@@ -56,7 +60,6 @@ pip install Pillow
 pip install torchvision==0.22.1
 
 # -------------------- llava project dependencies (from pyproject.toml) --------------------
-pip install sentencepiece
 pip install shortuuid
 pip install peft
 pip install pydantic
@@ -190,8 +193,8 @@ echo "TEST_PATH:    $TEST_PATH"
 echo ">>>>>>>>>>>>>>>>>>>>>>>>>>>>>>> finish moxing >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>"
 
 # ====================== auto gradient accumulation ======================
-tar_equal_batch_size=128
-per_device_train_batch_size=1
+tar_equal_batch_size=64
+per_device_train_batch_size=2
 
 total_gpus=$(( NNODES * NPROC_PER_NODE ))
 gas=$((tar_equal_batch_size / (total_gpus * per_device_train_batch_size) ))
@@ -221,9 +224,10 @@ NUM_EPOCHS=6
 LR=2e-5
 MM_PROJECTOR_LR=5e-5
 WEIGHT_DECAY=0.0
-WARMUP_RATIO=0.03
+WARMUP_STEPS=50
 LR_SCHEDULER_TYPE=cosine
 MODEL_MAX_LENGTH=4096
+WARMUP_STEPS=50
 SAVE_STEPS=1000
 SAVE_TOTAL_LIMIT=10
 LOGGING_STEPS=10
@@ -268,7 +272,7 @@ torchrun \
     --learning_rate "${LR}" \
     --mm_projector_lr "${MM_PROJECTOR_LR}" \
     --weight_decay "${WEIGHT_DECAY}" \
-    --warmup_ratio "${WARMUP_RATIO}" \
+    --warmup_steps "${WARMUP_STEPS}" \
     --lr_scheduler_type "${LR_SCHEDULER_TYPE}" \
     --model_max_length "${MODEL_MAX_LENGTH}" \
     --gradient_checkpointing True \
@@ -276,7 +280,6 @@ torchrun \
     --remove_unused_columns false \
     --save_strategy steps \
     --save_steps "${SAVE_STEPS}" \
-    --evaluation_strategy no \
     --save_total_limit "${SAVE_TOTAL_LIMIT}" \
     --logging_steps "${LOGGING_STEPS}" \
     --report_to none \

@@ -1182,12 +1182,13 @@ def train(attn_implementation=None):
 
     if is_qwen3vl_checkpoint(model_args.model_name_or_path):
         cache_path = get_extracted_path(model_args.model_name_or_path)
-        if not os.path.exists(cache_path):
-            rank0_print(f"Extracting LLM from Qwen3-VL checkpoint: {model_args.model_name_or_path}")
-            extract_llm_from_qwen3vl(model_args.model_name_or_path, cache_path)
-            rank0_print(f"Extracted LLM to: {cache_path}")
-        else:
-            rank0_print(f"Using cached extracted LLM: {cache_path}")
+        if not os.path.exists(os.path.join(cache_path, 'model.safetensors')):
+            if training_args.local_rank in (-1, 0):
+                rank0_print(f"Extracting LLM from Qwen3-VL checkpoint: {model_args.model_name_or_path}")
+                extract_llm_from_qwen3vl(model_args.model_name_or_path, cache_path)
+                rank0_print(f"Extracted LLM to: {cache_path}")
+            if torch.distributed.is_initialized():
+                torch.distributed.barrier()
         model_args.model_name_or_path = cache_path
 
     if model_args.vision_tower is not None:

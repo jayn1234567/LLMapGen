@@ -7,6 +7,7 @@ from pathlib import Path
 import torch
 from PIL import Image
 from transformers import AutoTokenizer
+from transformers import AutoConfig
 
 try:
     from safetensors.torch import load_file as safe_load_file
@@ -21,7 +22,8 @@ from llava import conversation as conversation_lib
 from llava.constants import DEFAULT_IMAGE_TOKEN, IMAGE_TOKEN_INDEX
 from llava.mm_utils import process_images, tokenizer_image_token
 from llava.model.builder import load_pretrained_model
-from llava.model.language_model.llava_qwen import LlavaConfig, LlavaQwen2ForCausalLM
+from llava.model.language_model.llava_qwen import LlavaConfig as LlavaQwen2Config, LlavaQwen2ForCausalLM
+from llava.model.language_model.llava_qwen3 import LlavaQwen3ForCausalLM
 
 DEFAULT_PROMPT = DEFAULT_IMAGE_TOKEN
 
@@ -126,11 +128,15 @@ def _read_llava_checkpoint_metadata(checkpoint_dir: Path) -> dict:
 def _load_full_finetune_model(checkpoint_dir: Path, device: str):
     checkpoint_dir_str = str(checkpoint_dir.resolve())
     tokenizer = AutoTokenizer.from_pretrained(checkpoint_dir_str, use_fast=False, local_files_only=True)
-    config = LlavaConfig.from_pretrained(checkpoint_dir_str, local_files_only=True)
+    config = AutoConfig.from_pretrained(checkpoint_dir_str, local_files_only=True)
+    model_type = getattr(config, 'model_type', '')
     config.fastvit_pretrained = False
     config.fastvit_pretrained_path = None
 
-    model = LlavaQwen2ForCausalLM(config)
+    if 'qwen3' in model_type.lower():
+        model = LlavaQwen3ForCausalLM(config)
+    else:
+        model = LlavaQwen2ForCausalLM(config)
     model.resize_token_embeddings(len(tokenizer))
 
     vision_tower = model.get_vision_tower()
@@ -236,9 +242,13 @@ def main():
     checkpoint_dir = Path(args.checkpoint_dir)
     manifest = read_manifest(checkpoint_dir)
 
-    conv_template = args.conv_template or manifest.get("version") or "qwen_2_centerline_coord"
-    if conv_template not in conversation_lib.conv_templates:
-        conv_template = "qwen_2_centerline_coord"
+    conv_template = args.conv_template or manifest.get("version") or ""
+    if not conv_template or conv_template not in conversation_lib.conv_templates:
+        model_type = getattr(manifest, 'model_type', '') or ''
+        if 'qwen3' in str(manifest).lower():
+            conv_template = "conv_qwen_3_Dinov2_huawei"
+        else:
+            conv_template = "conv_qwen_2_Dinov2_huawei"
 
     tokenizer, model, image_processor = load_model_components(checkpoint_dir, manifest, args.device)
 

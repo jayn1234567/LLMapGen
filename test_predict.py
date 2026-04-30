@@ -12,7 +12,7 @@ from llava.mm_utils import tokenizer_image_token, process_images, get_model_name
 from llava.constants import IMAGE_TOKEN_INDEX, DEFAULT_IMAGE_TOKEN, DEFAULT_IM_START_TOKEN, DEFAULT_IM_END_TOKEN
 
 
-def predict(model_path, image_file, prompt, conv_mode="qwen_2_centerline_coord", output_file=None):
+def predict(model_path, image_file, prompt, conv_mode="conv_qwen_2_Dinov2_huawei", output_file=None):
     disable_torch_init()
     model_name = get_model_name_from_path(model_path)
     device = "cuda" if torch.cuda.is_available() else "npu" if hasattr(torch, 'npu') and torch.npu.is_available() else "cpu"

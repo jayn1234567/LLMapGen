@@ -12,7 +12,7 @@ from llava.mm_utils import tokenizer_image_token, process_images, get_model_name
 from llava.constants import IMAGE_TOKEN_INDEX, DEFAULT_IMAGE_TOKEN, DEFAULT_IM_START_TOKEN, DEFAULT_IM_END_TOKEN
 
 
-def predict(model_path, image_file, conv_mode="qwen_2_centerline_coord", device="cuda"):
+def predict(model_path, image_file, conv_mode="conv_qwen_2_Dinov2_huawei", device="cuda"):
     disable_torch_init()
     model_name = get_model_name_from_path(model_path)
     tokenizer, model, _, context_len = load_pretrained_model(model_path, None, model_name, device_map={"": device}, device=device)

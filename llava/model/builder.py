@@ -21,10 +21,21 @@ from transformers import AutoTokenizer, AutoModelForCausalLM, AutoConfig, BitsAn
 import torch
 from llava.model import *
 from llava.constants import DEFAULT_IMAGE_PATCH_TOKEN, DEFAULT_IM_START_TOKEN, DEFAULT_IM_END_TOKEN
+from llava.model.qwen3vl_extractor import is_qwen3vl_checkpoint, is_llava_checkpoint, get_extracted_path, extract_llm_from_qwen3vl
 
 
 def load_pretrained_model(model_path, model_base, model_name, load_8bit=False, load_4bit=False, device_map="auto", device="cuda", use_flash_attn=False, **kwargs):
     kwargs = {"device_map": device_map, **kwargs}
+
+    if is_qwen3vl_checkpoint(model_path) and not is_llava_checkpoint(model_path):
+        cache_path = get_extracted_path(model_path)
+        if not os.path.exists(cache_path):
+            print(f"Extracting LLM from Qwen3-VL checkpoint: {model_path}")
+            extract_llm_from_qwen3vl(model_path, cache_path)
+            print(f"Extracted LLM to: {cache_path}")
+        else:
+            print(f"Using cached extracted LLM: {cache_path}")
+        model_path = cache_path
 
     if device != "cuda":
         kwargs['device_map'] = {"": device}
@@ -97,8 +108,11 @@ def load_pretrained_model(model_path, model_base, model_name, load_8bit=False, l
             else:
                 tokenizer = AutoTokenizer.from_pretrained(model_base, use_fast=False)
                 cfg_pretrained = AutoConfig.from_pretrained(model_path)
-                # model = LlavaLlamaForCausalLM.from_pretrained(model_base, low_cpu_mem_usage=True, config=cfg_pretrained, **kwargs)
-                model = LlavaQwen2ForCausalLM.from_pretrained(model_base, low_cpu_mem_usage=True, config=cfg_pretrained, **kwargs)
+                model_type = getattr(cfg_pretrained, 'model_type', '')
+                if 'qwen3' in model_type.lower():
+                    model = LlavaQwen3ForCausalLM.from_pretrained(model_base, low_cpu_mem_usage=True, config=cfg_pretrained, **kwargs)
+                else:
+                    model = LlavaQwen2ForCausalLM.from_pretrained(model_base, low_cpu_mem_usage=True, config=cfg_pretrained, **kwargs)
 
             mm_projector_weights = torch.load(os.path.join(model_path, 'mm_projector.bin'), map_location='cpu')
             mm_projector_weights = {k: v.to(torch.float16) for k, v in mm_projector_weights.items()}
@@ -123,16 +137,20 @@ def load_pretrained_model(model_path, model_base, model_name, load_8bit=False, l
                 )
             else:
                 tokenizer = AutoTokenizer.from_pretrained(model_path, use_fast=False)
-                # model = LlavaLlamaForCausalLM.from_pretrained(
-                #     model_path,
-                #     low_cpu_mem_usage=True,
-                #     **kwargs
-                # )
-                model = LlavaQwen2ForCausalLM.from_pretrained(
-                    model_path,
-                    low_cpu_mem_usage=True,
-                    **kwargs
-                )
+                cfg = AutoConfig.from_pretrained(model_path)
+                model_type = getattr(cfg, 'model_type', '')
+                if 'qwen3' in model_type.lower():
+                    model = LlavaQwen3ForCausalLM.from_pretrained(
+                        model_path,
+                        low_cpu_mem_usage=True,
+                        **kwargs
+                    )
+                else:
+                    model = LlavaQwen2ForCausalLM.from_pretrained(
+                        model_path,
+                        low_cpu_mem_usage=True,
+                        **kwargs
+                    )
     else:
         # Load language model
         if model_base is not None:
@@ -170,7 +188,10 @@ def load_pretrained_model(model_path, model_base, model_name, load_8bit=False, l
         if not vision_tower.is_loaded:
             vision_tower.load_model(device_map=device_map)
         if device_map != 'auto':
-            vision_tower.to(device=device_map, dtype=torch.float16)
+            if isinstance(device_map, dict):
+                vision_tower.to(device=device, dtype=torch.float16)
+            else:
+                vision_tower.to(device=device_map, dtype=torch.float16)
         image_processor = vision_tower.image_processor
 
     if hasattr(model.config, "max_sequence_length"):

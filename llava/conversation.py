@@ -451,6 +451,24 @@ conv_qwen_2_Dinov2_huawei = Conversation(
     sep="<|im_end|>\n",
 )
 
+conv_qwen_3_Dinov2_huawei = Conversation(
+    system=(
+        "<|im_start|>system\n"
+        "You are a road-map reconstruction assistant designed to process BEV (Bird's Eye View) "
+        "images generated from LiDAR data.\n"
+        "Predict the complete road map from the current patch in the BEV image.\n"
+        "Return only valid JSON in the required schema.\n"
+        "Do not output markdown fences or extra explanation.\n"
+        "Keep all coordinates in the patch-local coordinate system."
+    ),
+    roles=("<|im_start|>user\n", "<|im_start|>assistant\n"),
+    version="qwen_v3",
+    messages=(),
+    offset=0,
+    sep_style=SeparatorStyle.QWEN_2,
+    sep="<|im_end|>\n",
+)
+
 
 # conv_qwen_2 = Conversation(
 #     system="",
@@ -489,6 +507,16 @@ conv_qwen_2_Dinov2_huawei = Conversation(
 #     sep2="<|im_end|>",
 # )
 
+conv_qwen_3 = Conversation(
+    system="<|im_start|>system\nYou are a helpful assistant.",
+    roles=("<|im_start|>user\n", "<|im_start|>assistant\n"),
+    version="qwen_v3",
+    messages=(),
+    offset=0,
+    sep_style=SeparatorStyle.QWEN_2,
+    sep="<|im_end|>\n",
+)
+
 default_conversation = conv_qwen_2
 conv_templates = {
     "default": conv_qwen_2,
@@ -498,6 +526,7 @@ conv_templates = {
     "qwen_2": conv_qwen_2,
     "qwen_2_centerline_coord": conv_qwen_2_centerline_coord,
     "conv_qwen_2_Dinov2_huawei": conv_qwen_2_Dinov2_huawei,
+    "conv_qwen_3_Dinov2_huawei": conv_qwen_3_Dinov2_huawei,
     "llama_2": conv_llama_2,
     "mistral_instruct": conv_mistral_instruct,
     "chatml_direct": conv_chatml_direct,

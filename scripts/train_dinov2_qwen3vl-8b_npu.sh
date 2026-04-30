@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-set -euo pipefail
+# set -euo pipefail
 
 # ============================================================
-# NPU (Ascend) llava training script
-# Dependencies strictly from step.sh; env setup consistent with reference.
+# NPU (Ascend) llava training + eval script
+# Qwen3-VL-8B LLM (auto-extract) + DINOv2 + DeepStack
 # ============================================================
 
 SCRIPT_PATH=$(readlink -f "$0")
@@ -39,32 +39,51 @@ echo ">>>>>>>>>>>>>>>>>>>>>>>>>>>> moxing change finished >>>>>>>>>>>>>>>>>>>>>>
 echo ">>>>>>>>>>>>>>>>>>>>>>>>>>>>> Installing dependencies (step.sh) >>>>>>>>>>>>>>>>>>>>>>>>>>>>>"
 unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY
 
-# base torch
 pip install torch==2.7.1
 pip install torch_npu==2.7.1rc1
 
-# custom torch_npu whl (environment-specific)
 python -c "import moxing as mox; mox.file.copy_parallel('obs://yw-ads-training-gy1/data/external/personal/w00886412/llm4drive_utils/torch_npu/whl/torch_npu-2.7.1.dev20250724-cp311-cp311-manylinux_2_28_aarch64.whl', '/home/ma-user/torch_npu-2.7.1.dev20250724-cp311-cp311-manylinux_2_28_aarch64.whl')"
-pip install /home/ma-user/torch_npu-2.7.1.dev20250724-cp311-cp311-manylinux_2_28_aarch64.whl
+pip install --force-reinstall /home/ma-user/torch_npu-2.7.1.dev20250724-cp311-cp311-manylinux_2_28_aarch64.whl
 
-# step.sh specified versions
-pip install transformers==4.48.3
-pip install tokenizers==0.22.1
+# -------------------- core ML (step.sh) --------------------
+pip install "transformers>=4.51.0"
+pip install "tokenizers>=0.21"
 pip install accelerate==1.6.0
 pip install deepspeed==0.14.4
 pip install safetensors
 pip install packaging
 pip install Pillow
+pip install torchvision==0.22.1
 
-# project itself (editable)
-cd "$SCRIPT_DIR"
-pip install -e . 2>/dev/null || pip install -e . --no-deps
-cd -
+# -------------------- llava project dependencies (from pyproject.toml) --------------------
+pip install sentencepiece
+pip install shortuuid
+pip install peft
+pip install pydantic
+pip install 'markdown2[all]'
+pip install 'numpy>=1.26'
+pip install 'scikit-learn>=1.2'
+pip install 'gradio>=5.0'
+pip install requests
+pip install uvicorn
+pip install fastapi
+pip install 'einops>=0.6'
+pip install 'einops-exts>=0.0.4'
+pip install 'timm>=0.9.0'
 
-# compatibility
+pip install "huggingface-hub>=0.25.1" --force-reinstall
 pip install urllib3==1.26.15
 
+# -------------------- verification --------------------
+echo "========== key deps =========="
+python -c "import torch; print('torch', torch.__version__)"
+python -c "import torch_npu; print('torch_npu', torch_npu.__version__)"
+python -c "import transformers; print('transformers', transformers.__version__)"
+python -c "import deepspeed; print('deepspeed', deepspeed.__version__)"
+echo "==============================="
+
 pip list
+
 echo ">>>>>>>>>>>>>>>>>>>>>>>>>>>>> Dependencies installed >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>"
 
 # ====================== distributed parameters ======================
@@ -113,6 +132,7 @@ export WITHOUT_JIT_COMPILE=1
 export HCCL_OP_BASE_FFTS_MODE_ENABLE=FALSE
 export COMBINED_ENABLE=1
 export OMP_NUM_THREADS=1
+export PYTORCH_NPU_ALLOC_CONF=max_split_size_mb:128
 
 # ====================== output management ======================
 CLUSTER_SAVE=${OUTPUT_URL}
@@ -134,35 +154,40 @@ MODEL_OBS_PATH="obs://yw-ads-training-gy1/data/external/personal/h58801830/whu/j
 DATASET_OBS_PATH="obs://yw-ads-training-gy1/data/external/personal/h58801830/whu/jjh/MLLM20260427_rc_jjh.zip"
 
 DINOV2_PATH=${DINOV2_PATH:-${OBS_CACHE}/checkpoints/facebook_dinov2-large}
-FASTVLM_PATH=${FASTVLM_PATH:-${OBS_CACHE}/checkpoints/llava-fastvithd_7b_stage2}
-DATASET_PATH=${DATASET_PATH:-${OBS_CACHE}/data}
-IMAGE_FOLDER=${IMAGE_FOLDER:-${DATASET_PATH}/img}
+Qwen3VL_PATH=${Qwen3VL_PATH:-${OBS_CACHE}/checkpoints/Qwen3-VL-8B-Instruct}
+
+DATASET_PATH="/cache/MLLM20260427_rc_jjh"
+IMAGE_FOLDER="${DATASET_PATH}/img"
 
 # ====================== download ======================
 echo ">>>>>>>>>>>>>>>>>>>>>>>>>>>>> Downloading models >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>"
 python -c "import moxing as mox; mox.file.copy_parallel('${MODEL_OBS_PATH}/facebook_dinov2-large', '${DINOV2_PATH}')"
-python -c "import moxing as mox; mox.file.copy_parallel('${MODEL_OBS_PATH}/llava-fastvithd_7b_stage2', '${FASTVLM_PATH}')"
+python -c "import moxing as mox; mox.file.copy_parallel('${MODEL_OBS_PATH}/Qwen3-VL-8B-Instruct', '${Qwen3VL_PATH}')"
 
 echo ">>>>>>>>>>>>>>>>>>>>>>>>>>>>> Downloading dataset >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>"
 python -c "import moxing as mox; mox.file.copy('${DATASET_OBS_PATH}', '${OBS_CACHE}/dataset.zip')"
-cd ${OBS_CACHE}
-unzip -o dataset.zip -d ${DATASET_PATH}
+
+cd /cache
+unzip -o dataset.zip
 cd $SCRIPT_DIR
 
-if [[ -f "${DATASET_PATH}/train.jsonl" ]]; then
-    TRAIN_PATH="${DATASET_PATH}/train.jsonl"
-else
-    echo "ERROR: train.jsonl not found under ${DATASET_PATH}"
+if [ ! -d "$DATASET_PATH" ]; then
+    echo "ERROR: Expected dataset directory $DATASET_PATH not found after unzip."
+    ls -l /cache/
+    exit 1
+fi
+
+TRAIN_PATH="${DATASET_PATH}/train.jsonl"
+TEST_PATH="${DATASET_PATH}/test.jsonl"
+if [ ! -f "$TRAIN_PATH" ]; then
+    echo "ERROR: $TRAIN_PATH not found"
     exit 1
 fi
 
 echo "DATASET_PATH: $DATASET_PATH"
-echo "TRAIN_PATH: $TRAIN_PATH"
+echo "TRAIN_PATH:   $TRAIN_PATH"
+echo "TEST_PATH:    $TEST_PATH"
 echo ">>>>>>>>>>>>>>>>>>>>>>>>>>>>>>> finish moxing >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>"
-
-# ====================== DeepSpeed config ======================
-DEEPSPEED_CONFIG=${DEEPSPEED_CONFIG:-configs/deepspeed_zero3.json}
-echo ">>> DeepSpeed config: ${DEEPSPEED_CONFIG}"
 
 # ====================== auto gradient accumulation ======================
 tar_equal_batch_size=128
@@ -186,6 +211,37 @@ cd "$SCRIPT_DIR/.."
 
 export PYTHONPATH="$(pwd):${PYTHONPATH:-}"
 
+# ---------- Training params ----------
+MM_VISION_SELECT_LAYER=-2
+MM_PROJECTOR_TYPE=mlp2x_gelu
+UNFREEZE_MM_VISION_TOWER=False
+DEEPSTACK_VISUAL_INDEXES="6 12 18 23"
+DEEPSPEED_CONFIG="scripts/deepspeed_zero3.json"
+NUM_EPOCHS=6
+LR=2e-5
+MM_PROJECTOR_LR=5e-5
+WEIGHT_DECAY=0.0
+WARMUP_RATIO=0.03
+LR_SCHEDULER_TYPE=cosine
+MODEL_MAX_LENGTH=4096
+SAVE_STEPS=1000
+SAVE_TOTAL_LIMIT=10
+LOGGING_STEPS=10
+SAMPLE_SEED=42
+
+# ---------- DeepStack ----------
+DEEPSTACK_ARGS=()
+if [ -n "${DEEPSTACK_VISUAL_INDEXES}" ]; then
+    DEEPSTACK_ARGS=(--deepstack_visual_indexes ${DEEPSTACK_VISUAL_INDEXES})
+fi
+
+echo "============================================================"
+echo "Model:      ${Qwen3VL_PATH} (Qwen3-VL-8B → auto-extract LLM)"
+echo "ViT:        ${DINOV2_PATH}"
+echo "DeepStack:  ${DEEPSTACK_VISUAL_INDEXES:-disabled}"
+echo "DeepSpeed:  ${DEEPSPEED_CONFIG}"
+echo "============================================================"
+
 torchrun \
     --nnodes="${NNODES}" \
     --nproc_per_node="${NPROC_PER_NODE}" \
@@ -193,36 +249,62 @@ torchrun \
     --master_addr="${MASTER_ADDR}" \
     --master_port="${MASTER_PORT}" \
     -m llava.train.train_qwen \
-    --model_name_or_path "${FASTVLM_PATH}" \
-    --version conv_qwen_2_Dinov2_huawei \
-    --unfreeze_mm_vision_tower False \
+    --model_name_or_path "${Qwen3VL_PATH}" \
+    --version conv_qwen_3_Dinov2_huawei \
     --vision_tower "${DINOV2_PATH}" \
-    --mm_vision_select_layer -2 \
-    --mm_projector_type mlp2x_gelu \
+    --mm_vision_select_layer "${MM_VISION_SELECT_LAYER}" \
+    --mm_projector_type "${MM_PROJECTOR_TYPE}" \
+    --unfreeze_mm_vision_tower "${UNFREEZE_MM_VISION_TOWER}" \
+    "${DEEPSTACK_ARGS[@]}" \
     --data_path "${TRAIN_PATH}" \
     --image_folder "${IMAGE_FOLDER}" \
+    --sample_seed "${SAMPLE_SEED}" \
     --image_aspect_ratio pad \
     --bf16 True \
     --output_dir "${OUTPUT_PATH}" \
-    --num_train_epochs 6 \
+    --num_train_epochs "${NUM_EPOCHS}" \
     --per_device_train_batch_size ${per_device_train_batch_size} \
     --gradient_accumulation_steps ${gradient_accumulation_steps} \
-    --learning_rate 2e-5 \
-    --mm_projector_lr 5e-5 \
-    --weight_decay 0. \
-    --warmup_ratio 0.03 \
-    --lr_scheduler_type cosine \
-    --model_max_length 4096 \
+    --learning_rate "${LR}" \
+    --mm_projector_lr "${MM_PROJECTOR_LR}" \
+    --weight_decay "${WEIGHT_DECAY}" \
+    --warmup_ratio "${WARMUP_RATIO}" \
+    --lr_scheduler_type "${LR_SCHEDULER_TYPE}" \
+    --model_max_length "${MODEL_MAX_LENGTH}" \
     --gradient_checkpointing True \
     --dataloader_num_workers 4 \
     --remove_unused_columns false \
     --save_strategy steps \
-    --save_steps 1000 \
+    --save_steps "${SAVE_STEPS}" \
     --evaluation_strategy no \
-    --load_best_model_at_end False \
-    --save_total_limit 10 \
-    --logging_steps 10 \
+    --save_total_limit "${SAVE_TOTAL_LIMIT}" \
+    --logging_steps "${LOGGING_STEPS}" \
     --report_to none \
+    --ddp_find_unused_parameters False \
+    --ddp_backend hccl \
     --deepspeed "${DEEPSPEED_CONFIG}"
 
 echo "=== Training finished ==="
+
+# ====================== inference ======================
+echo ">>>>>>>>>>>>>>>>>>>>>>>>>>>>>>> start inference >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>"
+cd "$SCRIPT_DIR/.."
+
+if [ -f "$TEST_PATH" ] && [ -d "$IMAGE_FOLDER" ]; then
+    echo ">>> Running inference on ${TEST_PATH}"
+    python scripts/infer_centerline_checkpoint.py \
+        --checkpoint-dir "${OUTPUT_PATH}" \
+        --test-json "${TEST_PATH}" \
+        --image-folder "${IMAGE_FOLDER}" \
+        --num-samples -1 \
+        --conv-template conv_qwen_3_Dinov2_huawei \
+        --device npu \
+        --max-new-tokens 2048 \
+        --output-json "${OUTPUT_PATH}/predictions.json" \
+        --output-dir "${OUTPUT_PATH}/predictions" \
+        --print-full-output
+else
+    echo ">>> No test.jsonl found, skipping inference"
+fi
+
+echo ">>>>>>>>>>>>>>>>>>>>>>>>>>>>>>> inference finished >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>"

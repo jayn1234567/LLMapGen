@@ -78,7 +78,7 @@ if __name__ == "__main__":
     parser.add_argument("--model-base", type=str, default=None)
     parser.add_argument("--image-file", type=str, default=None, help="location of image file")
     parser.add_argument("--prompt", type=str, default="Describe the image.", help="Prompt for VLM.")
-    parser.add_argument("--conv-mode", type=str, default="qwen_2_centerline_coord")
+    parser.add_argument("--conv-mode", type=str, default="conv_qwen_2_Dinov2_huawei")
     parser.add_argument("--temperature", type=float, default=0.2)
     parser.add_argument("--top_p", type=float, default=None)
     parser.add_argument("--num_beams", type=int, default=1)

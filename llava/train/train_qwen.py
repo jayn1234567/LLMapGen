@@ -39,6 +39,7 @@ from transformers import TrainerCallback
 from llava import conversation as conversation_lib
 from llava.model import *
 from llava.mm_utils import tokenizer_image_token, process_anyres_image
+from llava.model.qwen3vl_extractor import is_qwen3vl_checkpoint, is_llava_checkpoint, get_extracted_path, extract_llm_from_qwen3vl
 
 from PIL import Image
 
@@ -143,6 +144,7 @@ class ModelArguments:
     mm_patch_merge_type: Optional[str] = field(default='flat')
     mm_vision_select_feature: Optional[str] = field(default="patch")
     unfreeze_mm_vision_tower: bool = field(default=False)
+    deepstack_visual_indexes: Optional[List[int]] = field(default=None)
     s2: Optional[bool] = field(default=False)
     hd: Optional[bool] = field(default=False)
 
@@ -938,9 +940,10 @@ def preprocess(
     if conversation_lib.default_conversation.version == "mpt":
         # print('--mpt--')
         return preprocess_mpt(sources, tokenizer, has_image=has_image)
-    # fix: add qwen2
+    # fix: add qwen2/qwen3
     if conversation_lib.default_conversation.version.startswith("qwen_v2"):
-        # print('--qwen_v2--')
+        return preprocess_qwen_2(sources, tokenizer, has_image=has_image)
+    if conversation_lib.default_conversation.version.startswith("qwen_v3"):
         return preprocess_qwen_2(sources, tokenizer, has_image=has_image)
     # add end signal and concatenate together
     conversations = []
@@ -1175,6 +1178,18 @@ def train(attn_implementation=None):
             )
         ))
 
+    _is_qwen3 = any(kw in model_args.model_name_or_path.lower() for kw in ['qwen3', 'qwen-3'])
+
+    if is_qwen3vl_checkpoint(model_args.model_name_or_path):
+        cache_path = get_extracted_path(model_args.model_name_or_path)
+        if not os.path.exists(cache_path):
+            rank0_print(f"Extracting LLM from Qwen3-VL checkpoint: {model_args.model_name_or_path}")
+            extract_llm_from_qwen3vl(model_args.model_name_or_path, cache_path)
+            rank0_print(f"Extracted LLM to: {cache_path}")
+        else:
+            rank0_print(f"Using cached extracted LLM: {cache_path}")
+        model_args.model_name_or_path = cache_path
+
     if model_args.vision_tower is not None:
         if 'mpt' in model_args.model_name_or_path:
             config = transformers.AutoConfig.from_pretrained(model_args.model_name_or_path, trust_remote_code=True)
@@ -1191,22 +1206,47 @@ def train(attn_implementation=None):
             if _original_vt and _original_vt != model_args.vision_tower:
                 delattr(config, 'mm_vision_tower')
                 rank0_print(f"checkpoint vision tower '{_original_vt}' != requested '{model_args.vision_tower}', will rebuild vision modules.")
-            model = LlavaQwen2ForCausalLM.from_pretrained(
+            if _is_qwen3:
+                from llava.model.language_model.llava_qwen3 import LlavaQwen3ConfigWrapper
+                if not isinstance(config, LlavaQwen3ConfigWrapper):
+                    config = LlavaQwen3ConfigWrapper(**config.to_dict())
+                model = LlavaQwen3ForCausalLM.from_pretrained(
+                    model_args.model_name_or_path,
+                    config=config,
+                    cache_dir=training_args.cache_dir,
+                    attn_implementation=attn_implementation,
+                    torch_dtype=(torch.bfloat16 if training_args.bf16 else None),
+                    **bnb_model_from_pretrained_args
+                )
+            else:
+                from llava.model.language_model.llava_qwen import LlavaConfig
+                if not isinstance(config, LlavaConfig):
+                    config = LlavaConfig(**config.to_dict())
+                model = LlavaQwen2ForCausalLM.from_pretrained(
+                    model_args.model_name_or_path,
+                    config=config,
+                    cache_dir=training_args.cache_dir,
+                    attn_implementation=attn_implementation,
+                    torch_dtype=(torch.bfloat16 if training_args.bf16 else None),
+                    **bnb_model_from_pretrained_args
+                )
+    else:
+        if _is_qwen3:
+            model = transformers.AutoModelForCausalLM.from_pretrained(
                 model_args.model_name_or_path,
-                config=config,
                 cache_dir=training_args.cache_dir,
                 attn_implementation=attn_implementation,
                 torch_dtype=(torch.bfloat16 if training_args.bf16 else None),
                 **bnb_model_from_pretrained_args
             )
-    else:
-        model = transformers.Qwen2ForCausalLM.from_pretrained(
-            model_args.model_name_or_path,
-            cache_dir=training_args.cache_dir,
-            attn_implementation=attn_implementation,
-            torch_dtype=(torch.bfloat16 if training_args.bf16 else None),
-            **bnb_model_from_pretrained_args
-        )
+        else:
+            model = transformers.Qwen2ForCausalLM.from_pretrained(
+                model_args.model_name_or_path,
+                cache_dir=training_args.cache_dir,
+                attn_implementation=attn_implementation,
+                torch_dtype=(torch.bfloat16 if training_args.bf16 else None),
+                **bnb_model_from_pretrained_args
+            )
     model.config.use_cache = False
 
     if model_args.freeze_backbone:
@@ -1335,7 +1375,7 @@ def train(attn_implementation=None):
     data_module = make_supervised_data_module(tokenizer=tokenizer,
                                               data_args=data_args)
     trainer = LLaVATrainer(model=model,
-                           tokenizer=tokenizer,
+                           processing_class=tokenizer,
                            args=training_args,
                            callbacks=[JsonlMetricLoggerCallback(training_args.output_dir)],
                            **data_module)

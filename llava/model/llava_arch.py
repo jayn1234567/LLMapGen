@@ -171,7 +171,7 @@ class LlavaMetaForCausalLM(ABC):
             main_features, deepstack_features = output
         else:
             main_features, deepstack_features = output, None
-        main_features = self.get_model().mm_projector(main_features)
+        main_features = self.get_model().mm_projector(main_features.to(self.dtype))
         return main_features, deepstack_features
 
     def prepare_inputs_labels_for_multimodal(

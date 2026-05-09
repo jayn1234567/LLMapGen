@@ -44,7 +44,7 @@ MLLM_project/
 │   │   └── multimodal_projector/
 │   └── train/
 │       ├── train_qwen.py              # 主训练脚本
-│       └── llava_trainer.py
+│   └── llava_trainer.py           # LLaVATrainer — HF Trainer 子类 (含分组 LR)
 │
 └── scripts/
     ├── gpu/                           # GPU 训练脚本 ★ 7 个
@@ -144,27 +144,62 @@ LayerNorm(vit_dim) → Linear(vit_dim → llm_dim) → GELU → Linear(llm_dim �
 
 ---
 
-## 训练
+## 训练参数
 
-### GPU 命令
+### ModelArguments (新增参数以 ★ 标注)
+
+| 参数 | 类型 | 默认值 | 说明 |
+|------|------|--------|------|
+| `--model_name_or_path` | str | `facebook/opt-125m` | LLM checkpoint 路径 |
+| `--version` | str | `v0` | 对话模板: `conv_qwen_2/3_Dinov2_huawei` |
+| `--vision_tower` | str | None | 视觉编码器路径 |
+| `--mm_vision_select_layer` | int | -1 | ViT 层选择 (-2=倒数第二层) |
+| `--mm_projector_type` | str | `linear` | 投影器: `mlp2x_gelu` |
+| `--mm_vision_select_feature` | str | `patch` | `patch`(去CLS) / `cls_patch` |
+| `--mm_patch_merge_type` | str | `flat` | `flat` / `spatial` / `spatial_unpad` |
+| `--unfreeze_mm_vision_tower` | bool | False | 解冻 Vision Tower |
+| `--freeze_llm` | bool | False | 冻结 LLM, 仅训 ViT + Projector |
+| ★ `--deepstack_visual_indexes` | List[int] | None | DeepStack 选择层，如 `6 12 18 23` |
+| ★ `--input_image_size` | int | None | ViT 输入尺寸 (不传则用默认) |
+| ★ `--dino_variant` | str | None | 显式指定 DINO 变体: `dinov3_large`, `dinov2_large` 等 |
+
+### DeepSpeed 配置
+
+| 配置文件 | gather_16bit_weights | 用途 |
+|---------|---------------------|------|
+| `deepspeed_zero3.json` | true | 训练时自动合并权重 (可能 OOM) |
+| `deepspeed_zero3_no_merge.json` | false | 训练时保持分片 (推荐) |
+
+使用 no_merge 时，训练结束后 NPU 脚本会自动运行 `zero_to_fp32.py` 将每个 checkpoint 的分片合并为 `model.safetensors`。
+
+### 推荐训练命令
 
 ```bash
-# DINOv3 + Qwen3VL-2B
-bash scripts/gpu/train_dinov3_qwen3vl-2b.sh
-
-# DINOv3 + Qwen3VL-8B (需多卡)
-bash scripts/gpu/train_dinov3_qwen3vl-8b.sh
+# Qwen2 + DINOv2 + DeepStack
+python -m llava.train.train_qwen \
+    --model_name_or_path checkpoints/llava-fastvithd_7b_stage2 \
+    --version conv_qwen_2_Dinov2_huawei \
+    --vision_tower checkpoints/facebook_dinov2-large \
+    --mm_vision_select_layer -2 \
+    --mm_projector_type mlp2x_gelu \
+    --deepstack_visual_indexes 6 12 18 23 \
+    --data_path data/train.jsonl \
+    --image_folder data/img \
+    --image_aspect_ratio pad \
+    --bf16 True \
+    --output_dir outputs/my_exp \
+    --num_train_epochs 3 \
+    --per_device_train_batch_size 1 \
+    --gradient_accumulation_steps 4 \
+    --learning_rate 2e-5 \
+    --mm_projector_lr 5e-5 \
+    --warmup_ratio 0.03 \
+    --lr_scheduler_type cosine \
+    --model_max_length 4096 \
+    --gradient_checkpointing True \
+    --save_steps 1000 \
+    --logging_steps 10
 ```
-
-### NPU 脚本结构
-
-每个 NPU 脚本是自包含的：下载模型/数据 → 训练 → DeepSpeed 合并 → 推理。云平台每次任务独立运行。
-
-关键参数：
-- `--deepstack_visual_indexes`: 自动从 dino_config 填充
-- `--input_image_size`: 不传则用默认（DINOv2:518, DINOv3:224）
-- `--mm_vision_select_layer -2`: 主特征取倒数第二层
-- 设备相关：`builder.py` 用 `str(device).startswith("npu")` 精确路由，不硬编码 "cuda" vs "npu"
 
 ---
 

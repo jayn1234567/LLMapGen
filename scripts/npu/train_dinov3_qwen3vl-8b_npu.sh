@@ -219,7 +219,7 @@ MM_VISION_SELECT_LAYER=-2
 MM_PROJECTOR_TYPE=mlp2x_gelu
 UNFREEZE_MM_VISION_TOWER=True
 DEEPSTACK_VISUAL_INDEXES="6 12 18 23"
-DEEPSPEED_CONFIG="scripts/deepspeed_zero3.json"
+DEEPSPEED_CONFIG="scripts/deepspeed_zero3_no_merge.json"
 NUM_EPOCHS=3
 LR=2e-5
 MM_PROJECTOR_LR=5e-5
@@ -304,7 +304,7 @@ if [ -n "${DEEPSPEED_CONFIG}" ] && [ ${NODE_RANK} -eq 0 ]; then
     fi
 fi
 
-    # --deepspeed "${DEEPSPEED_CONFIG}"
+        --deepspeed "${DEEPSPEED_CONFIG}"
 
 # # ====================== inference ======================
 # echo ">>>>>>>>>>>>>>>>>>>>>>>>>>>>>>> start inference >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>"

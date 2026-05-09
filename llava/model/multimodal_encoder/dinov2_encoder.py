@@ -1,3 +1,4 @@
+import os
 import torch
 import torch.nn as nn
 
@@ -29,8 +30,11 @@ class DINOv2VisionTower(nn.Module):
         elif self.tune_vision_tower:
             self.load_model()
         else:
-            self.cfg_only = AutoConfig.from_pretrained(self.vision_tower_name, local_files_only=True)
-            if self.input_image_size is not None:
+            try:
+                self.cfg_only = AutoConfig.from_pretrained(self.vision_tower_name, local_files_only=True)
+            except (OSError, EnvironmentError):
+                self.cfg_only = None
+            if self.input_image_size is not None and self.cfg_only is not None:
                 self.cfg_only.image_size = self.input_image_size
 
     def load_model(self, device_map=None):
@@ -50,6 +54,32 @@ class DINOv2VisionTower(nn.Module):
         target_size = self.input_image_size or self.vision_tower.config.image_size
         if target_size is not None:
             print(f"Using DINOv2 input image size: {target_size}")
+            self.image_processor.size = {"shortest_edge": target_size}
+            self.image_processor.crop_size = {"height": target_size, "width": target_size}
+
+        self.num_layers = len(self.vision_tower.encoder.layer)
+        self._resolve_select_layer_index()
+
+        if self.deepstack_visual_indexes is not None:
+            self._build_deepstack()
+
+        self.cfg_only = self.vision_tower.config
+        self.is_loaded = True
+
+    def load_model_from_checkpoint(self, checkpoint_dir):
+        vit_config_path = os.path.join(checkpoint_dir, 'vit_config.json')
+        if not os.path.isfile(vit_config_path):
+            raise FileNotFoundError(f"vit_config.json not found in {checkpoint_dir}")
+        vit_config = AutoConfig.from_pretrained(vit_config_path)
+
+        self.image_processor = AutoImageProcessor.from_pretrained(checkpoint_dir, local_files_only=True)
+        self.vision_tower = Dinov2Model(vit_config)
+        if not self.tune_vision_tower:
+            self.vision_tower.requires_grad_(False)
+
+        target_size = self.input_image_size or self.vision_tower.config.image_size
+        if target_size is not None:
+            print(f"Using DINOv2 input image size (from checkpoint): {target_size}")
             self.image_processor.size = {"shortest_edge": target_size}
             self.image_processor.crop_size = {"height": target_size, "width": target_size}
 

@@ -193,12 +193,13 @@ echo "Checkpoint directory contents:"
 ls -la ${CHECKPOINT_DIR}
 
 if [ ! -f "${CHECKPOINT_DIR}/model.safetensors" ] && [ ! -f "${CHECKPOINT_DIR}/pytorch_model.bin" ]; then
-    echo "WARNING: No model.safetensors or pytorch_model.bin found in root."
+    echo "ERROR: No model.safetensors or pytorch_model.bin found."
+    exit 1
 fi
-if [ -f "${CHECKPOINT_DIR}/preprocessor_config.json" ]; then
-    echo "OK: image_processor config found in checkpoint (self-contained)"
+if [ -f "${CHECKPOINT_DIR}/preprocessor_config.json" ] && [ -f "${CHECKPOINT_DIR}/vit_config.json" ]; then
+    echo "OK: checkpoint is self-contained (preprocessor_config.json + vit_config.json)"
 else
-    echo "WARNING: preprocessor_config.json not found in checkpoint."
+    echo "WARNING: missing preprocessor_config.json or vit_config.json. ViT base must be accessible."
 fi
 
 echo "CHECKPOINT_DIR: $CHECKPOINT_DIR"

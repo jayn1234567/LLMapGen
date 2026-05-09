@@ -52,6 +52,31 @@ def add_title(image: Image.Image, text: str) -> Image.Image:
     return canvas
 
 
+def load_json_array_or_lines(file_path: Path) -> list:
+    """读取 JSON 数组格式 或 JSON Lines 格式（每行一个 JSON 对象）"""
+    content = file_path.read_text(encoding="utf-8").strip()
+    if not content:
+        return []
+    # 如果以 '[' 开头且以 ']' 结尾，视为标准 JSON 数组
+    if content.startswith('[') and content.endswith(']'):
+        try:
+            return json.loads(content)
+        except json.JSONDecodeError:
+            pass  # 解析失败则尝试按行处理
+    # 按行解析 JSON Lines
+    results = []
+    for line in content.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            results.append(json.loads(line))
+        except json.JSONDecodeError:
+            # 安静跳过无效行，可改为打印警告
+            continue
+    return results
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--input-dir", required=True)
@@ -67,7 +92,10 @@ def main():
     if not summary_path.exists():
         raise FileNotFoundError(f"Summary file not found: {summary_path}")
 
-    results = json.loads(summary_path.read_text(encoding="utf-8"))
+    results = load_json_array_or_lines(summary_path)
+    if not results:
+        raise ValueError(f"No valid records found in {summary_path}")
+
     output_dir = Path(args.output_dir) if args.output_dir else input_dir / "viz"
     output_dir.mkdir(parents=True, exist_ok=True)
 

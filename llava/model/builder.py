@@ -134,7 +134,7 @@ def load_pretrained_model(model_path, model_base, model_name, load_8bit=False, l
                     **kwargs
                 )
             else:
-                tokenizer = AutoTokenizer.from_pretrained(model_path, use_fast=False)
+                tokenizer = AutoTokenizer.from_pretrained(model_path, use_fast=True)
                 cfg = AutoConfig.from_pretrained(model_path)
                 model_type = getattr(cfg, 'model_type', '')
                 if 'qwen3' in model_type.lower():

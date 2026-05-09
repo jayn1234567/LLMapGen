@@ -160,7 +160,7 @@ DINOV2_PATH=${DINOV2_PATH:-${OBS_CACHE}/checkpoints/facebook_dinov2-large}
 Qwen3VL_PATH=${Qwen3VL_PATH:-${OBS_CACHE}/checkpoints/Qwen3-VL-8B-Instruct}
 
 DATASET_PATH="/cache/MLLM20260427_rc_jjh"
-IMAGE_FOLDER="${DATASET_PATH}/img"
+IMAGE_FOLDER="${DATASET_PATH}"
 
 # ====================== download ======================
 echo ">>>>>>>>>>>>>>>>>>>>>>>>>>>>> Downloading models >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>"
@@ -217,17 +217,17 @@ export PYTHONPATH="$(pwd):${PYTHONPATH:-}"
 # ---------- Training params ----------
 MM_VISION_SELECT_LAYER=-2
 MM_PROJECTOR_TYPE=mlp2x_gelu
-UNFREEZE_MM_VISION_TOWER=False
+UNFREEZE_MM_VISION_TOWER=True
 DEEPSTACK_VISUAL_INDEXES="6 12 18 23"
 DEEPSPEED_CONFIG="scripts/deepspeed_zero3.json"
-NUM_EPOCHS=6
+NUM_EPOCHS=3
 LR=2e-5
 MM_PROJECTOR_LR=5e-5
 WEIGHT_DECAY=0.0
 WARMUP_STEPS=50
 LR_SCHEDULER_TYPE=cosine
 MODEL_MAX_LENGTH=4096
-SAVE_STEPS=1000
+SAVE_STEPS=500
 SAVE_TOTAL_LIMIT=10
 LOGGING_STEPS=10
 SAMPLE_SEED=42
@@ -254,6 +254,7 @@ torchrun \
     -m llava.train.train_qwen \
     --model_name_or_path "${Qwen3VL_PATH}" \
     --version conv_qwen_3_Dinov2_huawei \
+    --freeze_llm=True \
     --vision_tower "${DINOV2_PATH}" \
     --mm_vision_select_layer "${MM_VISION_SELECT_LAYER}" \
     --mm_projector_type "${MM_PROJECTOR_TYPE}" \
@@ -281,30 +282,73 @@ torchrun \
     --save_steps "${SAVE_STEPS}" \
     --save_total_limit "${SAVE_TOTAL_LIMIT}" \
     --logging_steps "${LOGGING_STEPS}" \
-    --report_to none \
-    --deepspeed "${DEEPSPEED_CONFIG}"
+    --report_to none 
+
 
 echo "=== Training finished ==="
 
-# ====================== inference ======================
-echo ">>>>>>>>>>>>>>>>>>>>>>>>>>>>>>> start inference >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>"
-cd "$SCRIPT_DIR/.."
+    # --deepspeed "${DEEPSPEED_CONFIG}"
 
-if [ -f "$TEST_PATH" ] && [ -d "$IMAGE_FOLDER" ]; then
-    echo ">>> Running inference on ${TEST_PATH}"
-    python scripts/infer_centerline_checkpoint.py \
-        --checkpoint-dir "${OUTPUT_PATH}" \
-        --test-json "${TEST_PATH}" \
-        --image-folder "${IMAGE_FOLDER}" \
-        --num-samples -1 \
-        --conv-template conv_qwen_3_Dinov2_huawei \
-        --device npu \
-        --max-new-tokens 2048 \
-        --output-json "${OUTPUT_PATH}/predictions.json" \
-        --output-dir "${OUTPUT_PATH}/predictions" \
-        --print-full-output
-else
-    echo ">>> No test.jsonl found, skipping inference"
-fi
+# # ====================== inference ======================
+# echo ">>>>>>>>>>>>>>>>>>>>>>>>>>>>>>> start inference >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>"
+# cd "$SCRIPT_DIR/.."
 
-echo ">>>>>>>>>>>>>>>>>>>>>>>>>>>>>>> inference finished >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>"
+# # 👇 只在主节点跑推理
+# if [ ${NODE_RANK} -ne 0 ]; then
+#     echo "✅ Skip inference on non-master node"
+#     exit 0
+# fi
+
+# # 👇 主节点使用单机8卡推理（正确）
+# if [ -f "$TEST_PATH" ] && [ -d "$IMAGE_FOLDER" ]; then
+#     echo ">>> Running inference on ${TEST_PATH}"
+
+#     torchrun --nproc_per_node=8 \
+#         --master_addr=127.0.0.1 \
+#         --master_port=29501 \
+#         scripts/infer_centerline_checkpoint.py \
+#         --checkpoint-dir "${OUTPUT_PATH}" \
+#         --test-json "${TEST_PATH}" \
+#         --image-folder "${IMAGE_FOLDER}" \
+#         --num-samples -1 \
+#         --conv-template conv_qwen_3_Dinov2_huawei \
+#         --device npu \
+#         --max-new-tokens 2048 \
+#         --output-json "${OUTPUT_PATH}/summary.json" \
+#         --output-dir "${OUTPUT_PATH}/predictions" \
+#         --print-full-output
+# else
+#     echo ">>> No test.jsonl found, skipping inference"
+# fi
+
+# TEST_OUTPUT_LOCAL="${OUTPUT_PATH}/predictions"
+
+# # ===================== 【自动合并 rank 文件】 =====================
+# echo "🔗 正在合并所有 summary_rank*.json → summary.json"
+# python3 - << EOF
+# import json, glob, os
+# output_dir = "$TEST_OUTPUT_LOCAL"
+# files = sorted(glob.glob(os.path.join(output_dir, "summary_rank*.json")))
+# merged = []
+# for f in files:
+#     with open(f, "r", encoding="utf-8") as fp:
+#         for line in fp:
+#             line = line.strip()
+#             if line:
+#                 merged.append(json.loads(line))
+# merged.sort(key=lambda x: x.get("idx", 0))
+# with open(os.path.join(output_dir, "summary.json"), "w", encoding="utf-8") as fp:
+#     for item in merged:
+#         fp.write(json.dumps(item, ensure_ascii=False) + "\n")
+# print(f"✅ 合并完成，共 {len(merged)} 条记录")
+# EOF
+# # ==================================================================
+
+# if [ -f "scripts/visualize_centerline.py" ]; then
+#     python scripts/visualize_centerline.py \
+#       --input-dir "${OUTPUT_PATH}/predictions" \
+#       --image-folder "${IMAGE_FOLDER}" \
+#       --output-dir "${TEST_OUTPUT_LOCAL}/viz"
+# fi
+
+# echo ">>>>>>>>>>>>>>>>>>>>>>>>>>>>>>> inference finished >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>"

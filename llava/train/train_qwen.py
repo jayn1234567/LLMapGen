@@ -172,6 +172,7 @@ class ModelArguments:
     mm_vision_select_feature: Optional[str] = field(default="patch")
     unfreeze_mm_vision_tower: bool = field(default=False)
     deepstack_visual_indexes: Optional[List[int]] = field(default=None)
+    input_image_size: Optional[int] = field(default=None)
     s2: Optional[bool] = field(default=False)
     hd: Optional[bool] = field(default=False)
 

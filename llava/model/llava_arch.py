@@ -54,6 +54,7 @@ class LlavaMetaModel:
         mm_patch_merge_type = model_args.mm_patch_merge_type
 
         self.config.mm_vision_tower = vision_tower
+        self.config.mm_vision_tower_type = "dinov3" if "dinov3" in str(vision_tower).lower() else "dinov2"
 
         if self.get_vision_tower() is None:
             vision_tower = build_vision_tower(model_args)

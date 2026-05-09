@@ -3,7 +3,7 @@
 
 # ============================================================
 # NPU (Ascend) llava training + eval script
-# Qwen2 + DINOv2 + DeepStack
+# Qwen3-VL-8B LLM (auto-extract) + DINOv2 + DeepStack
 # ============================================================
 
 SCRIPT_PATH=$(readlink -f "$0")
@@ -156,16 +156,16 @@ OBS_CACHE=${OBS_CACHE:-/cache}
 MODEL_OBS_PATH="obs://yw-ads-training-gy1/data/external/personal/h58801830/whu/jjh/checkpoints"
 DATASET_OBS_PATH="obs://yw-ads-training-gy1/data/external/personal/h58801830/whu/jjh/MLLM20260427_rc_jjh.zip"
 
-DINOV2_PATH=${DINOV2_PATH:-${OBS_CACHE}/checkpoints/facebook_dinov2-large}
-LLM_PATH=${LLM_PATH:-${OBS_CACHE}/checkpoints/llava-fastvithd_7b_stage2}
+DINOV3_PATH=${DINOV3_PATH:-${OBS_CACHE}/checkpoints/dinov3-vitl16-pretrain-lvd1689m}
+Qwen3VL_PATH=${Qwen3VL_PATH:-${OBS_CACHE}/checkpoints/Qwen3-VL-8B-Instruct}
 
 DATASET_PATH="/cache/MLLM20260427_rc_jjh"
 IMAGE_FOLDER="${DATASET_PATH}"
 
 # ====================== download ======================
 echo ">>>>>>>>>>>>>>>>>>>>>>>>>>>>> Downloading models >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>"
-python -c "import moxing as mox; mox.file.copy_parallel('${MODEL_OBS_PATH}/facebook_dinov2-large', '${DINOV2_PATH}')"
-python -c "import moxing as mox; mox.file.copy_parallel('${MODEL_OBS_PATH}/llava-fastvithd_1.5b_stage2', '${LLM_PATH}')"
+python -c "import moxing as mox; mox.file.copy_parallel('${MODEL_OBS_PATH}/facebook/dinov3-vitl16-pretrain-lvd1689m', '${DINOV2_PATH}')"
+python -c "import moxing as mox; mox.file.copy_parallel('${MODEL_OBS_PATH}/Qwen3-VL-8B-Instruct', '${Qwen3VL_PATH}')"
 
 echo ">>>>>>>>>>>>>>>>>>>>>>>>>>>>> Downloading dataset >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>"
 python -c "import moxing as mox; mox.file.copy('${DATASET_OBS_PATH}', '${OBS_CACHE}/dataset.zip')"
@@ -210,24 +210,23 @@ echo ">>> Gradient accumulation steps: ${gradient_accumulation_steps}"
 
 # ====================== training ======================
 echo ">>>>>>>>>>>>>>>>>>>>>>>>>>>>>>> start training >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>"
-cd "$SCRIPT_DIR/.."
+cd "$SCRIPT_DIR/../.."
 
 export PYTHONPATH="$(pwd):${PYTHONPATH:-}"
 
 # ---------- Training params ----------
 MM_VISION_SELECT_LAYER=-2
 MM_PROJECTOR_TYPE=mlp2x_gelu
-UNFREEZE_MM_VISION_TOWER=False
+UNFREEZE_MM_VISION_TOWER=True
 DEEPSTACK_VISUAL_INDEXES="6 12 18 23"
 DEEPSPEED_CONFIG="scripts/deepspeed_zero3.json"
-NUM_EPOCHS=6
+NUM_EPOCHS=3
 LR=2e-5
-MM_PROJECTOR_LR=2e-5
+MM_PROJECTOR_LR=5e-5
 WEIGHT_DECAY=0.0
 WARMUP_STEPS=50
 LR_SCHEDULER_TYPE=cosine
 MODEL_MAX_LENGTH=4096
-WARMUP_STEPS=50
 SAVE_STEPS=500
 SAVE_TOTAL_LIMIT=10
 LOGGING_STEPS=10
@@ -240,7 +239,7 @@ if [ -n "${DEEPSTACK_VISUAL_INDEXES}" ]; then
 fi
 
 echo "============================================================"
-echo "Model:      ${LLM_PATH}"
+echo "Model:      ${Qwen3VL_PATH} (Qwen3-VL-8B → auto-extract LLM)"
 echo "ViT:        ${DINOV2_PATH}"
 echo "DeepStack:  ${DEEPSTACK_VISUAL_INDEXES:-disabled}"
 echo "DeepSpeed:  ${DEEPSPEED_CONFIG}"
@@ -253,8 +252,9 @@ torchrun \
     --master_addr="${MASTER_ADDR}" \
     --master_port="${MASTER_PORT}" \
     -m llava.train.train_qwen \
-    --model_name_or_path "${LLM_PATH}" \
-    --version conv_qwen_2_Dinov2_huawei \
+    --model_name_or_path "${Qwen3VL_PATH}" \
+    --version conv_qwen_3_Dinov2_huawei \
+    --freeze_llm=True \
     --vision_tower "${DINOV2_PATH}" \
     --mm_vision_select_layer "${MM_VISION_SELECT_LAYER}" \
     --mm_projector_type "${MM_PROJECTOR_TYPE}" \
@@ -282,16 +282,33 @@ torchrun \
     --save_steps "${SAVE_STEPS}" \
     --save_total_limit "${SAVE_TOTAL_LIMIT}" \
     --logging_steps "${LOGGING_STEPS}" \
-    --report_to none \
-    --ddp_find_unused_parameters False \
-    --ddp_backend hccl \
-    --deepspeed "${DEEPSPEED_CONFIG}"
+    --report_to none 
+
 
 echo "=== Training finished ==="
 
+# ====================== DeepSpeed weight consolidation ======================
+if [ -n "${DEEPSPEED_CONFIG}" ] && [ ${NODE_RANK} -eq 0 ]; then
+    echo ">>> Merging DeepSpeed sharded checkpoints..."
+    for ckpt_dir in ${OUTPUT_PATH}/checkpoint-*; do
+        if [ -d "${ckpt_dir}" ] && [ -f "${ckpt_dir}/zero_to_fp32.py" ]; then
+            cd "${ckpt_dir}"
+            python zero_to_fp32.py . pytorch_model.bin
+            echo "  Merged: ${ckpt_dir}"
+        fi
+    done
+    if [ -f "${OUTPUT_PATH}/zero_to_fp32.py" ]; then
+        cd "${OUTPUT_PATH}"
+        python zero_to_fp32.py . pytorch_model.bin
+        echo "  Merged: final model"
+    fi
+fi
+
+    # --deepspeed "${DEEPSPEED_CONFIG}"
+
 # # ====================== inference ======================
 # echo ">>>>>>>>>>>>>>>>>>>>>>>>>>>>>>> start inference >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>"
-# cd "$SCRIPT_DIR/.."
+# cd "$SCRIPT_DIR/../.."
 
 # # 👇 只在主节点跑推理
 # if [ ${NODE_RANK} -ne 0 ]; then
@@ -311,7 +328,7 @@ echo "=== Training finished ==="
 #         --test-json "${TEST_PATH}" \
 #         --image-folder "${IMAGE_FOLDER}" \
 #         --num-samples -1 \
-#         --conv-template conv_qwen_2_Dinov2_huawei \
+#         --conv-template conv_qwen_3_Dinov2_huawei \
 #         --device npu \
 #         --max-new-tokens 2048 \
 #         --output-json "${OUTPUT_PATH}/summary.json" \
@@ -324,70 +341,23 @@ echo "=== Training finished ==="
 # TEST_OUTPUT_LOCAL="${OUTPUT_PATH}/predictions"
 
 # # ===================== 【自动合并 rank 文件】 =====================
-# echo "🔗 正在使用鲁棒合并处理所有 summary_rank*.json → summary.json"
-# export TEST_OUTPUT_LOCAL="${TEST_OUTPUT_LOCAL}"
-# python3 - << 'EOF'
-# import json, glob, os, sys
-
-# def extract_json_objects(content):
-#     brace_count = 0
-#     start = None
-#     in_string = False
-#     escape = False
-#     i = 0
-#     length = len(content)
-#     while i < length:
-#         ch = content[i]
-#         if not escape and ch == '\\':
-#             escape = True
-#             i += 1
-#             continue
-#         if not escape and ch == '"':
-#             in_string = not in_string
-#         escape = False
-#         if not in_string:
-#             if ch == '{':
-#                 if brace_count == 0:
-#                     start = i
-#                 brace_count += 1
-#             elif ch == '}':
-#                 brace_count -= 1
-#                 if brace_count == 0 and start is not None:
-#                     obj_str = content[start:i+1]
-#                     yield obj_str
-#                     start = None
-#         i += 1
-
-# output_dir = os.environ.get("TEST_OUTPUT_LOCAL", "/cache/test_output")
+# echo "🔗 正在合并所有 summary_rank*.json → summary.json"
+# python3 - << EOF
+# import json, glob, os
+# output_dir = "$TEST_OUTPUT_LOCAL"
 # files = sorted(glob.glob(os.path.join(output_dir, "summary_rank*.json")))
-# if not files:
-#     print("❌ 未找到任何 summary_rank*.json 文件")
-#     sys.exit(1)
-
 # merged = []
-# bad = 0
 # for f in files:
-#     with open(f, "r", encoding="utf-8-sig") as fp:
-#         data = fp.read()
-#     for idx, obj_str in enumerate(extract_json_objects(data)):
-#         try:
-#             obj = json.loads(obj_str)
-#             merged.append(obj)
-#         except json.JSONDecodeError as e:
-#             bad += 1
-#             print(f"⚠️ 解析失败 {f} 对象{idx}: {e}", file=sys.stderr)
-
-# if not merged:
-#     print("❌ 没有解析到任何有效 JSON 对象", file=sys.stderr)
-#     sys.exit(1)
-
+#     with open(f, "r", encoding="utf-8") as fp:
+#         for line in fp:
+#             line = line.strip()
+#             if line:
+#                 merged.append(json.loads(line))
 # merged.sort(key=lambda x: x.get("idx", 0))
-# out_path = os.path.join(output_dir, "summary.json")
-# with open(out_path, "w", encoding="utf-8") as fp:
+# with open(os.path.join(output_dir, "summary.json"), "w", encoding="utf-8") as fp:
 #     for item in merged:
 #         fp.write(json.dumps(item, ensure_ascii=False) + "\n")
-
-# print(f"✅ 合并完成，有效记录 {len(merged)} 条，跳过 {bad} 条无效对象")
+# print(f"✅ 合并完成，共 {len(merged)} 条记录")
 # EOF
 # # ==================================================================
 

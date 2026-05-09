@@ -35,7 +35,11 @@ def load_pretrained_model(model_path, model_base, model_name, load_8bit=False, l
             print(f"Extracted LLM to: {cache_path}")
         model_path = cache_path
 
-    if device != "cuda":
+    if str(device).startswith("npu"):
+        kwargs['device_map'] = {"": device}
+    elif str(device).startswith("cuda"):
+        kwargs['device_map'] = {"": device}  # explicit mapping works for both cuda and cuda:N
+    else:
         kwargs['device_map'] = {"": device}
 
     if load_8bit:
@@ -185,11 +189,10 @@ def load_pretrained_model(model_path, model_base, model_name, load_8bit=False, l
         vision_tower = model.get_vision_tower()
         if not vision_tower.is_loaded:
             vision_tower.load_model(device_map=device_map)
-        if device_map != 'auto':
-            if isinstance(device_map, dict):
-                vision_tower.to(device=device, dtype=torch.float16)
-            else:
-                vision_tower.to(device=device_map, dtype=torch.float16)
+        if isinstance(device_map, dict):
+            vision_tower.to(device=device, dtype=torch.float16)
+        elif device_map != 'auto':
+            vision_tower.to(device=device_map, dtype=torch.float16)
         image_processor = vision_tower.image_processor
 
     if hasattr(model.config, "max_sequence_length"):

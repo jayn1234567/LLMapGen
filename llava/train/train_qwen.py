@@ -173,6 +173,7 @@ class ModelArguments:
     unfreeze_mm_vision_tower: bool = field(default=False)
     deepstack_visual_indexes: Optional[List[int]] = field(default=None)
     input_image_size: Optional[int] = field(default=None)
+    dino_variant: Optional[str] = field(default=None)
     s2: Optional[bool] = field(default=False)
     hd: Optional[bool] = field(default=False)
 

@@ -87,9 +87,42 @@ DINO_CONFIGS: Dict[str, DinoConfig] = {
     ),
 }
 
+# Human-readable variant name -> internal key mapping
+DINO_VARIANT_MAP = {
+    # DINOv2
+    "dinov2_large": "dinov2-large",
+    "dinov2_l": "dinov2-large",
+    # DINOv3
+    "dinov3_small": "dinov3-vits16",
+    "dinov3_s": "dinov3-vits16",
+    "dinov3_base": "dinov3-vitb16",
+    "dinov3_b": "dinov3-vitb16",
+    "dinov3_large": "dinov3-vitl16",
+    "dinov3_l": "dinov3-vitl16",
+    "dinov3_huge": "dinov3-vith16plus",
+    "dinov3_h": "dinov3-vith16plus",
+}
 
-def get_dino_config(vision_tower_path: str, input_image_size: Optional[int] = None) -> DinoConfig:
+
+def get_dino_config(vision_tower_path: str, input_image_size: Optional[int] = None,
+                    variant: Optional[str] = None) -> DinoConfig:
     path_lower = vision_tower_path.lower()
+
+    if variant:
+        variant_lower = variant.lower()
+        if variant_lower in DINO_VARIANT_MAP:
+            key = DINO_VARIANT_MAP[variant_lower]
+        elif variant_lower in DINO_CONFIGS:
+            key = variant_lower
+        else:
+            raise KeyError(f"Unknown DINO variant: {variant}. "
+                           f"Known: {list(DINO_VARIANT_MAP.keys())}")
+        cfg = DINO_CONFIGS[key]
+        d = cfg.__dict__.copy()
+        if input_image_size is not None:
+            d["image_size"] = input_image_size
+        return DinoConfig(**d)
+
     for key, cfg in DINO_CONFIGS.items():
         if key in path_lower:
             d = cfg.__dict__.copy()

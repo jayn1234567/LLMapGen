@@ -114,6 +114,24 @@ LayerNorm(vit_dim) → Linear(vit_dim → llm_dim) → GELU → Linear(llm_dim �
 
 自动检测由 `dino_config.py` 实现，`builder.py` 调用。可通过 `--deepstack_visual_indexes` 和 `--input_image_size` 覆盖。
 
+### 显式指定 DINO 变体（推荐二次训练时使用）
+
+```bash
+--dino_variant dinov3_large   # DINOv3 ViT-L
+--dino_variant dinov3_base    # DINOv3 ViT-B
+--dino_variant dinov2_large   # DINOv2-L
+```
+
+| 别名 | 对应 config key |
+|------|----------------|
+| `dinov2_large`, `dinov2_l` | `dinov2-large` |
+| `dinov3_small`, `dinov3_s` | `dinov3-vits16` |
+| `dinov3_base`, `dinov3_b` | `dinov3-vitb16` |
+| `dinov3_large`, `dinov3_l` | `dinov3-vitl16` |
+| `dinov3_huge`, `dinov3_h` | `dinov3-vith16plus` |
+
+优先级：`--dino_variant` 传了 → 直接用；没传 → 路径自动检测。
+
 ### DINOv2 vs DINOv3
 
 | | DINOv2-L | DINOv3-L |

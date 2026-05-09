@@ -14,7 +14,8 @@ def build_vision_tower(vision_tower_cfg, **kwargs):
     if "dinov" in vision_tower.lower():
         try:
             img_size = getattr(vision_tower_cfg, 'input_image_size', None) or None
-            dino_cfg = get_dino_config(vision_tower, input_image_size=img_size)
+            variant = getattr(vision_tower_cfg, 'dino_variant', None) or None
+            dino_cfg = get_dino_config(vision_tower, input_image_size=img_size, variant=variant)
             if getattr(vision_tower_cfg, 'input_image_size', None) is None:
                 vision_tower_cfg.input_image_size = dino_cfg.image_size
             if getattr(vision_tower_cfg, 'deepstack_visual_indexes', None) is None:

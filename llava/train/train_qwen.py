@@ -19,7 +19,8 @@ import os
 import copy
 import random
 import shutil
-import time
+import time 
+from datetime import datetime
 from dataclasses import dataclass, field
 import json
 import logging
@@ -44,6 +45,7 @@ from llava.model.qwen3vl_extractor import is_qwen3vl_checkpoint, is_llava_checkp
 from PIL import Image
 
 
+
 local_rank = None
 
 
@@ -55,9 +57,12 @@ def rank0_print(*args):
 class JsonlMetricLoggerCallback(TrainerCallback):
     def __init__(self, output_dir: str):
         self.output_dir = output_dir
-        self.train_log_path = os.path.join(output_dir, "train_metrics.jsonl")
-        self.eval_log_path = os.path.join(output_dir, "eval_metrics.jsonl")
-        self.checkpoint_log_path = os.path.join(output_dir, "checkpoint_events.jsonl")
+        self.train_log_path = os.path.join(output_dir, "train_metrics.log")
+        self.eval_log_path = os.path.join(output_dir, "eval_metrics.log")
+        self.checkpoint_log_path = os.path.join(output_dir, "checkpoint_events.log")
+        # 吞吐量计算
+        self._throughput_start_time = None
+        self._throughput_start_step = 0
 
     def _is_rank0(self, args) -> bool:
         return args.local_rank in (-1, 0)
@@ -86,12 +91,34 @@ class JsonlMetricLoggerCallback(TrainerCallback):
         if not self._is_rank0(args) or not logs:
             return
 
+        # 吞吐量计算
+        throughput_str = None
+        if self._throughput_start_time is None:
+            self._throughput_start_time = time.time()
+            self._throughput_start_step = state.global_step
+        else:
+            step_diff = state.global_step - self._throughput_start_step
+            time_diff = time.time() - self._throughput_start_time
+            if step_diff > 0 and time_diff > 0:
+                per_device_bs = getattr(args,'per_device_train_batch_size',1)
+                gas = getattr(args,'gradient_accumulation_steps',1)
+                n_gpus = max(1,getattr(args,'world_size',1))
+                max_len = getattr(args,'model_max_length',4096)
+                total_tokens = per_device_bs * gas * step_diff *max_len
+                throughput = total_tokens / time_diff / n_gpus
+                throughput_str = f"{throughput:.2f} tokens/s/npu"
+                
+            self._throughput_start_time = time.time()
+            self._throughput_start_step = state.global_step
+
         payload = {
-            "time": time.time(),
+            "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             "global_step": state.global_step,
             "epoch": state.epoch,
             **logs,
         }
+        if throughput_str:
+            payload["DI_throughput"] = throughput_str
 
         if "eval_loss" in logs or any(key.startswith("eval_") for key in logs):
             self._append_jsonl(self.eval_log_path, payload)
@@ -173,6 +200,7 @@ class TrainingArguments(transformers.TrainingArguments):
     cache_dir: Optional[str] = field(default=None)
     optim: str = field(default="adamw_torch")
     remove_unused_columns: bool = field(default=False)
+    freeze_llm: bool = field(default=False)
     freeze_mm_mlp_adapter: bool = field(default=False)
     mpt_attn_impl: Optional[str] = field(default="triton")
     model_max_length: int = field(
@@ -300,7 +328,10 @@ def safe_save_model_for_hf_trainer(trainer: transformers.Trainer,
         return
 
     if trainer.deepspeed:
-        torch.cuda.synchronize()
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+        else:
+           torch.npu.synchronize() 
         trainer.save_model(output_dir)
         return
 
@@ -1149,6 +1180,21 @@ def make_supervised_data_module(tokenizer: transformers.PreTrainedTokenizer,
                 eval_dataset=eval_dataset,
                 data_collator=data_collator)
 
+def print_trainable_parameters(model):
+    """打印模型的可训练参数数量和总参数数量"""
+    trainable_params = 0
+    all_param = 0
+    for name, param in model.named_parameters():
+        num_params = param.numel()
+        all_param += num_params
+        if param.requires_grad:
+            trainable_params += num_params
+            # 可选：打印每个可训练参数的名称和大小（用于调试）
+            # print(f"Trainable: {name} | {num_params}")
+    print(
+        f"trainable params: {trainable_params} || "
+        f"all params: {all_param} || "
+        f"trainable%: {100 * trainable_params / all_param:.2f}")
 
 def train(attn_implementation=None):
     global local_rank
@@ -1210,7 +1256,9 @@ def train(attn_implementation=None):
             if _is_qwen3:
                 from llava.model.language_model.llava_qwen3 import LlavaQwen3ConfigWrapper
                 if not isinstance(config, LlavaQwen3ConfigWrapper):
-                    config = LlavaQwen3ConfigWrapper(**config.to_dict())
+                    d = config.to_dict()
+                    d.pop("model_type",None)
+                    config = LlavaQwen3ConfigWrapper(**d)
                 model = LlavaQwen3ForCausalLM.from_pretrained(
                     model_args.model_name_or_path,
                     config=config,
@@ -1222,7 +1270,9 @@ def train(attn_implementation=None):
             else:
                 from llava.model.language_model.llava_qwen import LlavaConfig
                 if not isinstance(config, LlavaConfig):
-                    config = LlavaConfig(**config.to_dict())
+                    d = config.to_dict()
+                    d.pop("model_type",None)
+                    config = LlavaConfig(**d)
                 model = LlavaQwen2ForCausalLM.from_pretrained(
                     model_args.model_name_or_path,
                     config=config,
@@ -1332,6 +1382,7 @@ def train(attn_implementation=None):
         vision_tower.vision_tower.requires_grad_(model_args.unfreeze_mm_vision_tower)
         vision_tower.to(dtype=torch.bfloat16 if training_args.bf16 else torch.float16, device=training_args.device)
 
+
         data_args.image_processor = vision_tower.image_processor
         data_args.is_multimodal = True
 
@@ -1346,7 +1397,16 @@ def train(attn_implementation=None):
             for p in model.get_model().mm_projector.parameters():
                 p.requires_grad = True
 
+        # freeze llm
+        if training_args.freeze_llm:
+            model.requires_grad_(False)
+            for p in model.get_model().vision_tower.parameters():
+                p.requires_grad = True
+            for p in model.get_model().mm_projector.parameters():
+                p.requires_grad = True
+
         model.config.freeze_mm_mlp_adapter = training_args.freeze_mm_mlp_adapter
+
         if training_args.freeze_mm_mlp_adapter:
             for p in model.get_model().mm_projector.parameters():
                 p.requires_grad = False
@@ -1372,6 +1432,9 @@ def train(attn_implementation=None):
                 if hasattr(module, 'weight'):
                     if training_args.bf16 and module.weight.dtype == torch.float32:
                         module = module.to(torch.bfloat16)
+                        
+    if local_rank in (-1, 0):
+            print_trainable_parameters(model)
 
     data_module = make_supervised_data_module(tokenizer=tokenizer,
                                               data_args=data_args)

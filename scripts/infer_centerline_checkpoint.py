@@ -6,7 +6,7 @@ from pathlib import Path
 
 import torch
 from PIL import Image
-from transformers import AutoTokenizer
+from transformers import AutoTokenizer, AutoImageProcessor
 from transformers import AutoConfig
 import os
 
@@ -143,6 +143,8 @@ def _load_full_finetune_model(checkpoint_dir: Path, device: str):
     vision_tower = model.get_vision_tower()
     if vision_tower is not None and not vision_tower.is_loaded:
         vision_tower.load_model()
+    if (checkpoint_dir / "preprocessor_config.json").exists():
+        vision_tower.image_processor = AutoImageProcessor.from_pretrained(str(checkpoint_dir), local_files_only=True)
 
     metadata = _read_llava_checkpoint_metadata(checkpoint_dir)
     if metadata and not metadata.get("bundled_vision_tower", True):

@@ -130,7 +130,6 @@ export WITHOUT_JIT_COMPILE=1
 export HCCL_OP_BASE_FFTS_MODE_ENABLE=FALSE
 export COMBINED_ENABLE=1
 export OMP_NUM_THREADS=1
-export PYTORCH_NPU_ALLOC_CONF=max_split_size_mb:128
 
 # ====================== output management ======================
 if [[ -z "${OUTPUT_URL}" ]]; then

@@ -292,6 +292,7 @@ echo "=== Training finished ==="
 # ====================== DeepSpeed weight consolidation ======================
 if [ -n "${DEEPSPEED_CONFIG}" ] && [ ${NODE_RANK} -eq 0 ]; then
     echo ">>> Merging DeepSpeed sharded checkpoints..."
+    export TORCH_FORCE_WEIGHTS_ONLY_LOAD=0
     for ckpt_dir in ${OUTPUT_PATH}/checkpoint-*; do
         if [ -d "${ckpt_dir}" ] && [ -f "${ckpt_dir}/zero_to_fp32.py" ]; then
             cd "${ckpt_dir}"

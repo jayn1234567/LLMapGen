@@ -282,14 +282,17 @@ torchrun \
     --save_steps "${SAVE_STEPS}" \
     --save_total_limit "${SAVE_TOTAL_LIMIT}" \
     --logging_steps "${LOGGING_STEPS}" \
-    --report_to none 
-
+    --report_to none \
+    --ddp_find_unused_parameters False \
+    --ddp_backend hccl \
+    --deepspeed "${DEEPSPEED_CONFIG}"
 
 echo "=== Training finished ==="
 
 # ====================== DeepSpeed weight consolidation ======================
 if [ -n "${DEEPSPEED_CONFIG}" ] && [ ${NODE_RANK} -eq 0 ]; then
     echo ">>> Merging DeepSpeed sharded checkpoints..."
+    export TORCH_FORCE_WEIGHTS_ONLY_LOAD=0
     for ckpt_dir in ${OUTPUT_PATH}/checkpoint-*; do
         if [ -d "${ckpt_dir}" ] && [ -f "${ckpt_dir}/zero_to_fp32.py" ]; then
             cd "${ckpt_dir}"
@@ -303,8 +306,6 @@ if [ -n "${DEEPSPEED_CONFIG}" ] && [ ${NODE_RANK} -eq 0 ]; then
         echo "  Merged: final model"
     fi
 fi
-
-        --deepspeed "${DEEPSPEED_CONFIG}"
 
 # # ====================== inference ======================
 # echo ">>>>>>>>>>>>>>>>>>>>>>>>>>>>>>> start inference >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>"

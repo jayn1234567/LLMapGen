@@ -1,5 +1,4 @@
 import os
-import shutil
 import torch
 import torch.nn as nn
 
@@ -265,26 +264,6 @@ class LLaVATrainer(Trainer):
             model.generation_config = transformers.GenerationConfig(do_sample=True, temperature=None, top_p=None)
             super(LLaVATrainer, self)._save_checkpoint(model, trial)
 
-    def _save_vit_assets(self, output_dir):
-        try:
-            vision_tower = self.model.get_vision_tower()
-            if vision_tower is None or not hasattr(vision_tower, 'vision_tower_name'):
-                return
-            vit_path = vision_tower.vision_tower_name
-            if not os.path.isdir(vit_path):
-                return
-            src_pp = os.path.join(vit_path, 'preprocessor_config.json')
-            src_cfg = os.path.join(vit_path, 'config.json')
-            for src, dst_name in [(src_pp, 'preprocessor_config.json'), (src_cfg, 'vit_config.json')]:
-                if not os.path.isfile(src):
-                    continue
-                dst = os.path.join(output_dir, dst_name)
-                if not os.path.isfile(dst):
-                    shutil.copy2(src, dst)
-                    print(f"Saved {dst_name} to {dst}")
-        except Exception as e:
-            print(f"[WARN] Could not save ViT assets: {e}")
-
     def _save(self, output_dir: Optional[str] = None, state_dict=None):
         if getattr(self.args, 'tune_mm_mlp_adapter', False):
             pass
@@ -292,5 +271,3 @@ class LLaVATrainer(Trainer):
             # Workaround for the issue: https://github.com/haotian-liu/LLaVA/issues/1144
             self.model.generation_config = transformers.GenerationConfig(do_sample=True, temperature=None, top_p=None)
             super(LLaVATrainer, self)._save(output_dir, state_dict)
-        if output_dir is not None and (self.args.local_rank == 0 or self.args.local_rank == -1):
-            self._save_vit_assets(output_dir)

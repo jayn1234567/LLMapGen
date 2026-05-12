@@ -136,7 +136,7 @@ class DINOv2VisionTower(nn.Module):
         if self.deepstack_mergers is not None:
             deepstack_features = []
             for i, idx in enumerate(self.deepstack_visual_indexes):
-                idx = min(idx, self.num_layers - 1)
+                idx = max(0, min(idx, len(hidden_states) - 1))
                 hs = hidden_states[idx]
                 if self.select_feature == 'patch':
                     hs = hs[:, 1:]

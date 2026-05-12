@@ -21,6 +21,7 @@ class DINOv3VisionTower(nn.Module):
 
         self.deepstack_visual_indexes = getattr(args, 'deepstack_visual_indexes', None)
         self.deepstack_mergers = None
+        self._preferred_dtype = torch.bfloat16
 
         if self.tune_vision_tower:
             print("DINOv3 vision tower is set to tunable")
@@ -36,6 +37,29 @@ class DINOv3VisionTower(nn.Module):
                 self.cfg_only = None
             if self.input_image_size is not None and self.cfg_only is not None:
                 self.cfg_only.image_size = self.input_image_size
+
+    def _stable_dtype_for_device(self):
+        if not hasattr(self, "vision_tower"):
+            return self._preferred_dtype
+        device = next(self.vision_tower.parameters()).device
+        if device.type in ("cuda", "npu"):
+            return torch.bfloat16
+        return torch.float32
+
+    def _keep_stable_dtype(self):
+        if not hasattr(self, "vision_tower"):
+            return
+        dtype = next(self.vision_tower.parameters()).dtype
+        if dtype == torch.float16:
+            stable_dtype = self._stable_dtype_for_device()
+            self.vision_tower.to(dtype=stable_dtype)
+            if self.deepstack_mergers is not None:
+                self.deepstack_mergers.to(dtype=stable_dtype)
+
+    def _apply(self, fn):
+        module = super()._apply(fn)
+        self._keep_stable_dtype()
+        return module
 
     def load_model(self, device_map=None):
         if self.is_loaded:
@@ -70,6 +94,7 @@ class DINOv3VisionTower(nn.Module):
 
         self.cfg_only = self.vision_tower.config
         self.is_loaded = True
+        self._keep_stable_dtype()
 
     def load_model_from_checkpoint(self, checkpoint_dir):
         vit_config_path = os.path.join(checkpoint_dir, 'vit_config.json')
@@ -101,6 +126,7 @@ class DINOv3VisionTower(nn.Module):
 
         self.cfg_only = self.vision_tower.config
         self.is_loaded = True
+        self._keep_stable_dtype()
 
     def _resolve_select_layer_index(self):
         raw = self.select_layer
@@ -128,6 +154,7 @@ class DINOv3VisionTower(nn.Module):
                 llm_hidden_size=llm_hidden_size,
                 num_mergers=len(self.deepstack_visual_indexes),
             )
+            self._keep_stable_dtype()
 
     def feature_select(self, image_forward_outs):
         hidden_states = image_forward_outs.hidden_states
@@ -139,11 +166,16 @@ class DINOv3VisionTower(nn.Module):
             pass
         else:
             raise ValueError(f'Unexpected select feature: {self.select_feature}')
+        if not torch.isfinite(main_features).all():
+            raise RuntimeError(
+                "DINOv3 produced non-finite visual features. "
+                "DINOv3 should run in bfloat16 or float32, not float16."
+            )
 
         if self.deepstack_mergers is not None:
             deepstack_features = []
             for i, idx in enumerate(self.deepstack_visual_indexes):
-                idx = min(idx, self.num_layers)
+                idx = max(0, min(idx, len(hidden_states) - 1))
                 hs = hidden_states[idx]
                 if self.select_feature == 'patch':
                     hs = hs[:, self.skip_tokens:]
@@ -159,6 +191,7 @@ class DINOv3VisionTower(nn.Module):
             return self.forward_images(images)
 
     def forward_images(self, images):
+        self._keep_stable_dtype()
         if type(images) is list:
             main_features = []
             deepstack_features = None

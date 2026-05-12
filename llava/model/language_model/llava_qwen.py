@@ -50,36 +50,42 @@ class LlavaQwen2ForCausalLM(Qwen2ForCausalLM, LlavaMetaForCausalLM):
                     hs, *rest = args
                     ds_feat = deepstack_visual_embeds[layer_idx]
                     if ds_feat is not None:
-                        try:
-                            src = ds_feat.float()
-                            if src.ndim == 2: src = src.unsqueeze(0)
-                            B, S, D = hs.shape
-                            _, N, _ = src.shape
-                            mask_count = visual_pos_mask.sum().item() // B
-                            if N == mask_count or N == S:
-                                actual_N = min(N, mask_count)
-                                scattered = torch.zeros(B, S, D, device=hs.device, dtype=src.dtype)
-                                for b in range(B):
-                                    pos = visual_pos_mask[b].nonzero(as_tuple=True)[0][:actual_N]
-                                    scattered[b, pos] = src[min(b, src.shape[0] - 1)][:actual_N]
-                                hs = hs + scattered
-                        except (RuntimeError, IndexError, ValueError):
-                            pass
+                        src = ds_feat.to(device=hs.device, dtype=hs.dtype)
+                        if src.ndim == 2:
+                            src = src.unsqueeze(0)
+                        B, S, D = hs.shape
+                        src_bsz, N, src_dim = src.shape
+                        if src_dim != D:
+                            raise RuntimeError(
+                                f"DeepStack dim mismatch at LLM layer {layer_idx}: "
+                                f"visual dim {src_dim}, hidden dim {D}"
+                            )
+                        scattered = torch.zeros(B, S, D, device=hs.device, dtype=hs.dtype)
+                        for b in range(B):
+                            pos = visual_pos_mask[b].nonzero(as_tuple=True)[0]
+                            if pos.numel() != N:
+                                raise RuntimeError(
+                                    f"DeepStack token count mismatch at LLM layer {layer_idx}: "
+                                    f"visual tokens {N}, image positions {pos.numel()}"
+                                )
+                            scattered[b, pos] = src[min(b, src_bsz - 1)]
+                        hs = hs + scattered
                     return (hs,) + tuple(rest)
                 return hook
 
             for i in range(n_ds):
                 handles.append(self.model.layers[i].register_forward_pre_hook(make_hook(i)))
 
-        outputs = self.model(
-            input_ids=None, inputs_embeds=inputs_embeds, attention_mask=attention_mask,
-            position_ids=position_ids, past_key_values=past_key_values,
-            use_cache=use_cache, output_attentions=output_attentions,
-            output_hidden_states=output_hidden_states, cache_position=cache_position,
-        )
-
-        for h in handles:
-            h.remove()
+        try:
+            outputs = self.model(
+                input_ids=None, inputs_embeds=inputs_embeds, attention_mask=attention_mask,
+                position_ids=position_ids, past_key_values=past_key_values,
+                use_cache=use_cache, output_attentions=output_attentions,
+                output_hidden_states=output_hidden_states, cache_position=cache_position,
+            )
+        finally:
+            for h in handles:
+                h.remove()
 
         return outputs.last_hidden_state, outputs.hidden_states, outputs.attentions, outputs.past_key_values
 
@@ -98,10 +104,9 @@ class LlavaQwen2ForCausalLM(Qwen2ForCausalLM, LlavaMetaForCausalLM):
         image_sizes: Optional[List[List[int]]] = None,
         return_dict: Optional[bool] = None,
         cache_position=None,
+        visual_pos_mask: Optional[torch.Tensor] = None,
+        deepstack_visual_embeds: Optional[List[torch.Tensor]] = None,
     ) -> Union[Tuple, CausalLMOutputWithPast]:
-
-        visual_pos_mask = None
-        deepstack_visual_embeds = None
 
         if inputs_embeds is None:
             (
@@ -111,6 +116,14 @@ class LlavaQwen2ForCausalLM(Qwen2ForCausalLM, LlavaMetaForCausalLM):
                 input_ids, position_ids, attention_mask,
                 past_key_values, labels, images, image_sizes,
             )
+        else:
+            if visual_pos_mask is None:
+                visual_pos_mask = getattr(self, "_generation_visual_pos_mask", None)
+            if deepstack_visual_embeds is None:
+                deepstack_visual_embeds = getattr(self, "_generation_deepstack_visual_embeds", None)
+            if past_key_values is not None:
+                visual_pos_mask = None
+                deepstack_visual_embeds = None
 
         if deepstack_visual_embeds is not None and visual_pos_mask is not None and inputs_embeds is not None:
             if inputs_embeds.ndim >= 3:
@@ -162,18 +175,26 @@ class LlavaQwen2ForCausalLM(Qwen2ForCausalLM, LlavaMetaForCausalLM):
         if images is not None:
             (
                 inputs, position_ids, attention_mask, _,
-                inputs_embeds, _, _, _,
+                inputs_embeds, _, visual_pos_mask, deepstack_visual_embeds,
             ) = self.prepare_inputs_labels_for_multimodal(
                 inputs, position_ids, attention_mask,
                 None, None, images, image_sizes=image_sizes,
             )
         else:
             inputs_embeds = self.get_model().embed_tokens(inputs)
+            visual_pos_mask = None
+            deepstack_visual_embeds = None
 
-        return super().generate(
-            position_ids=position_ids, attention_mask=attention_mask,
-            inputs_embeds=inputs_embeds, **kwargs,
-        )
+        self._generation_visual_pos_mask = visual_pos_mask
+        self._generation_deepstack_visual_embeds = deepstack_visual_embeds
+        try:
+            return super().generate(
+                position_ids=position_ids, attention_mask=attention_mask,
+                inputs_embeds=inputs_embeds, **kwargs,
+            )
+        finally:
+            self._generation_visual_pos_mask = None
+            self._generation_deepstack_visual_embeds = None
 
     def prepare_inputs_for_generation(self, input_ids, past_key_values=None,
                                       inputs_embeds=None, **kwargs):

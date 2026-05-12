@@ -43,6 +43,44 @@ def normalize_prediction_text(text: str) -> str:
     return cleaned
 
 
+def extract_json_array(text: str) -> str:
+    start = text.find("[")
+    if start < 0:
+        return text.strip()
+
+    depth = 0
+    in_string = False
+    escape = False
+    for idx in range(start, len(text)):
+        ch = text[idx]
+        if escape:
+            escape = False
+            continue
+        if ch == "\\":
+            escape = True
+            continue
+        if ch == '"':
+            in_string = not in_string
+            continue
+        if in_string:
+            continue
+        if ch == "[":
+            depth += 1
+        elif ch == "]":
+            depth -= 1
+            if depth == 0:
+                return text[start:idx + 1].strip()
+
+    return text[start:].strip()
+
+
+def prediction_preview(text: str, limit: int = 240) -> str:
+    text = text.replace("\n", "\\n")
+    if len(text) <= limit:
+        return text
+    return text[:limit] + "..."
+
+
 def read_manifest(checkpoint_dir: Path) -> dict:
     search_dirs = [checkpoint_dir]
     if checkpoint_dir.parent != checkpoint_dir:
@@ -128,7 +166,8 @@ def _read_llava_checkpoint_metadata(checkpoint_dir: Path) -> dict:
 
 def _config_overrides_from_args(args) -> dict:
     return {
-        "dino_variant": args.dino_variant or None,
+        "mm_vision_tower": args.vision_tower or None,
+        "vision_tower": args.vision_tower or None,
         "input_image_size": args.input_image_size,
         "deepstack_visual_indexes": args.deepstack_visual_indexes,
     }
@@ -138,6 +177,23 @@ def _apply_config_overrides(config, overrides: dict):
     for key, value in overrides.items():
         if value is not None:
             setattr(config, key, value)
+
+
+def _is_dinov3_config(config) -> bool:
+    values = [
+        getattr(config, "mm_vision_tower_type", ""),
+        getattr(config, "mm_vision_tower", ""),
+        getattr(config, "vision_tower", ""),
+    ]
+    return any("dinov3" in str(value).lower() for value in values if value is not None)
+
+
+def _runtime_dtype(config, device: str):
+    if not str(device).startswith(("cuda", "npu")):
+        return torch.float32
+    if _is_dinov3_config(config):
+        return torch.bfloat16
+    return torch.float16
 
 
 def _load_full_finetune_model(checkpoint_dir: Path, device: str, config_overrides=None):
@@ -189,7 +245,7 @@ def _load_full_finetune_model(checkpoint_dir: Path, device: str, config_override
     if unexpected:
         print(f"[WARN] Unexpected keys after full-finetune load: {unexpected[:20]}")
 
-    dtype = torch.float16 if str(device).startswith(("cuda","npu")) else torch.float32
+    dtype = _runtime_dtype(model.config, device)
     model = model.to(dtype=dtype)
     model = model.to(device)
     model.eval()
@@ -279,7 +335,7 @@ def main():
     parser.add_argument("--output-json", default="")
     parser.add_argument("--output-dir", default="")
     parser.add_argument("--print-full-output", action="store_true")
-    parser.add_argument("--dino_variant", default="")
+    parser.add_argument("--vision_tower", default="")
     parser.add_argument("--input_image_size", type=int, default=None)
     parser.add_argument("--deepstack_visual_indexes", type=int, nargs="*", default=None)
     args = parser.parse_args()
@@ -298,6 +354,12 @@ def main():
 
    
     config_overrides = _config_overrides_from_args(args)
+    print(
+        "[infer] config overrides: "
+        f"vision_tower={config_overrides.get('mm_vision_tower')}, "
+        f"input_image_size={config_overrides.get('input_image_size')}, "
+        f"deepstack_visual_indexes={config_overrides.get('deepstack_visual_indexes')}"
+    )
     tokenizer, model, image_processor = load_model_components(
         checkpoint_dir, manifest, args.device, config_overrides=config_overrides)
     if args.test_json:
@@ -333,11 +395,13 @@ def main():
 
         image = Image.open(image_path).convert("RGB")
         images_tensor = process_images([image], image_processor, model.config)
-        dtype = next(model.parameters()).dtype
+        vision_tower = model.get_vision_tower()
+        dtype = vision_tower.dtype if vision_tower is not None else next(model.parameters()).dtype
+        image_device = vision_tower.device if vision_tower is not None else model.device
         if isinstance(images_tensor, list):
-            images_tensor = [img.to(dtype=dtype, device=model.device) for img in images_tensor]
+            images_tensor = [img.to(dtype=dtype, device=image_device) for img in images_tensor]
         else:
-            images_tensor = images_tensor.to(dtype=dtype, device=model.device)
+            images_tensor = images_tensor.to(dtype=dtype, device=image_device)
 
         if args.prompt_mode == "dataset" and record.get("conversations"):
             prompt_text = record["conversations"][0]["value"]
@@ -349,20 +413,22 @@ def main():
         input_ids = input_ids.unsqueeze(0).to(model.device)
         attention_mask = input_ids.ne(tokenizer.pad_token_id).to(model.device)
 
+        generate_kwargs = {
+            "attention_mask": attention_mask,
+            "images": images_tensor,
+            "image_sizes": [image.size],
+            "max_new_tokens": args.max_new_tokens,
+            "use_cache": True,
+            "do_sample": args.temperature > 0,
+            "num_beams": 1,
+            "pad_token_id": tokenizer.pad_token_id,
+            "eos_token_id": tokenizer.eos_token_id,
+        }
+        if args.temperature > 0:
+            generate_kwargs["temperature"] = args.temperature
+
         with torch.inference_mode():
-            output_ids = model.generate(
-                input_ids,
-                attention_mask=attention_mask,
-                images=images_tensor,
-                image_sizes=[image.size],
-                max_new_tokens=args.max_new_tokens,
-                use_cache=True,
-                do_sample=args.temperature > 0,
-                temperature=max(args.temperature, 1e-5),
-                num_beams=1,
-                pad_token_id=tokenizer.pad_token_id,
-                eos_token_id=tokenizer.eos_token_id,
-            )
+            output_ids = model.generate(input_ids, **generate_kwargs)
 
         # Keep the full generated sequence. For this task the model is expected
         # to output the JSON directly, and length-based slicing can remove valid
@@ -374,12 +440,13 @@ def main():
             skip_special_tokens=False,
         )[0].strip()
         prediction = normalize_prediction_text(raw_prediction)
+        prediction_json = extract_json_array(prediction)
 
         parse_ok = False
         parsed_items = []
         parse_error = ""
         try:
-            parsed_items = parse_centerline_json(prediction)
+            parsed_items = parse_centerline_json(prediction_json)
             parse_ok = True
         except Exception as exc:
             parse_error = str(exc)
@@ -392,6 +459,7 @@ def main():
             "conv_template": conv_template,
             "raw_prediction": raw_prediction,
             "prediction": prediction,
+            "prediction_json": prediction_json,
             "parse_ok": parse_ok,
             "num_items": len(parsed_items) if parse_ok else 0,
             "parse_error": parse_error,
@@ -418,6 +486,7 @@ def main():
                     "parse_ok": parse_ok,
                     "num_items": result["num_items"],
                     "parse_error": parse_error,
+                    "prediction_preview": prediction_preview(prediction),
                     "decoded_mode": result["decoded_mode"],
                     "input_token_len": result["input_token_len"],
                     "output_token_len": result["output_token_len"],

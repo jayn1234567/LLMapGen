@@ -4,7 +4,7 @@
 # ============================================================
 # GPU full-parameter finetune llava testing script
 # - Downloads: dataset + trained checkpoint from specified OBS path
-# - Checkpoint is self-contained: includes ViT weights, config, image_processor
+# - Uses an external ViT base model path during inference
 # - Results uploaded to ${OUTPUT_URL}/test_results (platform injected)
 # ============================================================
 
@@ -84,7 +84,7 @@ OBS_CACHE=${OBS_CACHE:-/cache}
 
 DATASET_OBS_PATH="obs://yw-ads-training-gy1/data/external/personal/h58801830/whu/jjh/MLLM20260427_rc_jjh.zip"
 
-# 【修改】全参训练输出目录（DeepSpeed merge 后的根目录，包含 model.safetensors + preprocessor_config.json）
+# 【修改】全参训练输出目录（DeepSpeed merge 后的根目录，包含 model.safetensors）
 TRAINED_CHECKPOINT_OBS="obs://yw-ads-model-training-gy1/model-dev/rc-nn/rc_base_model/2026/05/06/c9017063151248669d7d57b48790b6a0/output/"
 
 DATASET_PATH="/cache/MLLM20260427_rc_jjh"
@@ -124,11 +124,7 @@ if [ ! -f "${CHECKPOINT_DIR}/model.safetensors" ] && [ ! -f "${CHECKPOINT_DIR}/p
     echo "ERROR: No model.safetensors or pytorch_model.bin found."
     exit 1
 fi
-if [ -f "${CHECKPOINT_DIR}/preprocessor_config.json" ] && [ -f "${CHECKPOINT_DIR}/vit_config.json" ]; then
-    echo "OK: checkpoint is self-contained (preprocessor_config.json + vit_config.json)"
-else
-    echo "WARNING: missing preprocessor_config.json or vit_config.json. ViT base must be accessible."
-fi
+echo "ViT base must be supplied separately during inference."
 
 echo "CHECKPOINT_DIR: $CHECKPOINT_DIR"
 echo "TEST_JSON: $TEST_JSON"

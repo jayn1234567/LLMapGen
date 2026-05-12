@@ -114,13 +114,7 @@ LayerNorm(vit_dim) → Linear(vit_dim → llm_dim) → GELU → Linear(llm_dim �
 
 自动检测由 `dino_config.py` 实现，`builder.py` 调用。可通过 `--deepstack_visual_indexes` 和 `--input_image_size` 覆盖。
 
-### 显式指定 DINO 变体（推荐二次训练时使用）
-
-```bash
---dino_variant dinov3_large   # DINOv3 ViT-L
---dino_variant dinov3_base    # DINOv3 ViT-B
---dino_variant dinov2_large   # DINOv2-L
-```
+### DINO 路径别名
 
 | 别名 | 对应 config key |
 |------|----------------|
@@ -130,7 +124,7 @@ LayerNorm(vit_dim) → Linear(vit_dim → llm_dim) → GELU → Linear(llm_dim �
 | `dinov3_large`, `dinov3_l` | `dinov3-vitl16` |
 | `dinov3_huge`, `dinov3_h` | `dinov3-vith16plus` |
 
-优先级：`--dino_variant` 传了 → 直接用；没传 → 路径自动检测。
+优先级：`mm_vision_tower_type` → `vision_tower` 路径关键字。路径应包含明确的 DINO key 或别名；如果只能看出 `dinov...` 但无法判断具体类型，会直接报错。
 
 ### DINOv2 vs DINOv3
 
@@ -161,7 +155,7 @@ LayerNorm(vit_dim) → Linear(vit_dim → llm_dim) → GELU → Linear(llm_dim �
 | `--freeze_llm` | bool | False | 冻结 LLM, 仅训 ViT + Projector |
 | ★ `--deepstack_visual_indexes` | List[int] | None | DeepStack 选择层，如 `6 12 18 23` |
 | ★ `--input_image_size` | int | None | ViT 输入尺寸 (不传则用默认) |
-| ★ `--dino_variant` | str | None | 显式指定 DINO 变体: `dinov3_large`, `dinov2_large` 等 |
+| ★ `--mm_vision_tower_type` | str | None | 可选视觉塔类型: `dinov2` / `dinov3`，通常由 checkpoint 或路径自动识别 |
 
 ### DeepSpeed 配置
 

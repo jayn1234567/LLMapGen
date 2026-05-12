@@ -217,7 +217,6 @@ export PYTHONPATH="$(pwd):${PYTHONPATH:-}"
 MM_VISION_SELECT_LAYER=-2
 MM_PROJECTOR_TYPE=mlp2x_gelu
 UNFREEZE_MM_VISION_TOWER=False
-DINO_VARIANT=dinov3_large
 INPUT_IMAGE_SIZE=448
 DEEPSTACK_VISUAL_INDEXES="6 12 18 23"
 DEEPSPEED_CONFIG="scripts/deepspeed_zero3_no_merge.json"
@@ -243,7 +242,6 @@ fi
 echo "============================================================"
 echo "Model:      ${LLM_PATH}"
 echo "ViT:        ${DINOV3_PATH}"
-echo "DINO:       ${DINO_VARIANT}"
 echo "DeepStack:  ${DEEPSTACK_VISUAL_INDEXES:-disabled}"
 echo "DeepSpeed:  ${DEEPSPEED_CONFIG}"
 echo "============================================================"
@@ -261,7 +259,6 @@ torchrun \
     --mm_vision_select_layer "${MM_VISION_SELECT_LAYER}" \
     --mm_projector_type "${MM_PROJECTOR_TYPE}" \
     --unfreeze_mm_vision_tower "${UNFREEZE_MM_VISION_TOWER}" \
-    --dino_variant "${DINO_VARIANT}" \
     "${DEEPSTACK_ARGS[@]}" \
     --input_image_size "${INPUT_IMAGE_SIZE}" \
     --data_path "${TRAIN_PATH}" \

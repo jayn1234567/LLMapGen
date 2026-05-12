@@ -4,7 +4,7 @@
 # ============================================================
 # NPU (Ascend) full-parameter finetune llava testing script
 # - Downloads: dataset + trained checkpoint from specified OBS path
-# - Checkpoint is self-contained: includes ViT weights, config, image_processor
+# - Downloads the external ViT base model and passes it to inference explicitly
 # - Results uploaded to ${OUTPUT_URL}/test_results (platform injected)
 # ============================================================
 
@@ -147,16 +147,22 @@ mkdir -p $LOCAL_MODEL_SAVE_PATH
 # ====================== OBS paths ======================
 OBS_CACHE=${OBS_CACHE:-/cache}
 
+MODEL_OBS_PATH="obs://yw-ads-training-gy1/data/external/personal/h58801830/whu/jjh/checkpoints"
 DATASET_OBS_PATH="obs://yw-ads-training-gy1/data/external/personal/h58801830/whu/jjh/MLLM20260427_rc_jjh.zip"
 
-# 【修改】全参训练输出目录（DeepSpeed merge 后的根目录，包含 model.safetensors + preprocessor_config.json）
+# 【修改】全参训练输出目录（DeepSpeed merge 后的根目录，包含 model.safetensors）
 TRAINED_CHECKPOINT_OBS="obs://yw-ads-model-training-gy1/model-dev/rc-nn/rc_base_model/2026/05/06/c9017063151248669d7d57b48790b6a0/output/"
+
+DINOV3_PATH=${DINOV3_PATH:-${OBS_CACHE}/checkpoints/facebook_dinov3-vitl16-pretrain-lvd1689m}
+INPUT_IMAGE_SIZE=224
+DEEPSTACK_VISUAL_INDEXES="6 12 18 23"
 
 DATASET_PATH="/cache/MLLM20260427_rc_jjh"
 IMAGE_FOLDER="${DATASET_PATH}"
 
 # ====================== download dataset ======================
 echo ">>>>>>>>>>>>>>>>>>>>>>>>>>>>> Downloading dataset >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>"
+python -c "import moxing as mox; mox.file.copy_parallel('${MODEL_OBS_PATH}/facebook_dinov3-vitl16-pretrain-lvd1689m', '${DINOV3_PATH}')"
 python -c "import moxing as mox; mox.file.copy('${DATASET_OBS_PATH}', '${OBS_CACHE}/dataset.zip')"
 
 cd /cache
@@ -195,13 +201,10 @@ if [ ! -f "${CHECKPOINT_DIR}/model.safetensors" ] && [ ! -f "${CHECKPOINT_DIR}/p
     echo "ERROR: No model.safetensors or pytorch_model.bin found."
     exit 1
 fi
-if [ -f "${CHECKPOINT_DIR}/preprocessor_config.json" ] && [ -f "${CHECKPOINT_DIR}/vit_config.json" ]; then
-    echo "OK: checkpoint is self-contained (preprocessor_config.json + vit_config.json)"
-else
-    echo "WARNING: missing preprocessor_config.json or vit_config.json. ViT base must be accessible."
-fi
+echo "ViT base is loaded from DINOV3_PATH and passed with --vision_tower."
 
 echo "CHECKPOINT_DIR: $CHECKPOINT_DIR"
+echo "DINOV3_PATH:    $DINOV3_PATH"
 
 # ====================== inference ======================
 TEST_OUTPUT_LOCAL="/cache/test_output"
@@ -218,6 +221,9 @@ torchrun \
     --master_port="${MASTER_PORT}" \
     scripts/infer_centerline_checkpoint.py \
     --checkpoint-dir "${CHECKPOINT_DIR}" \
+    --vision_tower "${DINOV3_PATH}" \
+    --input_image_size "${INPUT_IMAGE_SIZE}" \
+    --deepstack_visual_indexes ${DEEPSTACK_VISUAL_INDEXES} \
     --test-json "${TEST_JSON}" \
     --num-samples -1 \
     --image-folder "${IMAGE_FOLDER}" \

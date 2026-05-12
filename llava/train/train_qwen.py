@@ -67,10 +67,28 @@ class JsonlMetricLoggerCallback(TrainerCallback):
     def _is_rank0(self, args) -> bool:
         return args.local_rank in (-1, 0)
 
-    def _append_jsonl(self, path: str, payload: dict):
+    def _format_log_value(self, value):
+        if isinstance(value, float):
+            return f"{value:.6g}"
+        if isinstance(value, (list, tuple)):
+            return " ".join(str(item) for item in value)
+        if isinstance(value, dict):
+            return " ".join(f"{key}={self._format_log_value(val)}" for key, val in value.items())
+        return str(value)
+
+    def _format_log_line(self, payload: dict):
+        return "  ".join(
+            f"{key}: {self._format_log_value(value)}"
+            for key, value in payload.items()
+            if value is not None
+        )
+
+    def _append_log_line(self, path: str, payload: dict):
         os.makedirs(os.path.dirname(path), exist_ok=True)
+        line = self._format_log_line(payload)
         with open(path, "a", encoding="utf-8") as f:
-            f.write(json.dumps(payload, ensure_ascii=False) + "\n")
+            f.write(line + "\n")
+        return line
 
     def on_train_begin(self, args, state, control, **kwargs):
         if not self._is_rank0(args):
@@ -85,7 +103,7 @@ class JsonlMetricLoggerCallback(TrainerCallback):
             "save_steps": getattr(args, "save_steps", None),
             "eval_steps": getattr(args, "eval_steps", None),
         }
-        self._append_jsonl(self.checkpoint_log_path, payload)
+        self._append_log_line(self.checkpoint_log_path, payload)
 
     def on_log(self, args, state, control, logs=None, **kwargs):
         if not self._is_rank0(args) or not logs:
@@ -121,9 +139,10 @@ class JsonlMetricLoggerCallback(TrainerCallback):
             payload["DI_throughput"] = throughput_str
 
         if "eval_loss" in logs or any(key.startswith("eval_") for key in logs):
-            self._append_jsonl(self.eval_log_path, payload)
+            line = self._append_log_line(self.eval_log_path, payload)
         else:
-            self._append_jsonl(self.train_log_path, payload)
+            line = self._append_log_line(self.train_log_path, payload)
+        print(line)
 
     def on_save(self, args, state, control, **kwargs):
         if not self._is_rank0(args):
@@ -136,7 +155,8 @@ class JsonlMetricLoggerCallback(TrainerCallback):
             "epoch": state.epoch,
             "checkpoint_dir": checkpoint_dir,
         }
-        self._append_jsonl(self.checkpoint_log_path, payload)
+        line = self._append_log_line(self.checkpoint_log_path, payload)
+        print(line)
 
     def on_train_end(self, args, state, control, **kwargs):
         if not self._is_rank0(args):
@@ -149,7 +169,8 @@ class JsonlMetricLoggerCallback(TrainerCallback):
             "best_model_checkpoint": state.best_model_checkpoint,
             "best_metric": state.best_metric,
         }
-        self._append_jsonl(self.checkpoint_log_path, payload)
+        line = self._append_log_line(self.checkpoint_log_path, payload)
+        print(line)
 
 
 IS_TOKENIZER_GREATER_THAN_0_14 = version.parse(tokenizers.__version__) >= version.parse('0.14')
@@ -173,7 +194,7 @@ class ModelArguments:
     unfreeze_mm_vision_tower: bool = field(default=False)
     deepstack_visual_indexes: Optional[List[int]] = field(default=None)
     input_image_size: Optional[int] = field(default=None)
-    dino_variant: Optional[str] = field(default=None)
+    mm_vision_tower_type: Optional[str] = field(default=None)
     s2: Optional[bool] = field(default=False)
     hd: Optional[bool] = field(default=False)
 

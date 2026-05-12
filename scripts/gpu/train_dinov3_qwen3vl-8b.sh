@@ -24,7 +24,6 @@ MM_VISION_SELECT_LAYER=-2
 MM_PROJECTOR_TYPE=mlp2x_gelu
 MM_VISION_SELECT_FEATURE=patch
 UNFREEZE_MM_VISION_TOWER=False
-DINO_VARIANT=dinov3_large
 INPUT_IMAGE_SIZE=448
 DEEPSTACK_VISUAL_INDEXES="6 12 18 23"
 
@@ -79,7 +78,6 @@ echo "GPUs:     ${CUDA_VISIBLE_DEVICES} (${NUM_GPUS} processes)"
 echo "Model:    ${MODEL_NAME_OR_PATH} (Qwen3-VL-8B → auto-extract)"
 echo "Version:  ${VERSION}"
 echo "ViT:      ${VISION_TOWER}"
-echo "DINO:     ${DINO_VARIANT}"
 echo "DeepStack:${DEEPSTACK_VISUAL_INDEXES:-disabled}"
 echo "DeepSpeed:${DEEPSPEED_CONFIG:-disabled}"
 echo "Batch:    ${PER_DEVICE_BATCH_SIZE}/gpu x ${GRADIENT_ACCUMULATION} x ${NUM_GPUS} = $((PER_DEVICE_BATCH_SIZE * GRADIENT_ACCUMULATION * NUM_GPUS))"
@@ -96,7 +94,6 @@ torchrun \
     --mm_vision_select_feature "${MM_VISION_SELECT_FEATURE}" \
     --mm_projector_type "${MM_PROJECTOR_TYPE}" \
     --unfreeze_mm_vision_tower "${UNFREEZE_MM_VISION_TOWER}" \
-    --dino_variant "${DINO_VARIANT}" \
     "${DEEPSTACK_ARGS[@]}" \
     --input_image_size "${INPUT_IMAGE_SIZE}" \
     --data_path "${DATA_PATH}" \

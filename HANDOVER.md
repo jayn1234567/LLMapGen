@@ -95,7 +95,6 @@ python scripts/infer_centerline_checkpoint.py \
 | 参数 | 说明 |
 |------|------|
 | `--vision_tower` | DINO 模型路径，自动检测 dinov2/dinov3 |
-| `--dino_variant` | 显式指定变体：`dinov3_large`, `dinov3_base`, `dinov2_large` |
 | `--input_image_size` | ViT 输入尺寸（DINOv2 默认 518，DINOv3 默认 224） |
 | `--deepstack_visual_indexes` | DeepStack 层选择，自动从 dino_config 填充 |
 | `--freeze_llm` | 冻结 LLM，仅训 ViT + Projector |

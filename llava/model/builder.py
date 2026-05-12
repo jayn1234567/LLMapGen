@@ -62,17 +62,19 @@ def _iter_checkpoint_state_files(model_path, prefixes):
 
 def _load_multimodal_weights_if_present(model, model_path):
     if not os.path.isdir(model_path):
-        return
+        return 0
 
     prefixes = ("model.vision_tower.",)
     expected = model.state_dict()
     loaded = {}
     skipped = []
+    seen = 0
     for state_file in _iter_checkpoint_state_files(model_path, prefixes):
         state_dict = _load_checkpoint_file(state_file)
         for key, value in state_dict.items():
             if not key.startswith(prefixes):
                 continue
+            seen += 1
             if key in expected and expected[key].shape == value.shape:
                 loaded[key] = value
             else:
@@ -80,14 +82,25 @@ def _load_multimodal_weights_if_present(model, model_path):
         del state_dict
 
     if not loaded:
-        return
+        if seen:
+            raise RuntimeError(
+                f"Found {seen} multimodal checkpoint tensors under {model_path}, "
+                "but none matched the initialized model. Check vision tower type, "
+                "input_image_size, deepstack_visual_indexes, and LLM hidden size."
+            )
+        print(f"[WARN] No model.vision_tower.* tensors found in checkpoint: {model_path}")
+        return 0
 
     missing, unexpected = model.load_state_dict(loaded, strict=False)
-    print(f"Loaded {len(loaded)} multimodal checkpoint tensors after vision tower init.")
+    print(
+        f"Loaded {len(loaded)}/{seen} multimodal checkpoint tensors "
+        "after vision tower init."
+    )
     if unexpected:
         print(f"[WARN] Unexpected multimodal keys after reload: {unexpected[:20]}")
     if skipped:
         print(f"[WARN] Skipped multimodal keys with missing/mismatched shapes: {skipped[:20]}")
+    return len(loaded)
 
 
 def _apply_model_config_overrides(config, overrides=None):
@@ -97,6 +110,16 @@ def _apply_model_config_overrides(config, overrides=None):
         if value is not None:
             setattr(config, key, value)
     return config
+
+
+def _vision_tower_runtime_dtype(vision_tower, device):
+    class_name = vision_tower.__class__.__name__.lower()
+    tower_name = str(getattr(vision_tower, "vision_tower_name", "")).lower()
+    if "dinov3" in class_name or "dinov3" in tower_name:
+        if str(device).startswith(("cuda", "npu")):
+            return torch.bfloat16
+        return torch.float32
+    return torch.float16
 
 
 def load_pretrained_model(model_path, model_base, model_name, load_8bit=False, load_4bit=False, device_map="auto", device="cuda", use_flash_attn=False, model_config_overrides=None, **kwargs):
@@ -273,10 +296,11 @@ def load_pretrained_model(model_path, model_base, model_name, load_8bit=False, l
         if hasattr(vision_tower, 'set_llm_hidden_size'):
             vision_tower.set_llm_hidden_size(model.config.hidden_size)
             _load_multimodal_weights_if_present(model, model_path)
+        vision_dtype = _vision_tower_runtime_dtype(vision_tower, device)
         if isinstance(resolved_device_map, dict):
-            vision_tower.to(device=device, dtype=torch.float16)
+            vision_tower.to(device=device, dtype=vision_dtype)
         elif resolved_device_map != 'auto':
-            vision_tower.to(device=resolved_device_map, dtype=torch.float16)
+            vision_tower.to(device=resolved_device_map, dtype=vision_dtype)
         image_processor = vision_tower.image_processor
 
     if hasattr(model.config, "max_sequence_length"):

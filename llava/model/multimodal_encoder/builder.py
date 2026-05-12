@@ -15,10 +15,8 @@ def _normalize_dino_type(vision_tower_type):
     return ""
 
 
-def _apply_dino_config(vision_tower_cfg, dino_cfg, variant=None):
+def _apply_dino_config(vision_tower_cfg, dino_cfg):
     vision_tower_cfg.mm_vision_tower_type = dino_cfg.encoder_type
-    if variant is not None:
-        vision_tower_cfg.dino_variant = variant
     if getattr(vision_tower_cfg, 'input_image_size', None) is None:
         vision_tower_cfg.input_image_size = dino_cfg.image_size
     if getattr(vision_tower_cfg, 'deepstack_visual_indexes', None) is None:
@@ -34,14 +32,6 @@ def build_vision_tower(vision_tower_cfg, **kwargs):
     vision_tower_str = str(vision_tower)
     vision_tower_lower = vision_tower_str.lower()
     img_size = getattr(vision_tower_cfg, 'input_image_size', None) or None
-    variant = getattr(vision_tower_cfg, 'dino_variant', None) or None
-
-    if variant:
-        dino_cfg = get_dino_config(vision_tower_str, input_image_size=img_size, variant=variant)
-        _apply_dino_config(vision_tower_cfg, dino_cfg, variant=variant)
-        if dino_cfg.encoder_type == "dinov3":
-            return DINOv3VisionTower(vision_tower, args=vision_tower_cfg, **kwargs)
-        return DINOv2VisionTower(vision_tower, args=vision_tower_cfg, **kwargs)
 
     vit_type = _normalize_dino_type(getattr(vision_tower_cfg, 'mm_vision_tower_type', ''))
     if vit_type in ("dinov2", "dinov3"):
@@ -69,7 +59,8 @@ def build_vision_tower(vision_tower_cfg, **kwargs):
     if "dinov" in vision_tower_lower:
         raise ValueError(
             f"Ambiguous DINO vision tower '{vision_tower}'. "
-            "Pass --dino_variant or set mm_vision_tower_type to dinov2/dinov3."
+            "Set mm_vision_tower_type to dinov2/dinov3 or use a vision_tower path "
+            "whose folder name contains an exact DINO variant such as dinov3-vitl16."
         )
 
     if is_absolute_path_exists or vision_tower_str.startswith("openai") or vision_tower_str.startswith("laion") or "ShareGPT4V" in vision_tower_str:

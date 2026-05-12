@@ -1241,19 +1241,6 @@ def print_trainable_parameters(model):
         f"trainable%: {100 * trainable_params / all_param:.2f}")
 
 
-def disable_gradient_checkpointing(model):
-    if hasattr(model, "gradient_checkpointing_disable"):
-        try:
-            model.gradient_checkpointing_disable()
-        except TypeError:
-            model.gradient_checkpointing_disable(gradient_checkpointing_kwargs={})
-        except Exception:
-            pass
-    for module in model.modules():
-        if hasattr(module, "gradient_checkpointing"):
-            module.gradient_checkpointing = False
-
-
 def train(attn_implementation=None):
     global local_rank
 
@@ -1265,12 +1252,6 @@ def train(attn_implementation=None):
     if model_args.disable_deepstack:
         model_args.deepstack_visual_indexes = None
         rank0_print("DeepStack disabled: using ViT main feature + mm_projector only.")
-    if model_args.deepstack_visual_indexes and training_args.gradient_checkpointing:
-        rank0_print(
-            "DeepStack injection is incompatible with activation checkpoint recompute; "
-            "disabling gradient_checkpointing for this run."
-        )
-        training_args.gradient_checkpointing = False
     compute_dtype = (torch.float16 if training_args.fp16 else (torch.bfloat16 if training_args.bf16 else torch.float32))
 
     bnb_model_from_pretrained_args = {}
@@ -1362,8 +1343,6 @@ def train(attn_implementation=None):
                 **bnb_model_from_pretrained_args
             )
     model.config.use_cache = False
-    if model_args.deepstack_visual_indexes:
-        disable_gradient_checkpointing(model)
 
     if model_args.freeze_backbone:
         model.model.requires_grad_(False)

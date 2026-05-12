@@ -10,6 +10,7 @@ from transformers.modeling_outputs import CausalLMOutputWithPast
 from transformers.generation.utils import GenerateOutput
 
 from ..llava_arch import LlavaMetaModel, LlavaMetaForCausalLM
+from .deepstack_hooks import clear_deepstack_context, set_deepstack_context
 
 
 class LlavaConfig(Qwen2Config):
@@ -40,49 +41,7 @@ class LlavaQwen2ForCausalLM(Qwen2ForCausalLM, LlavaMetaForCausalLM):
     def _deepstack_forward(self, inputs_embeds, attention_mask, position_ids,
                            past_key_values, visual_pos_mask, deepstack_visual_embeds,
                            use_cache, output_attentions, output_hidden_states, cache_position):
-        """Use standard model forward with pre-hooks on first N layers for deepstack injection."""
-        n_ds = len(deepstack_visual_embeds) if deepstack_visual_embeds else 0
-        handles = []
-        old_gradient_checkpointing = getattr(self.model, "gradient_checkpointing", False)
-
-        if n_ds > 0:
-            # Forward hooks are not replayed during checkpoint recomputation after
-            # they are removed, which makes saved tensors differ. Disable layer
-            # checkpointing only for the DeepStack-injected forward path.
-            if old_gradient_checkpointing:
-                self.model.gradient_checkpointing = False
-
-            def make_hook(layer_idx):
-                def hook(module, args):
-                    hs, *rest = args
-                    ds_feat = deepstack_visual_embeds[layer_idx]
-                    if ds_feat is not None:
-                        src = ds_feat.to(device=hs.device, dtype=hs.dtype)
-                        if src.ndim == 2:
-                            src = src.unsqueeze(0)
-                        B, S, D = hs.shape
-                        src_bsz, N, src_dim = src.shape
-                        if src_dim != D:
-                            raise RuntimeError(
-                                f"DeepStack dim mismatch at LLM layer {layer_idx}: "
-                                f"visual dim {src_dim}, hidden dim {D}"
-                            )
-                        scattered = torch.zeros(B, S, D, device=hs.device, dtype=hs.dtype)
-                        for b in range(B):
-                            pos = visual_pos_mask[b].nonzero(as_tuple=True)[0]
-                            if pos.numel() != N:
-                                raise RuntimeError(
-                                    f"DeepStack token count mismatch at LLM layer {layer_idx}: "
-                                    f"visual tokens {N}, image positions {pos.numel()}"
-                                )
-                            scattered[b, pos] = src[min(b, src_bsz - 1)]
-                        hs = hs + scattered
-                    return (hs,) + tuple(rest)
-                return hook
-
-            for i in range(n_ds):
-                handles.append(self.model.layers[i].register_forward_pre_hook(make_hook(i)))
-
+        set_deepstack_context(self, visual_pos_mask, deepstack_visual_embeds)
         try:
             outputs = self.model(
                 input_ids=None, inputs_embeds=inputs_embeds, attention_mask=attention_mask,
@@ -91,10 +50,8 @@ class LlavaQwen2ForCausalLM(Qwen2ForCausalLM, LlavaMetaForCausalLM):
                 output_hidden_states=output_hidden_states, cache_position=cache_position,
             )
         finally:
-            for h in handles:
-                h.remove()
-            if n_ds > 0 and old_gradient_checkpointing:
-                self.model.gradient_checkpointing = old_gradient_checkpointing
+            if not self.training or not torch.is_grad_enabled():
+                clear_deepstack_context(self)
 
         return outputs.last_hidden_state, outputs.hidden_states, outputs.attentions, outputs.past_key_values
 
@@ -160,6 +117,7 @@ class LlavaQwen2ForCausalLM(Qwen2ForCausalLM, LlavaMetaForCausalLM):
                     hidden_states=all_hs, attentions=all_attn,
                 )
 
+        clear_deepstack_context(self)
         return super().forward(
             input_ids=input_ids, attention_mask=attention_mask,
             position_ids=position_ids, past_key_values=past_key_values,

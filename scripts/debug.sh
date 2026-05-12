@@ -116,10 +116,10 @@ if [[ "${DISABLE_DEEPSTACK:-False}" =~ ^(1|true|True|TRUE|yes|YES)$ ]]; then
 elif [ -n "${DEEPSTACK_VISUAL_INDEXES}" ]; then
     DEEPSTACK_ARGS=(--deepstack_visual_indexes ${DEEPSTACK_VISUAL_INDEXES})
     DEEPSTACK_LABEL="${DEEPSTACK_VISUAL_INDEXES}"
-    GRADIENT_CHECKPOINTING=${GRADIENT_CHECKPOINTING:-False}
+    GRADIENT_CHECKPOINTING=${GRADIENT_CHECKPOINTING:-True}
 else
     DEEPSTACK_LABEL="disabled"
-    GRADIENT_CHECKPOINTING=${GRADIENT_CHECKPOINTING:-False}
+    GRADIENT_CHECKPOINTING=${GRADIENT_CHECKPOINTING:-True}
 fi
 
 echo "============================================================"
@@ -165,7 +165,7 @@ torchrun \
     --warmup_steps 0 \
     --lr_scheduler_type constant \
     --model_max_length "${MODEL_MAX_LENGTH}" \
-    --gradient_checkpointing "${GRADIENT_CHECKPOINTING:-False}" \
+    --gradient_checkpointing "${GRADIENT_CHECKPOINTING:-True}" \
     --dataloader_num_workers 0 \
     --remove_unused_columns false \
     --save_strategy no \

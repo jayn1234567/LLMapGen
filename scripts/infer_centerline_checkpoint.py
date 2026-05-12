@@ -6,7 +6,7 @@ from pathlib import Path
 
 import torch
 from PIL import Image
-from transformers import AutoTokenizer, AutoImageProcessor
+from transformers import AutoTokenizer
 from transformers import AutoConfig
 import os
 
@@ -141,26 +141,8 @@ def _load_full_finetune_model(checkpoint_dir: Path, device: str):
     model.resize_token_embeddings(len(tokenizer))
 
     vision_tower = model.get_vision_tower()
-    has_pp = (checkpoint_dir / "preprocessor_config.json").exists()
-    has_vit_cfg = (checkpoint_dir / "vit_config.json").exists()
-    vit_base_accessible = (vision_tower is not None
-                           and hasattr(vision_tower, 'vision_tower_name')
-                           and os.path.isdir(vision_tower.vision_tower_name))
-
     if vision_tower is not None and not vision_tower.is_loaded:
-        if vit_base_accessible:
-            vision_tower.load_model()
-        elif has_vit_cfg and has_pp:
-            print("Loading vision tower from self-contained checkpoint (ViT base not accessible)")
-            vision_tower.load_model_from_checkpoint(checkpoint_dir_str)
-        else:
-            raise FileNotFoundError(
-                f"ViT base not accessible: {vision_tower.vision_tower_name}. "
-                f"Checkpoint is not self-contained (missing vit_config.json or preprocessor_config.json)."
-            )
-
-    if has_pp and vision_tower is not None and hasattr(vision_tower, 'image_processor'):
-        vision_tower.image_processor = AutoImageProcessor.from_pretrained(checkpoint_dir_str, local_files_only=True)
+        vision_tower.load_model()
 
     metadata = _read_llava_checkpoint_metadata(checkpoint_dir)
     if metadata and not metadata.get("bundled_vision_tower", True):
@@ -209,7 +191,7 @@ def load_model_components(checkpoint_dir: Path, manifest: dict, device: str):
         model_path=str(checkpoint_dir),
         model_base=model_base,
         model_name=model_name,
-        device_map={"": device} if str(device).startswith("npu") else( "auto" if str(device).startswith(("cuda")) else {"": device}),
+        device_map="auto" if str(device).startswith(("cuda","npu")) else {"": device},
         device=device,
     )
     model.eval()

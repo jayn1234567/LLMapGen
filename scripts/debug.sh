@@ -156,7 +156,7 @@ torchrun \
     --warmup_steps 0 \
     --lr_scheduler_type constant \
     --model_max_length "${MODEL_MAX_LENGTH}" \
-    --gradient_checkpointing True \
+    --gradient_checkpointing False \
     --dataloader_num_workers 0 \
     --remove_unused_columns false \
     --save_strategy no \

@@ -98,7 +98,7 @@ python -m llava.train.train_qwen \
     --warmup_ratio "${WARMUP_RATIO}" \
     --lr_scheduler_type "${LR_SCHEDULER_TYPE}" \
     --model_max_length "${MODEL_MAX_LENGTH}" \
-    --gradient_checkpointing True \
+    --gradient_checkpointing False \
     --dataloader_num_workers 4 \
     --remove_unused_columns false \
     --save_strategy "${SAVE_STRATEGY}" \

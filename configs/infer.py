@@ -143,6 +143,8 @@ def _load_full_finetune_model(checkpoint_dir: Path, device: str):
     vision_tower = model.get_vision_tower()
     if vision_tower is not None and not vision_tower.is_loaded:
         vision_tower.load_model()
+    if vision_tower is not None and hasattr(vision_tower, 'set_llm_hidden_size'):
+        vision_tower.set_llm_hidden_size(model.config.hidden_size)
 
     metadata = _read_llava_checkpoint_metadata(checkpoint_dir)
     if metadata and not metadata.get("bundled_vision_tower", True):
@@ -191,7 +193,7 @@ def load_model_components(checkpoint_dir: Path, manifest: dict, device: str):
         model_path=str(checkpoint_dir),
         model_base=model_base,
         model_name=model_name,
-        device_map="auto" if str(device).startswith(("cuda","npu")) else {"": device},
+        device_map={"": device},
         device=device,
     )
     model.eval()
@@ -227,10 +229,24 @@ def main():
     import torch
     local_rank = int(os.environ.get("LOCAL_RANK",-1))
     if local_rank >= 0:
-        torch.distributed.init_process_group(backend="nccl" if torch.cuda.is_available() else "hccl")
-        device_str = f"cuda:{local_rank}" if torch.cuda.is_available() else f"npu:{local_rank}"
+        if torch.cuda.is_available():
+            torch.cuda.set_device(local_rank)
+            backend = "nccl"
+            device_str = f"cuda:{local_rank}"
+        else:
+            if hasattr(torch, "npu") and torch.npu.is_available():
+                torch.npu.set_device(local_rank)
+            backend = "hccl"
+            device_str = f"npu:{local_rank}"
+        torch.distributed.init_process_group(backend=backend)
     else:
-        device_str = "cuda" if torch.cuda.is_available() else "cpu"
+        if torch.cuda.is_available():
+            device_str = "cuda"
+        elif hasattr(torch, "npu") and torch.npu.is_available():
+            torch.npu.set_device(0)
+            device_str = "npu:0"
+        else:
+            device_str = "cpu"
     parser = argparse.ArgumentParser()
     parser.add_argument("--checkpoint-dir", required=True)
     parser.add_argument("--image", default="")

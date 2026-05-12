@@ -14,6 +14,7 @@
 
 
 import os
+import json
 import warnings
 import shutil
 
@@ -22,6 +23,71 @@ import torch
 from llava.model import *
 from llava.constants import DEFAULT_IMAGE_PATCH_TOKEN, DEFAULT_IM_START_TOKEN, DEFAULT_IM_END_TOKEN
 from llava.model.qwen3vl_extractor import is_qwen3vl_checkpoint, is_llava_checkpoint, get_extracted_path, extract_llm_from_qwen3vl
+
+try:
+    from safetensors.torch import load_file as safe_load_file
+except ImportError:  # pragma: no cover
+    safe_load_file = None
+
+
+def _load_checkpoint_file(path):
+    if path.endswith(".safetensors"):
+        if safe_load_file is None:
+            raise ImportError("safetensors is required to load safetensors checkpoints")
+        return safe_load_file(path, device="cpu")
+    return torch.load(path, map_location="cpu")
+
+
+def _iter_checkpoint_state_files(model_path, prefixes):
+    safe_index = os.path.join(model_path, "model.safetensors.index.json")
+    bin_index = os.path.join(model_path, "pytorch_model.bin.index.json")
+    if os.path.isfile(safe_index) or os.path.isfile(bin_index):
+        index_path = safe_index if os.path.isfile(safe_index) else bin_index
+        with open(index_path, "r", encoding="utf-8") as f:
+            weight_map = json.load(f).get("weight_map", {})
+        shard_names = sorted({
+            shard for key, shard in weight_map.items()
+            if key.startswith(prefixes)
+        })
+        for shard_name in shard_names:
+            yield os.path.join(model_path, shard_name)
+        return
+
+    for filename in ("model.safetensors", "pytorch_model.bin"):
+        path = os.path.join(model_path, filename)
+        if os.path.isfile(path):
+            yield path
+            return
+
+
+def _load_multimodal_weights_if_present(model, model_path):
+    if not os.path.isdir(model_path):
+        return
+
+    prefixes = ("model.vision_tower.",)
+    expected = model.state_dict()
+    loaded = {}
+    skipped = []
+    for state_file in _iter_checkpoint_state_files(model_path, prefixes):
+        state_dict = _load_checkpoint_file(state_file)
+        for key, value in state_dict.items():
+            if not key.startswith(prefixes):
+                continue
+            if key in expected and expected[key].shape == value.shape:
+                loaded[key] = value
+            else:
+                skipped.append(key)
+        del state_dict
+
+    if not loaded:
+        return
+
+    missing, unexpected = model.load_state_dict(loaded, strict=False)
+    print(f"Loaded {len(loaded)} multimodal checkpoint tensors after vision tower init.")
+    if unexpected:
+        print(f"[WARN] Unexpected multimodal keys after reload: {unexpected[:20]}")
+    if skipped:
+        print(f"[WARN] Skipped multimodal keys with missing/mismatched shapes: {skipped[:20]}")
 
 
 def load_pretrained_model(model_path, model_base, model_name, load_8bit=False, load_4bit=False, device_map="auto", device="cuda", use_flash_attn=False, **kwargs):
@@ -41,6 +107,7 @@ def load_pretrained_model(model_path, model_base, model_name, load_8bit=False, l
         kwargs['device_map'] = {"": device}  # explicit mapping works for both cuda and cuda:N
     else:
         kwargs['device_map'] = {"": device}
+    resolved_device_map = kwargs['device_map']
 
     if load_8bit:
         kwargs['load_in_8bit'] = True
@@ -188,11 +255,14 @@ def load_pretrained_model(model_path, model_base, model_name, load_8bit=False, l
 
         vision_tower = model.get_vision_tower()
         if not vision_tower.is_loaded:
-            vision_tower.load_model(device_map=device_map)
-        if isinstance(device_map, dict):
+            vision_tower.load_model(device_map=resolved_device_map)
+        if hasattr(vision_tower, 'set_llm_hidden_size'):
+            vision_tower.set_llm_hidden_size(model.config.hidden_size)
+            _load_multimodal_weights_if_present(model, model_path)
+        if isinstance(resolved_device_map, dict):
             vision_tower.to(device=device, dtype=torch.float16)
-        elif device_map != 'auto':
-            vision_tower.to(device=device_map, dtype=torch.float16)
+        elif resolved_device_map != 'auto':
+            vision_tower.to(device=resolved_device_map, dtype=torch.float16)
         image_processor = vision_tower.image_processor
 
     if hasattr(model.config, "max_sequence_length"):

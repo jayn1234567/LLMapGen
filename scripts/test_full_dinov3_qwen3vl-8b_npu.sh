@@ -131,6 +131,7 @@ export WITHOUT_JIT_COMPILE=1
 export HCCL_OP_BASE_FFTS_MODE_ENABLE=FALSE
 export COMBINED_ENABLE=1
 export OMP_NUM_THREADS=1
+export LLAVA_LOG_RANK0_ONLY=${LLAVA_LOG_RANK0_ONLY:-1}
 
 # ====================== output management ======================
 if [[ -z "${OUTPUT_URL}" ]]; then

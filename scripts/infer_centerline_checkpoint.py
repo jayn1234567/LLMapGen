@@ -29,6 +29,24 @@ from llava.model.language_model.llava_qwen3 import LlavaQwen3ForCausalLM
 DEFAULT_PROMPT = DEFAULT_IMAGE_TOKEN
 
 
+def _env_flag(name, default="0"):
+    return str(os.environ.get(name, default)).lower() in ("1", "true", "yes", "on")
+
+
+def silence_non_primary_rank_output():
+    """Keep normal inference logs on global rank 0 only."""
+    if not _env_flag("LLAVA_LOG_RANK0_ONLY", "1"):
+        return
+    rank = int(os.environ.get("RANK", os.environ.get("LOCAL_RANK", "0")))
+    if rank == 0:
+        return
+    sys.stdout.flush()
+    sys.stdout = open(os.devnull, "w")
+    if _env_flag("LLAVA_SUPPRESS_NONZERO_STDERR", "0"):
+        sys.stderr.flush()
+        sys.stderr = open(os.devnull, "w")
+
+
 def normalize_prediction_text(text: str) -> str:
     cleaned = text.strip()
     for token in ("<|im_end|>", "<|endoftext|>", "</s>"):
@@ -300,6 +318,7 @@ def main():
     import os
     import torch
     local_rank = int(os.environ.get("LOCAL_RANK",-1))
+    silence_non_primary_rank_output()
     if local_rank >= 0:
         if torch.cuda.is_available():
             torch.cuda.set_device(local_rank)

@@ -16,6 +16,7 @@
 
 from packaging import version
 import os
+import sys
 import copy
 import random
 import shutil
@@ -49,8 +50,26 @@ from PIL import Image
 local_rank = None
 
 
+def _env_flag(name, default="0"):
+    return str(os.environ.get(name, default)).lower() in ("1", "true", "yes", "on")
+
+
+def silence_non_primary_rank_output():
+    """Keep normal training logs on global rank 0 only."""
+    if not _env_flag("LLAVA_LOG_RANK0_ONLY", "1"):
+        return
+    rank = int(os.environ.get("RANK", os.environ.get("LOCAL_RANK", "0")))
+    if rank == 0:
+        return
+    sys.stdout.flush()
+    sys.stdout = open(os.devnull, "w")
+    if _env_flag("LLAVA_SUPPRESS_NONZERO_STDERR", "0"):
+        sys.stderr.flush()
+        sys.stderr = open(os.devnull, "w")
+
+
 def rank0_print(*args):
-    if local_rank == 0:
+    if local_rank in (-1, 0):
         print(*args)
 
 
@@ -1226,6 +1245,7 @@ def train(attn_implementation=None):
         (ModelArguments, DataArguments, TrainingArguments))
     model_args, data_args, training_args = parser.parse_args_into_dataclasses()
     local_rank = training_args.local_rank
+    silence_non_primary_rank_output()
     compute_dtype = (torch.float16 if training_args.fp16 else (torch.bfloat16 if training_args.bf16 else torch.float32))
 
     bnb_model_from_pretrained_args = {}

@@ -100,6 +100,7 @@ OUTPUT_PATH=$OSB_SHARE_PATH
 
 echo "Platform OUTPUT_URL: $OUTPUT_URL"
 echo "OSB_SHARE_PATH: $OSB_SHARE_PATH"
+export LLAVA_LOG_RANK0_ONLY=${LLAVA_LOG_RANK0_ONLY:-1}
 
 # ====================== OBS paths ======================
 OBS_CACHE=${OBS_CACHE:-/cache}

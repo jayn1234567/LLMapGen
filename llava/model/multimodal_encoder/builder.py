@@ -23,6 +23,11 @@ def build_vision_tower(vision_tower_cfg, **kwargs):
         except KeyError:
             pass
 
+    vit_type = getattr(vision_tower_cfg, 'mm_vision_tower_type', '')
+    if vit_type == "dinov3":
+        return DINOv3VisionTower(vision_tower, args=vision_tower_cfg, **kwargs)
+    if vit_type == "dinov2":
+        return DINOv2VisionTower(vision_tower, args=vision_tower_cfg, **kwargs)
     if "dinov3" in vision_tower.lower():
         return DINOv3VisionTower(vision_tower, args=vision_tower_cfg, **kwargs)
     if "dinov2" in vision_tower.lower():

@@ -263,13 +263,6 @@ def main():
 
    
     tokenizer, model, image_processor = load_model_components(checkpoint_dir, manifest, args.device)
-    import torch
-    if torch.distributed.is_initialized():
-        vt = model.get_vision_tower()
-        vt.to(device=torch.device(args.device))
-        if hasattr(vt,'vision_tower') and vt.vision_tower is not None:
-            vt.vision_tower.to(device=torch.device(args.device))
-
     if args.test_json:
         with open(args.test_json, "r", encoding="utf-8") as f:
             first_char = f.read(1)

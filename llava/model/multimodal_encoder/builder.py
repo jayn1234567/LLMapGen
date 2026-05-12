@@ -19,6 +19,9 @@ def _apply_dino_config(vision_tower_cfg, dino_cfg):
     vision_tower_cfg.mm_vision_tower_type = dino_cfg.encoder_type
     if getattr(vision_tower_cfg, 'input_image_size', None) is None:
         vision_tower_cfg.input_image_size = dino_cfg.image_size
+    if getattr(vision_tower_cfg, 'disable_deepstack', False):
+        vision_tower_cfg.deepstack_visual_indexes = None
+        return
     if getattr(vision_tower_cfg, 'deepstack_visual_indexes', None) is None:
         vision_tower_cfg.deepstack_visual_indexes = dino_cfg.deepstack_visual_indexes
 

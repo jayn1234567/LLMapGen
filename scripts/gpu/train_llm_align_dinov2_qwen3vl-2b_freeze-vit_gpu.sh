@@ -64,7 +64,18 @@ export PYTHONPATH="$(pwd):${PYTHONPATH:-}"
 
 # ====================== args ======================
 DEEPSTACK_ARGS=()
-[ -n "${DEEPSTACK_VISUAL_INDEXES}" ] && DEEPSTACK_ARGS=(--deepstack_visual_indexes ${DEEPSTACK_VISUAL_INDEXES})
+if [[ "${DISABLE_DEEPSTACK:-False}" =~ ^(1|true|True|TRUE|yes|YES)$ ]]; then
+    DEEPSTACK_ARGS=(--disable_deepstack True)
+    DEEPSTACK_LABEL="disabled"
+    GRADIENT_CHECKPOINTING=${GRADIENT_CHECKPOINTING:-True}
+elif [ -n "${DEEPSTACK_VISUAL_INDEXES}" ]; then
+    DEEPSTACK_ARGS=(--deepstack_visual_indexes ${DEEPSTACK_VISUAL_INDEXES})
+    DEEPSTACK_LABEL="${DEEPSTACK_VISUAL_INDEXES}"
+    GRADIENT_CHECKPOINTING=${GRADIENT_CHECKPOINTING:-False}
+else
+    DEEPSTACK_LABEL="disabled"
+    GRADIENT_CHECKPOINTING=${GRADIENT_CHECKPOINTING:-False}
+fi
 
 DEEPSPEED_CMD=()
 [ -n "${DEEPSPEED_CONFIG}" ] && DEEPSPEED_CMD=(--deepspeed "${DEEPSPEED_CONFIG}")
@@ -73,7 +84,7 @@ echo "============================================================"
 echo "Model:    ${MODEL_NAME_OR_PATH} (Qwen3-VL-2B → auto-extract)"
 echo "ViT:      ${VISION_TOWER}"
 echo "Version:  ${VERSION}"
-echo "DeepStack:${DEEPSTACK_VISUAL_INDEXES:-disabled}"
+echo "DeepStack:${DEEPSTACK_LABEL}"
 echo "DeepSpeed:${DEEPSPEED_CONFIG:-disabled}"
 echo "GPU:      ${CUDA_VISIBLE_DEVICES}"
 echo "============================================================"
@@ -102,7 +113,7 @@ python -m llava.train.train_qwen \
     --warmup_ratio "${WARMUP_RATIO}" \
     --lr_scheduler_type "${LR_SCHEDULER_TYPE}" \
     --model_max_length "${MODEL_MAX_LENGTH}" \
-    --gradient_checkpointing False \
+    --gradient_checkpointing "${GRADIENT_CHECKPOINTING:-False}" \
     --dataloader_num_workers 4 \
     --remove_unused_columns false \
     --save_strategy "${SAVE_STRATEGY}" \

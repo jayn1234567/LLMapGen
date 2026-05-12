@@ -213,6 +213,7 @@ class ModelArguments:
     mm_vision_select_feature: Optional[str] = field(default="patch")
     unfreeze_mm_vision_tower: bool = field(default=False)
     deepstack_visual_indexes: Optional[List[int]] = field(default=None)
+    disable_deepstack: bool = field(default=False)
     input_image_size: Optional[int] = field(default=None)
     mm_vision_tower_type: Optional[str] = field(default=None)
     s2: Optional[bool] = field(default=False)
@@ -1261,6 +1262,9 @@ def train(attn_implementation=None):
     model_args, data_args, training_args = parser.parse_args_into_dataclasses()
     local_rank = training_args.local_rank
     silence_non_primary_rank_output()
+    if model_args.disable_deepstack:
+        model_args.deepstack_visual_indexes = None
+        rank0_print("DeepStack disabled: using ViT main feature + mm_projector only.")
     if model_args.deepstack_visual_indexes and training_args.gradient_checkpointing:
         rank0_print(
             "DeepStack injection is incompatible with activation checkpoint recompute; "

@@ -187,6 +187,7 @@ def _config_overrides_from_args(args) -> dict:
         "mm_vision_tower": args.vision_tower or None,
         "vision_tower": args.vision_tower or None,
         "input_image_size": args.input_image_size,
+        "disable_deepstack": args.disable_deepstack,
         "deepstack_visual_indexes": args.deepstack_visual_indexes,
     }
 
@@ -356,6 +357,7 @@ def main():
     parser.add_argument("--print-full-output", action="store_true")
     parser.add_argument("--vision_tower", default="")
     parser.add_argument("--input_image_size", type=int, default=None)
+    parser.add_argument("--disable_deepstack", action="store_true")
     parser.add_argument("--deepstack_visual_indexes", type=int, nargs="*", default=None)
     args = parser.parse_args()
     args.device = device_str
@@ -377,6 +379,7 @@ def main():
         "[infer] config overrides: "
         f"vision_tower={config_overrides.get('mm_vision_tower')}, "
         f"input_image_size={config_overrides.get('input_image_size')}, "
+        f"disable_deepstack={config_overrides.get('disable_deepstack')}, "
         f"deepstack_visual_indexes={config_overrides.get('deepstack_visual_indexes')}"
     )
     tokenizer, model, image_processor = load_model_components(

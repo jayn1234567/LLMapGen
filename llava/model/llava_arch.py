@@ -108,6 +108,7 @@ class LlavaMetaModel:
         self.config.mm_vision_select_feature = mm_vision_select_feature
         self.config.mm_patch_merge_type = mm_patch_merge_type
         self.config.input_image_size = getattr(model_args, 'input_image_size', None)
+        self.config.disable_deepstack = getattr(model_args, 'disable_deepstack', False)
         self.config.deepstack_visual_indexes = getattr(model_args, 'deepstack_visual_indexes', None)
 
         mm_projector = getattr(self, 'mm_projector', None)

@@ -234,14 +234,23 @@ SAMPLE_SEED=42
 
 # ---------- DeepStack ----------
 DEEPSTACK_ARGS=()
-if [ -n "${DEEPSTACK_VISUAL_INDEXES}" ]; then
+if [[ "${DISABLE_DEEPSTACK:-False}" =~ ^(1|true|True|TRUE|yes|YES)$ ]]; then
+    DEEPSTACK_ARGS=(--disable_deepstack True)
+    DEEPSTACK_LABEL="disabled"
+    GRADIENT_CHECKPOINTING=${GRADIENT_CHECKPOINTING:-True}
+elif [ -n "${DEEPSTACK_VISUAL_INDEXES}" ]; then
     DEEPSTACK_ARGS=(--deepstack_visual_indexes ${DEEPSTACK_VISUAL_INDEXES})
+    DEEPSTACK_LABEL="${DEEPSTACK_VISUAL_INDEXES}"
+    GRADIENT_CHECKPOINTING=${GRADIENT_CHECKPOINTING:-False}
+else
+    DEEPSTACK_LABEL="disabled"
+    GRADIENT_CHECKPOINTING=${GRADIENT_CHECKPOINTING:-False}
 fi
 
 echo "============================================================"
 echo "Model:      ${Qwen3VL_PATH} (Qwen3-VL-8B → auto-extract LLM)"
 echo "ViT:        ${DINOV3_PATH}"
-echo "DeepStack:  ${DEEPSTACK_VISUAL_INDEXES:-disabled}"
+echo "DeepStack:  ${DEEPSTACK_LABEL}"
 echo "DeepSpeed:  ${DEEPSPEED_CONFIG}"
 echo "============================================================"
 
@@ -274,7 +283,7 @@ torchrun \
     --warmup_steps "${WARMUP_STEPS}" \
     --lr_scheduler_type "${LR_SCHEDULER_TYPE}" \
     --model_max_length "${MODEL_MAX_LENGTH}" \
-    --gradient_checkpointing False \
+    --gradient_checkpointing "${GRADIENT_CHECKPOINTING:-False}" \
     --dataloader_num_workers 4 \
     --remove_unused_columns false \
     --save_strategy steps \

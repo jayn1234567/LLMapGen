@@ -109,8 +109,17 @@ LOGGING_STEPS=${LOGGING_STEPS:-1}
 SAMPLE_SEED=${SAMPLE_SEED:-42}
 
 DEEPSTACK_ARGS=()
-if [ -n "${DEEPSTACK_VISUAL_INDEXES}" ]; then
+if [[ "${DISABLE_DEEPSTACK:-False}" =~ ^(1|true|True|TRUE|yes|YES)$ ]]; then
+    DEEPSTACK_ARGS=(--disable_deepstack True)
+    DEEPSTACK_LABEL="disabled"
+    GRADIENT_CHECKPOINTING=${GRADIENT_CHECKPOINTING:-True}
+elif [ -n "${DEEPSTACK_VISUAL_INDEXES}" ]; then
     DEEPSTACK_ARGS=(--deepstack_visual_indexes ${DEEPSTACK_VISUAL_INDEXES})
+    DEEPSTACK_LABEL="${DEEPSTACK_VISUAL_INDEXES}"
+    GRADIENT_CHECKPOINTING=${GRADIENT_CHECKPOINTING:-False}
+else
+    DEEPSTACK_LABEL="disabled"
+    GRADIENT_CHECKPOINTING=${GRADIENT_CHECKPOINTING:-False}
 fi
 
 echo "============================================================"
@@ -120,7 +129,7 @@ echo "ViT:        ${DINOV3_PATH}"
 echo "Train:      ${TRAIN_PATH}"
 echo "Images:     ${IMAGE_FOLDER}"
 echo "Output:     ${OUTPUT_PATH}"
-echo "DeepStack:  ${DEEPSTACK_VISUAL_INDEXES:-disabled}"
+echo "DeepStack:  ${DEEPSTACK_LABEL}"
 echo "Max steps:  ${MAX_STEPS}"
 echo "Batch:      ${PER_DEVICE_TRAIN_BATCH_SIZE}/npu x ${GRADIENT_ACCUMULATION_STEPS}"
 echo "DeepSpeed:  ${DEEPSPEED_CONFIG}"
@@ -156,7 +165,7 @@ torchrun \
     --warmup_steps 0 \
     --lr_scheduler_type constant \
     --model_max_length "${MODEL_MAX_LENGTH}" \
-    --gradient_checkpointing False \
+    --gradient_checkpointing "${GRADIENT_CHECKPOINTING:-False}" \
     --dataloader_num_workers 0 \
     --remove_unused_columns false \
     --save_strategy no \

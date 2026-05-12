@@ -41,7 +41,7 @@ from transformers import TrainerCallback
 from llava import conversation as conversation_lib
 from llava.model import *
 from llava.mm_utils import tokenizer_image_token, process_anyres_image
-from llava.model.qwen3vl_extractor import is_qwen3vl_checkpoint, is_llava_checkpoint, get_extracted_path, extract_llm_from_qwen3vl
+from llava.model.qwen3vl_extractor import is_qwen3vl_checkpoint, is_llava_checkpoint, ensure_extracted_llm_from_qwen3vl
 from llava.model.qwen_token_utils import sync_qwen_token_config
 
 from PIL import Image
@@ -1291,14 +1291,9 @@ def train(attn_implementation=None):
     _is_qwen3 = any(kw in model_args.model_name_or_path.lower() for kw in ['qwen3', 'qwen-3'])
 
     if is_qwen3vl_checkpoint(model_args.model_name_or_path):
-        cache_path = get_extracted_path(model_args.model_name_or_path)
-        if not os.path.exists(os.path.join(cache_path, 'model.safetensors')):
-            if training_args.local_rank in (-1, 0):
-                rank0_print(f"Extracting LLM from Qwen3-VL checkpoint: {model_args.model_name_or_path}")
-                extract_llm_from_qwen3vl(model_args.model_name_or_path, cache_path)
-                rank0_print(f"Extracted LLM to: {cache_path}")
-            if torch.distributed.is_initialized():
-                torch.distributed.barrier()
+        rank0_print(f"Ensuring extracted LLM cache for Qwen3-VL checkpoint: {model_args.model_name_or_path}")
+        cache_path = ensure_extracted_llm_from_qwen3vl(model_args.model_name_or_path)
+        rank0_print(f"Using extracted LLM cache: {cache_path}")
         model_args.model_name_or_path = cache_path
 
     if model_args.vision_tower is not None:

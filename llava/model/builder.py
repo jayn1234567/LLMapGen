@@ -22,7 +22,7 @@ from transformers import AutoTokenizer, AutoModelForCausalLM, AutoConfig, BitsAn
 import torch
 from llava.model import *
 from llava.constants import DEFAULT_IMAGE_PATCH_TOKEN, DEFAULT_IM_START_TOKEN, DEFAULT_IM_END_TOKEN
-from llava.model.qwen3vl_extractor import is_qwen3vl_checkpoint, is_llava_checkpoint, get_extracted_path, extract_llm_from_qwen3vl
+from llava.model.qwen3vl_extractor import is_qwen3vl_checkpoint, is_llava_checkpoint, ensure_extracted_llm_from_qwen3vl
 from llava.model.qwen_token_utils import sync_qwen_token_config
 
 try:
@@ -127,11 +127,9 @@ def load_pretrained_model(model_path, model_base, model_name, load_8bit=False, l
     kwargs = {"device_map": device_map, **kwargs}
 
     if is_qwen3vl_checkpoint(model_path) and not is_llava_checkpoint(model_path):
-        cache_path = get_extracted_path(model_path)
-        if not os.path.exists(os.path.join(cache_path, 'model.safetensors')):
-            print(f"Extracting LLM from Qwen3-VL checkpoint: {model_path}")
-            extract_llm_from_qwen3vl(model_path, cache_path)
-            print(f"Extracted LLM to: {cache_path}")
+        print(f"Ensuring extracted LLM cache for Qwen3-VL checkpoint: {model_path}")
+        cache_path = ensure_extracted_llm_from_qwen3vl(model_path)
+        print(f"Using extracted LLM cache: {cache_path}")
         model_path = cache_path
 
     if str(device).startswith("npu"):

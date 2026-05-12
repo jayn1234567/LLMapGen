@@ -404,6 +404,9 @@ def main():
     output_dir = Path(args.output_dir) if args.output_dir else None
     if output_dir is not None:
         output_dir.mkdir(parents=True, exist_ok=True)
+    rank_suffix = ""
+    if torch.distributed.is_initialized():
+        rank_suffix = f"rank{torch.distributed.get_rank()}_"
 
     results = []
     for idx, record in enumerate(records):
@@ -496,7 +499,7 @@ def main():
         results.append(result)
 
         if output_dir is not None:
-            sample_path = output_dir / f"{idx:03d}_{sanitize_filename(str(result['record_id']))}.json"
+            sample_path = output_dir / f"{rank_suffix}{idx:03d}_{sanitize_filename(str(result['record_id']))}.json"
             sample_path.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
 
         print(

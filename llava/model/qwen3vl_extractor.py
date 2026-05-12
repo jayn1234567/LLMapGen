@@ -2,9 +2,14 @@ import json
 import os
 import shutil
 import hashlib
+import time
 
 from safetensors.torch import load_file, save_file
 from llava.model.qwen_token_utils import normalize_qwen_config_dict
+
+
+EXTRACT_DONE_FILE = ".extract_complete"
+EXTRACT_LOCK_FILE = ".extract_lock"
 
 
 def is_qwen3vl_checkpoint(path):
@@ -28,6 +33,48 @@ def is_llava_checkpoint(path):
 def get_extracted_path(vl_path):
     h = hashlib.md5(os.path.abspath(vl_path).encode()).hexdigest()[:8]
     return os.path.join(os.path.dirname(vl_path), f'.qwen3_llm_extracted_{h}')
+
+
+def is_extracted_llm_ready(output_path):
+    if not os.path.exists(os.path.join(output_path, EXTRACT_DONE_FILE)):
+        return False
+    return (
+        os.path.exists(os.path.join(output_path, "model.safetensors"))
+        or os.path.exists(os.path.join(output_path, "model.safetensors.index.json"))
+    )
+
+
+def ensure_extracted_llm_from_qwen3vl(vl_path, timeout=7200, poll_interval=2):
+    output_path = get_extracted_path(vl_path)
+    if is_extracted_llm_ready(output_path):
+        return output_path
+
+    os.makedirs(output_path, exist_ok=True)
+    lock_path = os.path.join(output_path, EXTRACT_LOCK_FILE)
+    start = time.time()
+    owns_lock = False
+    while not owns_lock:
+        if is_extracted_llm_ready(output_path):
+            return output_path
+        try:
+            fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            with os.fdopen(fd, "w") as f:
+                f.write(f"pid={os.getpid()} time={time.time()}\n")
+            owns_lock = True
+        except FileExistsError:
+            if time.time() - start > timeout:
+                raise TimeoutError(f"Timed out waiting for Qwen3-VL LLM extraction: {output_path}")
+            time.sleep(poll_interval)
+
+    try:
+        if not is_extracted_llm_ready(output_path):
+            extract_llm_from_qwen3vl(vl_path, output_path)
+        return output_path
+    finally:
+        try:
+            os.remove(lock_path)
+        except FileNotFoundError:
+            pass
 
 
 def extract_llm_from_qwen3vl(vl_path, output_path):
@@ -102,5 +149,8 @@ def extract_llm_from_qwen3vl(vl_path, output_path):
         _, generation_config = normalize_qwen_config_dict(text_config, {})
         with open(generation_dst, 'w', encoding='utf-8') as f:
             json.dump(generation_config, f, indent=2, ensure_ascii=False)
+
+    with open(os.path.join(output_path, EXTRACT_DONE_FILE), 'w', encoding='utf-8') as f:
+        f.write(f"source={os.path.abspath(vl_path)}\n")
 
     return output_path

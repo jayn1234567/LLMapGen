@@ -58,8 +58,15 @@ class LlavaQwen3ForCausalLM(_Qwen3ForCausalLM, LlavaMetaForCausalLM):
                            use_cache, output_attentions, output_hidden_states, cache_position):
         n_ds = len(deepstack_visual_embeds) if deepstack_visual_embeds else 0
         handles = []
+        old_gradient_checkpointing = getattr(self.model, "gradient_checkpointing", False)
 
         if n_ds > 0:
+            # Forward hooks are not replayed during checkpoint recomputation after
+            # they are removed, which makes saved tensors differ. Disable layer
+            # checkpointing only for the DeepStack-injected forward path.
+            if old_gradient_checkpointing:
+                self.model.gradient_checkpointing = False
+
             def make_hook(layer_idx):
                 def hook(module, args):
                     hs, *rest = args
@@ -101,6 +108,8 @@ class LlavaQwen3ForCausalLM(_Qwen3ForCausalLM, LlavaMetaForCausalLM):
         finally:
             for h in handles:
                 h.remove()
+            if n_ds > 0 and old_gradient_checkpointing:
+                self.model.gradient_checkpointing = old_gradient_checkpointing
 
         return outputs.last_hidden_state, outputs.hidden_states, outputs.attentions, outputs.past_key_values
 

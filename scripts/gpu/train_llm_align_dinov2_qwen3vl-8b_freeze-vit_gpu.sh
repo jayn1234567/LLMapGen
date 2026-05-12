@@ -2,28 +2,31 @@
 set -euo pipefail
 
 # ============================================================
-# train_dinov3_qwen2-1.5b.sh
-# 单卡训练: DINOv2-large + Qwen2-1.5B + DeepStack
+# train_llm_align_dinov2_qwen3vl-8b_freeze-vit_gpu.sh
+# 多卡 DDP 训练: DINOv2-L + Qwen3-VL-8B LLM (auto-extract) + DeepStack + ZeRO-3, freeze ViT
 # ============================================================
 
+# ---------- Distributed ----------
+NUM_GPUS=4
+MASTER_PORT=29500
+CUDA_VISIBLE_DEVICES=0,1,2,3
+
 # ---------- Paths ----------
-MODEL_NAME_OR_PATH=checkpoints/llava-fastvithd_1.5b_stage2
-VISION_TOWER=checkpoints/facebook_dinov3-vitl16-pretrain-lvd1689m
+MODEL_NAME_OR_PATH=checkpoints/qwen/Qwen3-VL-8B-Instruct
+VISION_TOWER=checkpoints/facebook_dinov2-large
 DATA_PATH=data/train.jsonl
 IMAGE_FOLDER=data/images
-OUTPUT_DIR=outputs/dinov3_qwen2_1.5b
+OUTPUT_DIR=outputs/dinov2_qwen3vl_8b
 
 # ---------- Model ----------
-VERSION=conv_qwen_2_Dinov2_huawei
+VERSION=conv_qwen_3_Dinov2_huawei
 MM_VISION_SELECT_LAYER=-2
 MM_PROJECTOR_TYPE=mlp2x_gelu
 MM_VISION_SELECT_FEATURE=patch
 UNFREEZE_MM_VISION_TOWER=False
-INPUT_IMAGE_SIZE=448
 DEEPSTACK_VISUAL_INDEXES="6 12 18 23"
 
 # ---------- Training ----------
-CUDA_VISIBLE_DEVICES=0
 NUM_EPOCHS=3
 PER_DEVICE_BATCH_SIZE=1
 GRADIENT_ACCUMULATION=4
@@ -41,9 +44,8 @@ SAVE_TOTAL_LIMIT=10
 LOGGING_STEPS=10
 SAMPLE_SEED=42
 
-# ---------- DeepSpeed (set to "scripts/deepspeed_zero2.json" to enable) ----------
-DEEPSPEED_CONFIG=""
-# DEEPSPEED_CONFIG="scripts/deepspeed_zero2.json"
+# ---------- DeepSpeed ----------
+DEEPSPEED_CONFIG="scripts/deepspeed_zero3.json"
 
 # ====================== env ======================
 CONDA_SH=${CONDA_SH:-/home/q/anaconda3/etc/profile.d/conda.sh}
@@ -54,6 +56,10 @@ conda activate "${CONDA_ENV}"
 [ -d "${MODEL_NAME_OR_PATH}" ] || { echo "Model not found: ${MODEL_NAME_OR_PATH}"; exit 1; }
 [ -f "${DATA_PATH}" ] || { echo "Data not found: ${DATA_PATH}"; exit 1; }
 [ -d "${IMAGE_FOLDER}" ] || { echo "Image folder not found: ${IMAGE_FOLDER}"; exit 1; }
+
+if [ ! -d "${VISION_TOWER}" ]; then
+    python -c "from modelscope import snapshot_download; snapshot_download('facebook/dinov2-large', cache_dir='checkpoints')"
+fi
 
 mkdir -p "${OUTPUT_DIR}"
 export CUDA_VISIBLE_DEVICES
@@ -67,15 +73,19 @@ DEEPSPEED_CMD=()
 [ -n "${DEEPSPEED_CONFIG}" ] && DEEPSPEED_CMD=(--deepspeed "${DEEPSPEED_CONFIG}")
 
 echo "============================================================"
-echo "Model:    ${MODEL_NAME_OR_PATH}"
-echo "ViT:      ${VISION_TOWER}"
+echo "GPUs:     ${CUDA_VISIBLE_DEVICES} (${NUM_GPUS} processes)"
+echo "Model:    ${MODEL_NAME_OR_PATH} (Qwen3-VL-8B → auto-extract)"
 echo "Version:  ${VERSION}"
+echo "ViT:      ${VISION_TOWER}"
 echo "DeepStack:${DEEPSTACK_VISUAL_INDEXES:-disabled}"
 echo "DeepSpeed:${DEEPSPEED_CONFIG:-disabled}"
-echo "GPU:      ${CUDA_VISIBLE_DEVICES}"
+echo "Batch:    ${PER_DEVICE_BATCH_SIZE}/gpu x ${GRADIENT_ACCUMULATION} x ${NUM_GPUS} = $((PER_DEVICE_BATCH_SIZE * GRADIENT_ACCUMULATION * NUM_GPUS))"
 echo "============================================================"
 
-python -m llava.train.train_qwen \
+torchrun \
+    --nproc_per_node="${NUM_GPUS}" \
+    --master_port="${MASTER_PORT}" \
+    -m llava.train.train_qwen \
     --model_name_or_path "${MODEL_NAME_OR_PATH}" \
     --version "${VERSION}" \
     --vision_tower "${VISION_TOWER}" \
@@ -84,7 +94,6 @@ python -m llava.train.train_qwen \
     --mm_projector_type "${MM_PROJECTOR_TYPE}" \
     --unfreeze_mm_vision_tower "${UNFREEZE_MM_VISION_TOWER}" \
     "${DEEPSTACK_ARGS[@]}" \
-    --input_image_size "${INPUT_IMAGE_SIZE}" \
     --data_path "${DATA_PATH}" \
     --image_folder "${IMAGE_FOLDER}" \
     --sample_seed "${SAMPLE_SEED}" \
@@ -109,4 +118,6 @@ python -m llava.train.train_qwen \
     --logging_steps "${LOGGING_STEPS}" \
     --report_to none \
     --tf32 False \
+    --ddp_find_unused_parameters False \
+    --ddp_backend nccl \
     "${DEEPSPEED_CMD[@]}"

@@ -56,6 +56,7 @@ class DINOv2VisionTower(nn.Module):
             print(f"Using DINOv2 input image size: {target_size}")
             self.image_processor.size = {"shortest_edge": target_size}
             self.image_processor.crop_size = {"height": target_size, "width": target_size}
+        self._target_size = target_size
 
         self.num_layers = len(self.vision_tower.encoder.layer)
         self._resolve_select_layer_index()
@@ -82,6 +83,7 @@ class DINOv2VisionTower(nn.Module):
             print(f"Using DINOv2 input image size (from checkpoint): {target_size}")
             self.image_processor.size = {"shortest_edge": target_size}
             self.image_processor.crop_size = {"height": target_size, "width": target_size}
+        self._target_size = target_size
 
         self.num_layers = len(self.vision_tower.encoder.layer)
         self._resolve_select_layer_index()
@@ -202,8 +204,8 @@ class DINOv2VisionTower(nn.Module):
 
     @property
     def num_patches_per_side(self):
-        return self.config.image_size // self.config.patch_size
+        return self._target_size // self.config.patch_size
 
     @property
     def num_patches(self):
-        return (self.config.image_size // self.config.patch_size) ** 2
+        return (self._target_size // self.config.patch_size) ** 2

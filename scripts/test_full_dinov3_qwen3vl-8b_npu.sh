@@ -2,9 +2,9 @@
 # set -euo pipefail
 
 # ============================================================
-# GPU full-parameter finetune llava testing script
+# NPU (Ascend) full-parameter finetune llava testing script
 # - Downloads: dataset + trained checkpoint from specified OBS path
-# - Uses an external ViT base model path during inference
+# - Downloads the external ViT base model and passes it to inference explicitly
 # - Results uploaded to ${OUTPUT_URL}/test_results (platform injected)
 # ============================================================
 
@@ -15,6 +15,18 @@ echo "Script path: $SCRIPT_PATH"
 echo "Script folder path: $SCRIPT_DIR"
 echo "Current working path: $PWD"
 
+# ====================== NPU environment ======================
+export ASCEND_CUSTOM_PATH=/usr/local/Ascend/ascend-toolkit/latest
+export ASCEND_CUSTOM_OPP_PATH=/usr/local/Ascend/ascend-toolkit/latest
+export ASCEND_OPP_PATH=/usr/local/Ascend/ascend-toolkit/latest/opp
+
+workerID=$(echo $HOSTNAME | awk -F'-' '{print $(NF-1)"-"$NF}')
+echo ${workerID}
+
+source /usr/local/Ascend/ascend-toolkit/set_env.sh
+sudo chmod -R 777 /usr/local/Ascend/ascend-toolkit/
+source /usr/local/Ascend/nnal/atb/set_env.sh
+
 # ====================== moxing upgrade ======================
 echo ">>>>>>>>>>>>>>>>>>>>>>>>>>>>> changing moxing >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>"
 USE_MEMARTS=0 python -c "import moxing; moxing.file.copy('obs://yw-ads-training-gy1/data/external/personal/00592907/dataset_index/pkgs/moxing_framework-2.3.8-py2.py3-none-any.250714.whl', '/home/ma-user/moxing_framework-2.3.8-py2.py3-none-any.whl')"
@@ -23,13 +35,17 @@ pip cache purge
 pip install /home/ma-user/moxing_framework-2.3.8-py2.py3-none-any.whl
 export MOX_PROFILE=1
 export MOX_RECORD_OBS=1
-echo ">>>>>>>>>>>>>>>>>>>>>>>>>>>> moxing change finished >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>"
+echo ">>>>>>>>>>>>>>>>>>>>>>>>>>>> moxing change finished >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>"
 
 # ====================== dependencies ======================
 echo ">>>>>>>>>>>>>>>>>>>>>>>>>>>>> Installing dependencies >>>>>>>>>>>>>>>>>>>>>>>>>>>>>"
 unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY
 
 pip install torch==2.7.1
+pip install torch_npu==2.7.1rc1
+
+python -c "import moxing as mox; mox.file.copy_parallel('obs://yw-ads-training-gy1/data/external/personal/w00886412/llm4drive_utils/torch_npu/whl/torch_npu-2.7.1.dev20250724-cp311-cp311-manylinux_2_28_aarch64.whl', '/home/ma-user/torch_npu-2.7.1.dev20250724-cp311-cp311-manylinux_2_28_aarch64.whl')"
+pip install --force-reinstall /home/ma-user/torch_npu-2.7.1.dev20250724-cp311-cp311-manylinux_2_28_aarch64.whl
 
 pip install sentencepiece
 pip install tiktoken
@@ -62,11 +78,61 @@ pip install urllib3==1.26.15
 
 echo "========== key deps =========="
 python -c "import torch; print('torch', torch.__version__)"
+python -c "import torch_npu; print('torch_npu', torch_npu.__version__)"
 python -c "import transformers; print('transformers', transformers.__version__)"
 python -c "import deepspeed; print('deepspeed', deepspeed.__version__)"
 echo "==============================="
 
-# ====================== output management (platform injected) ======================
+echo ">>>>>>>>>>>>>>>>>>>>>>>>>>>>> Dependencies installed >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>"
+
+# ====================== distributed parameters ======================
+if [[ -z "${MA_VJ_NAME}" ]]; then
+    NNODES=1
+    NODE_RANK=0
+    NPROC_PER_NODE=8
+    MASTER_ADDR=localhost
+else
+    NNODES="$MA_NUM_HOSTS"
+    NODE_RANK="$VC_TASK_INDEX"
+    NPROC_PER_NODE="$MA_NUM_GPUS"
+    MASTER_HOST="$VC_WORKER_HOSTS"
+    MASTER_ADDR="${VC_WORKER_HOSTS%%,*}"
+fi
+
+MASTER_PORT="6060"
+export NNODES=$NNODES
+export NODE_RANK=$NODE_RANK
+export NPROC_PER_NODE=$NPROC_PER_NODE
+export MASTER_ADDR=$MASTER_ADDR
+export MASTER_PORT=$MASTER_PORT
+export RDZV_ID='1234'
+
+echo ">>>>>>>>>>>>>>>>>>>>>>>>>>>>> machine information >>>>>>>>>>>>>>>>>>>>>>>>>>>>>"
+echo "NNODES: $NNODES"
+echo "NODE_RANK: $NODE_RANK"
+echo "NPROC_PER_NODE: $NPROC_PER_NODE"
+echo "MASTER_ADDR: $MASTER_ADDR"
+echo "MASTER_PORT: $MASTER_PORT"
+echo ">>>>>>>>>>>>>>>>>>>>>>>>>>>>> machine information >>>>>>>>>>>>>>>>>>>>>>>>>>>>>"
+
+# ====================== HCCL & NPU settings ======================
+export GLOO_SOCKET_IFNAME=eth0
+export TP_SOCKET_IFNAME=eth0
+export HCCL_SOCKET_IFNAME=eth0
+
+export CUDA_DEVICE_MAX_CONNECTIONS=1
+export HCCL_WHITELIST_DISABLE=1
+export HCCL_CONNECT_TIMEOUT=7200
+export HCCL_EXEC_TIMEOUT=7200
+export HCCL_IF_BASE_PORT=64000
+export INF_NAN_MODE_ENABLE=1
+export HCCL_ASYNC_ERROR_HANDLING=0
+export WITHOUT_JIT_COMPILE=1
+export HCCL_OP_BASE_FFTS_MODE_ENABLE=FALSE
+export COMBINED_ENABLE=1
+export OMP_NUM_THREADS=1
+
+# ====================== output management ======================
 if [[ -z "${OUTPUT_URL}" ]]; then
     echo "ERROR: OUTPUT_URL is not set."
     exit 1
@@ -74,31 +140,37 @@ fi
 
 CLUSTER_SAVE=${OUTPUT_URL}
 OSB_SHARE_PATH="$CLUSTER_SAVE"
-OUTPUT_PATH=$OSB_SHARE_PATH
+echo "System defined obs share path: $OSB_SHARE_PATH"
 
-echo "Platform OUTPUT_URL: $OUTPUT_URL"
-echo "OSB_SHARE_PATH: $OSB_SHARE_PATH"
+LOCAL_MODEL_SAVE_PATH='/cache/local_model_save_path'
+mkdir -p $LOCAL_MODEL_SAVE_PATH
 
 # ====================== OBS paths ======================
 OBS_CACHE=${OBS_CACHE:-/cache}
 
+MODEL_OBS_PATH="obs://yw-ads-training-gy1/data/external/personal/h58801830/whu/jjh/checkpoints"
 DATASET_OBS_PATH="obs://yw-ads-training-gy1/data/external/personal/h58801830/whu/jjh/MLLM20260427_rc_jjh.zip"
 
-# 【修改】全参训练输出目录（DeepSpeed merge 后的根目录，包含 model.safetensors）
-TRAINED_CHECKPOINT_OBS="obs://yw-ads-model-training-gy1/model-dev/rc-nn/rc_base_model/2026/05/06/c9017063151248669d7d57b48790b6a0/output/"
+TRAINED_CHECKPOINT_OBS="obs://yw-ads-model-training-gy1/model-dev/rc-nn/rc_base_model/2026/05/11/91d5397b1e5e4d21a16177081527425e/output/checkpoint-2400"
+
+DINOV3_PATH=${DINOV3_PATH:-${OBS_CACHE}/checkpoints/facebook_dinov3-vitl16-pretrain-lvd1689m}
+DEEPSTACK_VISUAL_INDEXES="6 12 18 23"
 
 DATASET_PATH="/cache/MLLM20260427_rc_jjh"
 IMAGE_FOLDER="${DATASET_PATH}"
 
 # ====================== download dataset ======================
 echo ">>>>>>>>>>>>>>>>>>>>>>>>>>>>> Downloading dataset >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>"
+python -c "import moxing as mox; mox.file.copy_parallel('${MODEL_OBS_PATH}/facebook_dinov3-vitl16-pretrain-lvd1689m', '${DINOV3_PATH}')"
 python -c "import moxing as mox; mox.file.copy('${DATASET_OBS_PATH}', '${OBS_CACHE}/dataset.zip')"
+
 cd /cache
 unzip -o dataset.zip
 cd $SCRIPT_DIR
 
 if [ ! -d "$DATASET_PATH" ]; then
-    echo "ERROR: Dataset dir not found."
+    echo "ERROR: Expected dataset directory $DATASET_PATH not found after unzip."
+    ls -l /cache/
     exit 1
 fi
 
@@ -107,6 +179,10 @@ if [ ! -f "$TEST_JSON" ]; then
     echo "ERROR: test.jsonl missing."
     exit 1
 fi
+
+echo "DATASET_PATH: $DATASET_PATH"
+echo "TEST_JSON:    $TEST_JSON"
+echo ">>>>>>>>>>>>>>>>>>>>>>>>>>>>>>> finish moxing >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>"
 
 # ====================== download trained checkpoint ======================
 CHECKPOINT_LOCAL="/cache/train_output"
@@ -124,10 +200,10 @@ if [ ! -f "${CHECKPOINT_DIR}/model.safetensors" ] && [ ! -f "${CHECKPOINT_DIR}/p
     echo "ERROR: No model.safetensors or pytorch_model.bin found."
     exit 1
 fi
-echo "ViT base must be supplied separately during inference."
+echo "ViT base is loaded from DINOV3_PATH and passed with --vision_tower."
 
 echo "CHECKPOINT_DIR: $CHECKPOINT_DIR"
-echo "TEST_JSON: $TEST_JSON"
+echo "DINOV3_PATH:    $DINOV3_PATH"
 
 # ====================== inference ======================
 TEST_OUTPUT_LOCAL="/cache/test_output"
@@ -136,21 +212,27 @@ mkdir -p "$TEST_OUTPUT_LOCAL"
 cd "$SCRIPT_DIR/.."
 export PYTHONPATH="$(pwd):${PYTHONPATH:-}"
 
-# 8 GPU distributed inference
-torchrun --nproc_per_node=8 \
-  --master_addr=127.0.0.1 \
-  --master_port=29500 \
-  scripts/infer_centerline_checkpoint.py \
-  --checkpoint-dir "${CHECKPOINT_DIR}" \
-  --test-json "${TEST_JSON}" \
-  --num-samples -1 \
-  --image-folder "${IMAGE_FOLDER}" \
-  --prompt-mode dataset \
-  --conv-template "conv_qwen_2_Dinov2_huawei" \
-  --output-dir "${TEST_OUTPUT_LOCAL}" \
-  --output-json "${TEST_OUTPUT_LOCAL}/summary.json" \
-  --temperature 0.0 \
-  --max-new-tokens 2048
+torchrun \
+    --nnodes="${NNODES}" \
+    --nproc_per_node="${NPROC_PER_NODE}" \
+    --node_rank="${NODE_RANK}" \
+    --master_addr="${MASTER_ADDR}" \
+    --master_port="${MASTER_PORT}" \
+    scripts/infer_centerline_checkpoint.py \
+    --checkpoint-dir "${CHECKPOINT_DIR}" \
+    --vision_tower "${DINOV3_PATH}" \
+    --deepstack_visual_indexes ${DEEPSTACK_VISUAL_INDEXES} \
+    --test-json "${TEST_JSON}" \
+    --num-samples 533 \
+    --image-folder "${IMAGE_FOLDER}" \
+    --prompt-mode dataset \
+    --conv-template "conv_qwen_3_Dinov2_huawei" \
+    --output-dir "${TEST_OUTPUT_LOCAL}" \
+    --output-json "${TEST_OUTPUT_LOCAL}/summary.json" \
+    --temperature 0.0 \
+    --max-new-tokens 2048
+
+echo "=== Testing finished ==="
 
 # ===================== 【合并 rank 文件】 =====================
 echo "Merging summary_rank*.json -> summary.json"
@@ -231,8 +313,6 @@ if [ -f "scripts/visualize_centerline.py" ]; then
       --image-folder "${IMAGE_FOLDER}" \
       --output-dir "${TEST_OUTPUT_LOCAL}/viz"
 fi
-
-echo "=== Testing finished ==="
 
 # ====================== upload results ======================
 TEST_RESULT_OBS="${OUTPUT_URL}/test_results"

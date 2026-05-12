@@ -47,21 +47,27 @@ MLLM_project/
 │   └── llava_trainer.py           # LLaVATrainer — HF Trainer 子类 (含分组 LR)
 │
 └── scripts/
-    ├── gpu/                           # GPU 训练脚本 ★ 7 个
-    │   ├── train_dinov2_qwen2-1.5b.sh
-    │   ├── train_dinov2_qwen3-8b.sh
-    │   ├── train_dinov2_qwen3vl-2b.sh
-    │   ├── train_dinov2_qwen3vl-8b.sh
-    │   ├── train_dinov3_qwen2-1.5b.sh     # 新增
-    │   ├── train_dinov3_qwen3vl-2b.sh     # 新增
-    │   └── train_dinov3_qwen3vl-8b.sh     # 新增
-    ├── npu/                           # NPU 训练+推理脚本 ★ 4 个
-    │   ├── train_dinov2_qwen2-1.5b_npu.sh
-    │   ├── train_dinov2_qwen3vl-8b_npu.sh
-    │   ├── train_dinov3_qwen2-1.5b_npu.sh  # 新增
-    │   └── train_dinov3_qwen3vl-8b_npu.sh  # 新增
-    ├── qwen2/
-    ├── qwen3vl/
+    ├── train_full_dinov2_qwen3vl-8b_npu.sh
+    ├── train_full_dinov3_qwen3vl-8b_npu.sh
+    ├── test_full_dinov2_qwen3vl-8b_npu.sh
+    ├── test_full_dinov3_qwen3vl-8b_npu.sh
+    ├── debug.sh                       # 本地 NPU DINOv3 训练 smoke test
+    ├── gpu/                           # GPU 非全参/本地工具脚本
+    │   ├── train_llm_align_dinov2_qwen2-1.5b_freeze-vit_gpu.sh
+    │   ├── train_llm_align_dinov2_qwen3-8b_freeze-vit_gpu.sh
+    │   ├── train_llm_align_dinov2_qwen3vl-2b_freeze-vit_gpu.sh
+    │   ├── train_llm_align_dinov2_qwen3vl-8b_freeze-vit_gpu.sh
+    │   ├── train_llm_align_dinov3_qwen2-1.5b_freeze-vit_gpu.sh
+    │   ├── train_llm_align_dinov3_qwen3vl-2b_freeze-vit_gpu.sh
+    │   ├── train_llm_align_dinov3_qwen3vl-8b_freeze-vit_gpu.sh
+    │   ├── train_vit_align_dinov2_qwen3vl-8b_freeze-llm_gpu.sh
+    │   ├── infer_dinov2_centerline_gpu.sh
+    │   ├── test_full_checkpoint_gpu.sh
+    │   └── visualize_centerline_compare.py
+    ├── npu/                           # NPU 非全参训练脚本
+    │   ├── train_llm_align_dinov2_qwen2-1.5b_freeze-vit_npu.sh
+    │   ├── train_llm_align_dinov3_qwen2-1.5b_freeze-vit_npu.sh
+    │   └── train_vit_align_dinov2_qwen3vl-8b_freeze-llm_npu.sh
     ├── infer_centerline_checkpoint.py # 推理引擎
     ├── visualize_centerline.py
     ├── summarize_centerline_eval.py

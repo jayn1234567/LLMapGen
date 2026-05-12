@@ -3,7 +3,7 @@
 
 # ============================================================
 # NPU (Ascend) llava training + eval script
-# Qwen3-VL-8B LLM (auto-extract) + DINOv2 + DeepStack
+# Qwen3-VL-8B LLM (auto-extract) + DINOv2 + DeepStack, freeze LLM
 # ============================================================
 
 SCRIPT_PATH=$(readlink -f "$0")
@@ -156,7 +156,7 @@ MODEL_OBS_PATH="obs://yw-ads-training-gy1/data/external/personal/h58801830/whu/j
 DATASET_OBS_PATH="obs://yw-ads-training-gy1/data/external/personal/h58801830/whu/jjh/MLLM20260427_rc_jjh.zip"
 
 DINOV2_PATH=${DINOV2_PATH:-${OBS_CACHE}/checkpoints/facebook_dinov2-large}
-Qwen3VL_PATH=${Qwen3VL_PATH:-${OBS_CACHE}/checkpoints/Qwen3-VL-8B-Instruct}
+Qwen3VL_PATH=${Qwen3VL_PATH:-${OBS_CACHE}/checkpoints/qwen3vl-checkpoint-3200}
 
 DATASET_PATH="/cache/MLLM20260427_rc_jjh"
 IMAGE_FOLDER="${DATASET_PATH}"
@@ -164,7 +164,7 @@ IMAGE_FOLDER="${DATASET_PATH}"
 # ====================== download ======================
 echo ">>>>>>>>>>>>>>>>>>>>>>>>>>>>> Downloading models >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>"
 python -c "import moxing as mox; mox.file.copy_parallel('${MODEL_OBS_PATH}/facebook_dinov2-large', '${DINOV2_PATH}')"
-python -c "import moxing as mox; mox.file.copy_parallel('${MODEL_OBS_PATH}/Qwen3-VL-8B-Instruct', '${Qwen3VL_PATH}')"
+python -c "import moxing as mox; mox.file.copy_parallel('${MODEL_OBS_PATH}/qwen3vl-checkpoint-3200', '${Qwen3VL_PATH}')"
 
 echo ">>>>>>>>>>>>>>>>>>>>>>>>>>>>> Downloading dataset >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>"
 python -c "import moxing as mox; mox.file.copy('${DATASET_OBS_PATH}', '${OBS_CACHE}/dataset.zip')"
@@ -209,7 +209,7 @@ echo ">>> Gradient accumulation steps: ${gradient_accumulation_steps}"
 
 # ====================== training ======================
 echo ">>>>>>>>>>>>>>>>>>>>>>>>>>>>>>> start training >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>"
-cd "$SCRIPT_DIR/../.."
+cd "$SCRIPT_DIR/.."
 
 export PYTHONPATH="$(pwd):${PYTHONPATH:-}"
 
@@ -218,8 +218,8 @@ MM_VISION_SELECT_LAYER=-2
 MM_PROJECTOR_TYPE=mlp2x_gelu
 UNFREEZE_MM_VISION_TOWER=True
 DEEPSTACK_VISUAL_INDEXES="6 12 18 23"
-DEEPSPEED_CONFIG="scripts/deepspeed_zero3_no_merge.json"
-NUM_EPOCHS=3
+DEEPSPEED_CONFIG="scripts/deepspeed_zero3.json"
+NUM_EPOCHS=6
 LR=2e-5
 MM_PROJECTOR_LR=5e-5
 WEIGHT_DECAY=0.0
@@ -281,34 +281,16 @@ torchrun \
     --save_steps "${SAVE_STEPS}" \
     --save_total_limit "${SAVE_TOTAL_LIMIT}" \
     --logging_steps "${LOGGING_STEPS}" \
-    --report_to none \
-    --ddp_find_unused_parameters False \
-    --ddp_backend hccl \
-    --deepspeed "${DEEPSPEED_CONFIG}"
+    --report_to none 
+
 
 echo "=== Training finished ==="
 
-# ====================== DeepSpeed weight consolidation ======================
-if [ -n "${DEEPSPEED_CONFIG}" ] && [ ${NODE_RANK} -eq 0 ]; then
-    echo ">>> Merging DeepSpeed sharded checkpoints..."
-    export TORCH_FORCE_WEIGHTS_ONLY_LOAD=0
-    for ckpt_dir in ${OUTPUT_PATH}/checkpoint-*; do
-        if [ -d "${ckpt_dir}" ] && [ -f "${ckpt_dir}/zero_to_fp32.py" ]; then
-            cd "${ckpt_dir}"
-            python zero_to_fp32.py . model.safetensors
-            echo "  Merged: ${ckpt_dir}"
-        fi
-    done
-    if [ -f "${OUTPUT_PATH}/zero_to_fp32.py" ]; then
-        cd "${OUTPUT_PATH}"
-        python zero_to_fp32.py . model.safetensors
-        echo "  Merged: final model"
-    fi
-fi
+    # --deepspeed "${DEEPSPEED_CONFIG}"
 
 # # ====================== inference ======================
 # echo ">>>>>>>>>>>>>>>>>>>>>>>>>>>>>>> start inference >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>"
-# cd "$SCRIPT_DIR/../.."
+# cd "$SCRIPT_DIR/.."
 
 # # 👇 只在主节点跑推理
 # if [ ${NODE_RANK} -ne 0 ]; then

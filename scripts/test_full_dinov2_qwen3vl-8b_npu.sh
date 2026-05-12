@@ -174,11 +174,12 @@ torchrun --nproc_per_node=8 \
   --master_port=29500 \
   scripts/infer_centerline_checkpoint.py \
   --checkpoint-dir "${CHECKPOINT_DIR}" \
+  --vision_tower "${DINOV2_PATH}" \
   --test-json "${TEST_JSON}" \
   --num-samples 533 \
   --image-folder "${IMAGE_FOLDER}" \
   --prompt-mode dataset \
-  --conv-template "conv_qwen_2_Dinov2_huawei" \
+  --conv-template "conv_qwen_3_Dinov2_huawei" \
   --output-dir "${TEST_OUTPUT_LOCAL}" \
   --output-json "${TEST_OUTPUT_LOCAL}/summary.json" \
   --temperature 0.0 \

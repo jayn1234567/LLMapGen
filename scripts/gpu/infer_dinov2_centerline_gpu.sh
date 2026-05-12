@@ -2,8 +2,8 @@
 set -euo pipefail
 
 # ============================================================
-# infer_dinov2_centerline.sh
-# 推理测试: 加载 DINOv2 + Qwen checkpoint，输出中心线 JSON + 可视化
+# infer_dinov2_centerline_gpu.sh
+# GPU 推理测试: 加载 DINOv2 + Qwen checkpoint，输出中心线 JSON + 可视化
 # ============================================================
 
 # ---------- Paths ----------

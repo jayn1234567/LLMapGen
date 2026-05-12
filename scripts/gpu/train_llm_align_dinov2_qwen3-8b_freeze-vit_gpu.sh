@@ -2,8 +2,8 @@
 set -euo pipefail
 
 # ============================================================
-# train_dinov2_qwen3vl-8b.sh
-# 多卡 DDP 训练: DINOv2-large + Qwen3-VL-8B LLM (auto-extract) + DeepStack + ZeRO-3
+# train_llm_align_dinov2_qwen3-8b_freeze-vit_gpu.sh
+# 多卡 DDP 训练: DINOv2-L + Qwen3-8B + DeepStack, freeze ViT
 # ============================================================
 
 # ---------- Distributed ----------
@@ -12,11 +12,11 @@ MASTER_PORT=29500
 CUDA_VISIBLE_DEVICES=0,1,2,3
 
 # ---------- Paths ----------
-MODEL_NAME_OR_PATH=checkpoints/qwen/Qwen3-VL-8B-Instruct
+MODEL_NAME_OR_PATH=checkpoints/qwen3-8b-instruct
 VISION_TOWER=checkpoints/facebook_dinov2-large
 DATA_PATH=data/train.jsonl
 IMAGE_FOLDER=data/images
-OUTPUT_DIR=outputs/dinov2_qwen3vl_8b
+OUTPUT_DIR=outputs/dinov2_qwen3_8b
 
 # ---------- Model ----------
 VERSION=conv_qwen_3_Dinov2_huawei
@@ -57,10 +57,6 @@ conda activate "${CONDA_ENV}"
 [ -f "${DATA_PATH}" ] || { echo "Data not found: ${DATA_PATH}"; exit 1; }
 [ -d "${IMAGE_FOLDER}" ] || { echo "Image folder not found: ${IMAGE_FOLDER}"; exit 1; }
 
-if [ ! -d "${VISION_TOWER}" ]; then
-    python -c "from modelscope import snapshot_download; snapshot_download('facebook/dinov2-large', cache_dir='checkpoints')"
-fi
-
 mkdir -p "${OUTPUT_DIR}"
 export CUDA_VISIBLE_DEVICES
 export PYTHONPATH="$(pwd):${PYTHONPATH:-}"
@@ -74,7 +70,7 @@ DEEPSPEED_CMD=()
 
 echo "============================================================"
 echo "GPUs:     ${CUDA_VISIBLE_DEVICES} (${NUM_GPUS} processes)"
-echo "Model:    ${MODEL_NAME_OR_PATH} (Qwen3-VL-8B → auto-extract)"
+echo "Model:    ${MODEL_NAME_OR_PATH}"
 echo "Version:  ${VERSION}"
 echo "ViT:      ${VISION_TOWER}"
 echo "DeepStack:${DEEPSTACK_VISUAL_INDEXES:-disabled}"

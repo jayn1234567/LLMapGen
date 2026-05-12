@@ -2,19 +2,19 @@
 set -euo pipefail
 
 # ============================================================
-# train_dinov2_qwen2-1.5b.sh
-# 单卡训练: DINOv2-large + Qwen2-1.5B + DeepStack
+# train_llm_align_dinov2_qwen3vl-2b_freeze-vit_gpu.sh
+# 单卡训练: DINOv2-L + Qwen3-VL-2B LLM (auto-extract) + DeepStack, freeze ViT
 # ============================================================
 
 # ---------- Paths ----------
-MODEL_NAME_OR_PATH=checkpoints/llava-fastvithd_1.5b_stage2
+MODEL_NAME_OR_PATH=checkpoints/qwen/Qwen3-VL-2B-Instruct
 VISION_TOWER=checkpoints/facebook_dinov2-large
 DATA_PATH=data/train.jsonl
 IMAGE_FOLDER=data/images
-OUTPUT_DIR=outputs/dinov2_qwen2_1.5b
+OUTPUT_DIR=outputs/dinov2_qwen3vl_2b
 
 # ---------- Model ----------
-VERSION=conv_qwen_2_Dinov2_huawei
+VERSION=conv_qwen_3_Dinov2_huawei
 MM_VISION_SELECT_LAYER=-2
 MM_PROJECTOR_TYPE=mlp2x_gelu
 MM_VISION_SELECT_FEATURE=patch
@@ -42,7 +42,6 @@ SAMPLE_SEED=42
 
 # ---------- DeepSpeed (set to "scripts/deepspeed_zero2.json" to enable) ----------
 DEEPSPEED_CONFIG=""
-# DEEPSPEED_CONFIG="scripts/deepspeed_zero2.json"
 
 # ====================== env ======================
 CONDA_SH=${CONDA_SH:-/home/q/anaconda3/etc/profile.d/conda.sh}
@@ -53,6 +52,11 @@ conda activate "${CONDA_ENV}"
 [ -d "${MODEL_NAME_OR_PATH}" ] || { echo "Model not found: ${MODEL_NAME_OR_PATH}"; exit 1; }
 [ -f "${DATA_PATH}" ] || { echo "Data not found: ${DATA_PATH}"; exit 1; }
 [ -d "${IMAGE_FOLDER}" ] || { echo "Image folder not found: ${IMAGE_FOLDER}"; exit 1; }
+
+# 下载 vision_tower (如不存在)
+if [ ! -d "${VISION_TOWER}" ]; then
+    python -c "from modelscope import snapshot_download; snapshot_download('facebook/dinov2-large', cache_dir='checkpoints')"
+fi
 
 mkdir -p "${OUTPUT_DIR}"
 export CUDA_VISIBLE_DEVICES
@@ -66,7 +70,7 @@ DEEPSPEED_CMD=()
 [ -n "${DEEPSPEED_CONFIG}" ] && DEEPSPEED_CMD=(--deepspeed "${DEEPSPEED_CONFIG}")
 
 echo "============================================================"
-echo "Model:    ${MODEL_NAME_OR_PATH}"
+echo "Model:    ${MODEL_NAME_OR_PATH} (Qwen3-VL-2B → auto-extract)"
 echo "ViT:      ${VISION_TOWER}"
 echo "Version:  ${VERSION}"
 echo "DeepStack:${DEEPSTACK_VISUAL_INDEXES:-disabled}"

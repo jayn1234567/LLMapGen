@@ -23,6 +23,7 @@ import torch
 from llava.model import *
 from llava.constants import DEFAULT_IMAGE_PATCH_TOKEN, DEFAULT_IM_START_TOKEN, DEFAULT_IM_END_TOKEN
 from llava.model.qwen3vl_extractor import is_qwen3vl_checkpoint, is_llava_checkpoint, get_extracted_path, extract_llm_from_qwen3vl
+from llava.model.qwen_token_utils import sync_qwen_token_config
 
 try:
     from safetensors.torch import load_file as safe_load_file
@@ -302,6 +303,12 @@ def load_pretrained_model(model_path, model_base, model_name, load_8bit=False, l
         elif resolved_device_map != 'auto':
             vision_tower.to(device=resolved_device_map, dtype=vision_dtype)
         image_processor = vision_tower.image_processor
+
+    sync_qwen_token_config(
+        tokenizer=tokenizer,
+        model=model,
+        model_name_or_path=model_path,
+    )
 
     if hasattr(model.config, "max_sequence_length"):
         context_len = model.config.max_sequence_length

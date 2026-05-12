@@ -430,7 +430,10 @@ def main():
 
         input_ids = tokenizer_image_token(prompt, tokenizer, IMAGE_TOKEN_INDEX, return_tensors="pt")
         input_ids = input_ids.unsqueeze(0).to(model.device)
-        attention_mask = input_ids.ne(tokenizer.pad_token_id).to(model.device)
+        generation_config = getattr(model, "generation_config", None)
+        pad_token_id = getattr(generation_config, "pad_token_id", None) or tokenizer.pad_token_id
+        eos_token_id = getattr(generation_config, "eos_token_id", None) or tokenizer.eos_token_id
+        attention_mask = input_ids.ne(pad_token_id).to(model.device)
 
         generate_kwargs = {
             "attention_mask": attention_mask,
@@ -440,8 +443,8 @@ def main():
             "use_cache": True,
             "do_sample": args.temperature > 0,
             "num_beams": 1,
-            "pad_token_id": tokenizer.pad_token_id,
-            "eos_token_id": tokenizer.eos_token_id,
+            "pad_token_id": pad_token_id,
+            "eos_token_id": eos_token_id,
         }
         if args.temperature > 0:
             generate_kwargs["temperature"] = args.temperature

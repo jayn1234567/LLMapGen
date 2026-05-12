@@ -14,6 +14,7 @@ from transformers.trainer import (
     logger,
 )
 from typing import List, Optional
+from llava.model.qwen_token_utils import sync_qwen_token_config
 
 
 ALL_LAYERNORM_LAYERS = [nn.LayerNorm, nn.BatchNorm2d]
@@ -261,7 +262,11 @@ class LLaVATrainer(Trainer):
                 torch.save(weight_to_save, os.path.join(output_dir, f'mm_projector.bin'))
         else:
             # Workaround for the issue: https://github.com/haotian-liu/LLaVA/issues/1144
-            model.generation_config = transformers.GenerationConfig(do_sample=True, temperature=None, top_p=None)
+            if getattr(model, "generation_config", None) is None:
+                model.generation_config = transformers.GenerationConfig.from_model_config(model.config)
+            model.generation_config.temperature = None
+            model.generation_config.top_p = None
+            sync_qwen_token_config(model=model)
             super(LLaVATrainer, self)._save_checkpoint(model, trial)
 
     def _save(self, output_dir: Optional[str] = None, state_dict=None):
@@ -269,5 +274,9 @@ class LLaVATrainer(Trainer):
             pass
         else:
             # Workaround for the issue: https://github.com/haotian-liu/LLaVA/issues/1144
-            self.model.generation_config = transformers.GenerationConfig(do_sample=True, temperature=None, top_p=None)
+            if getattr(self.model, "generation_config", None) is None:
+                self.model.generation_config = transformers.GenerationConfig.from_model_config(self.model.config)
+            self.model.generation_config.temperature = None
+            self.model.generation_config.top_p = None
+            sync_qwen_token_config(model=self.model)
             super(LLaVATrainer, self)._save(output_dir, state_dict)

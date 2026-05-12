@@ -4,6 +4,7 @@ import shutil
 import hashlib
 
 from safetensors.torch import load_file, save_file
+from llava.model.qwen_token_utils import normalize_qwen_config_dict
 
 
 def is_qwen3vl_checkpoint(path):
@@ -39,6 +40,7 @@ def extract_llm_from_qwen3vl(vl_path, output_path):
     text_config['model_type'] = 'qwen3'
     text_config['architectures'] = ['Qwen3ForCausalLM']
     text_config.pop('dtype', None)
+    normalize_qwen_config_dict(text_config)
 
     with open(os.path.join(output_path, 'config.json'), 'w') as f:
         json.dump(text_config, f, indent=2, ensure_ascii=False)
@@ -86,6 +88,19 @@ def extract_llm_from_qwen3vl(vl_path, output_path):
                   'generation_config.json', 'chat_template.json']:
         src = os.path.join(vl_path, fname)
         if os.path.exists(src):
-            shutil.copy2(src, os.path.join(output_path, fname))
+            dst = os.path.join(output_path, fname)
+            shutil.copy2(src, dst)
+            if fname == 'generation_config.json':
+                with open(dst, 'r', encoding='utf-8') as f:
+                    generation_config = json.load(f)
+                normalize_qwen_config_dict(text_config, generation_config)
+                with open(dst, 'w', encoding='utf-8') as f:
+                    json.dump(generation_config, f, indent=2, ensure_ascii=False)
+
+    generation_dst = os.path.join(output_path, 'generation_config.json')
+    if not os.path.exists(generation_dst):
+        _, generation_config = normalize_qwen_config_dict(text_config, {})
+        with open(generation_dst, 'w', encoding='utf-8') as f:
+            json.dump(generation_config, f, indent=2, ensure_ascii=False)
 
     return output_path

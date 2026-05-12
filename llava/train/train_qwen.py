@@ -42,6 +42,7 @@ from llava import conversation as conversation_lib
 from llava.model import *
 from llava.mm_utils import tokenizer_image_token, process_anyres_image
 from llava.model.qwen3vl_extractor import is_qwen3vl_checkpoint, is_llava_checkpoint, get_extracted_path, extract_llm_from_qwen3vl
+from llava.model.qwen_token_utils import sync_qwen_token_config
 
 from PIL import Image
 
@@ -1393,6 +1394,12 @@ def train(attn_implementation=None):
             use_fast=False,
         )
 
+    sync_qwen_token_config(
+        tokenizer=tokenizer,
+        model=model,
+        model_name_or_path=model_args.model_name_or_path,
+    )
+
     if model_args.version == "v0":
         if tokenizer.pad_token is None:
             smart_tokenizer_and_embedding_resize(
@@ -1403,15 +1410,21 @@ def train(attn_implementation=None):
     elif model_args.version == "v0.5":
         tokenizer.pad_token = tokenizer.unk_token
     else:
-        if tokenizer.unk_token:
+        if tokenizer.pad_token is None and tokenizer.unk_token:
             tokenizer.pad_token = tokenizer.unk_token
-        else:  # use qwen
+        else:
             tokenizer.legacy = False
         if model_args.version in conversation_lib.conv_templates:
             # print('version:', model_args.version)
             conversation_lib.default_conversation = conversation_lib.conv_templates[model_args.version]
         else:
             conversation_lib.default_conversation = conversation_lib.conv_templates["vicuna_v1"]
+
+    sync_qwen_token_config(
+        tokenizer=tokenizer,
+        model=model,
+        model_name_or_path=model_args.model_name_or_path,
+    )
 
     if model_args.vision_tower is not None:
         model.get_model().initialize_vision_modules(
@@ -1462,6 +1475,11 @@ def train(attn_implementation=None):
         training_args.use_im_start_end = model_args.mm_use_im_start_end
         model.config.mm_use_im_patch_token = model_args.mm_use_im_patch_token
         model.initialize_vision_tokenizer(model_args, tokenizer=tokenizer)
+        sync_qwen_token_config(
+            tokenizer=tokenizer,
+            model=model,
+            model_name_or_path=model_args.model_name_or_path,
+        )
 
     if training_args.bits in [4, 8]:
         from peft.tuners.lora import LoraLayer
@@ -1501,6 +1519,11 @@ def train(attn_implementation=None):
     #     rank0_print(f"Copied best checkpoint to {best_output_dir}")
 
     model.config.use_cache = True
+    sync_qwen_token_config(
+        tokenizer=tokenizer,
+        model=model,
+        model_name_or_path=model_args.model_name_or_path,
+    )
 
     if training_args.lora_enable:
         state_dict = get_peft_state_maybe_zero_3(

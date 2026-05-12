@@ -3,7 +3,7 @@
 
 # ============================================================
 # NPU (Ascend) llava training + eval script
-# Qwen3-VL-8B LLM (auto-extract) + DINOv2 + DeepStack, freeze LLM
+# Qwen3-VL checkpoint-3200 + DINOv2 + DeepStack, freeze LLM
 # ============================================================
 
 SCRIPT_PATH=$(readlink -f "$0")
@@ -209,7 +209,7 @@ echo ">>> Gradient accumulation steps: ${gradient_accumulation_steps}"
 
 # ====================== training ======================
 echo ">>>>>>>>>>>>>>>>>>>>>>>>>>>>>>> start training >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>"
-cd "$SCRIPT_DIR/.."
+cd "$SCRIPT_DIR/../.."
 
 export PYTHONPATH="$(pwd):${PYTHONPATH:-}"
 
@@ -290,7 +290,7 @@ echo "=== Training finished ==="
 
 # # ====================== inference ======================
 # echo ">>>>>>>>>>>>>>>>>>>>>>>>>>>>>>> start inference >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>"
-# cd "$SCRIPT_DIR/.."
+# cd "$SCRIPT_DIR/../.."
 
 # # 👇 只在主节点跑推理
 # if [ ${NODE_RANK} -ne 0 ]; then

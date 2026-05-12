@@ -7,6 +7,11 @@ set -euo pipefail
 # ============================================================
 
 # ---------- Paths ----------
+SCRIPT_PATH=$(readlink -f "$0")
+SCRIPT_DIR=$(dirname "$SCRIPT_PATH")
+REPO_ROOT=$(readlink -f "${SCRIPT_DIR}/../..")
+cd "${REPO_ROOT}"
+
 CHECKPOINT_DIR=outputs/dinov2_qwen2_1.5b
 IMAGE=data/test.png
 IMAGE_FOLDER=""

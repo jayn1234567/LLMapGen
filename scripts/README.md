@@ -16,6 +16,7 @@ Training mode in filenames:
 - `llm_align_*_freeze-vit`: freeze the ViT, train the LLM plus alignment/projector/DeepStack modules.
 - `vit_align_*_freeze-llm`: freeze the LLM, train the ViT plus alignment/projector/DeepStack modules.
 - `full`: train all model components.
+- `ckpt3200`: starts from the local/cloud checkpoint-3200 variant instead of the base Qwen3-VL checkpoint.
 
 DINO type and platform are explicit:
 

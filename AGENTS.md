@@ -60,14 +60,14 @@ MLLM_project/
     │   ├── train_llm_align_dinov3_qwen2-1.5b_freeze-vit_gpu.sh
     │   ├── train_llm_align_dinov3_qwen3vl-2b_freeze-vit_gpu.sh
     │   ├── train_llm_align_dinov3_qwen3vl-8b_freeze-vit_gpu.sh
-    │   ├── train_vit_align_dinov2_qwen3vl-8b_freeze-llm_gpu.sh
     │   ├── infer_dinov2_centerline_gpu.sh
     │   ├── test_full_checkpoint_gpu.sh
     │   └── visualize_centerline_compare.py
     ├── npu/                           # NPU 非全参训练脚本
     │   ├── train_llm_align_dinov2_qwen2-1.5b_freeze-vit_npu.sh
     │   ├── train_llm_align_dinov3_qwen2-1.5b_freeze-vit_npu.sh
-    │   └── train_vit_align_dinov2_qwen3vl-8b_freeze-llm_npu.sh
+    │   ├── train_vit_align_dinov2_qwen3vl-8b_freeze-llm_npu.sh
+    │   └── train_vit_align_dinov2_qwen3vl-8b_ckpt3200_freeze-llm_npu.sh
     ├── infer_centerline_checkpoint.py # 推理引擎
     ├── visualize_centerline.py
     ├── summarize_centerline_eval.py

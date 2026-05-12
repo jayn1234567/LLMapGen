@@ -133,7 +133,7 @@ echo "TEST_JSON: $TEST_JSON"
 TEST_OUTPUT_LOCAL="/cache/test_output"
 mkdir -p "$TEST_OUTPUT_LOCAL"
 
-cd "$SCRIPT_DIR/.."
+cd "$SCRIPT_DIR/../.."
 export PYTHONPATH="$(pwd):${PYTHONPATH:-}"
 
 # 8 GPU distributed inference

@@ -26,6 +26,24 @@ from llava.constants import IGNORE_INDEX, IMAGE_TOKEN_INDEX, DEFAULT_IMAGE_PATCH
 from llava.mm_utils import get_anyres_image_grid_shape
 
 
+def _infer_vision_tower_type(vision_tower):
+    explicit_type = getattr(vision_tower, 'mm_vision_tower_type', None)
+    if explicit_type:
+        return explicit_type
+
+    class_name = vision_tower.__class__.__name__.lower()
+    tower_name = str(getattr(vision_tower, 'vision_tower_name', '')).lower()
+    if 'dinov3' in class_name or 'dinov3' in tower_name:
+        return 'dinov3'
+    if 'dinov2' in class_name or 'dinov2' in tower_name:
+        return 'dinov2'
+    if 'mobileclip' in class_name or 'mobileclip' in tower_name:
+        return 'mobileclip'
+    if 'clip' in class_name or 'clip' in tower_name:
+        return 'clip'
+    return ''
+
+
 class LlavaMetaModel:
 
     def __init__(self, config):
@@ -54,7 +72,6 @@ class LlavaMetaModel:
         mm_patch_merge_type = model_args.mm_patch_merge_type
 
         self.config.mm_vision_tower = vision_tower
-        self.config.mm_vision_tower_type = "dinov3" if "dinov3" in str(vision_tower).lower() else "dinov2"
 
         if self.get_vision_tower() is None:
             vision_tower = build_vision_tower(model_args)
@@ -82,11 +99,17 @@ class LlavaMetaModel:
                 vision_tower.load_model()
 
         self.config.use_mm_proj = True
+        vision_tower_type = _infer_vision_tower_type(vision_tower)
+        if vision_tower_type:
+            self.config.mm_vision_tower_type = vision_tower_type
         self.config.mm_projector_type = getattr(model_args, 'mm_projector_type', 'linear')
         self.config.mm_hidden_size = vision_tower.hidden_size
         self.config.mm_vision_select_layer = mm_vision_select_layer
         self.config.mm_vision_select_feature = mm_vision_select_feature
         self.config.mm_patch_merge_type = mm_patch_merge_type
+        self.config.input_image_size = getattr(model_args, 'input_image_size', None)
+        self.config.deepstack_visual_indexes = getattr(model_args, 'deepstack_visual_indexes', None)
+        self.config.dino_variant = getattr(model_args, 'dino_variant', None)
 
         mm_projector = getattr(self, 'mm_projector', None)
         projector_needs_rebuild = False

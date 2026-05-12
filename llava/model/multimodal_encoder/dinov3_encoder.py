@@ -191,11 +191,11 @@ class DINOv3VisionTower(nn.Module):
 
     @property
     def dtype(self):
-        return self.vision_tower.dtype
+        return next(self.vision_tower.parameters()).dtype
 
     @property
     def device(self):
-        return self.vision_tower.device
+        return next(self.vision_tower.parameters()).device
 
     @property
     def config(self):

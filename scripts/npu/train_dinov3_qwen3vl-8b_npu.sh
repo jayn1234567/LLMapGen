@@ -163,7 +163,7 @@ IMAGE_FOLDER="${DATASET_PATH}"
 
 # ====================== download ======================
 echo ">>>>>>>>>>>>>>>>>>>>>>>>>>>>> Downloading models >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>"
-python -c "import moxing as mox; mox.file.copy_parallel('${MODEL_OBS_PATH}/facebook/dinov3-vitl16-pretrain-lvd1689m', '${DINOV2_PATH}')"
+python -c "import moxing as mox; mox.file.copy_parallel('${MODEL_OBS_PATH}/facebook/dinov3-vitl16-pretrain-lvd1689m', '${DINOV3_PATH}')"
 python -c "import moxing as mox; mox.file.copy_parallel('${MODEL_OBS_PATH}/Qwen3-VL-8B-Instruct', '${Qwen3VL_PATH}')"
 
 echo ">>>>>>>>>>>>>>>>>>>>>>>>>>>>> Downloading dataset >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>"
@@ -217,6 +217,8 @@ export PYTHONPATH="$(pwd):${PYTHONPATH:-}"
 MM_VISION_SELECT_LAYER=-2
 MM_PROJECTOR_TYPE=mlp2x_gelu
 UNFREEZE_MM_VISION_TOWER=True
+DINO_VARIANT=dinov3_large
+INPUT_IMAGE_SIZE=448
 DEEPSTACK_VISUAL_INDEXES="6 12 18 23"
 DEEPSPEED_CONFIG="scripts/deepspeed_zero3_no_merge.json"
 NUM_EPOCHS=3
@@ -239,7 +241,8 @@ fi
 
 echo "============================================================"
 echo "Model:      ${Qwen3VL_PATH} (Qwen3-VL-8B → auto-extract LLM)"
-echo "ViT:        ${DINOV2_PATH}"
+echo "ViT:        ${DINOV3_PATH}"
+echo "DINO:       ${DINO_VARIANT}"
 echo "DeepStack:  ${DEEPSTACK_VISUAL_INDEXES:-disabled}"
 echo "DeepSpeed:  ${DEEPSPEED_CONFIG}"
 echo "============================================================"
@@ -254,11 +257,13 @@ torchrun \
     --model_name_or_path "${Qwen3VL_PATH}" \
     --version conv_qwen_3_Dinov2_huawei \
     --freeze_llm=True \
-    --vision_tower "${DINOV2_PATH}" \
+    --vision_tower "${DINOV3_PATH}" \
     --mm_vision_select_layer "${MM_VISION_SELECT_LAYER}" \
     --mm_projector_type "${MM_PROJECTOR_TYPE}" \
     --unfreeze_mm_vision_tower "${UNFREEZE_MM_VISION_TOWER}" \
+    --dino_variant "${DINO_VARIANT}" \
     "${DEEPSTACK_ARGS[@]}" \
+    --input_image_size "${INPUT_IMAGE_SIZE}" \
     --data_path "${TRAIN_PATH}" \
     --image_folder "${IMAGE_FOLDER}" \
     --sample_seed "${SAMPLE_SEED}" \

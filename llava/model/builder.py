@@ -90,7 +90,16 @@ def _load_multimodal_weights_if_present(model, model_path):
         print(f"[WARN] Skipped multimodal keys with missing/mismatched shapes: {skipped[:20]}")
 
 
-def load_pretrained_model(model_path, model_base, model_name, load_8bit=False, load_4bit=False, device_map="auto", device="cuda", use_flash_attn=False, **kwargs):
+def _apply_model_config_overrides(config, overrides=None):
+    if not overrides:
+        return config
+    for key, value in overrides.items():
+        if value is not None:
+            setattr(config, key, value)
+    return config
+
+
+def load_pretrained_model(model_path, model_base, model_name, load_8bit=False, load_4bit=False, device_map="auto", device="cuda", use_flash_attn=False, model_config_overrides=None, **kwargs):
     kwargs = {"device_map": device_map, **kwargs}
 
     if is_qwen3vl_checkpoint(model_path) and not is_llava_checkpoint(model_path):
@@ -132,6 +141,7 @@ def load_pretrained_model(model_path, model_base, model_name, load_8bit=False, l
         if 'lora' in model_name.lower() and model_base is not None:
             from llava.model.language_model.llava_llama import LlavaConfig
             lora_cfg_pretrained = LlavaConfig.from_pretrained(model_path)
+            _apply_model_config_overrides(lora_cfg_pretrained, model_config_overrides)
             tokenizer = AutoTokenizer.from_pretrained(model_base, use_fast=False)
             print('Loading LLaVA from base model...')
             model = LlavaLlamaForCausalLM.from_pretrained(model_base, low_cpu_mem_usage=True, config=lora_cfg_pretrained, **kwargs)
@@ -177,6 +187,7 @@ def load_pretrained_model(model_path, model_base, model_name, load_8bit=False, l
             else:
                 tokenizer = AutoTokenizer.from_pretrained(model_base, use_fast=False)
                 cfg_pretrained = AutoConfig.from_pretrained(model_path)
+                _apply_model_config_overrides(cfg_pretrained, model_config_overrides)
                 model_type = getattr(cfg_pretrained, 'model_type', '')
                 if 'qwen3' in model_type.lower():
                     model = LlavaQwen3ForCausalLM.from_pretrained(model_base, low_cpu_mem_usage=True, config=cfg_pretrained, **kwargs)
@@ -207,16 +218,19 @@ def load_pretrained_model(model_path, model_base, model_name, load_8bit=False, l
             else:
                 tokenizer = AutoTokenizer.from_pretrained(model_path, use_fast=True)
                 cfg = AutoConfig.from_pretrained(model_path)
+                _apply_model_config_overrides(cfg, model_config_overrides)
                 model_type = getattr(cfg, 'model_type', '')
                 if 'qwen3' in model_type.lower():
                     model = LlavaQwen3ForCausalLM.from_pretrained(
                         model_path,
+                        config=cfg,
                         low_cpu_mem_usage=True,
                         **kwargs
                     )
                 else:
                     model = LlavaQwen2ForCausalLM.from_pretrained(
                         model_path,
+                        config=cfg,
                         low_cpu_mem_usage=True,
                         **kwargs
                     )

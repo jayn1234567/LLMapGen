@@ -6,33 +6,73 @@ from .mobileclip_encoder import MobileCLIPVisionTower
 from .dino_config import get_dino_config
 
 
+def _normalize_dino_type(vision_tower_type):
+    vision_tower_type = str(vision_tower_type or "").lower()
+    if vision_tower_type in ("dinov2", "dino_v2", "dino2"):
+        return "dinov2"
+    if vision_tower_type in ("dinov3", "dino_v3", "dino3"):
+        return "dinov3"
+    return ""
+
+
+def _apply_dino_config(vision_tower_cfg, dino_cfg, variant=None):
+    vision_tower_cfg.mm_vision_tower_type = dino_cfg.encoder_type
+    if variant is not None:
+        vision_tower_cfg.dino_variant = variant
+    if getattr(vision_tower_cfg, 'input_image_size', None) is None:
+        vision_tower_cfg.input_image_size = dino_cfg.image_size
+    if getattr(vision_tower_cfg, 'deepstack_visual_indexes', None) is None:
+        vision_tower_cfg.deepstack_visual_indexes = dino_cfg.deepstack_visual_indexes
+
+
 def build_vision_tower(vision_tower_cfg, **kwargs):
     vision_tower = getattr(vision_tower_cfg, 'mm_vision_tower', getattr(vision_tower_cfg, 'vision_tower', None))
+    if vision_tower is None:
+        raise ValueError("Missing vision tower path")
     is_absolute_path_exists = os.path.exists(vision_tower)
     use_s2 = getattr(vision_tower_cfg, 's2', False)
+    vision_tower_str = str(vision_tower)
+    vision_tower_lower = vision_tower_str.lower()
+    img_size = getattr(vision_tower_cfg, 'input_image_size', None) or None
+    variant = getattr(vision_tower_cfg, 'dino_variant', None) or None
 
-    if "dinov" in vision_tower.lower():
-        try:
-            img_size = getattr(vision_tower_cfg, 'input_image_size', None) or None
-            variant = getattr(vision_tower_cfg, 'dino_variant', None) or None
-            dino_cfg = get_dino_config(vision_tower, input_image_size=img_size, variant=variant)
-            if getattr(vision_tower_cfg, 'input_image_size', None) is None:
-                vision_tower_cfg.input_image_size = dino_cfg.image_size
-            if getattr(vision_tower_cfg, 'deepstack_visual_indexes', None) is None:
-                vision_tower_cfg.deepstack_visual_indexes = dino_cfg.deepstack_visual_indexes
-        except KeyError:
-            pass
+    if variant:
+        dino_cfg = get_dino_config(vision_tower_str, input_image_size=img_size, variant=variant)
+        _apply_dino_config(vision_tower_cfg, dino_cfg, variant=variant)
+        if dino_cfg.encoder_type == "dinov3":
+            return DINOv3VisionTower(vision_tower, args=vision_tower_cfg, **kwargs)
+        return DINOv2VisionTower(vision_tower, args=vision_tower_cfg, **kwargs)
 
-    vit_type = getattr(vision_tower_cfg, 'mm_vision_tower_type', '')
+    vit_type = _normalize_dino_type(getattr(vision_tower_cfg, 'mm_vision_tower_type', ''))
+    if vit_type in ("dinov2", "dinov3"):
+        if "dinov2" in vision_tower_lower or "dinov3" in vision_tower_lower:
+            try:
+                dino_cfg = get_dino_config(vision_tower_str, input_image_size=img_size)
+                _apply_dino_config(vision_tower_cfg, dino_cfg)
+            except KeyError:
+                vision_tower_cfg.mm_vision_tower_type = vit_type
+        else:
+            vision_tower_cfg.mm_vision_tower_type = vit_type
+
     if vit_type == "dinov3":
         return DINOv3VisionTower(vision_tower, args=vision_tower_cfg, **kwargs)
     if vit_type == "dinov2":
         return DINOv2VisionTower(vision_tower, args=vision_tower_cfg, **kwargs)
-    if "dinov3" in vision_tower.lower():
-        return DINOv3VisionTower(vision_tower, args=vision_tower_cfg, **kwargs)
-    if "dinov2" in vision_tower.lower():
+
+    if "dinov3" in vision_tower_lower or "dinov2" in vision_tower_lower:
+        dino_cfg = get_dino_config(vision_tower_str, input_image_size=img_size)
+        _apply_dino_config(vision_tower_cfg, dino_cfg)
+        if dino_cfg.encoder_type == "dinov3":
+            return DINOv3VisionTower(vision_tower, args=vision_tower_cfg, **kwargs)
         return DINOv2VisionTower(vision_tower, args=vision_tower_cfg, **kwargs)
-    if is_absolute_path_exists or vision_tower.startswith("openai") or vision_tower.startswith("laion") or "ShareGPT4V" in vision_tower:
+
+    if "dinov" in vision_tower_lower:
+        raise ValueError(
+            f"Ambiguous DINO vision tower '{vision_tower}'. "
+            "Pass --dino_variant or set mm_vision_tower_type to dinov2/dinov3."
+        )
+
+    if is_absolute_path_exists or vision_tower_str.startswith("openai") or vision_tower_str.startswith("laion") or "ShareGPT4V" in vision_tower_str:
         if use_s2:
             return CLIPVisionTowerS2(vision_tower, args=vision_tower_cfg, **kwargs)
         else:

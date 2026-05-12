@@ -126,10 +126,25 @@ def _read_llava_checkpoint_metadata(checkpoint_dir: Path) -> dict:
     return json.loads(metadata_path.read_text(encoding="utf-8"))
 
 
-def _load_full_finetune_model(checkpoint_dir: Path, device: str):
+def _config_overrides_from_args(args) -> dict:
+    return {
+        "dino_variant": args.dino_variant or None,
+        "input_image_size": args.input_image_size,
+        "deepstack_visual_indexes": args.deepstack_visual_indexes,
+    }
+
+
+def _apply_config_overrides(config, overrides: dict):
+    for key, value in overrides.items():
+        if value is not None:
+            setattr(config, key, value)
+
+
+def _load_full_finetune_model(checkpoint_dir: Path, device: str, config_overrides=None):
     checkpoint_dir_str = str(checkpoint_dir.resolve())
     tokenizer = AutoTokenizer.from_pretrained(checkpoint_dir_str, use_fast=False, local_files_only=True)
     config = AutoConfig.from_pretrained(checkpoint_dir_str, local_files_only=True)
+    _apply_config_overrides(config, config_overrides or {})
     model_type = getattr(config, 'model_type', '')
     config.fastvit_pretrained = False
     config.fastvit_pretrained_path = None
@@ -183,9 +198,9 @@ def _load_full_finetune_model(checkpoint_dir: Path, device: str):
     return tokenizer, model, image_processor
 
 
-def load_model_components(checkpoint_dir: Path, manifest: dict, device: str):
+def load_model_components(checkpoint_dir: Path, manifest: dict, device: str, config_overrides=None):
     if manifest.get("full_model_finetune") or (checkpoint_dir / "llava_checkpoint.json").exists():
-        return _load_full_finetune_model(checkpoint_dir, device)
+        return _load_full_finetune_model(checkpoint_dir, device, config_overrides=config_overrides)
 
     model_base = manifest.get("model_name_or_path")
     model_name = f"llava_{checkpoint_dir.name}"
@@ -195,6 +210,7 @@ def load_model_components(checkpoint_dir: Path, manifest: dict, device: str):
         model_name=model_name,
         device_map={"": device},
         device=device,
+        model_config_overrides=config_overrides,
     )
     model.eval()
     return tokenizer, model, image_processor
@@ -263,6 +279,9 @@ def main():
     parser.add_argument("--output-json", default="")
     parser.add_argument("--output-dir", default="")
     parser.add_argument("--print-full-output", action="store_true")
+    parser.add_argument("--dino_variant", default="")
+    parser.add_argument("--input_image_size", type=int, default=None)
+    parser.add_argument("--deepstack_visual_indexes", type=int, nargs="*", default=None)
     args = parser.parse_args()
     args.device = device_str
 
@@ -278,7 +297,9 @@ def main():
             conv_template = "conv_qwen_2_Dinov2_huawei"
 
    
-    tokenizer, model, image_processor = load_model_components(checkpoint_dir, manifest, args.device)
+    config_overrides = _config_overrides_from_args(args)
+    tokenizer, model, image_processor = load_model_components(
+        checkpoint_dir, manifest, args.device, config_overrides=config_overrides)
     if args.test_json:
         with open(args.test_json, "r", encoding="utf-8") as f:
             first_char = f.read(1)

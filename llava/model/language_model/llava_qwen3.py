@@ -8,7 +8,7 @@ from transformers.modeling_outputs import CausalLMOutputWithPast
 from transformers.generation.utils import GenerateOutput
 
 from ..llava_arch import LlavaMetaModel, LlavaMetaForCausalLM
-from .deepstack_hooks import clear_deepstack_context, set_deepstack_context
+from .deepstack_hooks import clear_deepstack_context, densify_deepstack_visual_embeds, set_deepstack_context
 
 
 def _get_qwen3_classes():
@@ -57,7 +57,10 @@ class LlavaQwen3ForCausalLM(_Qwen3ForCausalLM, LlavaMetaForCausalLM):
     def _deepstack_forward(self, inputs_embeds, attention_mask, position_ids,
                            past_key_values, visual_pos_mask, deepstack_visual_embeds,
                            use_cache, output_attentions, output_hidden_states, cache_position):
-        set_deepstack_context(self, visual_pos_mask, deepstack_visual_embeds)
+        dense_deepstack_visual_embeds = densify_deepstack_visual_embeds(
+            visual_pos_mask, deepstack_visual_embeds, inputs_embeds
+        )
+        set_deepstack_context(self, visual_pos_mask, dense_deepstack_visual_embeds)
         try:
             outputs = self.model(
                 input_ids=None, inputs_embeds=inputs_embeds, attention_mask=attention_mask,

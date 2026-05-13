@@ -25,4 +25,6 @@ DINO type and platform are explicit:
 
 Common DINOv3 scripts do not pass `--dino_variant`; the code infers DINO type from `mm_vision_tower_type` or the `vision_tower` path. They also avoid hard-coded `--input_image_size` unless a specific experiment needs an override.
 
+DeepStack and gradient checkpointing are intended to work together. Training scripts keep `GRADIENT_CHECKPOINTING=True` by default, including DeepStack runs.
+
 Distributed logging defaults to `LLAVA_LOG_RANK0_ONLY=1`, so normal stdout logs are printed by global rank 0 only. Error tracebacks on stderr are kept for nonzero ranks unless `LLAVA_SUPPRESS_NONZERO_STDERR=1` is set.

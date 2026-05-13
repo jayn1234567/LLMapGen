@@ -182,15 +182,29 @@ def _resolve_base_model_path(base_model_path: str, checkpoint_dir: Path) -> Path
     return candidate
 
 
-def _read_llava_checkpoint_metadata(checkpoint_dir: Path) -> dict:
-    metadata_path = checkpoint_dir / "llava_checkpoint.json"
-    if not metadata_path.exists():
-        return {}
-    return json.loads(metadata_path.read_text(encoding="utf-8"))
+def _read_checkpoint_metadata(checkpoint_dir: Path) -> dict:
+    qwen_metadata_path = checkpoint_dir / "qwen_multimodal_checkpoint.json"
+    if qwen_metadata_path.exists():
+        payload = json.loads(qwen_metadata_path.read_text(encoding="utf-8"))
+        payload["_metadata_source"] = qwen_metadata_path.name
+        return payload
+
+    legacy_metadata_path = checkpoint_dir / "llava_checkpoint.json"
+    if legacy_metadata_path.exists():
+        payload = json.loads(legacy_metadata_path.read_text(encoding="utf-8"))
+        payload["_metadata_source"] = legacy_metadata_path.name
+        print("[WARN] Using legacy llava_checkpoint.json metadata for a Qwen multimodal checkpoint.")
+        return payload
+
+    return {}
 
 
 def _has_model_weights(checkpoint_dir: Path) -> bool:
     return (checkpoint_dir / "model.safetensors").exists() or (checkpoint_dir / "pytorch_model.bin").exists()
+
+
+def _has_adapter_weights(checkpoint_dir: Path) -> bool:
+    return (checkpoint_dir / "adapter_model.safetensors").exists() or (checkpoint_dir / "adapter_model.bin").exists()
 
 
 def _looks_like_full_llava_checkpoint(checkpoint_dir: Path) -> bool:
@@ -247,13 +261,19 @@ def _runtime_dtype(config, device: str):
 def _load_full_finetune_model(checkpoint_dir: Path, device: str, config_overrides=None):
     checkpoint_dir_str = str(checkpoint_dir.resolve())
     config = AutoConfig.from_pretrained(checkpoint_dir_str, local_files_only=True)
+    _apply_config_overrides(config, config_overrides or {})
+    if not getattr(config, "mm_vision_tower", None) and not getattr(config, "vision_tower", None):
+        raise RuntimeError(
+            "Full Qwen multimodal checkpoint is missing a vision tower path in config. "
+            "Pass --vision_tower explicitly; do not rely on legacy LLaVA fallback loading."
+        )
+
     tokenizer = AutoTokenizer.from_pretrained(
         checkpoint_dir_str,
         use_fast=False,
         local_files_only=True,
         **qwen_tokenizer_kwargs(checkpoint_dir_str, config=config),
     )
-    _apply_config_overrides(config, config_overrides or {})
     config.unfreeze_mm_vision_tower = False
     config.tune_vision_tower = False
     model_type = getattr(config, 'model_type', '')
@@ -272,24 +292,7 @@ def _load_full_finetune_model(checkpoint_dir: Path, device: str, config_override
     if vision_tower is not None and hasattr(vision_tower, 'set_llm_hidden_size'):
         vision_tower.set_llm_hidden_size(model.config.hidden_size)
 
-    metadata = _read_llava_checkpoint_metadata(checkpoint_dir)
-    if metadata and not metadata.get("bundled_vision_tower", True):
-        base_model_path = config._name_or_path
-        if not base_model_path:
-            raise ValueError("Missing config._name_or_path for non-bundled vision tower checkpoint")
-        base_checkpoint_dir = _resolve_base_model_path(base_model_path, checkpoint_dir)
-        base_state_dict = _load_state_dict(base_checkpoint_dir)
-        base_vision_tower_state = {
-            key: value for key, value in base_state_dict.items()
-            if key.startswith("model.vision_tower.")
-        }
-        missing, unexpected = model.load_state_dict(base_vision_tower_state, strict=False)
-        if unexpected:
-            print(f"[WARN] Unexpected base vision-tower keys: {unexpected[:20]}")
-        missing = [key for key in missing if not key.startswith("model.vision_tower.")]
-        if missing:
-            print(f"[WARN] Missing keys after base vision-tower load: {missing[:20]}")
-
+    metadata = _read_checkpoint_metadata(checkpoint_dir)
     state_dict = _load_state_dict(checkpoint_dir)
     _report_full_checkpoint_coverage(model, state_dict, model.config, metadata)
     missing, unexpected = model.load_state_dict(state_dict, strict=False)
@@ -356,9 +359,12 @@ def _report_full_checkpoint_coverage(model, state_dict, config, metadata):
     if deepstack_enabled and not _state_dict_has_prefix(state_dict, "model.vision_tower.deepstack_mergers."):
         critical_missing.append("model.vision_tower.deepstack_mergers.*")
 
-    expects_bundled_vit = not metadata or metadata.get("bundled_vision_tower", True)
-    if expects_bundled_vit and not _state_dict_has_prefix(state_dict, "model.vision_tower.vision_tower."):
+    has_vit_weights = _state_dict_has_prefix(state_dict, "model.vision_tower.vision_tower.")
+    explicit_external_vit = bool(metadata) and metadata.get("bundled_vision_tower") is False
+    if not has_vit_weights and not explicit_external_vit:
         critical_missing.append("model.vision_tower.vision_tower.*")
+    if explicit_external_vit:
+        print("Checkpoint metadata declares external ViT weights; using the configured vision_tower weights.")
 
     if critical_missing:
         raise RuntimeError(
@@ -486,17 +492,24 @@ def _load_lora_finetune_model(checkpoint_dir: Path, device: str, config_override
 
 
 def load_model_components(checkpoint_dir: Path, manifest: dict, device: str, config_overrides=None):
-    if (checkpoint_dir / "adapter_model.safetensors").exists() or (checkpoint_dir / "adapter_model.bin").exists():
+    if _has_adapter_weights(checkpoint_dir):
         return _load_lora_finetune_model(checkpoint_dir, device, config_overrides=config_overrides)
 
-    if (
-        manifest.get("full_model_finetune")
-        or (checkpoint_dir / "llava_checkpoint.json").exists()
-        or _looks_like_full_llava_checkpoint(checkpoint_dir)
-    ):
+    if _has_model_weights(checkpoint_dir):
+        if not _looks_like_full_llava_checkpoint(checkpoint_dir):
+            raise RuntimeError(
+                f"{checkpoint_dir} contains full model weights but does not look like a Qwen multimodal checkpoint. "
+                "Refusing to use the legacy LLaVA loader because it can silently skip projector/ViT weights. "
+                "Check config.json for mm_vision_tower/vision_tower/mm_projector_type or use the correct checkpoint dir."
+            )
         return _load_full_finetune_model(checkpoint_dir, device, config_overrides=config_overrides)
 
     model_base = manifest.get("model_name_or_path")
+    if not model_base:
+        raise RuntimeError(
+            f"{checkpoint_dir} has neither LoRA adapter weights nor full model weights. "
+            "Legacy base+projector loading requires an inference_manifest.json/run_config.json with model_name_or_path."
+        )
     model_name = f"llava_{checkpoint_dir.name}"
     tokenizer, model, image_processor, _ = load_pretrained_model(
         model_path=str(checkpoint_dir),

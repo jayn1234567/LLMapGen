@@ -389,6 +389,7 @@ def safe_save_model_for_hf_trainer(trainer: transformers.Trainer,
         elif hasattr(torch, "npu"):
            torch.npu.synchronize() 
         trainer.save_model(output_dir)
+        _write_qwen_multimodal_checkpoint_metadata(trainer.model, output_dir, trainer)
         return
 
     state_dict = trainer.model.state_dict()
@@ -399,6 +400,34 @@ def safe_save_model_for_hf_trainer(trainer: transformers.Trainer,
         }
         del state_dict
         trainer._save(output_dir, state_dict=cpu_state_dict)  # noqa
+        _write_qwen_multimodal_checkpoint_metadata(trainer.model, output_dir, trainer)
+
+
+def _write_qwen_multimodal_checkpoint_metadata(model, output_dir: str, trainer=None):
+    if trainer is not None and not trainer.is_world_process_zero():
+        return
+    config = getattr(model, "config", None)
+    if config is None and hasattr(model, "module"):
+        config = getattr(model.module, "config", None)
+    if config is None:
+        return
+    if not (getattr(config, "mm_vision_tower", None) or getattr(config, "vision_tower", None)):
+        return
+
+    payload = {
+        "format": "qwen_multimodal_checkpoint",
+        "model_type": getattr(config, "model_type", None),
+        "mm_vision_tower": getattr(config, "mm_vision_tower", None),
+        "vision_tower": getattr(config, "vision_tower", None),
+        "mm_vision_tower_type": getattr(config, "mm_vision_tower_type", None),
+        "input_image_size": getattr(config, "input_image_size", None),
+        "deepstack_visual_indexes": getattr(config, "deepstack_visual_indexes", None),
+        "disable_deepstack": getattr(config, "disable_deepstack", None),
+        "bundled_vision_tower": True,
+    }
+    os.makedirs(output_dir, exist_ok=True)
+    with open(os.path.join(output_dir, "qwen_multimodal_checkpoint.json"), "w", encoding="utf-8") as f:
+        json.dump(payload, f, ensure_ascii=False, indent=2)
 
 
 def smart_tokenizer_and_embedding_resize(
@@ -1557,6 +1586,7 @@ def train(attn_implementation=None):
             model.config.save_pretrained(training_args.output_dir)
             model.save_pretrained(training_args.output_dir, state_dict=state_dict)
             torch.save(non_lora_state_dict, os.path.join(training_args.output_dir, 'non_lora_trainables.bin'))
+            _write_qwen_multimodal_checkpoint_metadata(model, training_args.output_dir)
     else:
         safe_save_model_for_hf_trainer(trainer=trainer,
                                        output_dir=training_args.output_dir)

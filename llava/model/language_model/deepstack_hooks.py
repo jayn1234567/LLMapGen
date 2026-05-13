@@ -1,4 +1,14 @@
+import importlib
+
 import torch
+
+
+def _get_qwen_modeling_module(model):
+    for cls in type(model).mro():
+        module_name = getattr(cls, "__module__", "")
+        if module_name.startswith("transformers.models.qwen"):
+            return importlib.import_module(module_name)
+    raise RuntimeError(f"Unsupported Qwen model class for DeepStack forward: {type(model).__name__}")
 
 
 def clear_deepstack_context(model):
@@ -63,7 +73,7 @@ def densify_deepstack_visual_embeds(visual_pos_mask, deepstack_visual_embeds, re
     return dense_embeds
 
 
-def _add_deepstack_visual_features(hidden_states, visual_pos_mask, visual_embeds, layer_idx):
+def add_deepstack_visual_features(hidden_states, visual_pos_mask, visual_embeds, layer_idx):
     src = visual_embeds.to(device=hidden_states.device, dtype=hidden_states.dtype)
     if src.ndim == 3 and src.shape == hidden_states.shape:
         return hidden_states + src
@@ -130,14 +140,14 @@ def _make_deepstack_hook(model, layer_idx):
             hidden_states = output[0]
             if not isinstance(hidden_states, torch.Tensor) or hidden_states.ndim < 3:
                 return None
-            hidden_states = _add_deepstack_visual_features(
+            hidden_states = add_deepstack_visual_features(
                 hidden_states, visual_pos_mask, ds_feat, layer_idx
             )
             return (hidden_states,) + output[1:]
 
         if not isinstance(output, torch.Tensor) or output.ndim < 3:
             return None
-        return _add_deepstack_visual_features(output, visual_pos_mask, ds_feat, layer_idx)
+        return add_deepstack_visual_features(output, visual_pos_mask, ds_feat, layer_idx)
 
     return hook
 
@@ -160,3 +170,103 @@ def set_deepstack_context(model, visual_pos_mask, deepstack_visual_embeds):
     ensure_deepstack_hooks(model)
     model._active_visual_pos_mask = visual_pos_mask
     model._active_deepstack_visual_embeds = deepstack_visual_embeds
+
+
+def deepstack_decoder_forward(
+    model,
+    inputs_embeds,
+    attention_mask,
+    position_ids,
+    past_key_values,
+    visual_pos_mask,
+    deepstack_visual_embeds,
+    use_cache=None,
+    output_attentions=None,
+    output_hidden_states=None,
+    cache_position=None,
+):
+    """Run Qwen decoder layers with explicit post-layer DeepStack residuals."""
+    if inputs_embeds is None:
+        raise ValueError("DeepStack forward requires inputs_embeds")
+
+    modeling_module = _get_qwen_modeling_module(model)
+    DynamicCache = getattr(modeling_module, "DynamicCache")
+    create_causal_mask = getattr(modeling_module, "create_causal_mask")
+    create_sliding_window_causal_mask = getattr(modeling_module, "create_sliding_window_causal_mask")
+
+    use_cache = getattr(model.config, "use_cache", False) if use_cache is None else use_cache
+    output_hidden_states = (
+        getattr(model.config, "output_hidden_states", False)
+        if output_hidden_states is None else output_hidden_states
+    )
+    output_attentions = (
+        getattr(model.config, "output_attentions", False)
+        if output_attentions is None else output_attentions
+    )
+
+    if use_cache and past_key_values is None:
+        past_key_values = DynamicCache(config=model.config)
+
+    if position_ids is None:
+        past_seen_tokens = past_key_values.get_seq_length() if past_key_values is not None else 0
+        position_ids = torch.arange(inputs_embeds.shape[1], device=inputs_embeds.device) + past_seen_tokens
+        position_ids = position_ids.unsqueeze(0)
+
+    if not isinstance(causal_mask_mapping := attention_mask, dict):
+        mask_kwargs = {
+            "config": model.config,
+            "inputs_embeds": inputs_embeds,
+            "attention_mask": attention_mask,
+            "past_key_values": past_key_values,
+            "position_ids": position_ids,
+        }
+        if cache_position is not None:
+            mask_kwargs["cache_position"] = cache_position
+        causal_mask_mapping = {
+            "full_attention": create_causal_mask(**mask_kwargs),
+        }
+        if getattr(model, "has_sliding_layers", False):
+            causal_mask_mapping["sliding_attention"] = create_sliding_window_causal_mask(**mask_kwargs)
+
+    hidden_states = inputs_embeds
+    position_embeddings = model.rotary_emb(hidden_states, position_ids)
+    dense_deepstack_visual_embeds = densify_deepstack_visual_embeds(
+        visual_pos_mask, deepstack_visual_embeds, inputs_embeds
+    )
+    all_hidden_states = () if output_hidden_states else None
+    all_attentions = () if output_attentions else None
+
+    layer_types = getattr(model.config, "layer_types", None)
+    for layer_idx, decoder_layer in enumerate(model.layers[: model.config.num_hidden_layers]):
+        if output_hidden_states:
+            all_hidden_states += (hidden_states,)
+        layer_kwargs = {
+            "attention_mask": causal_mask_mapping[layer_types[layer_idx]] if layer_types else causal_mask_mapping["full_attention"],
+            "position_embeddings": position_embeddings,
+            "position_ids": position_ids,
+            "past_key_values": past_key_values,
+            "use_cache": use_cache,
+        }
+        if cache_position is not None:
+            layer_kwargs["cache_position"] = cache_position
+
+        layer_outputs = decoder_layer(hidden_states, **layer_kwargs)
+        if isinstance(layer_outputs, tuple):
+            hidden_states = layer_outputs[0]
+            if output_attentions and len(layer_outputs) > 1:
+                all_attentions += (layer_outputs[1],)
+        else:
+            hidden_states = layer_outputs
+
+        if dense_deepstack_visual_embeds is not None and layer_idx < len(dense_deepstack_visual_embeds):
+            ds_feat = dense_deepstack_visual_embeds[layer_idx]
+            if ds_feat is not None:
+                hidden_states = add_deepstack_visual_features(
+                    hidden_states, visual_pos_mask, ds_feat, layer_idx
+                )
+
+    hidden_states = model.norm(hidden_states)
+    if output_hidden_states:
+        all_hidden_states += (hidden_states,)
+
+    return hidden_states, all_hidden_states, all_attentions, past_key_values if use_cache else None

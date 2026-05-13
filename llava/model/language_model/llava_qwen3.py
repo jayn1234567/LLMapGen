@@ -8,7 +8,7 @@ from transformers.modeling_outputs import CausalLMOutputWithPast
 from transformers.generation.utils import GenerateOutput
 
 from ..llava_arch import LlavaMetaModel, LlavaMetaForCausalLM
-from .deepstack_hooks import clear_deepstack_context, densify_deepstack_visual_embeds, set_deepstack_context
+from .deepstack_hooks import clear_deepstack_context, deepstack_decoder_forward
 
 
 def _get_qwen3_classes():
@@ -57,22 +57,19 @@ class LlavaQwen3ForCausalLM(_Qwen3ForCausalLM, LlavaMetaForCausalLM):
     def _deepstack_forward(self, inputs_embeds, attention_mask, position_ids,
                            past_key_values, visual_pos_mask, deepstack_visual_embeds,
                            use_cache, output_attentions, output_hidden_states, cache_position):
-        dense_deepstack_visual_embeds = densify_deepstack_visual_embeds(
-            visual_pos_mask, deepstack_visual_embeds, inputs_embeds
+        return deepstack_decoder_forward(
+            self.model,
+            inputs_embeds=inputs_embeds,
+            attention_mask=attention_mask,
+            position_ids=position_ids,
+            past_key_values=past_key_values,
+            visual_pos_mask=visual_pos_mask,
+            deepstack_visual_embeds=deepstack_visual_embeds,
+            use_cache=use_cache,
+            output_attentions=output_attentions,
+            output_hidden_states=output_hidden_states,
+            cache_position=cache_position,
         )
-        set_deepstack_context(self, visual_pos_mask, dense_deepstack_visual_embeds)
-        try:
-            outputs = self.model(
-                input_ids=None, inputs_embeds=inputs_embeds, attention_mask=attention_mask,
-                position_ids=position_ids, past_key_values=past_key_values,
-                use_cache=use_cache, output_attentions=output_attentions,
-                output_hidden_states=output_hidden_states, cache_position=cache_position,
-            )
-        finally:
-            if not self.training or not torch.is_grad_enabled():
-                clear_deepstack_context(self)
-
-        return outputs.last_hidden_state, outputs.hidden_states, outputs.attentions, outputs.past_key_values
 
     def forward(self, input_ids=None, attention_mask=None, position_ids=None,
                 past_key_values=None, inputs_embeds=None, labels=None, use_cache=None,

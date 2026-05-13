@@ -157,6 +157,17 @@ TRAINED_CHECKPOINT_OBS="obs://yw-ads-model-training-gy1/model-dev/rc-nn/rc_base_
 DINOV3_PATH=${DINOV3_PATH:-${OBS_CACHE}/checkpoints/facebook_dinov3-vitl16-pretrain-lvd1689m}
 DEEPSTACK_VISUAL_INDEXES="6 12 18 23"
 
+DEEPSTACK_ARGS=()
+if [[ "${DISABLE_DEEPSTACK:-False}" =~ ^(1|true|True|TRUE|yes|YES)$ ]]; then
+    DEEPSTACK_ARGS=(--disable_deepstack)
+    DEEPSTACK_LABEL="disabled"
+elif [ -n "${DEEPSTACK_VISUAL_INDEXES}" ]; then
+    DEEPSTACK_ARGS=(--deepstack_visual_indexes ${DEEPSTACK_VISUAL_INDEXES})
+    DEEPSTACK_LABEL="${DEEPSTACK_VISUAL_INDEXES}"
+else
+    DEEPSTACK_LABEL="disabled"
+fi
+
 DATASET_PATH="/cache/MLLM20260427_rc_jjh"
 IMAGE_FOLDER="${DATASET_PATH}"
 
@@ -205,6 +216,9 @@ echo "ViT base is loaded from DINOV3_PATH and passed with --vision_tower."
 
 echo "CHECKPOINT_DIR: $CHECKPOINT_DIR"
 echo "DINOV3_PATH:    $DINOV3_PATH"
+echo "DeepStack:      ${DEEPSTACK_LABEL}"
+echo "Expected inference log when enabled: DeepStack (real injection) enabled"
+echo "Expected inference log when disabled: disable_deepstack=True and no DeepStack enabled line"
 
 # ====================== inference ======================
 TEST_OUTPUT_LOCAL="/cache/test_output"
@@ -222,7 +236,7 @@ torchrun \
     scripts/infer_centerline_checkpoint.py \
     --checkpoint-dir "${CHECKPOINT_DIR}" \
     --vision_tower "${DINOV3_PATH}" \
-    --deepstack_visual_indexes ${DEEPSTACK_VISUAL_INDEXES} \
+    "${DEEPSTACK_ARGS[@]}" \
     --test-json "${TEST_JSON}" \
     --num-samples 533 \
     --image-folder "${IMAGE_FOLDER}" \

@@ -113,6 +113,19 @@ DATASET_OBS_PATH="obs://yw-ads-training-gy1/data/external/personal/h58801830/whu
 TRAINED_CHECKPOINT_OBS="obs://yw-ads-model-training-gy1/model-dev/rc-nn/rc_base_model/2026/05/06/c9017063151248669d7d57b48790b6a0/output/checkpoint-3200"
 
 DINOV2_PATH=${DINOV2_PATH:-${OBS_CACHE}/checkpoints/facebook_dinov2-large}
+DEEPSTACK_VISUAL_INDEXES="6 12 18 23"
+
+DEEPSTACK_ARGS=()
+if [[ "${DISABLE_DEEPSTACK:-False}" =~ ^(1|true|True|TRUE|yes|YES)$ ]]; then
+    DEEPSTACK_ARGS=(--disable_deepstack)
+    DEEPSTACK_LABEL="disabled"
+elif [ -n "${DEEPSTACK_VISUAL_INDEXES}" ]; then
+    DEEPSTACK_ARGS=(--deepstack_visual_indexes ${DEEPSTACK_VISUAL_INDEXES})
+    DEEPSTACK_LABEL="${DEEPSTACK_VISUAL_INDEXES}"
+else
+    DEEPSTACK_LABEL="disabled"
+fi
+
 DATASET_PATH="/cache/MLLM20260427_rc_jjh"
 IMAGE_FOLDER="${DATASET_PATH}"
 
@@ -161,6 +174,9 @@ fi
 echo "CHECKPOINT_DIR: $CHECKPOINT_DIR"
 echo "TEST_JSON: $TEST_JSON"
 echo "DINOV2_PATH: $DINOV2_PATH"
+echo "DeepStack: ${DEEPSTACK_LABEL}"
+echo "Expected inference log when enabled: DeepStack (real injection) enabled"
+echo "Expected inference log when disabled: disable_deepstack=True and no DeepStack enabled line"
 
 # ====================== inference ======================
 TEST_OUTPUT_LOCAL="/cache/test_output"
@@ -176,6 +192,7 @@ torchrun --nproc_per_node=8 \
   scripts/infer_centerline_checkpoint.py \
   --checkpoint-dir "${CHECKPOINT_DIR}" \
   --vision_tower "${DINOV2_PATH}" \
+  "${DEEPSTACK_ARGS[@]}" \
   --test-json "${TEST_JSON}" \
   --num-samples 533 \
   --image-folder "${IMAGE_FOLDER}" \

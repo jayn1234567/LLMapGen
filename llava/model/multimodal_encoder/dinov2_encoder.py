@@ -29,8 +29,6 @@ class DINOv2VisionTower(nn.Module):
 
         if not delay_load:
             self.load_model()
-        elif self.tune_vision_tower:
-            self.load_model()
         else:
             try:
                 self.cfg_only = AutoConfig.from_pretrained(self.vision_tower_name, local_files_only=True)

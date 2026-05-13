@@ -20,12 +20,18 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from llava import conversation as conversation_lib
-from llava.constants import DEFAULT_IMAGE_TOKEN, IMAGE_TOKEN_INDEX
+from llava.constants import (
+    DEFAULT_IMAGE_TOKEN,
+    DEFAULT_IMAGE_PATCH_TOKEN,
+    DEFAULT_IM_END_TOKEN,
+    DEFAULT_IM_START_TOKEN,
+    IMAGE_TOKEN_INDEX,
+)
 from llava.mm_utils import process_images, tokenizer_image_token
 from llava.model.builder import load_pretrained_model
 from llava.model.language_model.llava_qwen import LlavaConfig as LlavaQwen2Config, LlavaQwen2ForCausalLM
 from llava.model.language_model.llava_qwen3 import LlavaQwen3ForCausalLM
-from llava.model.qwen_token_utils import qwen_tokenizer_kwargs
+from llava.model.qwen_token_utils import qwen_tokenizer_kwargs, sync_qwen_token_config
 
 DEFAULT_PROMPT = DEFAULT_IMAGE_TOKEN
 
@@ -279,7 +285,139 @@ def _load_full_finetune_model(checkpoint_dir: Path, device: str, config_override
     return tokenizer, model, image_processor
 
 
+def _normalize_non_lora_state_dict(state_dict):
+    normalized = {}
+    for key, value in state_dict.items():
+        if key.startswith("base_model."):
+            key = key[len("base_model."):]
+        if key.startswith("model.model."):
+            key = key[len("model."):]
+        normalized[key] = value
+    return normalized
+
+
+def _add_multimodal_tokens(tokenizer, config):
+    if getattr(config, "mm_use_im_patch_token", True):
+        tokenizer.add_tokens([DEFAULT_IMAGE_PATCH_TOKEN], special_tokens=True)
+    if getattr(config, "mm_use_im_start_end", False):
+        tokenizer.add_tokens([DEFAULT_IM_START_TOKEN, DEFAULT_IM_END_TOKEN], special_tokens=True)
+
+
+def _load_compatible_state_dict(model, state_dict, *, skip_prefixes=(), source_name="checkpoint"):
+    model_state = model.state_dict()
+    compatible = {}
+    partial = []
+    skipped_shape = []
+
+    for key, value in state_dict.items():
+        if skip_prefixes and any(key.startswith(prefix) for prefix in skip_prefixes):
+            continue
+        target = model_state.get(key)
+        if target is None:
+            continue
+        if tuple(value.shape) == tuple(target.shape):
+            compatible[key] = value
+            continue
+        if (
+            key in {"model.embed_tokens.weight", "lm_head.weight"}
+            and value.ndim == target.ndim == 2
+            and value.shape[1] == target.shape[1]
+        ):
+            merged = target.detach().cpu().clone()
+            rows = min(value.shape[0], target.shape[0])
+            merged[:rows].copy_(value[:rows].to(dtype=merged.dtype))
+            compatible[key] = merged
+            partial.append(f"{key}:{tuple(value.shape)}->{tuple(target.shape)}")
+            continue
+        skipped_shape.append(f"{key}:{tuple(value.shape)}->{tuple(target.shape)}")
+
+    missing, unexpected = model.load_state_dict(compatible, strict=False)
+    if partial:
+        print(f"Partially loaded {len(partial)} resized tensors from {source_name}: {partial[:8]}")
+    if skipped_shape:
+        print(f"[WARN] Skipped {len(skipped_shape)} shape-mismatched tensors from {source_name}: {skipped_shape[:8]}")
+    return missing, unexpected, len(compatible)
+
+
+def _load_lora_finetune_model(checkpoint_dir: Path, device: str, config_overrides=None):
+    adapter_config_path = checkpoint_dir / "adapter_config.json"
+    non_lora_path = checkpoint_dir / "non_lora_trainables.bin"
+    if not adapter_config_path.exists():
+        raise FileNotFoundError(f"adapter_config.json not found in {checkpoint_dir}")
+    if not non_lora_path.exists():
+        raise FileNotFoundError(f"non_lora_trainables.bin not found in {checkpoint_dir}")
+
+    adapter_config = json.loads(adapter_config_path.read_text(encoding="utf-8"))
+    model_base = adapter_config.get("base_model_name_or_path")
+    if not model_base:
+        raise ValueError(f"Missing base_model_name_or_path in {adapter_config_path}")
+
+    checkpoint_dir_str = str(checkpoint_dir.resolve())
+    resolved_model_base = _resolve_base_model_path(model_base, checkpoint_dir)
+    config = AutoConfig.from_pretrained(checkpoint_dir_str, local_files_only=True)
+    _apply_config_overrides(config, config_overrides or {})
+    config.unfreeze_mm_vision_tower = False
+    config.tune_vision_tower = False
+    tokenizer = AutoTokenizer.from_pretrained(
+        str(resolved_model_base),
+        use_fast=False,
+        local_files_only=True,
+        **qwen_tokenizer_kwargs(str(resolved_model_base), config=config),
+    )
+    _add_multimodal_tokens(tokenizer, config)
+
+    dtype = _runtime_dtype(config, device)
+    model_type = getattr(config, "model_type", "")
+    if "qwen3" in model_type.lower():
+        model = LlavaQwen3ForCausalLM(config)
+    else:
+        model = LlavaQwen2ForCausalLM(config)
+    model.resize_token_embeddings(len(tokenizer))
+    sync_qwen_token_config(
+        tokenizer=tokenizer,
+        model=model,
+        model_name_or_path=str(resolved_model_base),
+    )
+
+    base_state = _load_state_dict(resolved_model_base)
+    _, _, loaded_base = _load_compatible_state_dict(
+        model,
+        base_state,
+        skip_prefixes=("model.vision_tower.", "model.mm_projector.", "model.image_newline"),
+        source_name=f"base model {resolved_model_base}",
+    )
+    print(f"Loaded {loaded_base} compatible base tensors for LoRA inference.")
+
+    vision_tower = model.get_vision_tower()
+    if vision_tower is not None and not vision_tower.is_loaded:
+        vision_tower.load_model()
+    if vision_tower is not None and hasattr(vision_tower, "set_llm_hidden_size"):
+        vision_tower.set_llm_hidden_size(model.config.hidden_size)
+
+    non_lora_state = torch.load(non_lora_path, map_location="cpu")
+    non_lora_state = _normalize_non_lora_state_dict(non_lora_state)
+    missing, unexpected = model.load_state_dict(non_lora_state, strict=False)
+    unexpected = [key for key in unexpected if "lora_" not in key]
+    if unexpected:
+        print(f"[WARN] Unexpected non-LoRA keys: {unexpected[:20]}")
+    loaded = len(non_lora_state)
+    print(f"Loaded {loaded} non-LoRA trainable tensors from LoRA checkpoint.")
+
+    from peft import PeftModel
+    model = PeftModel.from_pretrained(model, checkpoint_dir_str, local_files_only=True)
+    model = model.merge_and_unload()
+    model = model.to(dtype=dtype)
+    model = model.to(device)
+    model.eval()
+
+    image_processor = model.get_model().get_vision_tower().image_processor
+    return tokenizer, model, image_processor
+
+
 def load_model_components(checkpoint_dir: Path, manifest: dict, device: str, config_overrides=None):
+    if (checkpoint_dir / "adapter_model.safetensors").exists() or (checkpoint_dir / "adapter_model.bin").exists():
+        return _load_lora_finetune_model(checkpoint_dir, device, config_overrides=config_overrides)
+
     if manifest.get("full_model_finetune") or (checkpoint_dir / "llava_checkpoint.json").exists():
         return _load_full_finetune_model(checkpoint_dir, device, config_overrides=config_overrides)
 

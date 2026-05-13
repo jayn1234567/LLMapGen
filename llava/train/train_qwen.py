@@ -1264,6 +1264,12 @@ def train(attn_implementation=None):
     if model_args.disable_deepstack:
         model_args.deepstack_visual_indexes = None
         rank0_print("DeepStack disabled: using ViT main feature + mm_projector only.")
+    if model_args.deepstack_visual_indexes and training_args.gradient_checkpointing:
+        training_args.gradient_checkpointing = False
+        rank0_print(
+            "Gradient checkpointing disabled because DeepStack injection is enabled; "
+            "this avoids checkpoint recomputation mismatch under DeepSpeed ZeRO-3/NPU."
+        )
     compute_dtype = (torch.float16 if training_args.fp16 else (torch.bfloat16 if training_args.bf16 else torch.float32))
 
     bnb_model_from_pretrained_args = {}

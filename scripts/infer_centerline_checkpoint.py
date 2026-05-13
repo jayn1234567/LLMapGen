@@ -163,7 +163,33 @@ def _load_state_dict(checkpoint_dir: Path):
         return safe_load_file(str(safetensors_path), device="cpu")
     if bin_path.exists():
         return torch.load(bin_path, map_location="cpu")
+    safe_index_path = checkpoint_dir / "model.safetensors.index.json"
+    bin_index_path = checkpoint_dir / "pytorch_model.bin.index.json"
+    if safe_index_path.exists() or bin_index_path.exists():
+        index_path = safe_index_path if safe_index_path.exists() else bin_index_path
+        with index_path.open("r", encoding="utf-8") as f:
+            weight_map = json.load(f).get("weight_map", {})
+        if not weight_map:
+            raise ValueError(f"Checkpoint index {index_path} has no weight_map entries")
+        shard_names = sorted(set(weight_map.values()))
+        merged_state = {}
+        for shard_name in shard_names:
+            shard_path = checkpoint_dir / shard_name
+            shard_state = _load_checkpoint_shard(shard_path)
+            merged_state.update(shard_state)
+            del shard_state
+        return merged_state
     raise FileNotFoundError(f"No model weights found under {checkpoint_dir}")
+
+
+def _load_checkpoint_shard(shard_path: Path):
+    if not shard_path.exists():
+        raise FileNotFoundError(f"Checkpoint shard listed in index is missing: {shard_path}")
+    if shard_path.suffix == ".safetensors":
+        if safe_load_file is None:
+            raise ImportError("safetensors is required to load sharded safetensors checkpoints")
+        return safe_load_file(str(shard_path), device="cpu")
+    return torch.load(shard_path, map_location="cpu")
 
 
 def _resolve_base_model_path(base_model_path: str, checkpoint_dir: Path) -> Path:
@@ -200,7 +226,15 @@ def _read_checkpoint_metadata(checkpoint_dir: Path) -> dict:
 
 
 def _has_model_weights(checkpoint_dir: Path) -> bool:
-    return (checkpoint_dir / "model.safetensors").exists() or (checkpoint_dir / "pytorch_model.bin").exists()
+    return any(
+        (checkpoint_dir / filename).exists()
+        for filename in (
+            "model.safetensors",
+            "pytorch_model.bin",
+            "model.safetensors.index.json",
+            "pytorch_model.bin.index.json",
+        )
+    )
 
 
 def _has_adapter_weights(checkpoint_dir: Path) -> bool:
@@ -274,6 +308,11 @@ def _load_full_finetune_model(checkpoint_dir: Path, device: str, config_override
         local_files_only=True,
         **qwen_tokenizer_kwargs(checkpoint_dir_str, config=config),
     )
+    sync_qwen_token_config(
+        tokenizer=tokenizer,
+        config=config,
+        model_name_or_path=checkpoint_dir_str,
+    )
     config.unfreeze_mm_vision_tower = False
     config.tune_vision_tower = False
     model_type = getattr(config, 'model_type', '')
@@ -285,6 +324,11 @@ def _load_full_finetune_model(checkpoint_dir: Path, device: str, config_override
     else:
         model = LlavaQwen2ForCausalLM(config)
     model.resize_token_embeddings(len(tokenizer))
+    sync_qwen_token_config(
+        tokenizer=tokenizer,
+        model=model,
+        model_name_or_path=checkpoint_dir_str,
+    )
 
     vision_tower = model.get_vision_tower()
     if vision_tower is not None and not vision_tower.is_loaded:

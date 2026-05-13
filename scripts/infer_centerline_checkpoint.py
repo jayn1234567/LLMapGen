@@ -189,6 +189,28 @@ def _read_llava_checkpoint_metadata(checkpoint_dir: Path) -> dict:
     return json.loads(metadata_path.read_text(encoding="utf-8"))
 
 
+def _has_model_weights(checkpoint_dir: Path) -> bool:
+    return (checkpoint_dir / "model.safetensors").exists() or (checkpoint_dir / "pytorch_model.bin").exists()
+
+
+def _looks_like_full_llava_checkpoint(checkpoint_dir: Path) -> bool:
+    if not _has_model_weights(checkpoint_dir):
+        return False
+    try:
+        config = AutoConfig.from_pretrained(str(checkpoint_dir), local_files_only=True)
+    except Exception:
+        return False
+
+    model_type = str(getattr(config, "model_type", "")).lower()
+    if model_type.startswith("llava_") or "llava" in model_type:
+        return True
+
+    return any(
+        getattr(config, attr, None) is not None
+        for attr in ("mm_vision_tower", "vision_tower", "mm_projector_type")
+    )
+
+
 def _config_overrides_from_args(args) -> dict:
     return {
         "mm_vision_tower": args.vision_tower or None,
@@ -232,6 +254,8 @@ def _load_full_finetune_model(checkpoint_dir: Path, device: str, config_override
         **qwen_tokenizer_kwargs(checkpoint_dir_str, config=config),
     )
     _apply_config_overrides(config, config_overrides or {})
+    config.unfreeze_mm_vision_tower = False
+    config.tune_vision_tower = False
     model_type = getattr(config, 'model_type', '')
     config.fastvit_pretrained = False
     config.fastvit_pretrained_path = None
@@ -418,7 +442,11 @@ def load_model_components(checkpoint_dir: Path, manifest: dict, device: str, con
     if (checkpoint_dir / "adapter_model.safetensors").exists() or (checkpoint_dir / "adapter_model.bin").exists():
         return _load_lora_finetune_model(checkpoint_dir, device, config_overrides=config_overrides)
 
-    if manifest.get("full_model_finetune") or (checkpoint_dir / "llava_checkpoint.json").exists():
+    if (
+        manifest.get("full_model_finetune")
+        or (checkpoint_dir / "llava_checkpoint.json").exists()
+        or _looks_like_full_llava_checkpoint(checkpoint_dir)
+    ):
         return _load_full_finetune_model(checkpoint_dir, device, config_overrides=config_overrides)
 
     model_base = manifest.get("model_name_or_path")

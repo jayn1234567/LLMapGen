@@ -90,6 +90,7 @@ class JsonlMetricLoggerCallback(TrainerCallback):
         # 吞吐量计算
         self._throughput_start_time = None
         self._throughput_start_step = 0
+        self._train_start_time = None
 
     def _is_rank0(self, args, state=None) -> bool:
         if state is not None and hasattr(state, "is_world_process_zero"):
@@ -122,9 +123,47 @@ class JsonlMetricLoggerCallback(TrainerCallback):
             f.write(line + "\n")
         return line
 
+    def _touch_log_file(self, path: str):
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "a", encoding="utf-8"):
+            pass
+
+    def _compute_throughput(self, args, state):
+        if self._throughput_start_time is None:
+            return None
+        step_diff = state.global_step - self._throughput_start_step
+        time_diff = time.time() - self._throughput_start_time
+        if step_diff <= 0 or time_diff <= 0:
+            return None
+        per_device_bs = getattr(args, "per_device_train_batch_size", 1)
+        gas = getattr(args, "gradient_accumulation_steps", 1)
+        max_len = getattr(args, "model_max_length", 4096)
+        tokens_per_npu = per_device_bs * gas * step_diff * max_len
+        throughput = tokens_per_npu / time_diff
+        return f"{throughput:.2f} tokens/s/npu"
+
+    def _compute_total_throughput(self, args, state, runtime):
+        if runtime is None or runtime <= 0 or state.global_step <= 0:
+            return None
+        per_device_bs = getattr(args, "per_device_train_batch_size", 1)
+        gas = getattr(args, "gradient_accumulation_steps", 1)
+        max_len = getattr(args, "model_max_length", 4096)
+        tokens_per_npu = per_device_bs * gas * state.global_step * max_len
+        throughput = tokens_per_npu / runtime
+        return f"{throughput:.2f} tokens/s/npu"
+
+    def _reset_throughput_window(self, state):
+        self._throughput_start_time = time.time()
+        self._throughput_start_step = state.global_step
+
     def on_train_begin(self, args, state, control, **kwargs):
         if not self._is_rank0(args, state):
             return
+        self._touch_log_file(self.train_log_path)
+        self._touch_log_file(self.eval_log_path)
+        self._touch_log_file(self.checkpoint_log_path)
+        self._train_start_time = time.time()
+        self._reset_throughput_window(state)
         payload = {
             "event": "train_begin",
             "time": time.time(),
@@ -141,25 +180,8 @@ class JsonlMetricLoggerCallback(TrainerCallback):
         if not self._is_rank0(args, state) or not logs:
             return
 
-        # 吞吐量计算
-        throughput_str = None
-        if self._throughput_start_time is None:
-            self._throughput_start_time = time.time()
-            self._throughput_start_step = state.global_step
-        else:
-            step_diff = state.global_step - self._throughput_start_step
-            time_diff = time.time() - self._throughput_start_time
-            if step_diff > 0 and time_diff > 0:
-                per_device_bs = getattr(args,'per_device_train_batch_size',1)
-                gas = getattr(args,'gradient_accumulation_steps',1)
-                n_gpus = max(1,getattr(args,'world_size',1))
-                max_len = getattr(args,'model_max_length',4096)
-                total_tokens = per_device_bs * gas * step_diff *max_len
-                throughput = total_tokens / time_diff / n_gpus
-                throughput_str = f"{throughput:.2f} tokens/s/npu"
-                
-            self._throughput_start_time = time.time()
-            self._throughput_start_step = state.global_step
+        throughput_str = self._compute_throughput(args, state)
+        self._reset_throughput_window(state)
 
         payload = {
             "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
@@ -193,6 +215,20 @@ class JsonlMetricLoggerCallback(TrainerCallback):
     def on_train_end(self, args, state, control, **kwargs):
         if not self._is_rank0(args, state):
             return
+        train_runtime = None
+        if self._train_start_time is not None:
+            train_runtime = time.time() - self._train_start_time
+        throughput_str = self._compute_total_throughput(args, state, train_runtime)
+        if train_runtime is not None or throughput_str:
+            train_payload = {
+                "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "global_step": state.global_step,
+                "epoch": state.epoch,
+                "train_runtime": train_runtime,
+                "DI_throughput": throughput_str,
+            }
+            line = self._append_log_line(self.train_log_path, train_payload)
+            print(line)
         payload = {
             "event": "train_end",
             "time": time.time(),

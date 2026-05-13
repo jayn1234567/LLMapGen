@@ -299,6 +299,9 @@ class LlavaMetaForCausalLM(ABC):
         new_input_embeds = []
         new_labels = []
         new_visual_pos_masks = []
+        new_deepstack_token_features = None
+        if all_deepstack_features is not None:
+            new_deepstack_token_features = [[] for _ in range(len(all_deepstack_features))]
         cur_image_idx = 0
         for batch_idx, cur_input_ids in enumerate(input_ids):
             num_images = (cur_input_ids == IMAGE_TOKEN_INDEX).sum()
@@ -309,6 +312,17 @@ class LlavaMetaForCausalLM(ABC):
                 new_input_embeds.append(cur_input_embeds)
                 new_labels.append(labels[batch_idx])
                 new_visual_pos_masks.append(torch.zeros(cur_input_embeds.shape[0], dtype=torch.bool, device=cur_input_embeds.device))
+                if new_deepstack_token_features is not None:
+                    for layer_idx in range(len(all_deepstack_features)):
+                        hidden_size = all_deepstack_features[layer_idx].shape[-1]
+                        new_deepstack_token_features[layer_idx].append(
+                            torch.zeros(
+                                cur_input_embeds.shape[0],
+                                hidden_size,
+                                dtype=all_deepstack_features[layer_idx].dtype,
+                                device=cur_input_embeds.device,
+                            )
+                        )
                 cur_image_idx += 1
                 continue
 
@@ -325,28 +339,59 @@ class LlavaMetaForCausalLM(ABC):
             cur_new_input_embeds = []
             cur_new_labels = []
             cur_visual_pos_mask = []
+            cur_deepstack_token_features = None
+            if new_deepstack_token_features is not None:
+                cur_deepstack_token_features = [[] for _ in range(len(all_deepstack_features))]
 
             for i in range(num_images + 1):
                 cur_new_input_embeds.append(cur_input_embeds_no_im[i])
                 cur_new_labels.append(cur_labels_noim[i])
                 cur_visual_pos_mask.append(torch.zeros(cur_input_embeds_no_im[i].shape[0], dtype=torch.bool, device=cur_input_embeds_no_im[i].device))
+                if cur_deepstack_token_features is not None:
+                    for layer_idx in range(len(all_deepstack_features)):
+                        hidden_size = all_deepstack_features[layer_idx].shape[-1]
+                        cur_deepstack_token_features[layer_idx].append(
+                            torch.zeros(
+                                cur_input_embeds_no_im[i].shape[0],
+                                hidden_size,
+                                dtype=all_deepstack_features[layer_idx].dtype,
+                                device=cur_input_embeds_no_im[i].device,
+                            )
+                        )
                 if i < num_images:
+                    image_feature_idx = cur_image_idx
                     cur_image_features = image_features[cur_image_idx]
                     cur_image_idx += 1
                     cur_new_input_embeds.append(cur_image_features)
                     cur_new_labels.append(torch.full((cur_image_features.shape[0],), IGNORE_INDEX, device=cur_labels.device, dtype=cur_labels.dtype))
                     cur_visual_pos_mask.append(torch.ones(cur_image_features.shape[0], dtype=torch.bool, device=cur_image_features.device))
+                    if cur_deepstack_token_features is not None:
+                        for layer_idx, layer_features in enumerate(all_deepstack_features):
+                            cur_deepstack_token_features[layer_idx].append(layer_features[image_feature_idx])
 
             cur_new_input_embeds = [x.to(self.device) for x in cur_new_input_embeds]
             cur_visual_pos_mask = [x.to(self.device) for x in cur_visual_pos_mask]
+            if cur_deepstack_token_features is not None:
+                cur_deepstack_token_features = [
+                    [x.to(self.device) for x in layer_parts]
+                    for layer_parts in cur_deepstack_token_features
+                ]
 
             cur_new_input_embeds = torch.cat(cur_new_input_embeds)
             cur_new_labels = torch.cat(cur_new_labels)
             cur_visual_pos_mask = torch.cat(cur_visual_pos_mask)
+            if cur_deepstack_token_features is not None:
+                cur_deepstack_token_features = [
+                    torch.cat(layer_parts, dim=0)
+                    for layer_parts in cur_deepstack_token_features
+                ]
 
             new_input_embeds.append(cur_new_input_embeds)
             new_labels.append(cur_new_labels)
             new_visual_pos_masks.append(cur_visual_pos_mask)
+            if new_deepstack_token_features is not None:
+                for layer_idx, layer_features in enumerate(cur_deepstack_token_features):
+                    new_deepstack_token_features[layer_idx].append(layer_features)
 
         # Truncate sequences to max length as image embeddings can make the sequence longer
         tokenizer_model_max_length = getattr(self.config, 'tokenizer_model_max_length', None)
@@ -354,12 +399,20 @@ class LlavaMetaForCausalLM(ABC):
             new_input_embeds = [x[:tokenizer_model_max_length] for x in new_input_embeds]
             new_labels = [x[:tokenizer_model_max_length] for x in new_labels]
             new_visual_pos_masks = [x[:tokenizer_model_max_length] for x in new_visual_pos_masks]
+            if new_deepstack_token_features is not None:
+                new_deepstack_token_features = [
+                    [x[:tokenizer_model_max_length] for x in layer_features]
+                    for layer_features in new_deepstack_token_features
+                ]
 
         # Combine them
         max_len = max(x.shape[0] for x in new_input_embeds)
         batch_size = len(new_input_embeds)
 
         new_input_embeds_padded = []
+        deepstack_features_padded = None
+        if new_deepstack_token_features is not None:
+            deepstack_features_padded = [[] for _ in range(len(new_deepstack_token_features))]
         new_labels_padded = torch.full((batch_size, max_len), IGNORE_INDEX, dtype=new_labels[0].dtype, device=new_labels[0].device)
         visual_pos_mask = torch.zeros((batch_size, max_len), dtype=torch.bool, device=new_input_embeds[0].device)
         attention_mask = torch.zeros((batch_size, max_len), dtype=attention_mask.dtype, device=attention_mask.device)
@@ -377,6 +430,13 @@ class LlavaMetaForCausalLM(ABC):
                     visual_pos_mask[i, -cur_len:] = cur_visual_mask
                     attention_mask[i, -cur_len:] = True
                     position_ids[i, -cur_len:] = torch.arange(0, cur_len, dtype=position_ids.dtype, device=position_ids.device)
+                if deepstack_features_padded is not None:
+                    for layer_idx, layer_features in enumerate(new_deepstack_token_features):
+                        cur_layer_features = layer_features[i]
+                        deepstack_features_padded[layer_idx].append(torch.cat((
+                            torch.zeros((max_len - cur_len, cur_layer_features.shape[1]), dtype=cur_layer_features.dtype, device=cur_layer_features.device),
+                            cur_layer_features
+                        ), dim=0))
             else:
                 new_input_embeds_padded.append(torch.cat((
                     cur_new_embed,
@@ -387,8 +447,20 @@ class LlavaMetaForCausalLM(ABC):
                     visual_pos_mask[i, :cur_len] = cur_visual_mask
                     attention_mask[i, :cur_len] = True
                     position_ids[i, :cur_len] = torch.arange(0, cur_len, dtype=position_ids.dtype, device=position_ids.device)
+                if deepstack_features_padded is not None:
+                    for layer_idx, layer_features in enumerate(new_deepstack_token_features):
+                        cur_layer_features = layer_features[i]
+                        deepstack_features_padded[layer_idx].append(torch.cat((
+                            cur_layer_features,
+                            torch.zeros((max_len - cur_len, cur_layer_features.shape[1]), dtype=cur_layer_features.dtype, device=cur_layer_features.device)
+                        ), dim=0))
 
         new_input_embeds = torch.stack(new_input_embeds_padded, dim=0)
+        if deepstack_features_padded is not None:
+            all_deepstack_features = [
+                torch.stack(layer_features, dim=0)[visual_pos_mask]
+                for layer_features in deepstack_features_padded
+            ]
 
         if _labels is None:
             new_labels = None

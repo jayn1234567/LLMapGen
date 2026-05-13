@@ -219,7 +219,7 @@ MM_VISION_SELECT_LAYER=-2
 MM_PROJECTOR_TYPE=mlp2x_gelu
 UNFREEZE_MM_VISION_TOWER=True
 DEEPSTACK_VISUAL_INDEXES="6 12 18 23"
-DEEPSPEED_CONFIG="scripts/deepspeed_zero3_no_merge.json"
+DEEPSPEED_CONFIG="scripts/deepspeed_zero3.json"
 NUM_EPOCHS=3
 LR=2e-5
 MM_PROJECTOR_LR=5e-5
@@ -297,24 +297,6 @@ torchrun \
     --deepspeed "${DEEPSPEED_CONFIG}"
 
 echo "=== Training finished ==="
-
-# ====================== DeepSpeed weight consolidation ======================
-if [ -n "${DEEPSPEED_CONFIG}" ] && [ ${NODE_RANK} -eq 0 ]; then
-    echo ">>> Merging DeepSpeed sharded checkpoints..."
-    export TORCH_FORCE_WEIGHTS_ONLY_LOAD=0
-    for ckpt_dir in ${OUTPUT_PATH}/checkpoint-*; do
-        if [ -d "${ckpt_dir}" ] && [ -f "${ckpt_dir}/zero_to_fp32.py" ]; then
-            cd "${ckpt_dir}"
-            python zero_to_fp32.py . model.safetensors
-            echo "  Merged: ${ckpt_dir}"
-        fi
-    done
-    if [ -f "${OUTPUT_PATH}/zero_to_fp32.py" ]; then
-        cd "${OUTPUT_PATH}"
-        python zero_to_fp32.py . model.safetensors
-        echo "  Merged: final model"
-    fi
-fi
 
 # # ====================== inference ======================
 # echo ">>>>>>>>>>>>>>>>>>>>>>>>>>>>>>> start inference >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>"

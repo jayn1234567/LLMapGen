@@ -297,24 +297,6 @@ torchrun \
 
 echo "=== Training finished ==="
 
-# ====================== DeepSpeed weight consolidation ======================
-if [[ "${DEEPSPEED_CONFIG}" == *"no_merge"* ]] && [ ${NODE_RANK} -eq 0 ]; then
-    echo ">>> Merging DeepSpeed sharded checkpoints..."
-    export TORCH_FORCE_WEIGHTS_ONLY_LOAD=0
-    for ckpt_dir in ${OUTPUT_PATH}/checkpoint-*; do
-        if [ -d "${ckpt_dir}" ] && [ -f "${ckpt_dir}/zero_to_fp32.py" ]; then
-            cd "${ckpt_dir}"
-            python zero_to_fp32.py . model.safetensors
-            echo "  Merged: ${ckpt_dir}"
-        fi
-    done
-    if [ -f "${OUTPUT_PATH}/zero_to_fp32.py" ]; then
-        cd "${OUTPUT_PATH}"
-        python zero_to_fp32.py . model.safetensors
-        echo "  Merged: final model"
-    fi
-fi
-
 # # ====================== inference ======================
 # echo ">>>>>>>>>>>>>>>>>>>>>>>>>>>>>>> start inference >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>"
 # cd "$SCRIPT_DIR/.."

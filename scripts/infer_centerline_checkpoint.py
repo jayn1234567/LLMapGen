@@ -291,6 +291,7 @@ def _load_full_finetune_model(checkpoint_dir: Path, device: str, config_override
             print(f"[WARN] Missing keys after base vision-tower load: {missing[:20]}")
 
     state_dict = _load_state_dict(checkpoint_dir)
+    _report_full_checkpoint_coverage(model, state_dict, model.config, metadata)
     missing, unexpected = model.load_state_dict(state_dict, strict=False)
     if "lm_head.weight" in missing and getattr(model.config, "tie_word_embeddings", False):
         model.tie_weights()
@@ -318,6 +319,52 @@ def _normalize_non_lora_state_dict(state_dict):
             key = key[len("model."):]
         normalized[key] = value
     return normalized
+
+
+def _state_dict_has_prefix(state_dict, prefix: str) -> bool:
+    return any(key.startswith(prefix) for key in state_dict)
+
+
+def _report_full_checkpoint_coverage(model, state_dict, config, metadata):
+    model_state = model.state_dict()
+    matched = []
+    mismatched = []
+    for key, value in state_dict.items():
+        target = model_state.get(key)
+        if target is None:
+            continue
+        if tuple(value.shape) == tuple(target.shape):
+            matched.append(key)
+        else:
+            mismatched.append(f"{key}:{tuple(value.shape)}->{tuple(target.shape)}")
+
+    print(
+        f"Loaded {len(matched)}/{len(model_state)} model tensors from full-finetune checkpoint "
+        f"({len(state_dict)} checkpoint tensors)."
+    )
+    if mismatched:
+        raise RuntimeError(f"Shape-mismatched full checkpoint tensors: {mismatched[:20]}")
+
+    critical_missing = []
+    if not _state_dict_has_prefix(state_dict, "model.mm_projector."):
+        critical_missing.append("model.mm_projector.*")
+
+    deepstack_enabled = (
+        not getattr(config, "disable_deepstack", False)
+        and getattr(config, "deepstack_visual_indexes", None) is not None
+    )
+    if deepstack_enabled and not _state_dict_has_prefix(state_dict, "model.vision_tower.deepstack_mergers."):
+        critical_missing.append("model.vision_tower.deepstack_mergers.*")
+
+    expects_bundled_vit = not metadata or metadata.get("bundled_vision_tower", True)
+    if expects_bundled_vit and not _state_dict_has_prefix(state_dict, "model.vision_tower.vision_tower."):
+        critical_missing.append("model.vision_tower.vision_tower.*")
+
+    if critical_missing:
+        raise RuntimeError(
+            "Full-finetune checkpoint is missing critical multimodal weights: "
+            + ", ".join(critical_missing)
+        )
 
 
 def _add_multimodal_tokens(tokenizer, config):

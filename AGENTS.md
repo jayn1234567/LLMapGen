@@ -47,8 +47,10 @@ MLLM_project/
 │   └── llava_trainer.py           # LLaVATrainer — HF Trainer 子类 (含分组 LR)
 │
 └── scripts/
-    ├── train_full_dinov2_qwen3vl-8b_npu.sh
-    ├── train_full_dinov3_qwen3vl-8b_npu.sh
+    ├── train_full_dinov2_qwen3vl-8b_deepstack_npu.sh
+    ├── train_full_dinov2_qwen3vl-8b_no-deepstack_npu.sh
+    ├── train_full_dinov3_qwen3vl-8b_deepstack_npu.sh
+    ├── train_full_dinov3_qwen3vl-8b_no-deepstack_npu.sh
     ├── test_full_dinov2_qwen3vl-8b_npu.sh
     ├── test_full_dinov3_qwen3vl-8b_npu.sh
     ├── debug.sh                       # 本地 NPU DINOv3 训练 smoke test

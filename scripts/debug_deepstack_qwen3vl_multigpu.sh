@@ -255,7 +255,7 @@ torchrun \
     --max-new-tokens 16 2>&1 | tee "${INFER_LOG}"
 
 require_grep "DeepStack \\(real injection\\) enabled" "${INFER_LOG}" "DeepStack enabled inference log"
-require_grep "Loaded [0-9]+/[0-9]+ multimodal checkpoint tensors after vision tower init" "${INFER_LOG}" "multimodal checkpoint reload"
+require_grep "Loaded [0-9]+/[0-9]+ (model tensors from full-finetune checkpoint|multimodal checkpoint tensors after vision tower init)" "${INFER_LOG}" "checkpoint tensor reload"
 
 DEBUG_INFER_OUTPUT_DIR="${INFER_OUTPUT_DIR}" \
 DEBUG_NPROC_PER_NODE="${NPROC_PER_NODE}" \

@@ -1266,20 +1266,22 @@ def make_supervised_data_module(tokenizer: transformers.PreTrainedTokenizer,
                 data_collator=data_collator)
 
 def print_trainable_parameters(model):
-    """打印模型的可训练参数数量和总参数数量"""
-    trainable_params = 0
-    all_param = 0
+    """Print trainable and total parameter storage in MiB."""
+    trainable_bytes = 0
+    all_bytes = 0
     for name, param in model.named_parameters():
-        num_params = param.numel()
-        all_param += num_params
+        param_bytes = param.numel() * param.element_size()
+        all_bytes += param_bytes
         if param.requires_grad:
-            trainable_params += num_params
-            # 可选：打印每个可训练参数的名称和大小（用于调试）
-            # print(f"Trainable: {name} | {num_params}")
+            trainable_bytes += param_bytes
+            # print(f"Trainable: {name} | {param_bytes / (1024 ** 2):.2f} MiB")
+    trainable_mib = trainable_bytes / (1024 ** 2)
+    all_mib = all_bytes / (1024 ** 2)
+    trainable_percent = 100 * trainable_bytes / all_bytes if all_bytes else 0.0
     print(
-        f"trainable params: {trainable_params} || "
-        f"all params: {all_param} || "
-        f"trainable%: {100 * trainable_params / all_param:.2f}")
+        f"trainable params: {trainable_mib:.2f} MiB || "
+        f"all params: {all_mib:.2f} MiB || "
+        f"trainable%: {trainable_percent:.2f}")
 
 
 def train(attn_implementation=None):

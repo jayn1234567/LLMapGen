@@ -113,7 +113,7 @@ DATASET_OBS_PATH="obs://yw-ads-training-gy1/data/external/personal/h58801830/whu
 TRAINED_CHECKPOINT_OBS="obs://yw-ads-model-training-gy1/model-dev/rc-nn/rc_base_model/2026/05/06/c9017063151248669d7d57b48790b6a0/output/checkpoint-3200"
 
 DINOV2_PATH=${DINOV2_PATH:-${OBS_CACHE}/checkpoints/facebook_dinov2-large}
-DEEPSTACK_VISUAL_INDEXES="6 12 18 23"
+DEEPSTACK_VISUAL_INDEXES=${DEEPSTACK_VISUAL_INDEXES:-}
 
 DEEPSTACK_ARGS=()
 if [[ "${DISABLE_DEEPSTACK:-False}" =~ ^(1|true|True|TRUE|yes|YES)$ ]]; then
@@ -121,9 +121,9 @@ if [[ "${DISABLE_DEEPSTACK:-False}" =~ ^(1|true|True|TRUE|yes|YES)$ ]]; then
     DEEPSTACK_LABEL="disabled"
 elif [ -n "${DEEPSTACK_VISUAL_INDEXES}" ]; then
     DEEPSTACK_ARGS=(--deepstack_visual_indexes ${DEEPSTACK_VISUAL_INDEXES})
-    DEEPSTACK_LABEL="${DEEPSTACK_VISUAL_INDEXES}"
+    DEEPSTACK_LABEL="override ${DEEPSTACK_VISUAL_INDEXES}"
 else
-    DEEPSTACK_LABEL="disabled"
+    DEEPSTACK_LABEL="from checkpoint config"
 fi
 
 DATASET_PATH="/cache/MLLM20260427_rc_jjh"
@@ -175,8 +175,7 @@ echo "CHECKPOINT_DIR: $CHECKPOINT_DIR"
 echo "TEST_JSON: $TEST_JSON"
 echo "DINOV2_PATH: $DINOV2_PATH"
 echo "DeepStack: ${DEEPSTACK_LABEL}"
-echo "Expected inference log when enabled: DeepStack (real injection) enabled"
-echo "Expected inference log when disabled: disable_deepstack=True and no DeepStack enabled line"
+echo "DeepStack is auto-detected from checkpoint config unless DISABLE_DEEPSTACK or DEEPSTACK_VISUAL_INDEXES is set."
 
 # ====================== inference ======================
 TEST_OUTPUT_LOCAL="/cache/test_output"

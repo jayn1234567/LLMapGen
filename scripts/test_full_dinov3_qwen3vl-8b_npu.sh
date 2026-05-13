@@ -155,7 +155,7 @@ DATASET_OBS_PATH="obs://yw-ads-training-gy1/data/external/personal/h58801830/whu
 TRAINED_CHECKPOINT_OBS="obs://yw-ads-model-training-gy1/model-dev/rc-nn/rc_base_model/2026/05/11/91d5397b1e5e4d21a16177081527425e/output/checkpoint-2400"
 
 DINOV3_PATH=${DINOV3_PATH:-${OBS_CACHE}/checkpoints/facebook_dinov3-vitl16-pretrain-lvd1689m}
-DEEPSTACK_VISUAL_INDEXES="6 12 18 23"
+DEEPSTACK_VISUAL_INDEXES=${DEEPSTACK_VISUAL_INDEXES:-}
 
 DEEPSTACK_ARGS=()
 if [[ "${DISABLE_DEEPSTACK:-False}" =~ ^(1|true|True|TRUE|yes|YES)$ ]]; then
@@ -163,9 +163,9 @@ if [[ "${DISABLE_DEEPSTACK:-False}" =~ ^(1|true|True|TRUE|yes|YES)$ ]]; then
     DEEPSTACK_LABEL="disabled"
 elif [ -n "${DEEPSTACK_VISUAL_INDEXES}" ]; then
     DEEPSTACK_ARGS=(--deepstack_visual_indexes ${DEEPSTACK_VISUAL_INDEXES})
-    DEEPSTACK_LABEL="${DEEPSTACK_VISUAL_INDEXES}"
+    DEEPSTACK_LABEL="override ${DEEPSTACK_VISUAL_INDEXES}"
 else
-    DEEPSTACK_LABEL="disabled"
+    DEEPSTACK_LABEL="from checkpoint config"
 fi
 
 DATASET_PATH="/cache/MLLM20260427_rc_jjh"
@@ -217,8 +217,7 @@ echo "ViT base is loaded from DINOV3_PATH and passed with --vision_tower."
 echo "CHECKPOINT_DIR: $CHECKPOINT_DIR"
 echo "DINOV3_PATH:    $DINOV3_PATH"
 echo "DeepStack:      ${DEEPSTACK_LABEL}"
-echo "Expected inference log when enabled: DeepStack (real injection) enabled"
-echo "Expected inference log when disabled: disable_deepstack=True and no DeepStack enabled line"
+echo "DeepStack is auto-detected from checkpoint config unless DISABLE_DEEPSTACK or DEEPSTACK_VISUAL_INDEXES is set."
 
 # ====================== inference ======================
 TEST_OUTPUT_LOCAL="/cache/test_output"

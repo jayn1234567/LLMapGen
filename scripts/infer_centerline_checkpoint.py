@@ -275,6 +275,22 @@ def _apply_config_overrides(config, overrides: dict):
             setattr(config, key, value)
 
 
+def _apply_checkpoint_metadata_defaults(config, metadata: dict):
+    if not metadata:
+        return
+    for key in (
+        "mm_vision_tower",
+        "vision_tower",
+        "mm_vision_tower_type",
+        "input_image_size",
+        "disable_deepstack",
+        "deepstack_visual_indexes",
+    ):
+        value = metadata.get(key)
+        if value is not None and getattr(config, key, None) is None:
+            setattr(config, key, value)
+
+
 def _is_dinov3_config(config) -> bool:
     values = [
         getattr(config, "mm_vision_tower_type", ""),
@@ -295,6 +311,8 @@ def _runtime_dtype(config, device: str):
 def _load_full_finetune_model(checkpoint_dir: Path, device: str, config_overrides=None):
     checkpoint_dir_str = str(checkpoint_dir.resolve())
     config = AutoConfig.from_pretrained(checkpoint_dir_str, local_files_only=True)
+    metadata = _read_checkpoint_metadata(checkpoint_dir)
+    _apply_checkpoint_metadata_defaults(config, metadata)
     _apply_config_overrides(config, config_overrides or {})
     if not getattr(config, "mm_vision_tower", None) and not getattr(config, "vision_tower", None):
         raise RuntimeError(
@@ -336,7 +354,6 @@ def _load_full_finetune_model(checkpoint_dir: Path, device: str, config_override
     if vision_tower is not None and hasattr(vision_tower, 'set_llm_hidden_size'):
         vision_tower.set_llm_hidden_size(model.config.hidden_size)
 
-    metadata = _read_checkpoint_metadata(checkpoint_dir)
     state_dict = _load_state_dict(checkpoint_dir)
     _report_full_checkpoint_coverage(model, state_dict, model.config, metadata)
     missing, unexpected = model.load_state_dict(state_dict, strict=False)
@@ -476,6 +493,8 @@ def _load_lora_finetune_model(checkpoint_dir: Path, device: str, config_override
     checkpoint_dir_str = str(checkpoint_dir.resolve())
     resolved_model_base = _resolve_base_model_path(model_base, checkpoint_dir)
     config = AutoConfig.from_pretrained(checkpoint_dir_str, local_files_only=True)
+    metadata = _read_checkpoint_metadata(checkpoint_dir)
+    _apply_checkpoint_metadata_defaults(config, metadata)
     _apply_config_overrides(config, config_overrides or {})
     config.unfreeze_mm_vision_tower = False
     config.tune_vision_tower = False
@@ -633,7 +652,7 @@ def main():
     parser.add_argument("--print-full-output", action="store_true")
     parser.add_argument("--vision_tower", default="")
     parser.add_argument("--input_image_size", type=int, default=None)
-    parser.add_argument("--disable_deepstack", action="store_true")
+    parser.add_argument("--disable_deepstack", action="store_true", default=None)
     parser.add_argument("--deepstack_visual_indexes", type=int, nargs="*", default=None)
     args = parser.parse_args()
     args.device = device_str

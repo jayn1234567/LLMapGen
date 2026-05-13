@@ -92,6 +92,7 @@ class JsonlMetricLoggerCallback(TrainerCallback):
         self._throughput_start_time = None
         self._throughput_start_step = 0
         self._train_start_time = None
+        self._saw_train_runtime_log = False
 
     def _is_rank0(self, args, state=None) -> bool:
         if state is not None and hasattr(state, "is_world_process_zero"):
@@ -181,8 +182,12 @@ class JsonlMetricLoggerCallback(TrainerCallback):
         if not self._is_rank0(args, state) or not logs:
             return
 
-        throughput_str = self._compute_throughput(args, state)
-        self._reset_throughput_window(state)
+        if "train_runtime" in logs:
+            throughput_str = self._compute_total_throughput(args, state, logs.get("train_runtime"))
+            self._saw_train_runtime_log = True
+        else:
+            throughput_str = self._compute_throughput(args, state)
+            self._reset_throughput_window(state)
 
         payload = {
             "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
@@ -220,7 +225,7 @@ class JsonlMetricLoggerCallback(TrainerCallback):
         if self._train_start_time is not None:
             train_runtime = time.time() - self._train_start_time
         throughput_str = self._compute_total_throughput(args, state, train_runtime)
-        if train_runtime is not None or throughput_str:
+        if not self._saw_train_runtime_log and (train_runtime is not None or throughput_str):
             train_payload = {
                 "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                 "global_step": state.global_step,

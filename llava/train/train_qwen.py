@@ -198,11 +198,13 @@ class JsonlMetricLoggerCallback(TrainerCallback):
         if throughput_str:
             payload["DI_throughput"] = throughput_str
 
+        is_train_runtime_summary = "train_runtime" in logs
         if "eval_loss" in logs or any(key.startswith("eval_") for key in logs):
             line = self._append_log_line(self.eval_log_path, payload)
         else:
             line = self._append_log_line(self.train_log_path, payload)
-        print(line)
+        if not is_train_runtime_summary:
+            print(line)
 
     def on_save(self, args, state, control, **kwargs):
         if not self._is_rank0(args, state):
@@ -215,8 +217,7 @@ class JsonlMetricLoggerCallback(TrainerCallback):
             "epoch": state.epoch,
             "checkpoint_dir": checkpoint_dir,
         }
-        line = self._append_log_line(self.checkpoint_log_path, payload)
-        print(line)
+        self._append_log_line(self.checkpoint_log_path, payload)
 
     def on_train_end(self, args, state, control, **kwargs):
         if not self._is_rank0(args, state):
@@ -233,8 +234,7 @@ class JsonlMetricLoggerCallback(TrainerCallback):
                 "train_runtime": train_runtime,
                 "DI_throughput": throughput_str,
             }
-            line = self._append_log_line(self.train_log_path, train_payload)
-            print(line)
+            self._append_log_line(self.train_log_path, train_payload)
         payload = {
             "event": "train_end",
             "time": time.time(),
@@ -243,8 +243,7 @@ class JsonlMetricLoggerCallback(TrainerCallback):
             "best_model_checkpoint": state.best_model_checkpoint,
             "best_metric": state.best_metric,
         }
-        line = self._append_log_line(self.checkpoint_log_path, payload)
-        print(line)
+        self._append_log_line(self.checkpoint_log_path, payload)
 
 
 IS_TOKENIZER_GREATER_THAN_0_14 = version.parse(tokenizers.__version__) >= version.parse('0.14')

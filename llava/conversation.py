@@ -469,6 +469,44 @@ conv_qwen_3_Dinov2_huawei = Conversation(
     sep="<|im_end|>\n",
 )
 
+conv_qwen_2_state_update_centerline = Conversation(
+    system=(
+        "<|im_start|>system\n"
+        "You are a road-map reconstruction assistant for BEV road patches.\n"
+        "Predict only the road geometry inside the current patch.\n"
+        "Use incoming traces only as continuity hints from already processed neighboring patches.\n"
+        "Return only valid JSON in the required schema.\n"
+        "For centerline records, include start_type and end_type as cut or inside.\n"
+        "For intersection records, output a closed polyline without start_type or end_type.\n"
+        "Keep all coordinates in the patch-local coordinate system."
+    ),
+    roles=("<|im_start|>user\n", "<|im_start|>assistant\n"),
+    version="qwen_v2",
+    messages=(),
+    offset=0,
+    sep_style=SeparatorStyle.QWEN_2,
+    sep="<|im_end|>\n",
+)
+
+conv_qwen_3_state_update_centerline = Conversation(
+    system=(
+        "<|im_start|>system\n"
+        "You are a road-map reconstruction assistant for BEV road patches.\n"
+        "Predict only the road geometry inside the current patch.\n"
+        "Use incoming traces only as continuity hints from already processed neighboring patches.\n"
+        "Return only valid JSON in the required schema.\n"
+        "For centerline records, include start_type and end_type as cut or inside.\n"
+        "For intersection records, output a closed polyline without start_type or end_type.\n"
+        "Keep all coordinates in the patch-local coordinate system."
+    ),
+    roles=("<|im_start|>user\n", "<|im_start|>assistant\n"),
+    version="qwen_v3",
+    messages=(),
+    offset=0,
+    sep_style=SeparatorStyle.QWEN_2,
+    sep="<|im_end|>\n",
+)
+
 
 # conv_qwen_2 = Conversation(
 #     system="",
@@ -527,6 +565,8 @@ conv_templates = {
     "qwen_2_centerline_coord": conv_qwen_2_centerline_coord,
     "conv_qwen_2_Dinov2_huawei": conv_qwen_2_Dinov2_huawei,
     "conv_qwen_3_Dinov2_huawei": conv_qwen_3_Dinov2_huawei,
+    "conv_qwen_2_state_update_centerline": conv_qwen_2_state_update_centerline,
+    "conv_qwen_3_state_update_centerline": conv_qwen_3_state_update_centerline,
     "llama_2": conv_llama_2,
     "mistral_instruct": conv_mistral_instruct,
     "chatml_direct": conv_chatml_direct,

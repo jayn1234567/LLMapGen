@@ -5,7 +5,7 @@ BEV road centerline reconstruction VLM based on a LLaVA-style multimodal stack.
 Current working branch:
 
 ```text
-qwen3vl_deepstack_checkpointing
+unimapgen
 ```
 
 This branch supports:
@@ -17,6 +17,7 @@ This branch supports:
 - LoRA and full-parameter checkpoint loading.
 - Inference that recovers DeepStack settings from checkpoint metadata.
 - Rank-0-only clean training logs with `DI_throughput: ... tokens/s/npu`.
+- UniMapGen-style 256 patch state-update data flow for centerline and intersection prediction.
 
 ## Documentation
 
@@ -24,6 +25,12 @@ This branch supports:
   [docs/qwen3vl_dinov3_deepstack.md](docs/qwen3vl_dinov3_deepstack.md)
 - Script naming and placement:
   [scripts/README.md](scripts/README.md)
+- UniMapGen reproduction plan:
+  [REPRODUCTION_PLAN.md](REPRODUCTION_PLAN.md)
+- AV2 4096-to-256 patch processing notes:
+  [DATASET_PATCH_PROCESSING.md](DATASET_PATCH_PROCESSING.md)
+- State-update handover notes:
+  [HANDOVER_STATE_UPDATE.md](HANDOVER_STATE_UPDATE.md)
 
 ## Main NPU Scripts
 

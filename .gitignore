@@ -1,5 +1,8 @@
 checkpoints/
 data/
+!scripts/data/
+!scripts/data/build_sft_dataset.py
+!scripts/data/split_av2_perlog_to_patches.py
 outputs/
 *.egg-info/
 __pycache__/

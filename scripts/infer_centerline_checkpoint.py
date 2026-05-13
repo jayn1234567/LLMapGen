@@ -99,6 +99,39 @@ def extract_json_array(text: str) -> str:
     return text[start:].strip()
 
 
+def extract_json_payload(text: str) -> str:
+    starts = [idx for idx in (text.find("{"), text.find("[")) if idx >= 0]
+    if not starts:
+        return text.strip()
+    start = min(starts)
+
+    depth_stack = []
+    in_string = False
+    escape = False
+    pairs = {"{": "}", "[": "]"}
+    for idx in range(start, len(text)):
+        ch = text[idx]
+        if escape:
+            escape = False
+            continue
+        if ch == "\\":
+            escape = True
+            continue
+        if ch == '"':
+            in_string = not in_string
+            continue
+        if in_string:
+            continue
+        if ch in pairs:
+            depth_stack.append(pairs[ch])
+        elif depth_stack and ch == depth_stack[-1]:
+            depth_stack.pop()
+            if not depth_stack:
+                return text[start:idx + 1].strip()
+
+    return text[start:].strip()
+
+
 def prediction_preview(text: str, limit: int = 240) -> str:
     text = text.replace("\n", "\\n")
     if len(text) <= limit:
@@ -266,6 +299,7 @@ def _config_overrides_from_args(args) -> dict:
         "input_image_size": args.input_image_size,
         "disable_deepstack": args.disable_deepstack,
         "deepstack_visual_indexes": args.deepstack_visual_indexes,
+        "dino_variant": args.dino_variant or None,
     }
 
 
@@ -285,6 +319,7 @@ def _apply_checkpoint_metadata_defaults(config, metadata: dict):
         "input_image_size",
         "disable_deepstack",
         "deepstack_visual_indexes",
+        "dino_variant",
     ):
         value = metadata.get(key)
         if value is not None and getattr(config, key, None) is None:
@@ -587,23 +622,59 @@ def load_model_components(checkpoint_dir: Path, manifest: dict, device: str, con
 
 
 
-def parse_centerline_json(prediction_text: str):
-    parsed_items = json.loads(prediction_text)
-    if not isinstance(parsed_items, list):
-        raise ValueError("prediction is not a JSON list")
+def _validate_points(points):
+    if not isinstance(points, list) or not points:
+        raise ValueError("missing points")
+    for point in points:
+        if not isinstance(point, list) or len(point) != 2:
+            raise ValueError("invalid point format")
+        if not all(isinstance(v, (int, float)) for v in point):
+            raise ValueError("point coordinates must be numeric")
 
+
+def parse_map_json(prediction_text: str):
+    parsed = json.loads(prediction_text)
+    if isinstance(parsed, list):
+        parsed_items = parsed
+    elif isinstance(parsed, dict) and isinstance(parsed.get("lines"), list):
+        parsed_items = parsed["lines"]
+    else:
+        raise ValueError("prediction must be a JSON list or an object with lines")
+
+    normalized = []
     for item in parsed_items:
         if not isinstance(item, dict):
             raise ValueError("prediction item is not an object")
-        if item.get("category") != "CenterLine":
-            raise ValueError("non-CenterLine category found")
+        category = str(item.get("category", "")).strip()
+        category_lower = "centerline" if category == "CenterLine" else category.lower()
+        if category_lower not in {"centerline", "intersection"}:
+            raise ValueError(f"unsupported category: {category}")
+
         points = item.get("points")
-        if not isinstance(points, list) or not points:
-            raise ValueError("missing points")
-        for point in points:
-            if not isinstance(point, list) or len(point) != 2:
-                raise ValueError("invalid point format")
-    return parsed_items
+        _validate_points(points)
+        clean_points = [[int(round(point[0])), int(round(point[1]))] for point in points]
+
+        if category_lower == "centerline":
+            start_type = item.get("start_type", "inside")
+            end_type = item.get("end_type", "inside")
+            if start_type not in {"cut", "inside"} or end_type not in {"cut", "inside"}:
+                raise ValueError("centerline start_type/end_type must be cut or inside")
+            normalized.append({
+                "category": "centerline",
+                "start_type": start_type,
+                "end_type": end_type,
+                "points": clean_points,
+            })
+        else:
+            normalized.append({
+                "category": "intersection",
+                "points": clean_points,
+            })
+    return normalized
+
+
+def parse_centerline_json(prediction_text: str):
+    return parse_map_json(prediction_text)
 
 
 def sanitize_filename(name: str) -> str:
@@ -654,6 +725,7 @@ def main():
     parser.add_argument("--input_image_size", type=int, default=None)
     parser.add_argument("--disable_deepstack", action="store_true", default=None)
     parser.add_argument("--deepstack_visual_indexes", type=int, nargs="*", default=None)
+    parser.add_argument("--dino_variant", default="")
     args = parser.parse_args()
     args.device = device_str
 
@@ -675,7 +747,8 @@ def main():
         f"vision_tower={config_overrides.get('mm_vision_tower')}, "
         f"input_image_size={config_overrides.get('input_image_size')}, "
         f"disable_deepstack={config_overrides.get('disable_deepstack')}, "
-        f"deepstack_visual_indexes={config_overrides.get('deepstack_visual_indexes')}"
+        f"deepstack_visual_indexes={config_overrides.get('deepstack_visual_indexes')}, "
+        f"dino_variant={config_overrides.get('dino_variant')}"
     )
     tokenizer, model, image_processor = load_model_components(
         checkpoint_dir, manifest, args.device, config_overrides=config_overrides)
@@ -763,7 +836,7 @@ def main():
             skip_special_tokens=False,
         )[0].strip()
         prediction = normalize_prediction_text(raw_prediction)
-        prediction_json = extract_json_array(prediction)
+        prediction_json = extract_json_payload(prediction)
 
         parse_ok = False
         parsed_items = []

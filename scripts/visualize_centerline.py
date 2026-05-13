@@ -13,13 +13,23 @@ def load_json_maybe(text: str):
         return []
 
 
-def draw_centerlines(image: Image.Image, centerlines: list, color: tuple, width: int = 3) -> Image.Image:
+def normalize_lines(payload):
+    if isinstance(payload, dict) and isinstance(payload.get("lines"), list):
+        return payload["lines"]
+    if isinstance(payload, list):
+        return payload
+    return []
+
+
+def draw_map_lines(image: Image.Image, payload, centerline_color: tuple, intersection_color: tuple, width: int = 3) -> Image.Image:
     draw = ImageDraw.Draw(image)
-    for item in centerlines:
+    for item in normalize_lines(payload):
         points = item.get("points", [])
         if not points:
             continue
         xy_points = [(int(pt[0]), int(pt[1])) for pt in points if isinstance(pt, list) and len(pt) == 2]
+        category = str(item.get("category", "centerline")).lower()
+        color = intersection_color if category == "intersection" else centerline_color
         for i in range(len(xy_points) - 1):
             draw.line([xy_points[i], xy_points[i + 1]], fill=color, width=width)
         for x, y in xy_points:
@@ -57,6 +67,13 @@ def load_json_array_or_lines(file_path: Path) -> list:
     content = file_path.read_text(encoding="utf-8").strip()
     if not content:
         return []
+    if content.startswith('{') and content.endswith('}'):
+        try:
+            payload = json.loads(content)
+            if isinstance(payload, dict) and isinstance(payload.get("patch_results"), list):
+                return payload["patch_results"]
+        except json.JSONDecodeError:
+            pass
     # 如果以 '[' 开头且以 ']' 结尾，视为标准 JSON 数组
     if content.startswith('[') and content.endswith(']'):
         try:
@@ -115,8 +132,8 @@ def main():
             continue
 
         base_image = Image.open(image_path).convert("RGB")
-        gt_image = draw_centerlines(base_image.copy(), load_json_maybe(result.get("ground_truth", "[]")), gt_color)
-        pred_image = draw_centerlines(base_image.copy(), load_json_maybe(result.get("prediction", "[]")), pred_color)
+        gt_image = draw_map_lines(base_image.copy(), load_json_maybe(result.get("ground_truth", "[]")), gt_color, colors["yellow"])
+        pred_image = draw_map_lines(base_image.copy(), load_json_maybe(result.get("prediction", "[]")), pred_color, colors["blue"])
 
         gt_panel = add_title(gt_image, "Ground Truth")
         pred_panel = add_title(pred_image, "Prediction")

@@ -110,6 +110,7 @@ class LlavaMetaModel:
         self.config.input_image_size = getattr(model_args, 'input_image_size', None)
         self.config.disable_deepstack = getattr(model_args, 'disable_deepstack', False)
         self.config.deepstack_visual_indexes = getattr(model_args, 'deepstack_visual_indexes', None)
+        self.config.dino_variant = getattr(model_args, 'dino_variant', None)
 
         mm_projector = getattr(self, 'mm_projector', None)
         projector_needs_rebuild = False

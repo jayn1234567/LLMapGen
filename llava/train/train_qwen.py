@@ -269,6 +269,7 @@ class ModelArguments:
     disable_deepstack: bool = field(default=False)
     input_image_size: Optional[int] = field(default=None)
     mm_vision_tower_type: Optional[str] = field(default=None)
+    dino_variant: Optional[str] = field(default=None)
     s2: Optional[bool] = field(default=False)
     hd: Optional[bool] = field(default=False)
 
@@ -461,6 +462,7 @@ def _write_qwen_multimodal_checkpoint_metadata(model, output_dir: str, trainer=N
         "mm_vision_tower": getattr(config, "mm_vision_tower", None),
         "vision_tower": getattr(config, "vision_tower", None),
         "mm_vision_tower_type": getattr(config, "mm_vision_tower_type", None),
+        "dino_variant": getattr(config, "dino_variant", None),
         "input_image_size": getattr(config, "input_image_size", None),
         "deepstack_visual_indexes": getattr(config, "deepstack_visual_indexes", None),
         "disable_deepstack": getattr(config, "disable_deepstack", None),

@@ -87,7 +87,7 @@ DINO_CONFIGS: Dict[str, DinoConfig] = {
     ),
 }
 
-PATH_ALIAS_MAP = {
+DINO_VARIANT_MAP = {
     "dinov2-large": "dinov2-large",
     "dinov2_large": "dinov2-large",
     "dinov2-l": "dinov2-large",
@@ -111,8 +111,29 @@ PATH_ALIAS_MAP = {
 }
 
 
-def get_dino_config(vision_tower_path: str, input_image_size: Optional[int] = None) -> DinoConfig:
+def get_dino_config(
+    vision_tower_path: str,
+    input_image_size: Optional[int] = None,
+    variant: Optional[str] = None,
+) -> DinoConfig:
     path_lower = vision_tower_path.lower()
+
+    if variant:
+        variant_lower = variant.lower()
+        if variant_lower in DINO_VARIANT_MAP:
+            key = DINO_VARIANT_MAP[variant_lower]
+        elif variant_lower in DINO_CONFIGS:
+            key = variant_lower
+        else:
+            raise KeyError(
+                f"Unknown DINO variant: {variant}. "
+                f"Known variants: {list(DINO_VARIANT_MAP.keys()) + list(DINO_CONFIGS.keys())}"
+            )
+        cfg = DINO_CONFIGS[key]
+        d = cfg.__dict__.copy()
+        if input_image_size is not None:
+            d["image_size"] = input_image_size
+        return DinoConfig(**d)
 
     for key, cfg in DINO_CONFIGS.items():
         if key in path_lower:
@@ -121,7 +142,7 @@ def get_dino_config(vision_tower_path: str, input_image_size: Optional[int] = No
                 d["image_size"] = input_image_size
             return DinoConfig(**d)
 
-    for alias, key in PATH_ALIAS_MAP.items():
+    for alias, key in DINO_VARIANT_MAP.items():
         if alias in path_lower:
             cfg = DINO_CONFIGS[key]
             d = cfg.__dict__.copy()
@@ -129,4 +150,4 @@ def get_dino_config(vision_tower_path: str, input_image_size: Optional[int] = No
                 d["image_size"] = input_image_size
             return DinoConfig(**d)
     raise KeyError(f"Cannot determine DINO variant from path: {vision_tower_path}. "
-                   f"Known path keys: {list(DINO_CONFIGS.keys()) + list(PATH_ALIAS_MAP.keys())}")
+                   f"Known path keys: {list(DINO_CONFIGS.keys()) + list(DINO_VARIANT_MAP.keys())}")

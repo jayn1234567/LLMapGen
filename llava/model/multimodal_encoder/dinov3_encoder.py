@@ -1,4 +1,6 @@
 import os
+from contextlib import nullcontext
+
 import torch
 import torch.nn as nn
 
@@ -185,21 +187,20 @@ class DINOv3VisionTower(nn.Module):
         return main_features, None
 
     def forward(self, images):
-        if self.tune_vision_tower:
-            return self.forward_images(images)
-        with torch.no_grad():
-            return self.forward_images(images)
+        return self.forward_images(images, freeze_vision=not self.tune_vision_tower)
 
-    def forward_images(self, images):
+    def forward_images(self, images, freeze_vision=False):
         self._keep_stable_dtype()
+        vision_context = torch.no_grad() if freeze_vision else nullcontext()
         if type(images) is list:
             main_features = []
             deepstack_features = None
             for image in images:
-                image_forward_out = self.vision_tower(
-                    image.to(device=self.device, dtype=self.dtype).unsqueeze(0),
-                    output_hidden_states=True,
-                )
+                with vision_context:
+                    image_forward_out = self.vision_tower(
+                        image.to(device=self.device, dtype=self.dtype).unsqueeze(0),
+                        output_hidden_states=True,
+                    )
                 mf, df = self.feature_select(image_forward_out)
                 mf = mf.to(image.dtype)
                 main_features.append(mf)
@@ -212,10 +213,11 @@ class DINOv3VisionTower(nn.Module):
                 deepstack_features = [torch.cat(dlist, dim=0) for dlist in deepstack_features]
             return main_features[0] if len(main_features) == 1 else main_features, deepstack_features
 
-        image_forward_outs = self.vision_tower(
-            images.to(device=self.device, dtype=self.dtype),
-            output_hidden_states=True,
-        )
+        with vision_context:
+            image_forward_outs = self.vision_tower(
+                images.to(device=self.device, dtype=self.dtype),
+                output_hidden_states=True,
+            )
         return self.feature_select(image_forward_outs)
 
     @property

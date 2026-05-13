@@ -241,7 +241,7 @@ if [[ "${DISABLE_DEEPSTACK:-False}" =~ ^(1|true|True|TRUE|yes|YES)$ ]]; then
 elif [ -n "${DEEPSTACK_VISUAL_INDEXES}" ]; then
     DEEPSTACK_ARGS=(--deepstack_visual_indexes ${DEEPSTACK_VISUAL_INDEXES})
     DEEPSTACK_LABEL="${DEEPSTACK_VISUAL_INDEXES}"
-    GRADIENT_CHECKPOINTING=${GRADIENT_CHECKPOINTING:-True}
+    GRADIENT_CHECKPOINTING=${GRADIENT_CHECKPOINTING:-False}
 else
     DEEPSTACK_LABEL="disabled"
     GRADIENT_CHECKPOINTING=${GRADIENT_CHECKPOINTING:-True}
@@ -251,6 +251,7 @@ echo "============================================================"
 echo "Model:      ${Qwen3VL_PATH} (Qwen3-VL-8B → auto-extract LLM)"
 echo "ViT:        ${DINOV3_PATH}"
 echo "DeepStack:  ${DEEPSTACK_LABEL}"
+echo "Grad ckpt:  ${GRADIENT_CHECKPOINTING}"
 echo "DeepSpeed:  ${DEEPSPEED_CONFIG}"
 echo "============================================================"
 

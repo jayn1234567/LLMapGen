@@ -78,6 +78,12 @@ def sync_qwen_token_config(tokenizer=None, model=None, config=None, generation_c
     return True
 
 
+def qwen_tokenizer_kwargs(model_name_or_path=None, config=None):
+    if _looks_like_qwen(config=config, model_name_or_path=model_name_or_path):
+        return {"fix_mistral_regex": True}
+    return {}
+
+
 def normalize_qwen_config_dict(config_dict, generation_config_dict=None):
     model_type = _as_lower(config_dict.get("model_type")) if config_dict else ""
     architectures = config_dict.get("architectures", []) if config_dict else []
@@ -90,6 +96,16 @@ def normalize_qwen_config_dict(config_dict, generation_config_dict=None):
         config_dict["pad_token_id"] = QWEN_PAD_TOKEN_ID
     if config_dict.get("eos_token_id") is None:
         config_dict["eos_token_id"] = QWEN_EOS_TOKEN_ID
+
+    rope_scaling = config_dict.get("rope_scaling")
+    if isinstance(rope_scaling, dict):
+        # Qwen3-VL text_config carries vision mRoPE metadata. The extracted
+        # text-only Qwen3 LLM does not consume these fields, and recent
+        # transformers versions warn about them under rope_type=default.
+        rope_scaling.pop("mrope_interleaved", None)
+        rope_scaling.pop("mrope_section", None)
+        if not rope_scaling:
+            config_dict.pop("rope_scaling", None)
 
     if generation_config_dict is not None:
         if generation_config_dict.get("bos_token_id") is None:

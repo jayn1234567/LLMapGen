@@ -235,6 +235,11 @@ torchrun \
 
 echo "=== Testing finished ==="
 
+if [ "${NODE_RANK}" -ne 0 ]; then
+    echo "Skip merge/upload on non-master node ${NODE_RANK}"
+    exit 0
+fi
+
 # ===================== 【合并 rank 文件】 =====================
 echo "Merging summary_rank*.json -> summary.json"
 export TEST_OUTPUT_LOCAL="${TEST_OUTPUT_LOCAL}"

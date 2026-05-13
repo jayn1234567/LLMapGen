@@ -23,7 +23,7 @@ import torch
 from llava.model import *
 from llava.constants import DEFAULT_IMAGE_PATCH_TOKEN, DEFAULT_IM_START_TOKEN, DEFAULT_IM_END_TOKEN
 from llava.model.qwen3vl_extractor import is_qwen3vl_checkpoint, is_llava_checkpoint, ensure_extracted_llm_from_qwen3vl
-from llava.model.qwen_token_utils import sync_qwen_token_config
+from llava.model.qwen_token_utils import qwen_tokenizer_kwargs, sync_qwen_token_config
 
 try:
     from safetensors.torch import load_file as safe_load_file
@@ -164,7 +164,7 @@ def load_pretrained_model(model_path, model_base, model_name, load_8bit=False, l
             from llava.model.language_model.llava_llama import LlavaConfig
             lora_cfg_pretrained = LlavaConfig.from_pretrained(model_path)
             _apply_model_config_overrides(lora_cfg_pretrained, model_config_overrides)
-            tokenizer = AutoTokenizer.from_pretrained(model_base, use_fast=False)
+            tokenizer = AutoTokenizer.from_pretrained(model_base, use_fast=False, **qwen_tokenizer_kwargs(model_base))
             print('Loading LLaVA from base model...')
             model = LlavaLlamaForCausalLM.from_pretrained(model_base, low_cpu_mem_usage=True, config=lora_cfg_pretrained, **kwargs)
             token_num, tokem_dim = model.lm_head.out_features, model.lm_head.in_features
@@ -203,11 +203,11 @@ def load_pretrained_model(model_path, model_base, model_name, load_8bit=False, l
             if 'mpt' in model_name.lower():
                 if not os.path.isfile(os.path.join(model_path, 'configuration_mpt.py')):
                     shutil.copyfile(os.path.join(model_base, 'configuration_mpt.py'), os.path.join(model_path, 'configuration_mpt.py'))
-                tokenizer = AutoTokenizer.from_pretrained(model_base, use_fast=True)
+                tokenizer = AutoTokenizer.from_pretrained(model_base, use_fast=True, **qwen_tokenizer_kwargs(model_base))
                 cfg_pretrained = AutoConfig.from_pretrained(model_path, trust_remote_code=True)
                 model = LlavaMptForCausalLM.from_pretrained(model_base, low_cpu_mem_usage=True, config=cfg_pretrained, **kwargs)
             else:
-                tokenizer = AutoTokenizer.from_pretrained(model_base, use_fast=False)
+                tokenizer = AutoTokenizer.from_pretrained(model_base, use_fast=False, **qwen_tokenizer_kwargs(model_base))
                 cfg_pretrained = AutoConfig.from_pretrained(model_path)
                 _apply_model_config_overrides(cfg_pretrained, model_config_overrides)
                 model_type = getattr(cfg_pretrained, 'model_type', '')
@@ -221,24 +221,24 @@ def load_pretrained_model(model_path, model_base, model_name, load_8bit=False, l
             model.load_state_dict(mm_projector_weights, strict=False)
         else:
             if 'mpt' in model_name.lower():
-                tokenizer = AutoTokenizer.from_pretrained(model_path, use_fast=True)
+                tokenizer = AutoTokenizer.from_pretrained(model_path, use_fast=True, **qwen_tokenizer_kwargs(model_path))
                 model = LlavaMptForCausalLM.from_pretrained(model_path, low_cpu_mem_usage=True, **kwargs)
             elif 'mistral' in model_name.lower():
-                tokenizer = AutoTokenizer.from_pretrained(model_path)
+                tokenizer = AutoTokenizer.from_pretrained(model_path, **qwen_tokenizer_kwargs(model_path))
                 model = LlavaMistralForCausalLM.from_pretrained(
                     model_path,
                     low_cpu_mem_usage=True,
                     **kwargs
                 )
             elif 'dclm' in model_name.lower():
-                tokenizer = AutoTokenizer.from_pretrained(model_path)
+                tokenizer = AutoTokenizer.from_pretrained(model_path, **qwen_tokenizer_kwargs(model_path))
                 model = LlavaOpenlmForCausalLM.from_pretrained(
                     model_path,
                     low_cpu_mem_usage=True,
                     **kwargs
                 )
             else:
-                tokenizer = AutoTokenizer.from_pretrained(model_path, use_fast=True)
+                tokenizer = AutoTokenizer.from_pretrained(model_path, use_fast=True, **qwen_tokenizer_kwargs(model_path))
                 cfg = AutoConfig.from_pretrained(model_path)
                 _apply_model_config_overrides(cfg, model_config_overrides)
                 model_type = getattr(cfg, 'model_type', '')
@@ -261,7 +261,7 @@ def load_pretrained_model(model_path, model_base, model_name, load_8bit=False, l
         if model_base is not None:
             # PEFT model
             from peft import PeftModel
-            tokenizer = AutoTokenizer.from_pretrained(model_base, use_fast=False)
+            tokenizer = AutoTokenizer.from_pretrained(model_base, use_fast=False, **qwen_tokenizer_kwargs(model_base))
             model = AutoModelForCausalLM.from_pretrained(model_base, low_cpu_mem_usage=True, **kwargs)
             print(f"Loading LoRA weights from {model_path}")
             model = PeftModel.from_pretrained(model, model_path)
@@ -272,10 +272,10 @@ def load_pretrained_model(model_path, model_base, model_name, load_8bit=False, l
         else:
             use_fast = False
             if 'mpt' in model_name.lower():
-                tokenizer = AutoTokenizer.from_pretrained(model_path, use_fast=True)
+                tokenizer = AutoTokenizer.from_pretrained(model_path, use_fast=True, **qwen_tokenizer_kwargs(model_path))
                 model = AutoModelForCausalLM.from_pretrained(model_path, low_cpu_mem_usage=True, trust_remote_code=True, **kwargs)
             else:
-                tokenizer = AutoTokenizer.from_pretrained(model_path, use_fast=False)
+                tokenizer = AutoTokenizer.from_pretrained(model_path, use_fast=False, **qwen_tokenizer_kwargs(model_path))
                 model = AutoModelForCausalLM.from_pretrained(model_path, low_cpu_mem_usage=True, **kwargs)
 
     image_processor = None

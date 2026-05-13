@@ -25,6 +25,7 @@ from llava.mm_utils import process_images, tokenizer_image_token
 from llava.model.builder import load_pretrained_model
 from llava.model.language_model.llava_qwen import LlavaConfig as LlavaQwen2Config, LlavaQwen2ForCausalLM
 from llava.model.language_model.llava_qwen3 import LlavaQwen3ForCausalLM
+from llava.model.qwen_token_utils import qwen_tokenizer_kwargs
 
 DEFAULT_PROMPT = DEFAULT_IMAGE_TOKEN
 
@@ -217,8 +218,13 @@ def _runtime_dtype(config, device: str):
 
 def _load_full_finetune_model(checkpoint_dir: Path, device: str, config_overrides=None):
     checkpoint_dir_str = str(checkpoint_dir.resolve())
-    tokenizer = AutoTokenizer.from_pretrained(checkpoint_dir_str, use_fast=False, local_files_only=True)
     config = AutoConfig.from_pretrained(checkpoint_dir_str, local_files_only=True)
+    tokenizer = AutoTokenizer.from_pretrained(
+        checkpoint_dir_str,
+        use_fast=False,
+        local_files_only=True,
+        **qwen_tokenizer_kwargs(checkpoint_dir_str, config=config),
+    )
     _apply_config_overrides(config, config_overrides or {})
     model_type = getattr(config, 'model_type', '')
     config.fastvit_pretrained = False

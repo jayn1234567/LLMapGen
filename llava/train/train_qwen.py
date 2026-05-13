@@ -42,7 +42,7 @@ from llava import conversation as conversation_lib
 from llava.model import *
 from llava.mm_utils import tokenizer_image_token, process_anyres_image
 from llava.model.qwen3vl_extractor import is_qwen3vl_checkpoint, is_llava_checkpoint, ensure_extracted_llm_from_qwen3vl
-from llava.model.qwen_token_utils import sync_qwen_token_config
+from llava.model.qwen_token_utils import qwen_tokenizer_kwargs, sync_qwen_token_config
 
 from PIL import Image
 
@@ -53,6 +53,13 @@ local_rank = None
 
 def _env_flag(name, default="0"):
     return str(os.environ.get(name, default)).lower() in ("1", "true", "yes", "on")
+
+
+def _is_global_rank0() -> bool:
+    rank = os.environ.get("RANK")
+    if rank is not None:
+        return int(rank) == 0
+    return local_rank in (None, -1, 0)
 
 
 def silence_non_primary_rank_output():
@@ -70,7 +77,7 @@ def silence_non_primary_rank_output():
 
 
 def rank0_print(*args):
-    if local_rank in (-1, 0):
+    if _is_global_rank0():
         print(*args)
 
 
@@ -84,7 +91,12 @@ class JsonlMetricLoggerCallback(TrainerCallback):
         self._throughput_start_time = None
         self._throughput_start_step = 0
 
-    def _is_rank0(self, args) -> bool:
+    def _is_rank0(self, args, state=None) -> bool:
+        if state is not None and hasattr(state, "is_world_process_zero"):
+            return state.is_world_process_zero
+        rank = os.environ.get("RANK")
+        if rank is not None:
+            return int(rank) == 0
         return args.local_rank in (-1, 0)
 
     def _format_log_value(self, value):
@@ -111,7 +123,7 @@ class JsonlMetricLoggerCallback(TrainerCallback):
         return line
 
     def on_train_begin(self, args, state, control, **kwargs):
-        if not self._is_rank0(args):
+        if not self._is_rank0(args, state):
             return
         payload = {
             "event": "train_begin",
@@ -126,7 +138,7 @@ class JsonlMetricLoggerCallback(TrainerCallback):
         self._append_log_line(self.checkpoint_log_path, payload)
 
     def on_log(self, args, state, control, logs=None, **kwargs):
-        if not self._is_rank0(args) or not logs:
+        if not self._is_rank0(args, state) or not logs:
             return
 
         # 吞吐量计算
@@ -165,7 +177,7 @@ class JsonlMetricLoggerCallback(TrainerCallback):
         print(line)
 
     def on_save(self, args, state, control, **kwargs):
-        if not self._is_rank0(args):
+        if not self._is_rank0(args, state):
             return
         checkpoint_dir = os.path.join(args.output_dir, f"checkpoint-{state.global_step}")
         payload = {
@@ -179,7 +191,7 @@ class JsonlMetricLoggerCallback(TrainerCallback):
         print(line)
 
     def on_train_end(self, args, state, control, **kwargs):
-        if not self._is_rank0(args):
+        if not self._is_rank0(args, state):
             return
         payload = {
             "event": "train_end",
@@ -358,11 +370,11 @@ def safe_save_model_for_hf_trainer(trainer: transformers.Trainer,
             keys_to_match.extend(['embed_tokens', 'embed_in'])
 
         weight_to_save = get_mm_adapter_state_maybe_zero_3(trainer.model.named_parameters(), keys_to_match)
-        trainer.model.config.save_pretrained(output_dir)
 
         current_folder = output_dir.split('/')[-1]
         parent_folder = os.path.dirname(output_dir)
-        if trainer.args.local_rank == 0 or trainer.args.local_rank == -1:
+        if trainer.is_world_process_zero():
+            trainer.model.config.save_pretrained(output_dir)
             if current_folder.startswith('checkpoint-'):
                 mm_projector_folder = os.path.join(parent_folder, "mm_projector")
                 os.makedirs(mm_projector_folder, exist_ok=True)
@@ -374,7 +386,7 @@ def safe_save_model_for_hf_trainer(trainer: transformers.Trainer,
     if trainer.deepspeed:
         if torch.cuda.is_available():
             torch.cuda.synchronize()
-        else:
+        elif hasattr(torch, "npu"):
            torch.npu.synchronize() 
         trainer.save_model(output_dir)
         return
@@ -1383,7 +1395,8 @@ def train(attn_implementation=None):
             model_args.model_name_or_path,
             cache_dir=training_args.cache_dir,
             model_max_length=training_args.model_max_length,
-            padding_side="right"
+            padding_side="right",
+            **qwen_tokenizer_kwargs(model_args.model_name_or_path),
         )
     else:
         tokenizer = transformers.AutoTokenizer.from_pretrained(
@@ -1392,6 +1405,7 @@ def train(attn_implementation=None):
             model_max_length=training_args.model_max_length,
             padding_side="right",
             use_fast=False,
+            **qwen_tokenizer_kwargs(model_args.model_name_or_path),
         )
 
     sync_qwen_token_config(
@@ -1494,7 +1508,7 @@ def train(attn_implementation=None):
                     if training_args.bf16 and module.weight.dtype == torch.float32:
                         module = module.to(torch.bfloat16)
                         
-    if local_rank in (-1, 0):
+    if _is_global_rank0():
             print_trainable_parameters(model)
 
     data_module = make_supervised_data_module(tokenizer=tokenizer,
@@ -1532,7 +1546,7 @@ def train(attn_implementation=None):
         non_lora_state_dict = get_peft_state_non_lora_maybe_zero_3(
             model.named_parameters()
         )
-        if training_args.local_rank == 0 or training_args.local_rank == -1:
+        if trainer.is_world_process_zero():
             model.config.save_pretrained(training_args.output_dir)
             model.save_pretrained(training_args.output_dir, state_dict=state_dict)
             torch.save(non_lora_state_dict, os.path.join(training_args.output_dir, 'non_lora_trainables.bin'))

@@ -10,6 +10,7 @@ from llava.model.qwen_token_utils import normalize_qwen_config_dict
 
 EXTRACT_DONE_FILE = ".extract_complete"
 EXTRACT_LOCK_FILE = ".extract_lock"
+EXTRACT_VERSION = "2"
 
 
 def is_qwen3vl_checkpoint(path):
@@ -36,7 +37,15 @@ def get_extracted_path(vl_path):
 
 
 def is_extracted_llm_ready(output_path):
-    if not os.path.exists(os.path.join(output_path, EXTRACT_DONE_FILE)):
+    done_path = os.path.join(output_path, EXTRACT_DONE_FILE)
+    if not os.path.exists(done_path):
+        return False
+    try:
+        with open(done_path, "r", encoding="utf-8") as f:
+            done_text = f.read()
+        if f"version={EXTRACT_VERSION}" not in done_text:
+            return False
+    except Exception:
         return False
     return (
         os.path.exists(os.path.join(output_path, "model.safetensors"))
@@ -151,6 +160,7 @@ def extract_llm_from_qwen3vl(vl_path, output_path):
             json.dump(generation_config, f, indent=2, ensure_ascii=False)
 
     with open(os.path.join(output_path, EXTRACT_DONE_FILE), 'w', encoding='utf-8') as f:
+        f.write(f"version={EXTRACT_VERSION}\n")
         f.write(f"source={os.path.abspath(vl_path)}\n")
 
     return output_path

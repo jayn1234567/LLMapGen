@@ -186,6 +186,11 @@ torchrun --nproc_per_node=8 \
   --temperature 0.0 \
   --max-new-tokens 2048
 
+if [ "${NODE_RANK}" -ne 0 ]; then
+    echo "Skip merge/upload on non-master node ${NODE_RANK}"
+    exit 0
+fi
+
 # ===================== 【鲁棒合并 rank 文件】 =====================
 echo "🔗 正在使用鲁棒合并处理所有 summary_rank*.json → summary.json"
 export TEST_OUTPUT_LOCAL="${TEST_OUTPUT_LOCAL}"

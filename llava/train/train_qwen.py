@@ -37,6 +37,7 @@ from llava.constants import IGNORE_INDEX, IMAGE_TOKEN_INDEX, DEFAULT_IMAGE_TOKEN
 from torch.utils.data import Dataset
 from llava.train.llava_trainer import LLaVATrainer
 from transformers import TrainerCallback
+from transformers.trainer_callback import PrinterCallback, ProgressCallback
 
 from llava import conversation as conversation_lib
 from llava.model import *
@@ -1592,6 +1593,8 @@ def train(attn_implementation=None):
                            args=training_args,
                            callbacks=[JsonlMetricLoggerCallback(training_args.output_dir)],
                            **data_module)
+    trainer.remove_callback(PrinterCallback)
+    trainer.remove_callback(ProgressCallback)
 
     if list(pathlib.Path(training_args.output_dir).glob("checkpoint-*")):
         trainer.train(resume_from_checkpoint=True)

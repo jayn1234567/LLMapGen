@@ -92,13 +92,10 @@ run_case() {
     mkdir -p "${train_dir}" "${infer_dir}"
 
     local deepstack_train_args=()
-    local deepstack_infer_args=()
     if [ "${deepstack_mode}" = "on" ]; then
         deepstack_train_args=(--deepstack_visual_indexes ${DEEPSTACK_VISUAL_INDEXES})
-        deepstack_infer_args=(--deepstack_visual_indexes ${DEEPSTACK_VISUAL_INDEXES})
     else
         deepstack_train_args=(--disable_deepstack True)
-        deepstack_infer_args=(--disable_deepstack)
     fi
 
     echo "========== CASE ${CASE_INDEX}: ${case_name} =========="
@@ -178,7 +175,6 @@ run_case() {
         --checkpoint-dir "${train_dir}" \
         --vision_tower "${vision_path}" \
         --input_image_size "${INPUT_IMAGE_SIZE}" \
-        "${deepstack_infer_args[@]}" \
         --test-json "${TEST_JSON}" \
         --num-samples "${NUM_INFER_SAMPLES}" \
         --image-folder "${IMAGE_FOLDER}" \
@@ -201,19 +197,21 @@ run_case() {
         require_grep "DeepStack \\(real injection\\) enabled" "${infer_log}" "DeepStack enabled infer log" || { FAILED_CASES+=("${case_name}:deepstack_infer"); return; }
     fi
 
-    DEBUG_CASE_DIR="${case_dir}" DEBUG_NPROC="${NPROC_PER_NODE}" DEBUG_CONV="${conv_template}" python - <<'PY'
+    DEBUG_CASE_DIR="${case_dir}" DEBUG_NPROC="${NPROC_PER_NODE}" DEBUG_NUM_INFER_SAMPLES="${NUM_INFER_SAMPLES}" DEBUG_CONV="${conv_template}" python - <<'PY'
 import json
 import os
 from pathlib import Path
 
 case_dir = Path(os.environ["DEBUG_CASE_DIR"])
 nproc = int(os.environ["DEBUG_NPROC"])
+num_infer_samples = int(os.environ["DEBUG_NUM_INFER_SAMPLES"])
 conv = os.environ["DEBUG_CONV"]
 infer_dir = case_dir / "infer"
 summary_files = sorted(infer_dir.glob("summary_rank*.json"))
 sample_files = sorted(p for p in infer_dir.glob("rank*_*.json") if not p.name.startswith("summary_"))
 assert len(summary_files) == nproc, f"expected {nproc} summary_rank files, got {len(summary_files)}"
-assert len(sample_files) >= nproc, f"expected rank sample files, got {len(sample_files)}"
+expected_sample_files = min(num_infer_samples, nproc) if num_infer_samples > 0 else nproc
+assert len(sample_files) >= expected_sample_files, f"expected at least {expected_sample_files} rank sample files, got {len(sample_files)}"
 for path in summary_files:
     data = json.loads(path.read_text(encoding="utf-8"))
     assert isinstance(data, list)

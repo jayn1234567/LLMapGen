@@ -335,17 +335,51 @@ python scripts/data/build_sft_dataset.py \
 - 绘制 `centerline`
 - 绘制 `intersection`
 
-## 8. 当前未做的工作
+## 8. 当前验证状态
+
+2026-05-14 已在本地新副本 `/media/q/data2/jjh/project/unimapgen_mllm` 完成一次最小 debug 验证。
+
+数据验证：
+
+- 由 1 张 4096 图生成 256 个 `256x256` patch
+- patch 顺序为 `tile_id -> row -> col`
+- `cut/inside` 不再按“落在 patch 边界就 cut”判断，而是按 clipping 来源判断
+- incoming trace 点数为 2 或 3，符合当前设计
+
+两卡 ZeRO-3 debug 训练：
+
+- GPU: `CUDA_VISIBLE_DEVICES=1,2`
+- 模型: Qwen3-VL-2B + DINOv3-B
+- DeepStack: `[3, 6, 9, 11]`
+- 数据: `data/av2_patch_256_fullimage_cutflag_test_v2/sft.jsonl`
+- 配置: `scripts/deepspeed_zero3.json`
+- 训练: `max_steps=1`, `train_sample_limit=2`, LoRA
+- 输出: `/tmp/unimapgen_zero3_debug_train`
+- 结果: 训练完成，生成 `adapter_model.safetensors`, `non_lora_trainables.bin`, `qwen_multimodal_checkpoint.json`
+
+两卡真实推理 debug：
+
+- checkpoint: `/tmp/unimapgen_zero3_debug_train`
+- 数据: 同一张 4096 图裁剪出的前 2 个 patch
+- 输出: `/tmp/unimapgen_zero3_debug_infer_256`
+- 结果: `summary_rank0.json` 和 `summary_rank1.json` 均生成，每个 rank 1 条样本，`parse_ok=True`
+
+注意：
+
+- 这是最小 smoke，不代表模型质量；只验证 ZeRO-3 训练、checkpoint 保存、LoRA 推理、DeepStack 加载和新 JSON schema 解析链路能跑通。
+- 训练和推理都使用本地已有权重路径，没有复制权重到新项目。
+
+## 9. 当前未做的工作
 
 以下工作仍未完成：
 
 - 用真实 checkpoint 跑 `scripts/infer_centerline_state_update.py`
 - 对 state-update 推理结果做整图可视化
 - 用云端完整数据集生成 Phase A / Phase B 训练数据
-- 启动新 schema 训练
+- 启动新 schema 的正式训练
 - 评估 `intersection` 标注的学习效果
 
-## 9. 明确不该先动的地方
+## 10. 明确不该先动的地方
 
 第一阶段不建议动这些文件：
 
@@ -360,7 +394,7 @@ python scripts/data/build_sft_dataset.py \
 - 当前缺口主要在 **任务流程和数据接口**
 - 不是 backbone 表达能力
 
-## 10. 下一步建议执行顺序
+## 11. 下一步建议执行顺序
 
 推荐按下面顺序继续：
 
@@ -371,7 +405,7 @@ python scripts/data/build_sft_dataset.py \
 5. 扩展或新增整图级可视化和评估脚本
 6. 专门评估 `intersection` 闭合线质量
 
-## 11. 当前重要结论
+## 12. 当前重要结论
 
 当前已经明确的设计结论如下：
 
@@ -385,7 +419,7 @@ python scripts/data/build_sft_dataset.py \
 - 推理顺序固定为从上到下、每行从左到右
 - 训练样本可以 shuffle
 
-## 12. 接手时优先看的文件
+## 13. 接手时优先看的文件
 
 建议按这个顺序阅读：
 

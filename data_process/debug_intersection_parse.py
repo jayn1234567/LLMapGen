@@ -77,6 +77,32 @@ def raw_geojson_summary(path: Path, label, max_features=5):
         print(f"{label}_json_root_type: {type(payload).__name__}")
 
 
+def list_geojson_candidates(sample_root: Path):
+    label_dir = sample_root / "label_check_crop"
+    print("label_geojson_candidates:")
+    if not label_dir.exists():
+        print(f"  label_dir_missing: {label_dir}")
+        return
+    for path in sorted(label_dir.glob("*.geojson")):
+        feature_count = "unreadable"
+        geometry_counts = {}
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            features = payload.get("features") if isinstance(payload, dict) else None
+            if isinstance(features, list):
+                feature_count = len(features)
+                for feature in features:
+                    geom = feature.get("geometry") if isinstance(feature, dict) else None
+                    geom_type = geom.get("type") if isinstance(geom, dict) else None
+                    geometry_counts[geom_type] = geometry_counts.get(geom_type, 0) + 1
+        except Exception as exc:
+            feature_count = f"error:{exc}"
+        print(
+            f"  {path.name}: size={path.stat().st_size} "
+            f"features={feature_count} geometry_types={geometry_counts}"
+        )
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Debug whether one raw sample can load and clip Intersection.geojson into patch-local targets."
@@ -97,6 +123,7 @@ def main():
     print(f"intersection_geojson: {sample.intersection_geojson} exists={sample.intersection_geojson.exists()}")
     print(f"image_tiff: {sample.image_tiff} exists={sample.image_tiff.exists()}")
     print(f"mask_tiff: {sample.mask_tiff} exists={sample.mask_tiff.exists()}")
+    list_geojson_candidates(sample_root)
 
     image_arr, meta, transform, crs = read_masked_image(sample.image_tiff, sample.mask_tiff)
     image_arr, original_size = pad_image_to_patch_grid(image_arr, args.patch_size)

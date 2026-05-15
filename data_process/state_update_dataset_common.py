@@ -13,12 +13,12 @@ try:
     import geopandas as gpd
     import rasterio
     from rasterio.transform import from_origin
-    from shapely.geometry import GeometryCollection, LineString, MultiLineString, MultiPolygon, Polygon, box
+    from shapely.geometry import GeometryCollection, LineString, MultiLineString, MultiPolygon, Polygon, box, shape
 except ModuleNotFoundError:
     gpd = None
     rasterio = None
     from_origin = None
-    GeometryCollection = LineString = MultiLineString = MultiPolygon = Polygon = box = None
+    GeometryCollection = LineString = MultiLineString = MultiPolygon = Polygon = box = shape = None
 
 
 TASK_TEXT = "Please construct the complete road map in the current BEV (Bird's Eye View) image patch."
@@ -264,10 +264,58 @@ def load_line_geometries(path: Path, crs, transform, simplify_tolerance: float):
     return lines
 
 
+def geojson_crs_name(payload):
+    crs_info = payload.get("crs") if isinstance(payload, dict) else None
+    if not isinstance(crs_info, dict):
+        return "EPSG:4326"
+    properties = crs_info.get("properties")
+    if not isinstance(properties, dict):
+        return "EPSG:4326"
+    name = properties.get("name")
+    if not name:
+        return "EPSG:4326"
+    if str(name).upper().endswith("CRS84"):
+        return "EPSG:4326"
+    return name
+
+
+def read_geojson_features_as_gdf(path: Path, dst_crs):
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    features = payload.get("features") if isinstance(payload, dict) else None
+    if not isinstance(features, list) or not features:
+        return gpd.GeoDataFrame(geometry=[], crs=dst_crs)
+
+    rows = []
+    geometries = []
+    for feature in features:
+        if not isinstance(feature, dict):
+            continue
+        geometry = feature.get("geometry")
+        if not isinstance(geometry, dict):
+            continue
+        try:
+            geom = shape(geometry)
+        except Exception:
+            continue
+        if geom is None or geom.is_empty:
+            continue
+        properties = feature.get("properties") if isinstance(feature.get("properties"), dict) else {}
+        rows.append(dict(properties))
+        geometries.append(geom)
+
+    src_crs = geojson_crs_name(payload)
+    fallback_gdf = gpd.GeoDataFrame(rows, geometry=geometries, crs=src_crs)
+    if fallback_gdf.empty:
+        return fallback_gdf.to_crs(dst_crs)
+    return fallback_gdf.to_crs(dst_crs)
+
+
 def load_intersection_geometries(path: Path, crs, transform, simplify_tolerance: float):
     if not path.exists():
         return []
     gdf = gpd.read_file(path).to_crs(crs)
+    if len(gdf) == 0:
+        gdf = read_geojson_features_as_gdf(path, crs)
     polygons = []
     for index, row in gdf.iterrows():
         geom = row.geometry

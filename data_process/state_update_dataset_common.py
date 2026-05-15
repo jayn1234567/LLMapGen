@@ -12,10 +12,12 @@ from PIL import Image
 try:
     import geopandas as gpd
     import rasterio
+    from rasterio.transform import from_origin
     from shapely.geometry import GeometryCollection, LineString, MultiLineString, MultiPolygon, Polygon, box
 except ModuleNotFoundError:
     gpd = None
     rasterio = None
+    from_origin = None
     GeometryCollection = LineString = MultiLineString = MultiPolygon = Polygon = box = None
 
 
@@ -215,7 +217,6 @@ def load_line_geometries(path: Path, crs, transform, simplify_tolerance: float):
     if not path.exists():
         return []
     gdf = gpd.read_file(path).to_crs(crs)
-    inverse_transform = ~transform
     lines = []
     for index, row in gdf.iterrows():
         geom = row.geometry
@@ -229,11 +230,10 @@ def load_line_geometries(path: Path, crs, transform, simplify_tolerance: float):
         elif isinstance(geom, MultiLineString):
             geoms = list(geom.geoms)
         for part_idx, line in enumerate(geoms):
-            points = line_to_pixel_coords(line, inverse_transform)
-            if len(points) >= 2:
+            if len(line.coords) >= 2:
                 lines.append({
                     "category": "centerline",
-                    "points": points,
+                    "geometry": line,
                     "_source_line_index": int(index),
                     "_source_part_index": part_idx,
                 })
@@ -244,7 +244,6 @@ def load_intersection_geometries(path: Path, crs, transform, simplify_tolerance:
     if not path.exists():
         return []
     gdf = gpd.read_file(path).to_crs(crs)
-    inverse_transform = ~transform
     polygons = []
     for index, row in gdf.iterrows():
         geom = row.geometry
@@ -263,15 +262,95 @@ def load_intersection_geometries(path: Path, crs, transform, simplify_tolerance:
             if key != "geometry" and not (isinstance(value, float) and np.isnan(value))
         }
         for part_idx, poly in enumerate(geoms):
-            pixel_poly = polygon_to_pixel_polygon(poly, inverse_transform)
-            if not pixel_poly.is_empty and pixel_poly.area > 0:
+            if not poly.is_empty and poly.area > 0:
                 polygons.append({
-                    "geometry": pixel_poly,
+                    "geometry": poly,
                     "source_properties": properties,
                     "source_index": int(index),
                     "source_part_index": part_idx,
                 })
     return polygons
+
+
+def patch_window_polygon(transform, x0, y0, patch_size):
+    return Polygon([
+        transform * (x0, y0),
+        transform * (x0 + patch_size, y0),
+        transform * (x0 + patch_size, y0 + patch_size),
+        transform * (x0, y0 + patch_size),
+        transform * (x0, y0),
+    ])
+
+
+def patch_window_transform(transform, x0, y0):
+    return from_origin(
+        transform.xoff + x0 * transform.a,
+        transform.yoff + y0 * transform.e,
+        transform.a,
+        abs(transform.e),
+    )
+
+
+def map_coord_to_local_point(coord, window_transform, patch_size):
+    px, py = ~window_transform * (float(coord[0]), float(coord[1]))
+    x = clamp(abs(int(round(px))), 0, patch_size - 1)
+    y = clamp(abs(int(round(py))), 0, patch_size - 1)
+    return [x, y]
+
+
+def line_parts(geom):
+    if isinstance(geom, LineString):
+        return [geom]
+    if isinstance(geom, MultiLineString):
+        return list(geom.geoms)
+    if isinstance(geom, GeometryCollection):
+        parts = []
+        for sub in geom.geoms:
+            parts.extend(line_parts(sub))
+        return parts
+    return []
+
+
+def endpoint_type_from_map_line(original_line, clipped_endpoint, tol=1e-6):
+    point = np.array([float(clipped_endpoint[0]), float(clipped_endpoint[1])])
+    original_start = np.array([float(original_line.coords[0][0]), float(original_line.coords[0][1])])
+    original_end = np.array([float(original_line.coords[-1][0]), float(original_line.coords[-1][1])])
+    if np.linalg.norm(point - original_start) <= tol or np.linalg.norm(point - original_end) <= tol:
+        return "inside"
+    return "cut"
+
+
+def clip_lanes_to_patch(lines, transform, x0, y0, patch_size):
+    window_polygon = patch_window_polygon(transform, x0, y0, patch_size)
+    window_transform = patch_window_transform(transform, x0, y0)
+    results = []
+    for idx, line in enumerate(lines):
+        geom = line["geometry"]
+        if not geom.intersects(window_polygon):
+            continue
+        clipped = geom.intersection(window_polygon)
+        for part_idx, clipped_line in enumerate(line_parts(clipped)):
+            if clipped_line.is_empty or len(clipped_line.coords) < 2:
+                continue
+            local_points = [map_coord_to_local_point(coord, window_transform, patch_size) for coord in clipped_line.coords]
+            local_points = dedupe_points(local_points)
+            if len(local_points) < 2:
+                continue
+            if np.linalg.norm(np.array(local_points[0]) - np.array(local_points[-1])) < 1:
+                continue
+            global_pixel_points = [[point[0] + x0, point[1] + y0] for point in local_points]
+            results.append({
+                "category": "centerline",
+                "start_type": endpoint_type_from_map_line(geom, clipped_line.coords[0]),
+                "end_type": endpoint_type_from_map_line(geom, clipped_line.coords[-1]),
+                "points": local_points,
+                "_source_line_index": line.get("_source_line_index", idx),
+                "_source_part_index": line.get("_source_part_index", part_idx),
+                "_source_points": global_pixel_points,
+                "_patch_x0": x0,
+                "_patch_y0": y0,
+            })
+    return results
 
 
 def region_code(x, y, xmin, ymin, xmax, ymax):
@@ -435,16 +514,24 @@ def polygon_parts(geom):
     return []
 
 
-def local_ring_points(poly: Polygon, x0, y0, patch_size):
-    points = [round_local_point(point, x0, y0, patch_size) for point in poly.exterior.coords]
+def local_ring_points(poly: Polygon, x0, y0, patch_size, window_transform=None):
+    if window_transform is None:
+        points = [round_local_point(point, x0, y0, patch_size) for point in poly.exterior.coords]
+    else:
+        points = [map_coord_to_local_point(point, window_transform, patch_size) for point in poly.exterior.coords]
     points = dedupe_points(points)
     if len(points) >= 2 and points[0] != points[-1]:
         points.append(points[0])
     return points
 
 
-def clip_intersections_to_patch(intersections, x0, y0, patch_size):
-    bbox = box(x0, y0, x0 + patch_size - 1, y0 + patch_size - 1)
+def clip_intersections_to_patch(intersections, x0, y0, patch_size, transform=None):
+    if transform is None:
+        bbox = box(x0, y0, x0 + patch_size - 1, y0 + patch_size - 1)
+        window_transform = None
+    else:
+        bbox = patch_window_polygon(transform, x0, y0, patch_size)
+        window_transform = patch_window_transform(transform, x0, y0)
     results = []
     for idx, item in enumerate(intersections):
         geom = item["geometry"]
@@ -455,7 +542,7 @@ def clip_intersections_to_patch(intersections, x0, y0, patch_size):
         for part_idx, poly in enumerate(polygon_parts(clipped)):
             if poly.is_empty or poly.area <= 0:
                 continue
-            pts = local_ring_points(poly, x0, y0, patch_size)
+            pts = local_ring_points(poly, x0, y0, patch_size, window_transform=window_transform)
             if len(pts) < 4:
                 continue
             results.append({
@@ -730,13 +817,15 @@ def process_sample(sample: RawSample, output_root: Path, split_name: str, includ
     patch_source_meta = {}
     for y0 in range(0, height - args.patch_size + 1, args.stride):
         for x0 in range(0, width - args.patch_size + 1, args.stride):
+            chunk = image_arr[:, y0:y0 + args.patch_size, x0:x0 + args.patch_size]
+            if np.all(chunk == 0):
+                continue
             row = y0 // args.stride
             col = x0 // args.stride
             local_lines = []
-            for line_idx, line in enumerate(lines):
-                local_lines.extend(clip_polyline_to_patch(line, x0, y0, args.patch_size, source_line_index=line_idx))
+            local_lines.extend(clip_lanes_to_patch(lines, transform, x0, y0, args.patch_size))
             if include_intersections:
-                local_lines.extend(clip_intersections_to_patch(intersections, x0, y0, args.patch_size))
+                local_lines.extend(clip_intersections_to_patch(intersections, x0, y0, args.patch_size, transform=transform))
             local_lines = sort_target_lines(local_lines, args.patch_size, args.boundary_tol)
             patch_lines_by_rc[(row, col)] = local_lines
             patch_source_meta[(row, col)] = {

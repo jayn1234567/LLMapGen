@@ -42,6 +42,41 @@ def geom_summary(gdf, label, max_rows=5):
         )
 
 
+def raw_geojson_summary(path: Path, label, max_features=5):
+    print(f"{label}_file_size_bytes: {path.stat().st_size if path.exists() else 'missing'}")
+    if not path.exists():
+        return
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        print(f"{label}_json_read_error: {exc}")
+        return
+
+    if isinstance(payload, dict):
+        print(f"{label}_json_type: {payload.get('type')}")
+        features = payload.get("features")
+        if isinstance(features, list):
+            print(f"{label}_json_feature_count: {len(features)}")
+            geom_counts = {}
+            for feature in features:
+                geom = feature.get("geometry") if isinstance(feature, dict) else None
+                geom_type = geom.get("type") if isinstance(geom, dict) else None
+                geom_counts[geom_type] = geom_counts.get(geom_type, 0) + 1
+            print(f"{label}_json_geometry_type_counts: {geom_counts}")
+            for idx, feature in enumerate(features[:max_features]):
+                geom = feature.get("geometry") if isinstance(feature, dict) else None
+                props = feature.get("properties") if isinstance(feature, dict) else None
+                print(
+                    f"{label}_json_feature_{idx}: "
+                    f"geometry_type={geom.get('type') if isinstance(geom, dict) else None} "
+                    f"property_keys={list(props.keys()) if isinstance(props, dict) else None}"
+                )
+        else:
+            print(f"{label}_json_features_field_type: {type(features).__name__}")
+    else:
+        print(f"{label}_json_root_type: {type(payload).__name__}")
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Debug whether one raw sample can load and clip Intersection.geojson into patch-local targets."
@@ -72,6 +107,7 @@ def main():
     print(f"padded_size: {[image_arr.shape[2], image_arr.shape[1]]}")
 
     if sample.intersection_geojson.exists():
+        raw_geojson_summary(sample.intersection_geojson, "raw_intersection")
         raw_intersection_gdf = gpd.read_file(sample.intersection_geojson)
         geom_summary(raw_intersection_gdf, "raw_intersection")
         projected_intersection_gdf = raw_intersection_gdf.to_crs(crs)

@@ -20,7 +20,7 @@ Expected extracted sample layout:
 sample_id/
 ├── label_check_crop/
 │   ├── Lane.geojson
-│   └── intersection.geojson
+│   └── Intersection.geojson or intersection.geojson
 ├── inter_patch_tif/
 │   └── 0_inter.tif
 └── patch_tif/

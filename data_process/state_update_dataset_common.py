@@ -83,12 +83,36 @@ def sample_id_from_root(root: Path) -> str:
     return root.name
 
 
+def find_geojson(label_dir: Path, preferred_names, stem_keywords):
+    for name in preferred_names:
+        path = label_dir / name
+        if path.exists():
+            return path
+    if not label_dir.exists():
+        return label_dir / preferred_names[0]
+    geojson_files = sorted(label_dir.glob("*.geojson"))
+    preferred_lower = {name.lower() for name in preferred_names}
+    for path in geojson_files:
+        if path.name.lower() in preferred_lower:
+            return path
+    for path in geojson_files:
+        stem = path.stem.lower()
+        if any(keyword in stem for keyword in stem_keywords):
+            return path
+    return label_dir / preferred_names[0]
+
+
 def required_paths(root: Path) -> RawSample:
+    label_dir = root / "label_check_crop"
     return RawSample(
         sample_id=sample_id_from_root(root),
         root=root,
-        lane_geojson=root / "label_check_crop" / "Lane.geojson",
-        intersection_geojson=root / "label_check_crop" / "intersection.geojson",
+        lane_geojson=find_geojson(label_dir, ("Lane.geojson", "lane.geojson"), ("lane",)),
+        intersection_geojson=find_geojson(
+            label_dir,
+            ("intersection.geojson", "Intersection.geojson"),
+            ("intersection",),
+        ),
         image_tiff=root / "inter_patch_tif" / "0_inter.tif",
         mask_tiff=root / "patch_tif" / "0_edit_poly.tif",
     )
@@ -136,7 +160,7 @@ def find_sample_roots(input_root: Path, require_intersection: bool = False):
 
 def discover_samples(input_root: Path, include_intersections: bool, delete_archives: bool, limit_samples=None):
     extract_archives(input_root, delete_archive=delete_archives)
-    roots = find_sample_roots(input_root, require_intersection=False)
+    roots = find_sample_roots(input_root, require_intersection=include_intersections)
     samples = [required_paths(root) for root in roots]
     samples = sorted(samples, key=lambda sample: (sample.sample_id, str(sample.root)))
     if limit_samples is not None:

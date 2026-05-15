@@ -183,3 +183,19 @@ python data_process/build_lane_intersection_dataset.py \
   --max-patches-per-sample 20 \
   --keep-archives
 ```
+
+Debug whether one extracted raw sample can load and clip `Intersection.geojson`:
+
+```bash
+python data_process/debug_intersection_parse.py \
+  /path/to/one_sample \
+  --patch-size 256 \
+  --stride 256
+```
+
+Key fields:
+
+- `intersection_geojson exists=True`: the script found `Intersection.geojson` or `intersection.geojson`.
+- `loaded_intersection_polygon_count`: number of polygon geometries read from the file.
+- `intersection_patch_count`: number of nonblack patches where intersection targets were clipped.
+- `intersection_examples`: example patch-local intersection targets.

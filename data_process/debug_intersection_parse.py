@@ -3,6 +3,7 @@ import argparse
 import json
 from pathlib import Path
 
+import geopandas as gpd
 import numpy as np
 
 from state_update_dataset_common import (
@@ -15,6 +16,30 @@ from state_update_dataset_common import (
     required_paths,
     sort_target_lines,
 )
+
+
+def geom_summary(gdf, label, max_rows=5):
+    print(f"{label}_crs: {gdf.crs}")
+    print(f"{label}_row_count: {len(gdf)}")
+    if len(gdf) == 0:
+        return
+    counts = gdf.geometry.geom_type.value_counts(dropna=False).to_dict()
+    print(f"{label}_geom_type_counts: {counts}")
+    try:
+        print(f"{label}_total_bounds: {list(map(float, gdf.total_bounds))}")
+    except Exception as exc:
+        print(f"{label}_total_bounds_error: {exc}")
+    for idx, geom in enumerate(gdf.geometry.head(max_rows)):
+        if geom is None:
+            print(f"{label}_row_{idx}: geom=None")
+            continue
+        print(
+            f"{label}_row_{idx}: "
+            f"type={geom.geom_type} "
+            f"is_empty={geom.is_empty} "
+            f"has_z={getattr(geom, 'has_z', False)} "
+            f"bounds={list(map(float, geom.bounds)) if not geom.is_empty else []}"
+        )
 
 
 def main():
@@ -45,6 +70,19 @@ def main():
     print(f"transform: {transform}")
     print(f"original_size: {original_size}")
     print(f"padded_size: {[image_arr.shape[2], image_arr.shape[1]]}")
+
+    if sample.intersection_geojson.exists():
+        raw_intersection_gdf = gpd.read_file(sample.intersection_geojson)
+        geom_summary(raw_intersection_gdf, "raw_intersection")
+        projected_intersection_gdf = raw_intersection_gdf.to_crs(crs)
+        geom_summary(projected_intersection_gdf, "projected_intersection")
+        if args.simplify_tolerance > 0:
+            simplified_intersection_gdf = projected_intersection_gdf.copy()
+            simplified_intersection_gdf["geometry"] = simplified_intersection_gdf.geometry.apply(
+                lambda geom: geom.simplify(args.simplify_tolerance, preserve_topology=True)
+                if geom is not None else geom
+            )
+            geom_summary(simplified_intersection_gdf, "simplified_intersection")
 
     lines = load_line_geometries(sample.lane_geojson, crs, transform, args.simplify_tolerance)
     intersections = load_intersection_geometries(

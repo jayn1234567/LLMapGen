@@ -275,11 +275,7 @@ def load_intersection_geometries(path: Path, crs, transform, simplify_tolerance:
             continue
         if simplify_tolerance > 0:
             geom = geom.simplify(simplify_tolerance, preserve_topology=True)
-        geoms = []
-        if isinstance(geom, Polygon):
-            geoms = [geom]
-        elif isinstance(geom, MultiPolygon):
-            geoms = list(geom.geoms)
+        geoms = polygon_parts(geom)
         properties = {
             key: value
             for key, value in row.items()

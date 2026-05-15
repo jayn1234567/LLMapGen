@@ -44,6 +44,12 @@
 - prompt 中可以带 `incoming traces`
 - 输出中带 `centerline / intersection / cut|inside`
 
+checkpoint 选择策略分三类入口：
+
+- 普通训练脚本默认不做 eval，也不维护 best-loss 目录。
+- `train_full_dinov3_qwen3vl-8b_deepstack_train_best_npu.sh` 用训练过程中的 `loss` 维护 `output/best/`，默认从 `BEST_TRAIN_LOSS_START_STEP=3000` 之后开始比较。
+- `train_full_dinov3_qwen3vl-8b_deepstack_eval_best_npu.sh` 使用单独验证集，每 `EVAL_STEPS` 做一次 eval，并按最低 `eval_loss` 维护 `output/eval_best/`。
+
 ### 2.4 patch 顺序规则
 
 推理阶段固定使用 row-major 顺序：
@@ -74,7 +80,7 @@
 
 - **Phase B**
   - 使用 GT 邻接 patch 构造的 `incoming traces`
-  - 每条 trace 从相邻的一条 `centerline` 上取共享边界附近的有序点：优先 3 个点，不满足 3 个则保留 2 个点，少于 2 个丢弃
+  - 每条 trace 从相邻的一条 `centerline` 上取共享边界附近的有序点：优先 3 个点，不满足 3 个则保留 2 个点；如果只剩 1 个边界锚点也保留，避免把“有 cut 延续但方向不足”误编码成“没有 incoming”
   - 只有相邻线端点的 `start_type/end_type` 是 `cut` 时才生成 trace；原始线自然端点即使落在 patch 边界也保持 `inside`，不能作为 continuity hint
   - 用点序列方向替代论文里的显式 direction
   - 目标是让模型学会利用 continuity hints
@@ -101,11 +107,12 @@
 
 ### 3.2 intersection
 
-`intersection` 是闭合线，不带 `start_type/end_type`
+`intersection` 是闭合线，不带 `start_type/end_type`，但需要带 `is_cut`
 
 ```json
 {
   "category": "intersection",
+  "is_cut": true,
   "points": [[92,92],[164,92],[164,164],[92,164],[92,92]]
 }
 ```
@@ -113,6 +120,8 @@
 语义：
 
 - 用闭合 polyline 圈出路口区域
+- `is_cut=true` 表示该路口 polygon 被当前 patch 边界截断，推理时可向右/下相邻 patch 传递边界提示
+- `is_cut=false` 表示该路口完整落在当前 patch 内
 
 ### 3.3 顶层输出
 
@@ -129,6 +138,7 @@
     },
     {
       "category": "intersection",
+      "is_cut": true,
       "points": [[92,92],[164,92],[164,164],[92,164],[92,92]]
     }
   ]
@@ -265,13 +275,25 @@ python scripts/data/build_sft_dataset.py \
 当前第一版能力：
 
 - 按 `(row, col)` 排序
-- 只从左邻和上邻抽取 traces
-- 将 traces 注入当前 user prompt
+- 只从左邻和上邻的 **已预测结果** 抽取 centerline traces
+- 可通过 `--include-intersections` 从左邻和上邻的 **已预测 intersection** 抽取路口边界提示
+- 将 traces / intersections 注入当前 user prompt
 - 调用现有模型推理单 patch
 - 支持 `--dry-run-prompts` 不加载模型验证流程
 - 输出每个 patch 的局部结果和合并后的全局坐标结果
 
 ### 6.4 可视化脚本
+
+已新增：
+
+- [scripts/visualize_state_update_global.py](/media/q/data2/jjh/project/unimapgen_mllm/scripts/visualize_state_update_global.py)
+
+作用：
+
+- 读取 `scripts/infer_centerline_state_update.py` 输出的 summary json
+- 直接绘制 `merged_global.lines`
+- 支持绘制 patch 网格
+- `centerline` 用红色，`intersection` 用蓝色
 
 已扩展 [scripts/visualize_centerline.py](/media/q/data2/jjh/project/unimapgen_mllm/scripts/visualize_centerline.py)：
 
@@ -313,6 +335,34 @@ python scripts/data/build_sft_dataset.py \
 - 兼容旧 `CenterLine` list
 - 兼容新 `{"lines": [...]}`
 - 支持 `centerline` 和 `intersection`
+- 保留 `intersection.is_cut`；旧输出没有 `is_cut` 时默认按 `false` 处理
+
+### 评估指标
+
+- [scripts/centerline_eval_metrics.py](/media/q/data2/jjh/project/unimapgen_mllm/scripts/centerline_eval_metrics.py)
+
+作用：
+
+- 将 `centerline` 的 GT / prediction 解析为折线
+- 按 `meter_per_pixel` 转成米制坐标
+- 使用 `shapely.geometry.LineString(...).buffer(buffer_size)` 计算两条线的 buffer IoU
+- 使用 Hungarian 匹配，阈值默认 `0.33`
+- 输出实例级和长度级 `precision / recall / f1`
+
+依赖：
+
+- `shapely`
+- `scipy`
+
+示例：
+
+```bash
+python scripts/centerline_eval_metrics.py \
+  --summary-json outputs/summary.json \
+  --meter-per-pixel 1 \
+  --buffer-size 1 \
+  --match-threshold 0.33
+```
 
 ### state update 推理
 
@@ -321,11 +371,43 @@ python scripts/data/build_sft_dataset.py \
 作用：
 
 - 按 row-major 顺序处理 patch
-- 从左邻/上邻预测结果抽取 traces
-- 把 traces 注入当前 user prompt
+- 从左邻/上邻预测结果抽取 traces，不使用 GT
+- `--include-intersections` 时，从左邻/上邻预测出的 `is_cut=true` 路口抽取 1 到 3 个边界点
+- centerline incoming trace 保留 1 到 3 个点；1 个点表示只有边界锚点，不能丢成空提示
+- 把 traces 和 intersection hints 注入当前 user prompt
 - 输出局部预测和合并后的全局坐标结果
+- `--eval-centerline` 时在 summary 中写入 shapely buffer-IoU + Hungarian 的中心线评估指标
+
+示例：
+
+```bash
+python scripts/infer_centerline_state_update.py \
+  --checkpoint-dir outputs/my_checkpoint \
+  --patch-json data/my_patch_dataset/test.jsonl \
+  --image-folder data/my_patch_dataset \
+  --output-json outputs/state_update_summary.json \
+  --output-dir outputs/state_update_patches \
+  --include-intersections \
+  --eval-centerline
+```
 
 ### 可视化
+
+- [scripts/visualize_state_update_global.py](/media/q/data2/jjh/project/unimapgen_mllm/scripts/visualize_state_update_global.py)
+
+作用：
+
+- 读取 state-update summary
+- 将所有 patch-local 预测合并后的 `merged_global.lines` 画成整图 PNG
+
+示例：
+
+```bash
+python scripts/visualize_state_update_global.py \
+  --summary-json outputs/state_update_summary.json \
+  --output outputs/state_update_global.png \
+  --draw-grid
+```
 
 - [scripts/visualize_centerline.py](/media/q/data2/jjh/project/unimapgen_mllm/scripts/visualize_centerline.py)
 
@@ -344,7 +426,7 @@ python scripts/data/build_sft_dataset.py \
 - 由 1 张 4096 图生成 256 个 `256x256` patch
 - patch 顺序为 `tile_id -> row -> col`
 - `cut/inside` 不再按“落在 patch 边界就 cut”判断，而是按 clipping 来源判断
-- incoming trace 点数为 2 或 3，符合当前设计
+- incoming trace 点数为 1 到 3，1 个点表示只有边界锚点、方向信息不足但仍存在邻接延续
 
 两卡 ZeRO-3 debug 训练：
 
@@ -373,11 +455,10 @@ python scripts/data/build_sft_dataset.py \
 
 以下工作仍未完成：
 
-- 用真实 checkpoint 跑 `scripts/infer_centerline_state_update.py`
-- 对 state-update 推理结果做整图可视化
 - 用云端完整数据集生成 Phase A / Phase B 训练数据
 - 启动新 schema 的正式训练
 - 评估 `intersection` 标注的学习效果
+- 用真实正式训练 checkpoint 跑 `scripts/infer_centerline_state_update.py`
 
 ## 10. 明确不该先动的地方
 
@@ -402,7 +483,7 @@ python scripts/data/build_sft_dataset.py \
 2. 用 Phase A 数据先训练，确认新 schema 输出稳定
 3. 再用带 traces 的 Phase B 数据训练
 4. 用真实 checkpoint 跑 `scripts/infer_centerline_state_update.py`
-5. 扩展或新增整图级可视化和评估脚本
+5. 用 `scripts/visualize_state_update_global.py` 拼接并查看整图 PNG
 6. 专门评估 `intersection` 闭合线质量
 
 ## 12. 当前重要结论
@@ -416,6 +497,7 @@ python scripts/data/build_sft_dataset.py \
 - `intersection` 是闭合线，不带 `start_type/end_type`
 - `centerline` 才带 `cut|inside`
 - 第一版只看 `left` 和 `top` 邻接 traces
+- 推理时 `left/top` 输入来自前面 patch 的预测值，不来自 GT
 - 推理顺序固定为从上到下、每行从左到右
 - 训练样本可以 shuffle
 

@@ -43,6 +43,31 @@ bash scripts/train_full_dinov3_qwen3vl-8b_deepstack_npu.sh
 bash scripts/train_full_dinov3_qwen3vl-8b_no-deepstack_npu.sh
 ```
 
+The normal training scripts do not run validation and do not maintain best-loss checkpoints unless explicitly enabled.
+
+Best checkpoint variants:
+
+```bash
+# Maintain output/best/ by lowest training loss after BEST_TRAIN_LOSS_START_STEP.
+bash scripts/train_full_dinov3_qwen3vl-8b_deepstack_train_best_npu.sh
+
+# Run a separate validation set every EVAL_STEPS and maintain output/eval_best/
+# by lowest eval_loss.
+bash scripts/train_full_dinov3_qwen3vl-8b_deepstack_eval_best_npu.sh
+```
+
+Useful environment overrides:
+
+```bash
+SAVE_BEST_TRAIN_LOSS=True
+BEST_TRAIN_LOSS_START_STEP=3000
+BEST_TRAIN_LOSS_DIR=best
+EVAL_PATH=/path/to/eval.jsonl
+EVAL_IMAGE_FOLDER=/path/to/images
+EVAL_STEPS=300
+BEST_EVAL_LOSS_DIR=eval_best
+```
+
 Full-checkpoint testing:
 
 ```bash

@@ -2,7 +2,7 @@
 # set -euo pipefail
 
 # ============================================================
-# NPU (Ascend) llava training + eval script
+# NPU (Ascend) llava training script with eval_best checkpoint selection
 # Qwen3-VL-8B LLM (auto-extract) + DINOv3 + DeepStack
 # ============================================================
 
@@ -182,14 +182,21 @@ fi
 
 TRAIN_PATH="${DATASET_PATH}/train.jsonl"
 TEST_PATH="${DATASET_PATH}/test.jsonl"
+EVAL_PATH=${EVAL_PATH:-${TEST_PATH}}
+EVAL_IMAGE_FOLDER=${EVAL_IMAGE_FOLDER:-${IMAGE_FOLDER}}
 if [ ! -f "$TRAIN_PATH" ]; then
     echo "ERROR: $TRAIN_PATH not found"
+    exit 1
+fi
+if [ ! -f "$EVAL_PATH" ]; then
+    echo "ERROR: eval data $EVAL_PATH not found"
     exit 1
 fi
 
 echo "DATASET_PATH: $DATASET_PATH"
 echo "TRAIN_PATH:   $TRAIN_PATH"
 echo "TEST_PATH:    $TEST_PATH"
+echo "EVAL_PATH:    $EVAL_PATH"
 echo ">>>>>>>>>>>>>>>>>>>>>>>>>>>>>>> finish moxing >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>"
 
 # ====================== auto gradient accumulation ======================
@@ -227,13 +234,17 @@ WEIGHT_DECAY=0.1
 WARMUP_STEPS=100
 LR_SCHEDULER_TYPE=cosine
 MODEL_MAX_LENGTH=4096
-SAVE_STEPS=300
+EVAL_STEPS=${EVAL_STEPS:-300}
+SAVE_STEPS=${SAVE_STEPS:-${EVAL_STEPS}}
 SAVE_TOTAL_LIMIT=10
 LOGGING_STEPS=10
 SAMPLE_SEED=42
 SAVE_BEST_TRAIN_LOSS=${SAVE_BEST_TRAIN_LOSS:-False}
 BEST_TRAIN_LOSS_START_STEP=${BEST_TRAIN_LOSS_START_STEP:-3000}
 BEST_TRAIN_LOSS_DIR=${BEST_TRAIN_LOSS_DIR:-best}
+EVAL_STRATEGY_ARG=$(python -c "import inspect, transformers; print('--eval_strategy' if 'eval_strategy' in inspect.signature(transformers.TrainingArguments.__init__).parameters else '--evaluation_strategy')")
+SAVE_BEST_EVAL_LOSS=${SAVE_BEST_EVAL_LOSS:-True}
+BEST_EVAL_LOSS_DIR=${BEST_EVAL_LOSS_DIR:-eval_best}
 
 # ---------- DeepStack ----------
 DEEPSTACK_ARGS=()
@@ -257,6 +268,7 @@ echo "DeepStack:  ${DEEPSTACK_LABEL}"
 echo "Grad ckpt:  ${GRADIENT_CHECKPOINTING}"
 echo "DeepSpeed:  ${DEEPSPEED_CONFIG}"
 echo "Best train: ${SAVE_BEST_TRAIN_LOSS}, start_step=${BEST_TRAIN_LOSS_START_STEP}, dir=${BEST_TRAIN_LOSS_DIR}"
+echo "Best eval:  ${SAVE_BEST_EVAL_LOSS}, eval_steps=${EVAL_STEPS}, dir=${BEST_EVAL_LOSS_DIR}, strategy_arg=${EVAL_STRATEGY_ARG}"
 echo "============================================================"
 
 torchrun \
@@ -275,6 +287,8 @@ torchrun \
     "${DEEPSTACK_ARGS[@]}" \
     --data_path "${TRAIN_PATH}" \
     --image_folder "${IMAGE_FOLDER}" \
+    --eval_data_path "${EVAL_PATH}" \
+    --eval_image_folder "${EVAL_IMAGE_FOLDER}" \
     --sample_seed "${SAMPLE_SEED}" \
     --image_aspect_ratio pad \
     --bf16 True \
@@ -294,6 +308,10 @@ torchrun \
     --save_strategy steps \
     --save_steps "${SAVE_STEPS}" \
     --save_total_limit "${SAVE_TOTAL_LIMIT}" \
+    "${EVAL_STRATEGY_ARG}" steps \
+    --eval_steps "${EVAL_STEPS}" \
+    --save_best_eval_loss "${SAVE_BEST_EVAL_LOSS}" \
+    --best_eval_loss_dir "${BEST_EVAL_LOSS_DIR}" \
     --save_best_train_loss "${SAVE_BEST_TRAIN_LOSS}" \
     --best_train_loss_start_step "${BEST_TRAIN_LOSS_START_STEP}" \
     --best_train_loss_dir "${BEST_TRAIN_LOSS_DIR}" \

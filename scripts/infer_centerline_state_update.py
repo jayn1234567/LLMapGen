@@ -22,6 +22,9 @@ from scripts.infer_centerline_checkpoint import (
 )
 
 
+TASK_TEXT = "Please construct the complete road map in the current BEV (Bird's Eye View) image patch."
+
+
 def load_json_or_jsonl(path: Path):
     text = path.read_text(encoding="utf-8").strip()
     if not text:
@@ -65,24 +68,26 @@ def sort_patch_records(records):
     return sorted(records, key=key_fn)
 
 
-def make_user_prompt(patch_size: int, incoming_traces):
+def make_user_prompt(patch_size: int, incoming_traces, incoming_intersections=None, include_intersections=False):
     traces_json = json.dumps(incoming_traces, ensure_ascii=False, separators=(",", ":"))
-    schema = (
-        "{\"lines\":["
-        "{\"category\":\"centerline\",\"start_type\":\"cut|inside\",\"end_type\":\"cut|inside\",\"points\":[[x,y],[x,y]]},"
-        "{\"category\":\"intersection\",\"points\":[[x,y],[x,y]]}"
-        "]}"
-    )
-    return (
-        f"<image>\nThis is a {patch_size}x{patch_size} BEV road patch.\n"
-        "Predict the road geometry inside this patch only.\n\n"
-        f"Incoming traces JSON:\n{traces_json}\n\n"
-        "Each incoming trace is ordered from the previous patch interior toward the current patch boundary.\n"
-        "Incoming traces are continuity hints only; they may be incomplete or absent.\n"
-        "Return only valid JSON in this schema:\n"
-        f"{schema}\n"
-        f"All output points must be integers inside [0,{patch_size - 1}]."
-    )
+    parts = [
+        "<image>",
+        TASK_TEXT,
+        "",
+        "Incoming traces JSON:",
+        traces_json,
+    ]
+    if include_intersections:
+        inter_json = json.dumps(incoming_intersections or [], ensure_ascii=False, separators=(",", ":"))
+        parts.extend(["", "Incoming intersections JSON:", inter_json])
+    parts.extend([
+        "",
+        "Each incoming trace has 1 to 3 points. If multiple points are present, they are ordered from the previous patch interior toward the current patch boundary.",
+        "Incoming traces are continuity hints only; they may be incomplete or absent.",
+    ])
+    if include_intersections:
+        parts.append("Each incoming intersection has 1 to 3 boundary points from neighboring patches.")
+    return "\n".join(parts)
 
 
 def near(value, target, tol):
@@ -148,6 +153,21 @@ def assign_trace_ids(traces):
     return result
 
 
+def assign_intersection_ids(hints):
+    counts = {"left": 0, "top": 0}
+    result = []
+    for hint in hints:
+        side = hint["side"]
+        prefix = "IL" if side == "left" else "IT"
+        result.append({
+            "id": f"{prefix}{counts[side]}",
+            "side": side,
+            "points": hint["points"],
+        })
+        counts[side] += 1
+    return result
+
+
 def build_incoming_traces(state_by_pos, tile_id, row, col, patch_size, boundary_tol, max_points):
     traces = []
     left_lines = state_by_pos.get((tile_id, row, col - 1), [])
@@ -155,6 +175,47 @@ def build_incoming_traces(state_by_pos, tile_id, row, col, patch_size, boundary_
     traces.extend(extract_neighbor_traces(left_lines, "left", patch_size, boundary_tol, max_points))
     traces.extend(extract_neighbor_traces(top_lines, "top", patch_size, boundary_tol, max_points))
     return assign_trace_ids(traces)
+
+
+def sample_points(points, max_points):
+    points = [point for idx, point in enumerate(points) if idx == 0 or point != points[idx - 1]]
+    if len(points) <= max_points:
+        return points
+    if max_points <= 1:
+        return [points[len(points) // 2]]
+    step = (len(points) - 1) / (max_points - 1)
+    return [points[round(i * step)] for i in range(max_points)]
+
+
+def extract_neighbor_intersections(neighbor_lines, side, patch_size, boundary_tol, max_points):
+    hints = []
+    for line in neighbor_lines:
+        if line.get("category") != "intersection" or not line.get("is_cut"):
+            continue
+        points = line.get("points") or []
+        if side == "left":
+            boundary_points = [point for point in points if near(point[0], patch_size - 1, boundary_tol)]
+            dx, dy = -patch_size, 0
+        else:
+            boundary_points = [point for point in points if near(point[1], patch_size - 1, boundary_tol)]
+            dx, dy = 0, -patch_size
+        boundary_points = sample_points(boundary_points, max_points)
+        if not boundary_points:
+            continue
+        hints.append({
+            "side": side,
+            "points": transform_trace_points(boundary_points, dx, dy),
+        })
+    return hints
+
+
+def build_incoming_intersections(state_by_pos, tile_id, row, col, patch_size, boundary_tol, max_points):
+    hints = []
+    left_lines = state_by_pos.get((tile_id, row, col - 1), [])
+    top_lines = state_by_pos.get((tile_id, row - 1, col), [])
+    hints.extend(extract_neighbor_intersections(left_lines, "left", patch_size, boundary_tol, max_points))
+    hints.extend(extract_neighbor_intersections(top_lines, "top", patch_size, boundary_tol, max_points))
+    return assign_intersection_ids(hints)
 
 
 def local_to_global_lines(lines, x0, y0):
@@ -216,10 +277,20 @@ def main():
     parser.add_argument("--patch-size", type=int, default=256)
     parser.add_argument("--boundary-tol", type=float, default=2.0)
     parser.add_argument("--trace-points", type=int, default=3)
+    parser.add_argument("--intersection-hint-points", type=int, default=3)
     parser.add_argument("--max-new-tokens", type=int, default=2048)
     parser.add_argument("--temperature", type=float, default=0.0)
+    parser.add_argument("--include-intersections", action="store_true")
+    parser.add_argument("--eval-centerline", action="store_true")
+    parser.add_argument("--eval-meter-per-pixel", type=float, default=1.0)
+    parser.add_argument("--eval-buffer-size", type=float, default=1.0)
+    parser.add_argument("--eval-match-threshold", type=float, default=0.33)
     parser.add_argument("--dry-run-prompts", action="store_true")
     args = parser.parse_args()
+
+    evaluate_records = None
+    if args.eval_centerline:
+        from scripts.centerline_eval_metrics import evaluate_records
 
     records = sort_patch_records(load_json_or_jsonl(Path(args.patch_json)))
     image_folder = Path(args.image_folder)
@@ -255,7 +326,23 @@ def main():
             args.boundary_tol,
             args.trace_points,
         )
-        prompt_text = make_user_prompt(args.patch_size, incoming_traces)
+        incoming_intersections = []
+        if args.include_intersections:
+            incoming_intersections = build_incoming_intersections(
+                state_by_pos,
+                tile_id,
+                row,
+                col,
+                args.patch_size,
+                args.boundary_tol,
+                args.intersection_hint_points,
+            )
+        prompt_text = make_user_prompt(
+            args.patch_size,
+            incoming_traces,
+            incoming_intersections,
+            include_intersections=args.include_intersections,
+        )
 
         parse_ok = False
         parsed_lines = []
@@ -302,7 +389,9 @@ def main():
             "col": col,
             "x0": x0,
             "y0": y0,
+            "patch_size": args.patch_size,
             "incoming_traces": incoming_traces,
+            "incoming_intersections": incoming_intersections,
             "prompt": prompt,
             "raw_prediction": raw_prediction,
             "prediction": prediction,
@@ -313,6 +402,8 @@ def main():
             "input_token_len": input_token_len,
             "output_token_len": output_token_len,
         }
+        if len(record.get("conversations", [])) > 1:
+            result["ground_truth"] = record["conversations"][1]["value"]
         patch_results.append(result)
 
         if output_dir is not None:
@@ -326,6 +417,7 @@ def main():
             "row": row,
             "col": col,
             "num_incoming_traces": len(incoming_traces),
+            "num_incoming_intersections": len(incoming_intersections),
             "parse_ok": parse_ok,
             "num_lines": len(parsed_lines),
             "parse_error": parse_error,
@@ -336,10 +428,18 @@ def main():
         "patch_json": args.patch_json,
         "conv_template": args.conv_template,
         "dry_run_prompts": args.dry_run_prompts,
+        "include_intersections": args.include_intersections,
         "num_patches": len(patch_results),
         "merged_global": {"lines": merged_global_lines},
         "patch_results": patch_results,
     }
+    if args.eval_centerline:
+        summary["centerline_eval"] = evaluate_records(
+            patch_results,
+            meter_per_pixel=args.eval_meter_per_pixel,
+            buffer_size=args.eval_buffer_size,
+            match_threshold=args.eval_match_threshold,
+        )
     dump_json(Path(args.output_json), summary)
 
 

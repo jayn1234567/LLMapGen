@@ -666,8 +666,12 @@ def parse_map_json(prediction_text: str):
                 "points": clean_points,
             })
         else:
+            is_cut = item.get("is_cut", False)
+            if not isinstance(is_cut, bool):
+                raise ValueError("intersection is_cut must be a boolean")
             normalized.append({
                 "category": "intersection",
+                "is_cut": is_cut,
                 "points": clean_points,
             })
     return normalized
@@ -726,8 +730,16 @@ def main():
     parser.add_argument("--disable_deepstack", action="store_true", default=None)
     parser.add_argument("--deepstack_visual_indexes", type=int, nargs="*", default=None)
     parser.add_argument("--dino_variant", default="")
+    parser.add_argument("--eval-centerline", action="store_true")
+    parser.add_argument("--eval-meter-per-pixel", type=float, default=1.0)
+    parser.add_argument("--eval-buffer-size", type=float, default=1.0)
+    parser.add_argument("--eval-match-threshold", type=float, default=0.33)
     args = parser.parse_args()
     args.device = device_str
+
+    evaluate_one_sample = evaluate_records = None
+    if args.eval_centerline:
+        from scripts.centerline_eval_metrics import evaluate_one_sample, evaluate_records
 
     checkpoint_dir = Path(args.checkpoint_dir)
     manifest = read_manifest(checkpoint_dir)
@@ -867,6 +879,15 @@ def main():
         }
         if len(record.get("conversations", [])) > 1:
             result["ground_truth"] = record["conversations"][1]["value"]
+            if args.eval_centerline:
+                result["centerline_eval"] = vars(evaluate_one_sample(
+                    result["ground_truth"],
+                    prediction_json,
+                    parse_ok=parse_ok,
+                    meter_per_pixel=args.eval_meter_per_pixel,
+                    buffer_size=args.eval_buffer_size,
+                    match_threshold=args.eval_match_threshold,
+                ))
         results.append(result)
 
         if output_dir is not None:
@@ -904,7 +925,18 @@ def main():
         args.output_json = f"{base}_rank{torch.distributed.get_rank()}.json"
 
     if args.output_json:
-        Path(args.output_json).write_text(json.dumps(results, ensure_ascii=False, indent=2), encoding="utf-8")
+        output_json_path = Path(args.output_json)
+        output_json_path.write_text(json.dumps(results, ensure_ascii=False, indent=2), encoding="utf-8")
+        if args.eval_centerline:
+            eval_summary = evaluate_records(
+                results,
+                meter_per_pixel=args.eval_meter_per_pixel,
+                buffer_size=args.eval_buffer_size,
+                match_threshold=args.eval_match_threshold,
+            )
+            eval_path = output_json_path.with_name(f"{output_json_path.stem}_centerline_eval.json")
+            eval_path.write_text(json.dumps(eval_summary, ensure_ascii=False, indent=2), encoding="utf-8")
+            print(json.dumps({"centerline_eval_json": str(eval_path), "centerline_eval": eval_summary}, ensure_ascii=False))
 
     if torch.distributed.is_initialized():
         torch.distributed.destroy_process_group()

@@ -14,6 +14,10 @@ from transformers.trainer import (
     logger,
 )
 from typing import List, Optional
+from llava.train.checkpoint_metadata import (
+    sync_qwen_multimodal_config,
+    write_qwen_multimodal_checkpoint_metadata,
+)
 from llava.model.qwen_token_utils import sync_qwen_token_config
 
 
@@ -258,8 +262,10 @@ class LLaVATrainer(Trainer):
             weight_to_save = get_mm_adapter_state_maybe_zero_3(self.model.named_parameters(), keys_to_match)
 
             if self.is_world_process_zero():
+                sync_qwen_multimodal_config(self.model)
                 self.model.config.save_pretrained(output_dir)
                 torch.save(weight_to_save, os.path.join(output_dir, f'mm_projector.bin'))
+                write_qwen_multimodal_checkpoint_metadata(self.model, output_dir, self)
         else:
             # Workaround for the issue: https://github.com/haotian-liu/LLaVA/issues/1144
             if getattr(model, "generation_config", None) is None:
@@ -267,6 +273,7 @@ class LLaVATrainer(Trainer):
             model.generation_config.temperature = None
             model.generation_config.top_p = None
             sync_qwen_token_config(model=model)
+            sync_qwen_multimodal_config(model)
             super(LLaVATrainer, self)._save_checkpoint(model, trial)
 
     def _save(self, output_dir: Optional[str] = None, state_dict=None):
@@ -279,4 +286,6 @@ class LLaVATrainer(Trainer):
             self.model.generation_config.temperature = None
             self.model.generation_config.top_p = None
             sync_qwen_token_config(model=self.model)
+            sync_qwen_multimodal_config(self.model)
             super(LLaVATrainer, self)._save(output_dir, state_dict)
+            write_qwen_multimodal_checkpoint_metadata(self.model, output_dir, self)

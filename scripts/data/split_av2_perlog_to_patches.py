@@ -226,17 +226,17 @@ def make_trace_from_line(line, side, patch_size, max_points, boundary_tol):
 
     if line.get("end_type") == "cut" and boundary(points[-1]):
         trace_points = source_trace_points(line, side, points[-1], True, patch_size, max_points)
-        if len(trace_points) < 2:
+        if not trace_points:
             trace_points = [shift_neighbor_point_to_current(point, side, patch_size) for point in points[-max_points:]]
     elif line.get("start_type") == "cut" and boundary(points[0]):
         trace_points = source_trace_points(line, side, points[0], False, patch_size, max_points)
-        if len(trace_points) < 2:
+        if not trace_points:
             trace_points = [shift_neighbor_point_to_current(point, side, patch_size) for point in reversed(points[:max_points])]
     else:
         return None
 
     trace_points = dedupe_points(trace_points[-max_points:])
-    if len(trace_points) < 2:
+    if not trace_points:
         return None
     return {"side": side, "points": trace_points}
 
@@ -380,7 +380,7 @@ def main():
         "--trace-points",
         type=int,
         default=3,
-        help="Maximum adjacent-line points per incoming trace. Default 3; traces with only 2 available points are kept.",
+        help="Maximum adjacent-line points per incoming trace. Default 3; one-point boundary anchors are kept.",
     )
     args = parser.parse_args()
 

@@ -36,6 +36,10 @@ import tokenizers
 from llava.constants import IGNORE_INDEX, IMAGE_TOKEN_INDEX, DEFAULT_IMAGE_TOKEN, DEFAULT_IM_START_TOKEN, DEFAULT_IM_END_TOKEN
 from torch.utils.data import Dataset
 from llava.train.llava_trainer import LLaVATrainer
+from llava.train.checkpoint_metadata import (
+    sync_qwen_multimodal_config,
+    write_qwen_multimodal_checkpoint_metadata,
+)
 from transformers import TrainerCallback
 from transformers.trainer_callback import PrinterCallback, ProgressCallback
 
@@ -246,6 +250,141 @@ class JsonlMetricLoggerCallback(TrainerCallback):
         self._append_log_line(self.checkpoint_log_path, payload)
 
 
+class BestTrainLossCallback(TrainerCallback):
+    def __init__(self):
+        self.best_loss = None
+        self.pending_best = None
+
+    def _is_rank0(self, args, state=None) -> bool:
+        if state is not None and hasattr(state, "is_world_process_zero"):
+            return state.is_world_process_zero
+        rank = os.environ.get("RANK")
+        if rank is not None:
+            return int(rank) == 0
+        return args.local_rank in (-1, 0)
+
+    def on_log(self, args, state, control, logs=None, **kwargs):
+        if not getattr(args, "save_best_train_loss", False) or not logs:
+            return control
+        if "loss" not in logs:
+            return control
+        if state.global_step < getattr(args, "best_train_loss_start_step", 0):
+            return control
+
+        loss = float(logs["loss"])
+        if self.best_loss is None or loss < self.best_loss:
+            self.best_loss = loss
+            self.pending_best = {
+                "loss": loss,
+                "step": state.global_step,
+                "epoch": state.epoch,
+            }
+            control.should_save = True
+        return control
+
+    def on_save(self, args, state, control, **kwargs):
+        if not getattr(args, "save_best_train_loss", False):
+            return control
+        if self.pending_best is None or self.pending_best["step"] != state.global_step:
+            return control
+        if not self._is_rank0(args, state):
+            self.pending_best = None
+            return control
+
+        checkpoint_dir = os.path.join(args.output_dir, f"checkpoint-{state.global_step}")
+        if not os.path.isdir(checkpoint_dir):
+            return control
+
+        best_dir = os.path.join(args.output_dir, getattr(args, "best_train_loss_dir", "best"))
+        tmp_dir = best_dir + ".tmp"
+        if os.path.exists(tmp_dir):
+            shutil.rmtree(tmp_dir)
+        shutil.copytree(checkpoint_dir, tmp_dir)
+
+        metadata = {
+            "best_train_loss": self.pending_best["loss"],
+            "best_train_loss_step": state.global_step,
+            "best_checkpoint": checkpoint_dir,
+            "start_step": getattr(args, "best_train_loss_start_step", 0),
+            "epoch": state.epoch,
+            "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        }
+        with open(os.path.join(tmp_dir, "best_train_loss.json"), "w", encoding="utf-8") as f:
+            json.dump(metadata, f, ensure_ascii=False, indent=2)
+
+        if os.path.exists(best_dir):
+            shutil.rmtree(best_dir)
+        os.replace(tmp_dir, best_dir)
+        self.pending_best = None
+        return control
+
+
+class BestEvalLossCallback(TrainerCallback):
+    def __init__(self):
+        self.best_loss = None
+        self.pending_best = None
+
+    def _is_rank0(self, args, state=None) -> bool:
+        if state is not None and hasattr(state, "is_world_process_zero"):
+            return state.is_world_process_zero
+        rank = os.environ.get("RANK")
+        if rank is not None:
+            return int(rank) == 0
+        return args.local_rank in (-1, 0)
+
+    def on_evaluate(self, args, state, control, metrics=None, **kwargs):
+        if not getattr(args, "save_best_eval_loss", False) or not metrics:
+            return control
+        if "eval_loss" not in metrics:
+            return control
+
+        loss = float(metrics["eval_loss"])
+        if self.best_loss is None or loss < self.best_loss:
+            self.best_loss = loss
+            self.pending_best = {
+                "loss": loss,
+                "step": state.global_step,
+                "epoch": state.epoch,
+            }
+            control.should_save = True
+        return control
+
+    def on_save(self, args, state, control, **kwargs):
+        if not getattr(args, "save_best_eval_loss", False):
+            return control
+        if self.pending_best is None or self.pending_best["step"] != state.global_step:
+            return control
+        if not self._is_rank0(args, state):
+            self.pending_best = None
+            return control
+
+        checkpoint_dir = os.path.join(args.output_dir, f"checkpoint-{state.global_step}")
+        if not os.path.isdir(checkpoint_dir):
+            return control
+
+        best_dir = os.path.join(args.output_dir, getattr(args, "best_eval_loss_dir", "eval_best"))
+        tmp_dir = best_dir + ".tmp"
+        if os.path.exists(tmp_dir):
+            shutil.rmtree(tmp_dir)
+        shutil.copytree(checkpoint_dir, tmp_dir)
+
+        metadata = {
+            "best_eval_loss": self.pending_best["loss"],
+            "best_eval_loss_step": state.global_step,
+            "best_checkpoint": checkpoint_dir,
+            "epoch": state.epoch,
+            "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        }
+        with open(os.path.join(tmp_dir, "best_eval_loss.json"), "w", encoding="utf-8") as f:
+            json.dump(metadata, f, ensure_ascii=False, indent=2)
+
+        if os.path.exists(best_dir):
+            shutil.rmtree(best_dir)
+        os.replace(tmp_dir, best_dir)
+        self.pending_best = None
+        return control
+
+
 IS_TOKENIZER_GREATER_THAN_0_14 = version.parse(tokenizers.__version__) >= version.parse('0.14')
 
 
@@ -329,6 +468,11 @@ class TrainingArguments(transformers.TrainingArguments):
     mm_projector_lr: Optional[float] = None
     group_by_modality_length: bool = field(default=False)
     mm_vision_tower_lr: Optional[float] = None
+    save_best_train_loss: bool = field(default=False)
+    best_train_loss_start_step: int = field(default=0)
+    best_train_loss_dir: str = field(default="best")
+    save_best_eval_loss: bool = field(default=False)
+    best_eval_loss_dir: str = field(default="eval_best")
 
 
 def maybe_zero_3(param, ignore_status=False, name=None):
@@ -416,6 +560,7 @@ def safe_save_model_for_hf_trainer(trainer: transformers.Trainer,
         current_folder = output_dir.split('/')[-1]
         parent_folder = os.path.dirname(output_dir)
         if trainer.is_world_process_zero():
+            sync_qwen_multimodal_config(trainer.model)
             trainer.model.config.save_pretrained(output_dir)
             if current_folder.startswith('checkpoint-'):
                 mm_projector_folder = os.path.join(parent_folder, "mm_projector")
@@ -423,6 +568,7 @@ def safe_save_model_for_hf_trainer(trainer: transformers.Trainer,
                 torch.save(weight_to_save, os.path.join(mm_projector_folder, f'{current_folder}.bin'))
             else:
                 torch.save(weight_to_save, os.path.join(output_dir, f'mm_projector.bin'))
+            write_qwen_multimodal_checkpoint_metadata(trainer.model, output_dir, trainer)
         return
 
     if trainer.deepspeed:
@@ -431,7 +577,7 @@ def safe_save_model_for_hf_trainer(trainer: transformers.Trainer,
         elif hasattr(torch, "npu"):
            torch.npu.synchronize() 
         trainer.save_model(output_dir)
-        _write_qwen_multimodal_checkpoint_metadata(trainer.model, output_dir, trainer)
+        write_qwen_multimodal_checkpoint_metadata(trainer.model, output_dir, trainer)
         return
 
     state_dict = trainer.model.state_dict()
@@ -442,35 +588,7 @@ def safe_save_model_for_hf_trainer(trainer: transformers.Trainer,
         }
         del state_dict
         trainer._save(output_dir, state_dict=cpu_state_dict)  # noqa
-        _write_qwen_multimodal_checkpoint_metadata(trainer.model, output_dir, trainer)
-
-
-def _write_qwen_multimodal_checkpoint_metadata(model, output_dir: str, trainer=None):
-    if trainer is not None and not trainer.is_world_process_zero():
-        return
-    config = getattr(model, "config", None)
-    if config is None and hasattr(model, "module"):
-        config = getattr(model.module, "config", None)
-    if config is None:
-        return
-    if not (getattr(config, "mm_vision_tower", None) or getattr(config, "vision_tower", None)):
-        return
-
-    payload = {
-        "format": "qwen_multimodal_checkpoint",
-        "model_type": getattr(config, "model_type", None),
-        "mm_vision_tower": getattr(config, "mm_vision_tower", None),
-        "vision_tower": getattr(config, "vision_tower", None),
-        "mm_vision_tower_type": getattr(config, "mm_vision_tower_type", None),
-        "dino_variant": getattr(config, "dino_variant", None),
-        "input_image_size": getattr(config, "input_image_size", None),
-        "deepstack_visual_indexes": getattr(config, "deepstack_visual_indexes", None),
-        "disable_deepstack": getattr(config, "disable_deepstack", None),
-        "bundled_vision_tower": True,
-    }
-    os.makedirs(output_dir, exist_ok=True)
-    with open(os.path.join(output_dir, "qwen_multimodal_checkpoint.json"), "w", encoding="utf-8") as f:
-        json.dump(payload, f, ensure_ascii=False, indent=2)
+        write_qwen_multimodal_checkpoint_metadata(trainer.model, output_dir, trainer)
 
 
 def smart_tokenizer_and_embedding_resize(
@@ -1575,6 +1693,7 @@ def train(attn_implementation=None):
             model=model,
             model_name_or_path=model_args.model_name_or_path,
         )
+        sync_qwen_multimodal_config(model)
 
     if training_args.bits in [4, 8]:
         from peft.tuners.lora import LoraLayer
@@ -1597,7 +1716,11 @@ def train(attn_implementation=None):
     trainer = LLaVATrainer(model=model,
                            processing_class=tokenizer,
                            args=training_args,
-                           callbacks=[JsonlMetricLoggerCallback(training_args.output_dir)],
+                           callbacks=[
+                               JsonlMetricLoggerCallback(training_args.output_dir),
+                               BestTrainLossCallback(),
+                               BestEvalLossCallback(),
+                           ],
                            **data_module)
     trainer.remove_callback(PrinterCallback)
     trainer.remove_callback(ProgressCallback)
@@ -1630,10 +1753,11 @@ def train(attn_implementation=None):
             model.named_parameters()
         )
         if trainer.is_world_process_zero():
+            sync_qwen_multimodal_config(model)
             model.config.save_pretrained(training_args.output_dir)
             model.save_pretrained(training_args.output_dir, state_dict=state_dict)
             torch.save(non_lora_state_dict, os.path.join(training_args.output_dir, 'non_lora_trainables.bin'))
-            _write_qwen_multimodal_checkpoint_metadata(model, training_args.output_dir)
+            write_qwen_multimodal_checkpoint_metadata(model, training_args.output_dir)
     else:
         safe_save_model_for_hf_trainer(trainer=trainer,
                                        output_dir=training_args.output_dir)

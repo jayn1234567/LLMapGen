@@ -193,7 +193,7 @@ echo "TEST_PATH:    $TEST_PATH"
 echo ">>>>>>>>>>>>>>>>>>>>>>>>>>>>>>> finish moxing >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>"
 
 # ====================== auto gradient accumulation ======================
-tar_equal_batch_size=64
+tar_equal_batch_size=32
 per_device_train_batch_size=2
 
 total_gpus=$(( NNODES * NPROC_PER_NODE ))
@@ -220,17 +220,20 @@ MM_PROJECTOR_TYPE=mlp2x_gelu
 UNFREEZE_MM_VISION_TOWER=True
 DEEPSTACK_VISUAL_INDEXES="6 12 18 23"
 DEEPSPEED_CONFIG="scripts/deepspeed_zero3.json"
-NUM_EPOCHS=8
+NUM_EPOCHS=6
 LR=2e-5
-MM_PROJECTOR_LR=5e-5
-WEIGHT_DECAY=0.0
-WARMUP_STEPS=50
+MM_PROJECTOR_LR=2e-5
+WEIGHT_DECAY=0.1
+WARMUP_STEPS=100
 LR_SCHEDULER_TYPE=cosine
 MODEL_MAX_LENGTH=4096
 SAVE_STEPS=300
 SAVE_TOTAL_LIMIT=10
 LOGGING_STEPS=10
 SAMPLE_SEED=42
+SAVE_BEST_TRAIN_LOSS=${SAVE_BEST_TRAIN_LOSS:-False}
+BEST_TRAIN_LOSS_START_STEP=${BEST_TRAIN_LOSS_START_STEP:-3000}
+BEST_TRAIN_LOSS_DIR=${BEST_TRAIN_LOSS_DIR:-best}
 
 # ---------- DeepStack ----------
 DEEPSTACK_ARGS=()
@@ -253,6 +256,7 @@ echo "ViT:        ${DINOV2_PATH}"
 echo "DeepStack:  ${DEEPSTACK_LABEL}"
 echo "Grad ckpt:  ${GRADIENT_CHECKPOINTING}"
 echo "DeepSpeed:  ${DEEPSPEED_CONFIG}"
+echo "Best train: ${SAVE_BEST_TRAIN_LOSS}, start_step=${BEST_TRAIN_LOSS_START_STEP}, dir=${BEST_TRAIN_LOSS_DIR}"
 echo "============================================================"
 
 torchrun \
@@ -290,6 +294,9 @@ torchrun \
     --save_strategy steps \
     --save_steps "${SAVE_STEPS}" \
     --save_total_limit "${SAVE_TOTAL_LIMIT}" \
+    --save_best_train_loss "${SAVE_BEST_TRAIN_LOSS}" \
+    --best_train_loss_start_step "${BEST_TRAIN_LOSS_START_STEP}" \
+    --best_train_loss_dir "${BEST_TRAIN_LOSS_DIR}" \
     --logging_steps "${LOGGING_STEPS}" \
     --report_to none \
     --ddp_find_unused_parameters False \

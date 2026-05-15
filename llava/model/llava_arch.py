@@ -107,9 +107,16 @@ class LlavaMetaModel:
         self.config.mm_vision_select_layer = mm_vision_select_layer
         self.config.mm_vision_select_feature = mm_vision_select_feature
         self.config.mm_patch_merge_type = mm_patch_merge_type
-        self.config.input_image_size = getattr(model_args, 'input_image_size', None)
-        self.config.disable_deepstack = getattr(model_args, 'disable_deepstack', False)
-        self.config.deepstack_visual_indexes = getattr(model_args, 'deepstack_visual_indexes', None)
+        self.config.input_image_size = (
+            getattr(vision_tower, '_target_size', None)
+            or getattr(vision_tower, 'input_image_size', None)
+            or getattr(model_args, 'input_image_size', None)
+        )
+        deepstack_visual_indexes = getattr(vision_tower, 'deepstack_visual_indexes', None)
+        if deepstack_visual_indexes is not None:
+            deepstack_visual_indexes = [int(idx) for idx in deepstack_visual_indexes]
+        self.config.deepstack_visual_indexes = deepstack_visual_indexes
+        self.config.disable_deepstack = deepstack_visual_indexes is None
         self.config.dino_variant = getattr(model_args, 'dino_variant', None)
 
         mm_projector = getattr(self, 'mm_projector', None)

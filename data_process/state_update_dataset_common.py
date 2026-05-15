@@ -173,9 +173,20 @@ def find_sample_roots(input_root: Path, require_intersection: bool = False):
     return sorted(roots, key=lambda path: str(path))
 
 
-def discover_samples(input_root: Path, include_intersections: bool, delete_archives: bool, limit_samples=None):
+def discover_samples(
+    input_root: Path,
+    include_intersections: bool,
+    delete_archives: bool,
+    limit_samples=None,
+    require_intersection_features: bool = False,
+):
     extract_archives(input_root, delete_archive=delete_archives)
     roots = find_sample_roots(input_root, require_intersection=include_intersections)
+    if require_intersection_features:
+        roots = [
+            root for root in roots
+            if (geojson_feature_count(required_paths(root).intersection_geojson) or 0) > 0
+        ]
     samples = [required_paths(root) for root in roots]
     samples = sorted(samples, key=lambda sample: (sample.sample_id, str(sample.root)))
     if limit_samples is not None:
@@ -1028,6 +1039,7 @@ def build_dataset(include_intersections: bool, args):
         include_intersections=include_intersections,
         delete_archives=not args.keep_archives,
         limit_samples=args.limit_samples,
+        require_intersection_features=include_intersections and not args.allow_empty_intersection_files,
     )
     if not samples:
         raise FileNotFoundError(f"no valid samples found under {input_root}")
@@ -1069,6 +1081,7 @@ def build_dataset(include_intersections: bool, args):
         "patch_size": args.patch_size,
         "stride": args.stride,
         "max_empty_ratio": args.max_empty_ratio,
+        "allow_empty_intersection_files": args.allow_empty_intersection_files,
         "phase_a_train_jsonl": str(output_root / "phase_a" / "train.jsonl"),
         "phase_a_test_jsonl": str(output_root / "phase_a" / "test.jsonl"),
         "phase_b_train_jsonl": str(output_root / "phase_b" / "train.jsonl"),
@@ -1094,6 +1107,11 @@ def add_common_args(parser):
     parser.add_argument("--max-intersections-per-side", type=int, default=8)
     parser.add_argument("--limit-samples", type=int, default=None)
     parser.add_argument("--max-patches-per-sample", type=int, default=None)
+    parser.add_argument(
+        "--allow-empty-intersection-files",
+        action="store_true",
+        help="In lane+intersection mode, keep raw samples whose Intersection.geojson has zero features.",
+    )
     parser.add_argument("--keep-archives", action="store_true", help="Do not delete .tar.gz archives after successful extraction.")
 
 

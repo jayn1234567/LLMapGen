@@ -10,6 +10,7 @@ This folder contains the current RC raw-data processors for the UniMapGen-style 
 - `build_lane_intersection_dataset.py`
   - Reads `label_check_crop/Lane.geojson` and `label_check_crop/intersection.geojson`.
   - Generates centerline + intersection targets.
+  - By default, raw samples whose intersection GeoJSON has zero features are skipped. Pass `--allow-empty-intersection-files` to keep them as negative samples.
 
 Both scripts accept an input directory that contains `.tar.gz` archives or already extracted sample folders.
 Archives are deleted after successful extraction unless `--keep-archives` is passed.

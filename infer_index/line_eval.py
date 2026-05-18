@@ -1,13 +1,25 @@
 from pathlib import Path
+import json
 from dataclasses import fields
+from dataclasses import asdict
 
 from tqdm import tqdm
-from loguru import logger
 from shapely.geometry import LineString
 
-from param import Parameter
-from eval_report_format import LineMatchRes, LineEvalRes
-from utils import hungarian_match, read_jsonl, convert_QA_data, convert_img_coord_to_meter
+try:
+    from loguru import logger
+except ImportError:
+    import logging
+    logger = logging.getLogger(__name__)
+
+try:
+    from .param import Parameter
+    from .eval_report_format import LineMatchRes, LineEvalRes
+    from .utils import hungarian_match, read_jsonl, convert_QA_data, convert_img_coord_to_meter
+except ImportError:
+    from param import Parameter
+    from eval_report_format import LineMatchRes, LineEvalRes
+    from utils import hungarian_match, read_jsonl, convert_QA_data, convert_img_coord_to_meter
 
 
 def line_match_matric(line1: LineString, line2: LineString, buffer) -> float:
@@ -18,8 +30,8 @@ def line_match_matric(line1: LineString, line2: LineString, buffer) -> float:
     return poly1.intersection(poly2).area / poly1.union(poly2).area # 计算交并比
 
 
-def generate_line_eval_res(gt: list[LineString], 
-                           pred: list[LineString], 
+def generate_line_eval_res(gt: list[LineString],
+                           pred: list[LineString],
                            gt_match_indices: list[int]) -> LineMatchRes:
     res = LineMatchRes()
     res.gt_line_length_sum = sum([i.length for i in gt])
@@ -38,18 +50,20 @@ def generate_eval_summary(samples_eval_res: list[LineMatchRes]) -> LineEvalRes:
 
     # 将单个sample的结果相加
     eval_summary = LineMatchRes()
+    eval_summary.sample_num = 0
+    eval_summary.valid_string_format = 0
     for one_eval in samples_eval_res:
         for field in fields(LineMatchRes):
             name = field.name
             setattr(eval_summary, name, getattr(eval_summary, name) + getattr(one_eval, name))
 
     res = LineEvalRes()
-    res.instance_pre = eval_summary.matched_line_num / eval_summary.pred_line_num
-    res.instance_recall = eval_summary.matched_line_num / eval_summary.gt_line_num
+    res.instance_pre = safe_div(eval_summary.matched_line_num, eval_summary.pred_line_num)
+    res.instance_recall = safe_div(eval_summary.matched_line_num, eval_summary.gt_line_num)
     res.instance_f1 = 2 * res.instance_pre * res.instance_recall / (res.instance_pre + res.instance_recall + 1e-6)
 
-    res.length_pre = eval_summary.matched_line_length_sum / eval_summary.pred_line_length_sum
-    res.length_recall = eval_summary.matched_line_length_sum / eval_summary.gt_line_length_sum
+    res.length_pre = safe_div(eval_summary.matched_line_length_sum, eval_summary.pred_line_length_sum)
+    res.length_recall = safe_div(eval_summary.matched_line_length_sum, eval_summary.gt_line_length_sum)
     res.length_f1 = 2 * res.length_pre * res.length_recall / (res.length_pre + res.length_recall + 1e-6)
 
     res.valid_string_format = eval_summary.valid_string_format
@@ -60,6 +74,10 @@ def generate_eval_summary(samples_eval_res: list[LineMatchRes]) -> LineEvalRes:
         if field.type is float:
             setattr(res, name, round(getattr(res, name), 4)) # 保留四位小数
     return res
+
+
+def safe_div(num, den):
+    return num / den if den else 0.0
 
 
 def convert_str_2_linestring(data: str) -> list[LineString]:
@@ -75,23 +93,97 @@ def eval_one_line_sample(one_sample, buffer_size: float, match_thres: float) -> 
         match_thres: 两个linestring的交并比大于该阈值时才认为他们匹配上了
     '''
     valid_string_format = True
-    gt = convert_str_2_linestring(one_sample['labels'])
+    gt_text = one_sample.get('labels', one_sample.get('ground_truth', '[]'))
+    pred_text = one_sample.get('response', one_sample.get('prediction_json', one_sample.get('prediction', '[]')))
+    parse_ok = one_sample.get('parse_ok', True)
     try:
-        pred = convert_str_2_linestring(one_sample['response'])
+        gt = convert_str_2_linestring(gt_text)
     except Exception as e:
-        logger.error(e)
+        logger.debug(e)
+        gt = []
+        valid_string_format = False
+
+    try:
+        if not parse_ok:
+            raise ValueError(one_sample.get('parse_error') or 'prediction parse_ok is false')
+        pred = convert_str_2_linestring(pred_text)
+    except Exception as e:
+        logger.debug(e)
         pred = []
         valid_string_format = False
-        
+
     gt_match_indices, pred_match_indices = hungarian_match(gt, pred, line_match_matric, buffer_size, match_thres)
     res = generate_line_eval_res(gt, pred, gt_match_indices)
     res.valid_string_format = valid_string_format
+    res.sample_num = 1
 
     # print(res)
     # from vis.plot import plot
     # plot([gt, pred])
 
     return res
+
+
+def evaluate_records(
+    records,
+    meter_per_pixel: float = Parameter.METER_PER_PIXEL,
+    buffer_size: float = 1.0,
+    match_threshold: float = 0.33,
+    include_samples: bool = False,
+    **kwargs,
+):
+    old_meter_per_pixel = Parameter.METER_PER_PIXEL
+    Parameter.METER_PER_PIXEL = meter_per_pixel
+    try:
+        sample_results = []
+        sample_payloads = []
+        for idx, record in enumerate(records):
+            if not isinstance(record, dict) or "ground_truth" not in record and "labels" not in record:
+                continue
+            one = eval_one_line_sample(record, buffer_size, match_threshold)
+            sample_results.append(one)
+            if include_samples:
+                payload = asdict(one)
+                payload["idx"] = idx
+                payload["record_id"] = record.get("record_id", record.get("id", f"sample_{idx}"))
+                sample_payloads.append(payload)
+        summary = asdict(generate_eval_summary(sample_results))
+        summary.update({
+            "backend": "infer_index.line_eval",
+            "meter_per_pixel": meter_per_pixel,
+            "buffer_size": buffer_size,
+            "match_threshold": match_threshold,
+        })
+        if include_samples:
+            return {"summary": summary, "samples": sample_payloads}
+        return summary
+    finally:
+        Parameter.METER_PER_PIXEL = old_meter_per_pixel
+
+
+def evaluate_one_sample(
+    ground_truth: str,
+    prediction: str,
+    parse_ok: bool = True,
+    meter_per_pixel: float = Parameter.METER_PER_PIXEL,
+    buffer_size: float = 1.0,
+    match_threshold: float = 0.33,
+    **kwargs,
+) -> LineMatchRes:
+    old_meter_per_pixel = Parameter.METER_PER_PIXEL
+    Parameter.METER_PER_PIXEL = meter_per_pixel
+    try:
+        return eval_one_line_sample(
+            {
+                "ground_truth": ground_truth,
+                "prediction_json": prediction,
+                "parse_ok": parse_ok,
+            },
+            buffer_size,
+            match_threshold,
+        )
+    finally:
+        Parameter.METER_PER_PIXEL = old_meter_per_pixel
 
 
 def line_eval_main(infer_jsonl: str, logger=None) -> LineMatchRes:
@@ -104,7 +196,7 @@ def line_eval_main(infer_jsonl: str, logger=None) -> LineMatchRes:
     for one_sample in tqdm(samples, desc='Evaluating samples'):
         # 计算单个sample的评估结果
         samples_eval_res.append(eval_one_line_sample(one_sample, buffer_size, match_thres))
-    
+
     # 汇总计算实例级和里程级准召及F1-score
     line_eval_res = generate_eval_summary(samples_eval_res)
     line_eval_res.show_res(logger)

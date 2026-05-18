@@ -8,19 +8,28 @@ from scipy.optimize import linear_sum_assignment
 
 
 def read_jsonl(path):
-    # 读取 jsonl 文件
-    data_list = []
+    # 兼容 JSONL、JSON array，以及 state-update 的 {"patch_results": [...]}。
     with open(path, "r", encoding="utf-8") as f:
-        for line in f:
-            # 去掉空行、换行符
-            line = line.strip()
-            if not line:
-                continue
-            # 解析每行 JSON
-            json_obj = json.loads(line)
-            data_list.append(json_obj)
+        text = f.read().strip()
+    if not text:
+        print("共读取 0 条数据")
+        return []
 
-    # 查看结果
+    try:
+        payload = json.loads(text)
+        if isinstance(payload, list):
+            data_list = payload
+        elif isinstance(payload, dict) and isinstance(payload.get("patch_results"), list):
+            data_list = payload["patch_results"]
+        else:
+            data_list = [payload]
+    except json.JSONDecodeError:
+        data_list = []
+        for line in text.splitlines():
+            line = line.strip()
+            if line:
+                data_list.append(json.loads(line))
+
     print(f"共读取 {len(data_list)} 条数据")
     return data_list
 
@@ -60,15 +69,74 @@ def hungarian_match(gt_list, pred_list, metric_func, buffer_size: float, match_t
     return gt_res, pred_res
 
 
+def _extract_json_payload(data: str) -> str:
+    text = str(data or "").strip()
+    starts = [idx for idx in (text.find("{"), text.find("[")) if idx >= 0]
+    if not starts:
+        return text
+    start = min(starts)
+    stack = []
+    in_string = False
+    escape = False
+    pairs = {"{": "}", "[": "]"}
+    for idx in range(start, len(text)):
+        ch = text[idx]
+        if escape:
+            escape = False
+            continue
+        if ch == "\\":
+            escape = True
+            continue
+        if ch == '"':
+            in_string = not in_string
+            continue
+        if in_string:
+            continue
+        if ch in pairs:
+            stack.append(pairs[ch])
+        elif stack and ch == stack[-1]:
+            stack.pop()
+            if not stack:
+                return text[start:idx + 1]
+    return text[start:]
+
+
+def _load_prediction_payload(data):
+    if isinstance(data, (list, dict)):
+        return data
+    text = _extract_json_payload(data)
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        text = re.sub(r'(\w+):', r'"\1":', text)
+        return ast.literal_eval(text)
+
+
+def _iter_line_items(payload):
+    if isinstance(payload, dict):
+        payload = payload.get("lines", payload.get("road_map", payload.get("centerlines", [])))
+    if not isinstance(payload, list):
+        return []
+    return payload
+
+
+def _is_centerline_item(item):
+    if not isinstance(item, dict):
+        return True
+    category = str(item.get("category", "centerline")).strip().lower()
+    return category in {"centerline", "center_line", "lane", ""}
+
+
 def convert_QA_data(data: str) -> list[list]:
     ''' 将QA数据集/大模型的infer结果，转换成点的列表
 
         data: 单条QA数据集或大模型infer结果
     '''
     json_res = []
-    data = re.sub(r'(\w+):', r'"\1":', data) # 把所有的  单词+冒号  替换成 "单词"+冒号
-    data = ast.literal_eval(data)
-    for one_sample in data:
+    payload = _load_prediction_payload(data)
+    for one_sample in _iter_line_items(payload):
+        if not _is_centerline_item(one_sample):
+            continue
         try:
             json_res.append(one_sample['points'])
         except Exception as e:

@@ -299,7 +299,6 @@ def _config_overrides_from_args(args) -> dict:
         "input_image_size": args.input_image_size,
         "disable_deepstack": args.disable_deepstack,
         "deepstack_visual_indexes": args.deepstack_visual_indexes,
-        "dino_variant": args.dino_variant or None,
     }
 
 
@@ -319,7 +318,6 @@ def _apply_checkpoint_metadata_defaults(config, metadata: dict):
         "input_image_size",
         "disable_deepstack",
         "deepstack_visual_indexes",
-        "dino_variant",
     ):
         value = metadata.get(key)
         if value is not None and getattr(config, key, None) is None:
@@ -729,9 +727,8 @@ def main():
     parser.add_argument("--input_image_size", type=int, default=None)
     parser.add_argument("--disable_deepstack", action="store_true", default=None)
     parser.add_argument("--deepstack_visual_indexes", type=int, nargs="*", default=None)
-    parser.add_argument("--dino_variant", default="")
     parser.add_argument("--eval-centerline", action="store_true")
-    parser.add_argument("--eval-meter-per-pixel", type=float, default=1.0)
+    parser.add_argument("--eval-meter-per-pixel", type=float, default=0.2)
     parser.add_argument("--eval-buffer-size", type=float, default=1.0)
     parser.add_argument("--eval-match-threshold", type=float, default=0.33)
     args = parser.parse_args()
@@ -739,7 +736,7 @@ def main():
 
     evaluate_one_sample = evaluate_records = None
     if args.eval_centerline:
-        from scripts.centerline_eval_metrics import evaluate_one_sample, evaluate_records
+        from infer_index.line_eval import evaluate_one_sample, evaluate_records
 
     checkpoint_dir = Path(args.checkpoint_dir)
     manifest = read_manifest(checkpoint_dir)
@@ -759,8 +756,7 @@ def main():
         f"vision_tower={config_overrides.get('mm_vision_tower')}, "
         f"input_image_size={config_overrides.get('input_image_size')}, "
         f"disable_deepstack={config_overrides.get('disable_deepstack')}, "
-        f"deepstack_visual_indexes={config_overrides.get('deepstack_visual_indexes')}, "
-        f"dino_variant={config_overrides.get('dino_variant')}"
+        f"deepstack_visual_indexes={config_overrides.get('deepstack_visual_indexes')}"
     )
     tokenizer, model, image_processor = load_model_components(
         checkpoint_dir, manifest, args.device, config_overrides=config_overrides)

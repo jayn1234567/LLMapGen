@@ -9,10 +9,23 @@ def _unwrap_model(model):
 
 
 def _get_config(model):
-    config = getattr(model, "config", None)
-    if config is None and hasattr(model, "module"):
-        config = getattr(model.module, "config", None)
-    return config
+    model = _unwrap_model(model)
+    return getattr(model, "config", None)
+
+
+def _cfg_get(config, name, default=None):
+    if config is None:
+        return default
+    if isinstance(config, dict):
+        return config.get(name, default)
+    return getattr(config, name, default)
+
+
+def _cfg_set(config, name, value):
+    if isinstance(config, dict):
+        config[name] = value
+    else:
+        setattr(config, name, value)
 
 
 def _get_vision_tower(model):
@@ -37,7 +50,7 @@ def _infer_vision_tower_type(vision_tower, config=None):
     if explicit_type:
         return explicit_type
     if config is not None:
-        config_type = getattr(config, "mm_vision_tower_type", None)
+        config_type = _cfg_get(config, "mm_vision_tower_type")
         if config_type:
             return config_type
 
@@ -72,7 +85,7 @@ def _resolve_input_image_size(vision_tower, config):
     if value is not None:
         return int(value)
 
-    value = getattr(config, "input_image_size", None)
+    value = _cfg_get(config, "input_image_size")
     return int(value) if value is not None else None
 
 
@@ -87,21 +100,21 @@ def sync_qwen_multimodal_config(model):
 
     vision_tower_name = getattr(vision_tower, "vision_tower_name", None)
     if vision_tower_name:
-        config.mm_vision_tower = vision_tower_name
-    elif not getattr(config, "mm_vision_tower", None):
-        config.mm_vision_tower = getattr(config, "vision_tower", None)
+        _cfg_set(config, "mm_vision_tower", vision_tower_name)
+    elif not _cfg_get(config, "mm_vision_tower"):
+        _cfg_set(config, "mm_vision_tower", _cfg_get(config, "vision_tower"))
 
-    if not getattr(config, "vision_tower", None):
-        config.vision_tower = getattr(config, "mm_vision_tower", None)
+    if not _cfg_get(config, "vision_tower"):
+        _cfg_set(config, "vision_tower", _cfg_get(config, "mm_vision_tower"))
 
     vision_tower_type = _infer_vision_tower_type(vision_tower, config)
     if vision_tower_type:
-        config.mm_vision_tower_type = vision_tower_type
+        _cfg_set(config, "mm_vision_tower_type", vision_tower_type)
 
-    config.input_image_size = _resolve_input_image_size(vision_tower, config)
+    _cfg_set(config, "input_image_size", _resolve_input_image_size(vision_tower, config))
     deepstack_visual_indexes = _as_jsonable_list(getattr(vision_tower, "deepstack_visual_indexes", None))
-    config.deepstack_visual_indexes = deepstack_visual_indexes
-    config.disable_deepstack = deepstack_visual_indexes is None
+    _cfg_set(config, "deepstack_visual_indexes", deepstack_visual_indexes)
+    _cfg_set(config, "disable_deepstack", deepstack_visual_indexes is None)
     return config
 
 
@@ -114,18 +127,18 @@ def write_qwen_multimodal_checkpoint_metadata(model, output_dir: str, trainer=No
     config = sync_qwen_multimodal_config(model)
     if config is None:
         return
-    if not (getattr(config, "mm_vision_tower", None) or getattr(config, "vision_tower", None)):
+    if not (_cfg_get(config, "mm_vision_tower") or _cfg_get(config, "vision_tower")):
         return
 
     payload = {
         "format": "qwen_multimodal_checkpoint",
-        "model_type": getattr(config, "model_type", None),
-        "mm_vision_tower": getattr(config, "mm_vision_tower", None),
-        "vision_tower": getattr(config, "vision_tower", None),
-        "mm_vision_tower_type": getattr(config, "mm_vision_tower_type", None),
-        "input_image_size": getattr(config, "input_image_size", None),
-        "deepstack_visual_indexes": getattr(config, "deepstack_visual_indexes", None),
-        "disable_deepstack": getattr(config, "disable_deepstack", None),
+        "model_type": _cfg_get(config, "model_type"),
+        "mm_vision_tower": _cfg_get(config, "mm_vision_tower"),
+        "vision_tower": _cfg_get(config, "vision_tower"),
+        "mm_vision_tower_type": _cfg_get(config, "mm_vision_tower_type"),
+        "input_image_size": _cfg_get(config, "input_image_size"),
+        "deepstack_visual_indexes": _cfg_get(config, "deepstack_visual_indexes"),
+        "disable_deepstack": _cfg_get(config, "disable_deepstack"),
         "bundled_vision_tower": True,
     }
     os.makedirs(output_dir, exist_ok=True)

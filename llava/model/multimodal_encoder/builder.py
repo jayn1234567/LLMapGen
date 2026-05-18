@@ -6,11 +6,11 @@ from .mobileclip_encoder import MobileCLIPVisionTower
 from .dino_config import get_dino_config
 
 
-def _normalize_dino_type(value):
-    value = str(value or "").lower()
-    if "dinov2" in value or value in ("dino_v2", "dino2"):
+def _normalize_dino_type(vision_tower_type):
+    vision_tower_type = str(vision_tower_type or "").lower()
+    if vision_tower_type in ("dinov2", "dino_v2", "dino2"):
         return "dinov2"
-    if "dinov3" in value or value in ("dino_v3", "dino3"):
+    if vision_tower_type in ("dinov3", "dino_v3", "dino3"):
         return "dinov3"
     return ""
 
@@ -27,33 +27,6 @@ def _apply_dino_config(vision_tower_cfg, dino_cfg):
         vision_tower_cfg.deepstack_visual_indexes = dino_cfg.deepstack_visual_indexes
 
 
-def _resolve_dino_type(vision_tower_cfg, vision_tower_str, img_size):
-    variant = getattr(vision_tower_cfg, 'dino_variant', None) or None
-    config_type = _normalize_dino_type(getattr(vision_tower_cfg, 'mm_vision_tower_type', None))
-    path_type = _normalize_dino_type(vision_tower_str)
-    is_dino_request = variant is not None or config_type or "dinov" in vision_tower_str.lower()
-    if not is_dino_request:
-        return ""
-
-    try:
-        dino_cfg = get_dino_config(vision_tower_str, input_image_size=img_size, variant=variant)
-        _apply_dino_config(vision_tower_cfg, dino_cfg)
-        return dino_cfg.encoder_type
-    except KeyError:
-        if variant is not None:
-            raise
-
-    dino_type = config_type or path_type
-    if dino_type:
-        vision_tower_cfg.mm_vision_tower_type = dino_type
-        return dino_type
-
-    raise ValueError(
-        f"Cannot determine DINO vision tower type from '{vision_tower_str}'. "
-        "Pass --dino_variant or set mm_vision_tower_type to dinov2/dinov3."
-    )
-
-
 def build_vision_tower(vision_tower_cfg, **kwargs):
     vision_tower = getattr(vision_tower_cfg, 'mm_vision_tower', getattr(vision_tower_cfg, 'vision_tower', None))
     if vision_tower is None:
@@ -64,10 +37,27 @@ def build_vision_tower(vision_tower_cfg, **kwargs):
     vision_tower_lower = vision_tower_str.lower()
     img_size = getattr(vision_tower_cfg, 'input_image_size', None) or None
 
-    vit_type = _resolve_dino_type(vision_tower_cfg, vision_tower_str, img_size)
+    vit_type = _normalize_dino_type(getattr(vision_tower_cfg, 'mm_vision_tower_type', ''))
+    if vit_type in ("dinov2", "dinov3"):
+        if "dinov2" in vision_tower_lower or "dinov3" in vision_tower_lower:
+            try:
+                dino_cfg = get_dino_config(vision_tower_str, input_image_size=img_size)
+                _apply_dino_config(vision_tower_cfg, dino_cfg)
+            except KeyError:
+                vision_tower_cfg.mm_vision_tower_type = vit_type
+        else:
+            vision_tower_cfg.mm_vision_tower_type = vit_type
+
     if vit_type == "dinov3":
         return DINOv3VisionTower(vision_tower, args=vision_tower_cfg, **kwargs)
     if vit_type == "dinov2":
+        return DINOv2VisionTower(vision_tower, args=vision_tower_cfg, **kwargs)
+
+    if "dinov3" in vision_tower_lower or "dinov2" in vision_tower_lower:
+        dino_cfg = get_dino_config(vision_tower_str, input_image_size=img_size)
+        _apply_dino_config(vision_tower_cfg, dino_cfg)
+        if dino_cfg.encoder_type == "dinov3":
+            return DINOv3VisionTower(vision_tower, args=vision_tower_cfg, **kwargs)
         return DINOv2VisionTower(vision_tower, args=vision_tower_cfg, **kwargs)
 
     if "dinov" in vision_tower_lower:
@@ -82,7 +72,7 @@ def build_vision_tower(vision_tower_cfg, **kwargs):
             return CLIPVisionTowerS2(vision_tower, args=vision_tower_cfg, **kwargs)
         else:
             return CLIPVisionTower(vision_tower, args=vision_tower_cfg, **kwargs)
-    elif "mobileclip" in vision_tower_lower:
+    elif "mobileclip" in vision_tower.lower():
         return MobileCLIPVisionTower(vision_tower, args=vision_tower_cfg, **kwargs)
 
     raise ValueError(f'Unknown vision tower: {vision_tower}')

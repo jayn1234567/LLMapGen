@@ -93,7 +93,7 @@ run_case() {
 
     local deepstack_train_args=()
     if [ "${deepstack_mode}" = "on" ]; then
-        deepstack_train_args=(--deepstack_visual_indexes ${DEEPSTACK_VISUAL_INDEXES})
+        deepstack_train_args=(--disable_deepstack False --deepstack_visual_indexes ${DEEPSTACK_VISUAL_INDEXES})
     else
         deepstack_train_args=(--disable_deepstack True)
     fi

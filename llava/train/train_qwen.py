@@ -46,6 +46,7 @@ from transformers.trainer_callback import PrinterCallback, ProgressCallback
 from llava import conversation as conversation_lib
 from llava.model import *
 from llava.mm_utils import tokenizer_image_token, process_anyres_image
+from llava.model.builder import _load_multimodal_weights_if_present
 from llava.model.qwen3vl_extractor import is_qwen3vl_checkpoint, is_llava_checkpoint, ensure_extracted_llm_from_qwen3vl
 from llava.model.qwen_token_utils import qwen_tokenizer_kwargs, sync_qwen_token_config
 
@@ -84,6 +85,25 @@ def silence_non_primary_rank_output():
 def rank0_print(*args):
     if _is_global_rank0():
         print(*args)
+
+
+def _config_declares_qwen3(config) -> bool:
+    model_type = str(getattr(config, "model_type", "") or "").lower()
+    if "qwen3" in model_type or "qwen-3" in model_type:
+        return True
+    architectures = getattr(config, "architectures", None) or []
+    return any("qwen3" in str(arch).lower() or "qwen-3" in str(arch).lower() for arch in architectures)
+
+
+def _path_declares_qwen3(model_path: str) -> bool:
+    path = str(model_path or "").lower()
+    if any(kw in path for kw in ("qwen3", "qwen-3", "qwen_3")):
+        return True
+    try:
+        config = transformers.AutoConfig.from_pretrained(model_path, trust_remote_code=True)
+    except Exception:
+        return False
+    return _config_declares_qwen3(config)
 
 
 class JsonlMetricLoggerCallback(TrainerCallback):
@@ -207,7 +227,7 @@ class JsonlMetricLoggerCallback(TrainerCallback):
             line = self._append_log_line(self.eval_log_path, payload)
         else:
             line = self._append_log_line(self.train_log_path, payload)
-        if not is_train_runtime_summary:
+        if not is_train_runtime_summary and not getattr(args, "use_hf_progress_bar", False):
             print(line)
 
     def on_save(self, args, state, control, **kwargs):
@@ -250,6 +270,16 @@ class JsonlMetricLoggerCallback(TrainerCallback):
         self._append_log_line(self.checkpoint_log_path, payload)
 
 
+def _copy_checkpoint_tree(src_dir: str, dst_dir: str):
+    def copy_or_link(src, dst):
+        try:
+            os.link(src, dst)
+        except OSError:
+            shutil.copy2(src, dst)
+
+    shutil.copytree(src_dir, dst_dir, symlinks=True, copy_function=copy_or_link)
+
+
 class BestTrainLossCallback(TrainerCallback):
     def __init__(self):
         self.best_loss = None
@@ -263,58 +293,93 @@ class BestTrainLossCallback(TrainerCallback):
             return int(rank) == 0
         return args.local_rank in (-1, 0)
 
+    def _enabled(self, args) -> bool:
+        return bool(getattr(args, "save_best_train_loss", False))
+
+    def _best_dir(self, args):
+        best_dir = getattr(args, "best_train_loss_dir", "best")
+        if os.path.isabs(best_dir):
+            return best_dir
+        return os.path.join(args.output_dir, best_dir)
+
+    def on_train_begin(self, args, state, control, **kwargs):
+        if not self._enabled(args):
+            return
+        metadata_path = os.path.join(self._best_dir(args), "best_train_loss.json")
+        if not os.path.isfile(metadata_path):
+            return
+        try:
+            with open(metadata_path, "r", encoding="utf-8") as f:
+                payload = json.load(f)
+            self.best_loss = float(payload["best_train_loss"])
+            if self._is_rank0(args, state):
+                rank0_print(f"Loaded existing best train loss: {self.best_loss:.6g}")
+        except Exception as exc:
+            if self._is_rank0(args, state):
+                rank0_print(f"[WARN] Failed to read existing best train loss metadata: {exc}")
+
     def on_log(self, args, state, control, logs=None, **kwargs):
-        if not getattr(args, "save_best_train_loss", False) or not logs:
+        if not self._enabled(args) or not logs:
             return control
-        if "loss" not in logs:
+        if "loss" not in logs or "train_runtime" in logs:
             return control
-        if state.global_step < getattr(args, "best_train_loss_start_step", 0):
+        start_step = int(getattr(args, "best_train_loss_start_step", 0) or 0)
+        if state.global_step < start_step:
             return control
 
-        loss = float(logs["loss"])
-        if self.best_loss is None or loss < self.best_loss:
-            self.best_loss = loss
-            self.pending_best = {
-                "loss": loss,
-                "step": state.global_step,
-                "epoch": state.epoch,
-            }
-            control.should_save = True
+        try:
+            loss = float(logs["loss"])
+        except (TypeError, ValueError):
+            return control
+        if self.best_loss is not None and loss >= self.best_loss:
+            return control
+
+        self.best_loss = loss
+        self.pending_best = {
+            "best_train_loss": loss,
+            "best_train_loss_step": state.global_step,
+            "best_checkpoint": f"checkpoint-{state.global_step}",
+            "start_step": start_step,
+            "epoch": state.epoch,
+            "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        }
+        control.should_save = True
+        if self._is_rank0(args, state):
+            rank0_print(
+                f"New best train loss after step {start_step}: "
+                f"{loss:.6g} at step {state.global_step}; saving checkpoint."
+            )
         return control
 
     def on_save(self, args, state, control, **kwargs):
-        if not getattr(args, "save_best_train_loss", False):
+        if not self._enabled(args) or not self._is_rank0(args, state):
             return control
-        if self.pending_best is None or self.pending_best["step"] != state.global_step:
-            return control
-        if not self._is_rank0(args, state):
-            self.pending_best = None
+        if not self.pending_best or self.pending_best.get("best_train_loss_step") != state.global_step:
             return control
 
         checkpoint_dir = os.path.join(args.output_dir, f"checkpoint-{state.global_step}")
         if not os.path.isdir(checkpoint_dir):
+            rank0_print(f"[WARN] Best train loss checkpoint not found after save: {checkpoint_dir}")
             return control
 
-        best_dir = os.path.join(args.output_dir, getattr(args, "best_train_loss_dir", "best"))
-        tmp_dir = best_dir + ".tmp"
+        best_dir = self._best_dir(args)
+        tmp_dir = f"{best_dir}.tmp"
         if os.path.exists(tmp_dir):
             shutil.rmtree(tmp_dir)
-        shutil.copytree(checkpoint_dir, tmp_dir)
+        _copy_checkpoint_tree(checkpoint_dir, tmp_dir)
 
-        metadata = {
-            "best_train_loss": self.pending_best["loss"],
-            "best_train_loss_step": state.global_step,
-            "best_checkpoint": checkpoint_dir,
-            "start_step": getattr(args, "best_train_loss_start_step", 0),
-            "epoch": state.epoch,
-            "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        }
+        metadata = dict(self.pending_best)
+        metadata["best_checkpoint"] = checkpoint_dir
         with open(os.path.join(tmp_dir, "best_train_loss.json"), "w", encoding="utf-8") as f:
             json.dump(metadata, f, ensure_ascii=False, indent=2)
 
         if os.path.exists(best_dir):
             shutil.rmtree(best_dir)
         os.replace(tmp_dir, best_dir)
+        rank0_print(
+            f"Updated best train loss checkpoint: {best_dir} "
+            f"(loss={metadata['best_train_loss']:.6g}, step={state.global_step})"
+        )
         self.pending_best = None
         return control
 
@@ -332,55 +397,88 @@ class BestEvalLossCallback(TrainerCallback):
             return int(rank) == 0
         return args.local_rank in (-1, 0)
 
+    def _enabled(self, args) -> bool:
+        return bool(getattr(args, "save_best_eval_loss", False))
+
+    def _best_dir(self, args):
+        best_dir = getattr(args, "best_eval_loss_dir", "eval_best")
+        if os.path.isabs(best_dir):
+            return best_dir
+        return os.path.join(args.output_dir, best_dir)
+
+    def on_train_begin(self, args, state, control, **kwargs):
+        if not self._enabled(args):
+            return
+        metadata_path = os.path.join(self._best_dir(args), "best_eval_loss.json")
+        if not os.path.isfile(metadata_path):
+            return
+        try:
+            with open(metadata_path, "r", encoding="utf-8") as f:
+                payload = json.load(f)
+            self.best_loss = float(payload["best_eval_loss"])
+            if self._is_rank0(args, state):
+                rank0_print(f"Loaded existing best eval loss: {self.best_loss:.6g}")
+        except Exception as exc:
+            if self._is_rank0(args, state):
+                rank0_print(f"[WARN] Failed to read existing best eval loss metadata: {exc}")
+
     def on_evaluate(self, args, state, control, metrics=None, **kwargs):
-        if not getattr(args, "save_best_eval_loss", False) or not metrics:
+        if not self._enabled(args) or not metrics:
             return control
         if "eval_loss" not in metrics:
             return control
 
-        loss = float(metrics["eval_loss"])
-        if self.best_loss is None or loss < self.best_loss:
-            self.best_loss = loss
-            self.pending_best = {
-                "loss": loss,
-                "step": state.global_step,
-                "epoch": state.epoch,
-            }
-            control.should_save = True
+        try:
+            loss = float(metrics["eval_loss"])
+        except (TypeError, ValueError):
+            return control
+        if self.best_loss is not None and loss >= self.best_loss:
+            return control
+
+        self.best_loss = loss
+        self.pending_best = {
+            "best_eval_loss": loss,
+            "best_eval_loss_step": state.global_step,
+            "best_checkpoint": f"checkpoint-{state.global_step}",
+            "epoch": state.epoch,
+            "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        }
+        control.should_save = True
+        if self._is_rank0(args, state):
+            rank0_print(
+                f"New best eval loss: {loss:.6g} at step {state.global_step}; saving checkpoint."
+            )
         return control
 
     def on_save(self, args, state, control, **kwargs):
-        if not getattr(args, "save_best_eval_loss", False):
+        if not self._enabled(args) or not self._is_rank0(args, state):
             return control
-        if self.pending_best is None or self.pending_best["step"] != state.global_step:
-            return control
-        if not self._is_rank0(args, state):
-            self.pending_best = None
+        if not self.pending_best or self.pending_best.get("best_eval_loss_step") != state.global_step:
             return control
 
         checkpoint_dir = os.path.join(args.output_dir, f"checkpoint-{state.global_step}")
         if not os.path.isdir(checkpoint_dir):
+            rank0_print(f"[WARN] Best eval loss checkpoint not found after save: {checkpoint_dir}")
             return control
 
-        best_dir = os.path.join(args.output_dir, getattr(args, "best_eval_loss_dir", "eval_best"))
-        tmp_dir = best_dir + ".tmp"
+        best_dir = self._best_dir(args)
+        tmp_dir = f"{best_dir}.tmp"
         if os.path.exists(tmp_dir):
             shutil.rmtree(tmp_dir)
-        shutil.copytree(checkpoint_dir, tmp_dir)
+        _copy_checkpoint_tree(checkpoint_dir, tmp_dir)
 
-        metadata = {
-            "best_eval_loss": self.pending_best["loss"],
-            "best_eval_loss_step": state.global_step,
-            "best_checkpoint": checkpoint_dir,
-            "epoch": state.epoch,
-            "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        }
+        metadata = dict(self.pending_best)
+        metadata["best_checkpoint"] = checkpoint_dir
         with open(os.path.join(tmp_dir, "best_eval_loss.json"), "w", encoding="utf-8") as f:
             json.dump(metadata, f, ensure_ascii=False, indent=2)
 
         if os.path.exists(best_dir):
             shutil.rmtree(best_dir)
         os.replace(tmp_dir, best_dir)
+        rank0_print(
+            f"Updated best eval loss checkpoint: {best_dir} "
+            f"(loss={metadata['best_eval_loss']:.6g}, step={state.global_step})"
+        )
         self.pending_best = None
         return control
 
@@ -405,10 +503,9 @@ class ModelArguments:
     mm_vision_select_feature: Optional[str] = field(default="patch")
     unfreeze_mm_vision_tower: bool = field(default=False)
     deepstack_visual_indexes: Optional[List[int]] = field(default=None)
-    disable_deepstack: bool = field(default=False)
+    disable_deepstack: bool = field(default=True)
     input_image_size: Optional[int] = field(default=None)
     mm_vision_tower_type: Optional[str] = field(default=None)
-    dino_variant: Optional[str] = field(default=None)
     s2: Optional[bool] = field(default=False)
     hd: Optional[bool] = field(default=False)
 
@@ -473,6 +570,7 @@ class TrainingArguments(transformers.TrainingArguments):
     best_train_loss_dir: str = field(default="best")
     save_best_eval_loss: bool = field(default=False)
     best_eval_loss_dir: str = field(default="eval_best")
+    use_hf_progress_bar: bool = field(default=False)
 
 
 def maybe_zero_3(param, ignore_status=False, name=None):
@@ -1484,14 +1582,16 @@ def train(attn_implementation=None):
             )
         ))
 
-    _is_qwen3 = any(kw in model_args.model_name_or_path.lower() for kw in ['qwen3', 'qwen-3'])
+    _is_qwen3 = _path_declares_qwen3(model_args.model_name_or_path)
 
     if is_qwen3vl_checkpoint(model_args.model_name_or_path):
         rank0_print(f"Ensuring extracted LLM cache for Qwen3-VL checkpoint: {model_args.model_name_or_path}")
         cache_path = ensure_extracted_llm_from_qwen3vl(model_args.model_name_or_path)
         rank0_print(f"Using extracted LLM cache: {cache_path}")
         model_args.model_name_or_path = cache_path
+        _is_qwen3 = True
 
+    load_multimodal_checkpoint_weights = False
     if model_args.vision_tower is not None:
         if 'mpt' in model_args.model_name_or_path:
             config = transformers.AutoConfig.from_pretrained(model_args.model_name_or_path, trust_remote_code=True)
@@ -1504,10 +1604,13 @@ def train(attn_implementation=None):
             )
         else:
             config = transformers.AutoConfig.from_pretrained(model_args.model_name_or_path)
+            _is_qwen3 = _is_qwen3 or _config_declares_qwen3(config)
             _original_vt = getattr(config, 'mm_vision_tower', None)
             if _original_vt and _original_vt != model_args.vision_tower:
                 delattr(config, 'mm_vision_tower')
                 rank0_print(f"checkpoint vision tower '{_original_vt}' != requested '{model_args.vision_tower}', will rebuild vision modules.")
+            elif _original_vt:
+                load_multimodal_checkpoint_weights = True
             if _is_qwen3:
                 from llava.model.language_model.llava_qwen3 import LlavaQwen3ConfigWrapper
                 if not isinstance(config, LlavaQwen3ConfigWrapper):
@@ -1650,6 +1753,8 @@ def train(attn_implementation=None):
         vision_tower.tune_vision_tower = model_args.unfreeze_mm_vision_tower
         vision_tower.vision_tower.requires_grad_(model_args.unfreeze_mm_vision_tower)
         vision_tower.to(dtype=torch.bfloat16 if training_args.bf16 else torch.float16, device=training_args.device)
+        if load_multimodal_checkpoint_weights:
+            _load_multimodal_weights_if_present(model, model_args.model_name_or_path)
 
 
         data_args.image_processor = vision_tower.image_processor
@@ -1723,7 +1828,8 @@ def train(attn_implementation=None):
                            ],
                            **data_module)
     trainer.remove_callback(PrinterCallback)
-    trainer.remove_callback(ProgressCallback)
+    if not training_args.use_hf_progress_bar:
+        trainer.remove_callback(ProgressCallback)
 
     if list(pathlib.Path(training_args.output_dir).glob("checkpoint-*")):
         trainer.train(resume_from_checkpoint=True)

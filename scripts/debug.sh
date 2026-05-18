@@ -114,7 +114,7 @@ if [[ "${DISABLE_DEEPSTACK:-False}" =~ ^(1|true|True|TRUE|yes|YES)$ ]]; then
     DEEPSTACK_LABEL="disabled"
     GRADIENT_CHECKPOINTING=${GRADIENT_CHECKPOINTING:-True}
 elif [ -n "${DEEPSTACK_VISUAL_INDEXES}" ]; then
-    DEEPSTACK_ARGS=(--deepstack_visual_indexes ${DEEPSTACK_VISUAL_INDEXES})
+    DEEPSTACK_ARGS=(--disable_deepstack False --deepstack_visual_indexes ${DEEPSTACK_VISUAL_INDEXES})
     DEEPSTACK_LABEL="${DEEPSTACK_VISUAL_INDEXES}"
     GRADIENT_CHECKPOINTING=${GRADIENT_CHECKPOINTING:-True}
 else

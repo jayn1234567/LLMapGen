@@ -1,9 +1,16 @@
 #!/usr/bin/env python3
 import argparse
 import json
+import sys
 from pathlib import Path
 
 from PIL import Image, ImageDraw, ImageFont
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from infer_index.line_eval import evaluate_records
 
 
 def load_json_maybe(text: str):
@@ -101,13 +108,22 @@ def main():
     parser.add_argument("--output-dir", default="")
     parser.add_argument("--color-gt", default="green")
     parser.add_argument("--color-pred", default="red")
+    parser.add_argument("--no-eval-centerline", action="store_true")
+    parser.add_argument("--eval-output-json", default="")
+    parser.add_argument("--eval-meter-per-pixel", type=float, default=0.2)
+    parser.add_argument("--eval-buffer-size", type=float, default=1.0)
+    parser.add_argument("--eval-match-threshold", type=float, default=0.33)
     args = parser.parse_args()
 
     input_dir = Path(args.input_dir)
     image_folder = Path(args.image_folder)
     summary_path = input_dir / "summary.json"
     if not summary_path.exists():
-        raise FileNotFoundError(f"Summary file not found: {summary_path}")
+        summary_jsonl_path = input_dir / "summary.jsonl"
+        if summary_jsonl_path.exists():
+            summary_path = summary_jsonl_path
+        else:
+            raise FileNotFoundError(f"Summary file not found: {summary_path}")
 
     results = load_json_array_or_lines(summary_path)
     if not results:
@@ -133,7 +149,8 @@ def main():
 
         base_image = Image.open(image_path).convert("RGB")
         gt_image = draw_map_lines(base_image.copy(), load_json_maybe(result.get("ground_truth", "[]")), gt_color, colors["yellow"])
-        pred_image = draw_map_lines(base_image.copy(), load_json_maybe(result.get("prediction", "[]")), pred_color, colors["blue"])
+        pred_text = result.get("prediction_json") or result.get("prediction", "[]")
+        pred_image = draw_map_lines(base_image.copy(), load_json_maybe(pred_text), pred_color, colors["blue"])
 
         gt_panel = add_title(gt_image, "Ground Truth")
         pred_panel = add_title(pred_image, "Prediction")
@@ -148,6 +165,16 @@ def main():
         print(f"Saved: {out_path}")
 
     print(f"Done. Visualizations saved to {output_dir}")
+    if not args.no_eval_centerline and any("ground_truth" in result for result in results):
+        eval_summary = evaluate_records(
+            results,
+            meter_per_pixel=args.eval_meter_per_pixel,
+            buffer_size=args.eval_buffer_size,
+            match_threshold=args.eval_match_threshold,
+        )
+        eval_path = Path(args.eval_output_json) if args.eval_output_json else input_dir / "centerline_eval.json"
+        eval_path.write_text(json.dumps(eval_summary, ensure_ascii=False, indent=2), encoding="utf-8")
+        print(json.dumps({"centerline_eval_json": str(eval_path), "centerline_eval": eval_summary}, ensure_ascii=False))
 
 
 if __name__ == "__main__":

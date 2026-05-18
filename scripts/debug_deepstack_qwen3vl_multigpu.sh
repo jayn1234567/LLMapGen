@@ -30,6 +30,7 @@ TRAIN_SAMPLE_LIMIT=${TRAIN_SAMPLE_LIMIT:-4}
 NUM_INFER_SAMPLES=${NUM_INFER_SAMPLES:-2}
 MODEL_MAX_LENGTH=${MODEL_MAX_LENGTH:-1536}
 OUTPUT_ROOT=${OUTPUT_ROOT:-/tmp/mllm_deepstack_qwen3vl_multigpu_debug}
+USE_HF_PROGRESS_BAR=${USE_HF_PROGRESS_BAR:-True}
 
 TRAIN_OUTPUT_DIR="${OUTPUT_ROOT}/train_lora"
 INFER_OUTPUT_DIR="${OUTPUT_ROOT}/infer"
@@ -55,6 +56,7 @@ echo "qwen3vl: ${QWEN3VL_PATH}"
 echo "dinov3: ${DINOV3_PATH}"
 echo "infer_checkpoint: ${INFER_CHECKPOINT_DIR}"
 echo "deepstack_indexes: ${DEEPSTACK_VISUAL_INDEXES}"
+echo "hf_tqdm: ${USE_HF_PROGRESS_BAR}"
 nvidia-smi --query-gpu=index,name,memory.total,memory.used,memory.free,utilization.gpu --format=csv,noheader,nounits
 
 require_file() {
@@ -173,7 +175,7 @@ require_grep "DEBUG_CHECK deepstack_count_ok" "${SHAPE_LOG}" "DeepStack feature 
 require_grep "DEBUG_CHECK visual_token_alignment_ok" "${SHAPE_LOG}" "visual token alignment check"
 require_grep "DEBUG_CHECK hidden_size_alignment_ok" "${SHAPE_LOG}" "hidden size alignment check"
 
-echo "========== 2-GPU training smoke =========="
+echo "========== multi-GPU training smoke =========="
 rm -rf "${TRAIN_OUTPUT_DIR}"
 mkdir -p "${TRAIN_OUTPUT_DIR}"
 CUDA_VISIBLE_DEVICES="${GPU_IDS}" \
@@ -187,6 +189,7 @@ torchrun \
     --vision_tower "${DINOV3_PATH}" \
     --mm_vision_select_layer -2 \
     --mm_projector_type mlp2x_gelu \
+    --disable_deepstack False \
     --deepstack_visual_indexes ${DEEPSTACK_VISUAL_INDEXES} \
     --data_path "${TRAIN_JSON}" \
     --image_folder "${IMAGE_FOLDER}" \
@@ -209,6 +212,7 @@ torchrun \
     --dataloader_num_workers 0 \
     --remove_unused_columns false \
     --save_strategy no \
+    --use_hf_progress_bar "${USE_HF_PROGRESS_BAR}" \
     --logging_steps 1 \
     --report_to none \
     --ddp_find_unused_parameters False \
@@ -231,7 +235,7 @@ if grep -Eq "\\[rank[1-9]\\]" "${TRAIN_LOG}"; then
     exit 1
 fi
 
-echo "========== 2-GPU inference smoke =========="
+echo "========== multi-GPU inference smoke =========="
 rm -rf "${INFER_OUTPUT_DIR}"
 mkdir -p "${INFER_OUTPUT_DIR}"
 CUDA_VISIBLE_DEVICES="${GPU_IDS}" \
@@ -259,6 +263,7 @@ require_grep "Loaded [0-9]+/[0-9]+ (model tensors from full-finetune checkpoint|
 
 DEBUG_INFER_OUTPUT_DIR="${INFER_OUTPUT_DIR}" \
 DEBUG_NPROC_PER_NODE="${NPROC_PER_NODE}" \
+DEBUG_NUM_INFER_SAMPLES="${NUM_INFER_SAMPLES}" \
 python - <<'PY'
 import glob
 import json
@@ -267,12 +272,14 @@ from pathlib import Path
 
 out_dir = Path(os.environ["DEBUG_INFER_OUTPUT_DIR"])
 nproc = int(os.environ["DEBUG_NPROC_PER_NODE"])
+num_infer_samples = int(os.environ["DEBUG_NUM_INFER_SAMPLES"])
 summary_files = sorted(out_dir.glob("summary_rank*.json"))
 sample_files = sorted(p for p in out_dir.glob("rank*_*.json") if not p.name.startswith("summary_"))
 print(f"DEBUG_INFER summary_files {len(summary_files)}")
 print(f"DEBUG_INFER sample_files {len(sample_files)}")
 assert len(summary_files) == nproc, f"expected {nproc} summary_rank*.json files"
-assert len(sample_files) >= nproc, "expected rank-prefixed per-sample output files"
+expected_min_sample_files = min(nproc, num_infer_samples)
+assert len(sample_files) >= expected_min_sample_files, "expected rank-prefixed per-sample output files"
 for path in summary_files:
     data = json.loads(path.read_text(encoding="utf-8"))
     assert isinstance(data, list), f"{path} must contain a list"

@@ -30,9 +30,11 @@ DINO type and platform are explicit:
 - `dinov2` or `dinov3` identifies the vision tower family.
 - `_npu` or `_gpu` identifies the target platform.
 
-Common DINOv3 scripts do not pass `--dino_variant`; the code infers DINO type from `mm_vision_tower_type` or the `vision_tower` path. They also avoid hard-coded `--input_image_size` unless a specific experiment needs an override.
+Common DINOv3 scripts infer DINO type from checkpoint metadata, `mm_vision_tower_type`, or the `vision_tower` path. They also avoid hard-coded `--input_image_size` unless a specific experiment needs an override.
 
 DeepStack and gradient checkpointing are intended to work together. Training scripts keep `GRADIENT_CHECKPOINTING=True` by default, including DeepStack runs. Inference scripts do not hard-code DeepStack settings; they recover DeepStack enabled/disabled state from the checkpoint config unless an override is passed.
+
+The Python training entry defaults to DeepStack disabled. Only scripts explicitly named `*_deepstack_*` enable it by passing both `--disable_deepstack False` and `--deepstack_visual_indexes ...`. Other align/debug scripts keep `DEEPSTACK_VISUAL_INDEXES` empty by default; set it only when you intentionally want DeepStack.
 
 Qwen multimodal checkpoints write `qwen_multimodal_checkpoint.json`. `llava_checkpoint.json` is treated as legacy metadata only. Inference refuses to use the old generic LLaVA loader for directories that contain full model weights, because that route can silently skip Qwen projector, ViT, or DeepStack tensors.
 
@@ -43,4 +45,17 @@ Best checkpoint behavior:
 - `train_full_dinov3_qwen3vl-8b_deepstack_eval_best_npu.sh` requires an eval jsonl through `EVAL_PATH` (defaulting to the dataset `test.jsonl` when present), evaluates every `EVAL_STEPS`, and writes the current best eval-loss checkpoint to `output/eval_best/` by default. Override with `EVAL_IMAGE_FOLDER`, `EVAL_STEPS`, and `BEST_EVAL_LOSS_DIR`.
 - Both best directories are copied from a normal `checkpoint-*` directory after that checkpoint is fully saved, and include `config.json`, `model.safetensors`, optimizer/scheduler state, and `qwen_multimodal_checkpoint.json`.
 
+Centerline geometry evaluation:
+
+- The project uses `infer_index/line_eval.py` for centerline metrics: LineString buffer IoU plus Hungarian matching, reporting instance-level and length-level precision/recall/F1.
+- `scripts/infer_centerline_checkpoint.py --eval-centerline` and `scripts/infer_centerline_state_update.py --eval-centerline` write these metrics with the inference summary.
+- `scripts/visualize_centerline.py` automatically prints and saves `centerline_eval.json` after visualization when ground truth is present. Use `--no-eval-centerline` to disable it.
+- The default metric scale is `--eval-meter-per-pixel 0.2`, matching `infer_index/param.py`.
+
 Distributed logging defaults to `LLAVA_LOG_RANK0_ONLY=1`, so normal stdout logs are printed by global rank 0 only. Error tracebacks on stderr are kept for nonzero ranks unless `LLAVA_SUPPRESS_NONZERO_STDERR=1` is set.
+
+Full training scripts keep the Hugging Face tqdm progress bar enabled by default and write full logs to `train_metrics.log`, `eval_metrics.log`, and `checkpoint_events.log`. Set `USE_HF_PROGRESS_BAR=False` to use compact step metric lines instead:
+
+```bash
+USE_HF_PROGRESS_BAR=False bash scripts/train_full_dinov3_qwen3vl-8b_deepstack_npu.sh
+```

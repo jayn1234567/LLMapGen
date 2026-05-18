@@ -282,7 +282,7 @@ def main():
     parser.add_argument("--temperature", type=float, default=0.0)
     parser.add_argument("--include-intersections", action="store_true")
     parser.add_argument("--eval-centerline", action="store_true")
-    parser.add_argument("--eval-meter-per-pixel", type=float, default=1.0)
+    parser.add_argument("--eval-meter-per-pixel", type=float, default=0.2)
     parser.add_argument("--eval-buffer-size", type=float, default=1.0)
     parser.add_argument("--eval-match-threshold", type=float, default=0.33)
     parser.add_argument("--dry-run-prompts", action="store_true")
@@ -290,7 +290,7 @@ def main():
 
     evaluate_records = None
     if args.eval_centerline:
-        from scripts.centerline_eval_metrics import evaluate_records
+        from infer_index.line_eval import evaluate_records
 
     records = sort_patch_records(load_json_or_jsonl(Path(args.patch_json)))
     image_folder = Path(args.image_folder)

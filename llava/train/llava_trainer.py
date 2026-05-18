@@ -44,6 +44,14 @@ def get_mm_adapter_state_maybe_zero_3(named_params, keys_to_match):
     return to_return
 
 
+def get_peft_state_non_lora_maybe_zero_3(named_params, require_grad_only=True):
+    to_return = {k: t for k, t in named_params if "lora_" not in k}
+    if require_grad_only:
+        to_return = {k: t for k, t in to_return.items() if t.requires_grad}
+    to_return = {k: maybe_zero_3(v, ignore_status=True, name=k).cpu() for k, v in to_return.items()}
+    return to_return
+
+
 def split_to_even_chunks(indices, lengths, num_chunks):
     """
     Split a list of indices into `chunks` chunks of roughly equal lengths.
@@ -247,13 +255,14 @@ class LLaVATrainer(Trainer):
         return self.optimizer
 
     def _save_checkpoint(self, model, trial, metrics=None):
+        from transformers.trainer_utils import PREFIX_CHECKPOINT_DIR
+        checkpoint_folder = f"{PREFIX_CHECKPOINT_DIR}-{self.state.global_step}"
+        run_dir = self._get_output_dir(trial=trial)
+        output_dir = os.path.join(run_dir, checkpoint_folder)
+
+        sync_qwen_multimodal_config(self.model)
+
         if getattr(self.args, 'tune_mm_mlp_adapter', False):
-            from transformers.trainer_utils import PREFIX_CHECKPOINT_DIR
-            checkpoint_folder = f"{PREFIX_CHECKPOINT_DIR}-{self.state.global_step}"
-
-            run_dir = self._get_output_dir(trial=trial)
-            output_dir = os.path.join(run_dir, checkpoint_folder)
-
             # Only save Adapter
             keys_to_match = ['mm_projector', 'vision_resampler']
             if getattr(self.args, "use_im_start_end", False):
@@ -273,8 +282,8 @@ class LLaVATrainer(Trainer):
             model.generation_config.temperature = None
             model.generation_config.top_p = None
             sync_qwen_token_config(model=model)
-            sync_qwen_multimodal_config(model)
             super(LLaVATrainer, self)._save_checkpoint(model, trial)
+            write_qwen_multimodal_checkpoint_metadata(self.model, output_dir, self)
 
     def _save(self, output_dir: Optional[str] = None, state_dict=None):
         if getattr(self.args, 'tune_mm_mlp_adapter', False):
@@ -288,4 +297,8 @@ class LLaVATrainer(Trainer):
             sync_qwen_token_config(model=self.model)
             sync_qwen_multimodal_config(self.model)
             super(LLaVATrainer, self)._save(output_dir, state_dict)
+            if getattr(self.args, "lora_enable", False) and self.is_world_process_zero():
+                self.model.config.save_pretrained(output_dir)
+                non_lora_state_dict = get_peft_state_non_lora_maybe_zero_3(self.model.named_parameters())
+                torch.save(non_lora_state_dict, os.path.join(output_dir, "non_lora_trainables.bin"))
             write_qwen_multimodal_checkpoint_metadata(self.model, output_dir, self)

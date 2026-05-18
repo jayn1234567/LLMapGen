@@ -234,6 +234,7 @@ SAMPLE_SEED=42
 SAVE_BEST_TRAIN_LOSS=${SAVE_BEST_TRAIN_LOSS:-False}
 BEST_TRAIN_LOSS_START_STEP=${BEST_TRAIN_LOSS_START_STEP:-3000}
 BEST_TRAIN_LOSS_DIR=${BEST_TRAIN_LOSS_DIR:-best}
+USE_HF_PROGRESS_BAR=${USE_HF_PROGRESS_BAR:-True}
 
 # ---------- DeepStack ----------
 DEEPSTACK_ARGS=()
@@ -242,7 +243,7 @@ if [[ "${DISABLE_DEEPSTACK:-False}" =~ ^(1|true|True|TRUE|yes|YES)$ ]]; then
     DEEPSTACK_LABEL="disabled"
     GRADIENT_CHECKPOINTING=${GRADIENT_CHECKPOINTING:-True}
 elif [ -n "${DEEPSTACK_VISUAL_INDEXES}" ]; then
-    DEEPSTACK_ARGS=(--deepstack_visual_indexes ${DEEPSTACK_VISUAL_INDEXES})
+    DEEPSTACK_ARGS=(--disable_deepstack False --deepstack_visual_indexes ${DEEPSTACK_VISUAL_INDEXES})
     DEEPSTACK_LABEL="${DEEPSTACK_VISUAL_INDEXES}"
     GRADIENT_CHECKPOINTING=${GRADIENT_CHECKPOINTING:-True}
 else
@@ -257,6 +258,7 @@ echo "DeepStack:  ${DEEPSTACK_LABEL}"
 echo "Grad ckpt:  ${GRADIENT_CHECKPOINTING}"
 echo "DeepSpeed:  ${DEEPSPEED_CONFIG}"
 echo "Best train: ${SAVE_BEST_TRAIN_LOSS}, start_step=${BEST_TRAIN_LOSS_START_STEP}, dir=${BEST_TRAIN_LOSS_DIR}"
+echo "HF tqdm:    ${USE_HF_PROGRESS_BAR}"
 echo "============================================================"
 
 torchrun \
@@ -297,6 +299,7 @@ torchrun \
     --save_best_train_loss "${SAVE_BEST_TRAIN_LOSS}" \
     --best_train_loss_start_step "${BEST_TRAIN_LOSS_START_STEP}" \
     --best_train_loss_dir "${BEST_TRAIN_LOSS_DIR}" \
+    --use_hf_progress_bar "${USE_HF_PROGRESS_BAR}" \
     --logging_steps "${LOGGING_STEPS}" \
     --report_to none \
     --ddp_find_unused_parameters False \

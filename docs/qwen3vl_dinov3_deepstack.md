@@ -87,7 +87,7 @@ DINOv3-L      224
 DINOv3-B      224
 ```
 
-Most scripts do not pass a strict `--dino_variant`. This is intentional. Training and inference should derive the DINO type from checkpoint metadata or `vision_tower` path unless an experiment explicitly needs an override.
+Training and inference derive the DINO type from checkpoint metadata, `mm_vision_tower_type`, or the `vision_tower` path. Vision tower paths should include a recognizable DINO key or alias such as `dinov3-vitl16`.
 
 ## Training Modes
 
@@ -117,6 +117,8 @@ freeze-vit       freeze ViT, train LLM plus alignment modules
 freeze-llm       freeze LLM, train ViT plus alignment modules
 dinov2/dinov3    selected vision tower family
 ```
+
+The raw Python training entry defaults to DeepStack disabled. DeepStack fixed scripts explicitly pass `--disable_deepstack False` together with `--deepstack_visual_indexes ...`; non-DeepStack align scripts leave `DEEPSTACK_VISUAL_INDEXES` empty unless the caller overrides it.
 
 ## Inference Behavior
 
@@ -160,13 +162,15 @@ Normal stdout is rank-0 only by default:
 LLAVA_LOG_RANK0_ONLY=1
 ```
 
-The console prints only step metrics:
+Direct `python -m llava.train.train_qwen` runs print compact step metrics by default:
 
 ```text
 time: 2026-05-13 15:43:14  global_step: 1  epoch: 1  loss: 1.23  learning_rate: 2e-05  DI_throughput: 12716.48 tokens/s/npu
 ```
 
-The console does not print Hugging Face dict logs such as:
+Full training scripts set `USE_HF_PROGRESS_BAR=True` internally, so they keep the Hugging Face tqdm progress bar by default. In that mode, the custom metric callback still writes `train_metrics.log` and `eval_metrics.log`, but does not print its compact step line to stdout. Set `USE_HF_PROGRESS_BAR=False` in the script environment if compact step lines are preferred.
+
+Compact mode does not print Hugging Face dict logs such as:
 
 ```text
 {'loss': ...}

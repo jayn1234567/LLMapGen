@@ -112,12 +112,12 @@ class LlavaMetaModel:
             or getattr(vision_tower, 'input_image_size', None)
             or getattr(model_args, 'input_image_size', None)
         )
-        deepstack_visual_indexes = getattr(vision_tower, 'deepstack_visual_indexes', None)
-        if deepstack_visual_indexes is not None:
-            deepstack_visual_indexes = [int(idx) for idx in deepstack_visual_indexes]
-        self.config.deepstack_visual_indexes = deepstack_visual_indexes
-        self.config.disable_deepstack = deepstack_visual_indexes is None
-        self.config.dino_variant = getattr(model_args, 'dino_variant', None)
+        self.config.deepstack_visual_indexes = getattr(
+            vision_tower,
+            'deepstack_visual_indexes',
+            getattr(model_args, 'deepstack_visual_indexes', None),
+        )
+        self.config.disable_deepstack = self.config.deepstack_visual_indexes is None
 
         mm_projector = getattr(self, 'mm_projector', None)
         projector_needs_rebuild = False

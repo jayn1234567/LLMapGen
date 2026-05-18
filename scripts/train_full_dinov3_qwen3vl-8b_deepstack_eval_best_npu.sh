@@ -182,8 +182,9 @@ fi
 
 TRAIN_PATH="${DATASET_PATH}/train.jsonl"
 TEST_PATH="${DATASET_PATH}/test.jsonl"
-EVAL_PATH=${EVAL_PATH:-${TEST_PATH}}
-EVAL_IMAGE_FOLDER=${EVAL_IMAGE_FOLDER:-${IMAGE_FOLDER}}
+# Eval set used by this eval-best script. Edit here if you prepare a separate validation jsonl.
+EVAL_PATH="${TEST_PATH}"
+EVAL_IMAGE_FOLDER="${IMAGE_FOLDER}"
 if [ ! -f "$TRAIN_PATH" ]; then
     echo "ERROR: $TRAIN_PATH not found"
     exit 1
@@ -199,20 +200,23 @@ echo "TEST_PATH:    $TEST_PATH"
 echo "EVAL_PATH:    $EVAL_PATH"
 echo ">>>>>>>>>>>>>>>>>>>>>>>>>>>>>>> finish moxing >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>"
 
-# ====================== auto gradient accumulation ======================
-tar_equal_batch_size=32
-per_device_train_batch_size=2
+# ====================== batch size ======================
+# Edit these values in this script. Do not pass them as one-off shell prefixes.
+# Target total train batch = TARGET_GLOBAL_BATCH_SIZE.
+# Actual total batch = NNODES * NPROC_PER_NODE * PER_DEVICE_TRAIN_BATCH_SIZE * gradient_accumulation_steps.
+TARGET_GLOBAL_BATCH_SIZE=32
+PER_DEVICE_TRAIN_BATCH_SIZE=2
 
 total_gpus=$(( NNODES * NPROC_PER_NODE ))
-gas=$((tar_equal_batch_size / (total_gpus * per_device_train_batch_size) ))
+gas=$((TARGET_GLOBAL_BATCH_SIZE / (total_gpus * PER_DEVICE_TRAIN_BATCH_SIZE) ))
 if [ $gas -lt 1 ]; then
     gradient_accumulation_steps=1
 else
     gradient_accumulation_steps=$gas
 fi
 
-echo ">>> Target global batch: ${tar_equal_batch_size}"
-echo ">>> Per-device batch: ${per_device_train_batch_size}, Total GPUs: ${total_gpus}"
+echo ">>> Target global batch: ${TARGET_GLOBAL_BATCH_SIZE}"
+echo ">>> Per-device batch: ${PER_DEVICE_TRAIN_BATCH_SIZE}, Total GPUs: ${total_gpus}"
 echo ">>> Gradient accumulation steps: ${gradient_accumulation_steps}"
 
 # ====================== training ======================
@@ -221,45 +225,45 @@ cd "$SCRIPT_DIR/.."
 
 export PYTHONPATH="$(pwd):${PYTHONPATH:-}"
 
-# ---------- Training params ----------
-MM_VISION_SELECT_LAYER=-2
-MM_PROJECTOR_TYPE=mlp2x_gelu
-UNFREEZE_MM_VISION_TOWER=True
-DEEPSTACK_VISUAL_INDEXES="6 12 18 23"
-DEEPSPEED_CONFIG="scripts/deepspeed_zero3.json"
-NUM_EPOCHS=6
-LR=2e-5
-MM_PROJECTOR_LR=2e-5
-WEIGHT_DECAY=0.1
-WARMUP_STEPS=100
-LR_SCHEDULER_TYPE=cosine
-MODEL_MAX_LENGTH=4096
-EVAL_STEPS=${EVAL_STEPS:-300}
-SAVE_STEPS=${SAVE_STEPS:-${EVAL_STEPS}}
-SAVE_TOTAL_LIMIT=10
-LOGGING_STEPS=10
-SAMPLE_SEED=42
-SAVE_BEST_TRAIN_LOSS=${SAVE_BEST_TRAIN_LOSS:-False}
-BEST_TRAIN_LOSS_START_STEP=${BEST_TRAIN_LOSS_START_STEP:-3000}
-BEST_TRAIN_LOSS_DIR=${BEST_TRAIN_LOSS_DIR:-best}
-USE_HF_PROGRESS_BAR=${USE_HF_PROGRESS_BAR:-True}
+# ====================== training parameters ======================
+# Edit this block for experiments. Each variable is passed to train_qwen.py below.
+MM_VISION_SELECT_LAYER=-2              # --mm_vision_select_layer; -2 means use the penultimate ViT layer as main feature.
+MM_PROJECTOR_TYPE=mlp2x_gelu           # --mm_projector_type.
+UNFREEZE_MM_VISION_TOWER=True          # --unfreeze_mm_vision_tower; True means full-param ViT training.
+DEEPSTACK_VISUAL_INDEXES="6 12 18 23"  # --deepstack_visual_indexes; fixed DeepStack layers for DINOv3-L.
+DISABLE_DEEPSTACK=${DISABLE_DEEPSTACK:-False}  # Internal wrapper override used by no-deepstack variants.
+GRADIENT_CHECKPOINTING=True            # --gradient_checkpointing; keep enabled for large full-param jobs.
+DEEPSPEED_CONFIG="scripts/deepspeed_zero3.json" # --deepspeed; ZeRO3 with gathered checkpoint saves.
+NUM_EPOCHS=6                           # --num_train_epochs.
+LR=2e-5                                # --learning_rate.
+MM_PROJECTOR_LR=2e-5                   # --mm_projector_lr.
+WEIGHT_DECAY=0.1                       # --weight_decay.
+WARMUP_STEPS=100                       # --warmup_steps.
+LR_SCHEDULER_TYPE=cosine               # --lr_scheduler_type.
+MODEL_MAX_LENGTH=4096                  # --model_max_length.
+EVAL_STEPS=300                         # --eval_steps.
+SAVE_STEPS=${EVAL_STEPS}               # --save_steps; keep aligned with eval_steps.
+SAVE_TOTAL_LIMIT=10                    # --save_total_limit.
+LOGGING_STEPS=10                       # --logging_steps.
+SAMPLE_SEED=42                         # --sample_seed.
+SAVE_BEST_TRAIN_LOSS=False             # --save_best_train_loss; optional train-loss best in this eval-best script.
+BEST_TRAIN_LOSS_START_STEP=3000        # --best_train_loss_start_step.
+BEST_TRAIN_LOSS_DIR=best               # --best_train_loss_dir.
+USE_HF_PROGRESS_BAR=True               # --use_hf_progress_bar; True prints HF tqdm progress on console.
 EVAL_STRATEGY_ARG=$(python -c "import inspect, transformers; print('--eval_strategy' if 'eval_strategy' in inspect.signature(transformers.TrainingArguments.__init__).parameters else '--evaluation_strategy')")
-SAVE_BEST_EVAL_LOSS=${SAVE_BEST_EVAL_LOSS:-True}
-BEST_EVAL_LOSS_DIR=${BEST_EVAL_LOSS_DIR:-eval_best}
+SAVE_BEST_EVAL_LOSS=True               # --save_best_eval_loss; maintain OUTPUT_PATH/eval_best.
+BEST_EVAL_LOSS_DIR=eval_best           # --best_eval_loss_dir.
 
 # ---------- DeepStack ----------
 DEEPSTACK_ARGS=()
-if [[ "${DISABLE_DEEPSTACK:-False}" =~ ^(1|true|True|TRUE|yes|YES)$ ]]; then
+if [[ "${DISABLE_DEEPSTACK}" =~ ^(1|true|True|TRUE|yes|YES)$ ]]; then
     DEEPSTACK_ARGS=(--disable_deepstack True)
     DEEPSTACK_LABEL="disabled"
-    GRADIENT_CHECKPOINTING=${GRADIENT_CHECKPOINTING:-True}
 elif [ -n "${DEEPSTACK_VISUAL_INDEXES}" ]; then
     DEEPSTACK_ARGS=(--disable_deepstack False --deepstack_visual_indexes ${DEEPSTACK_VISUAL_INDEXES})
     DEEPSTACK_LABEL="${DEEPSTACK_VISUAL_INDEXES}"
-    GRADIENT_CHECKPOINTING=${GRADIENT_CHECKPOINTING:-True}
 else
     DEEPSTACK_LABEL="disabled"
-    GRADIENT_CHECKPOINTING=${GRADIENT_CHECKPOINTING:-True}
 fi
 
 echo "============================================================"
@@ -296,7 +300,7 @@ torchrun \
     --bf16 True \
     --output_dir "${OUTPUT_PATH}" \
     --num_train_epochs "${NUM_EPOCHS}" \
-    --per_device_train_batch_size ${per_device_train_batch_size} \
+    --per_device_train_batch_size ${PER_DEVICE_TRAIN_BATCH_SIZE} \
     --gradient_accumulation_steps ${gradient_accumulation_steps} \
     --learning_rate "${LR}" \
     --mm_projector_lr "${MM_PROJECTOR_LR}" \
@@ -304,7 +308,7 @@ torchrun \
     --warmup_steps "${WARMUP_STEPS}" \
     --lr_scheduler_type "${LR_SCHEDULER_TYPE}" \
     --model_max_length "${MODEL_MAX_LENGTH}" \
-    --gradient_checkpointing "${GRADIENT_CHECKPOINTING:-True}" \
+    --gradient_checkpointing "${GRADIENT_CHECKPOINTING}" \
     --dataloader_num_workers 4 \
     --remove_unused_columns false \
     --save_strategy steps \

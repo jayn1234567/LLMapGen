@@ -41,8 +41,8 @@ Qwen multimodal checkpoints write `qwen_multimodal_checkpoint.json`. `llava_chec
 Best checkpoint behavior:
 
 - Normal full training scripts do not run eval and do not maintain best-loss directories by default.
-- `train_full_dinov3_qwen3vl-8b_deepstack_train_best_npu.sh` sets `SAVE_BEST_TRAIN_LOSS=True` and writes the current best training-loss checkpoint to `output/best/` by default. Override with `BEST_TRAIN_LOSS_START_STEP` and `BEST_TRAIN_LOSS_DIR`.
-- `train_full_dinov3_qwen3vl-8b_deepstack_eval_best_npu.sh` requires an eval jsonl through `EVAL_PATH` (defaulting to the dataset `test.jsonl` when present), evaluates every `EVAL_STEPS`, and writes the current best eval-loss checkpoint to `output/eval_best/` by default. Override with `EVAL_IMAGE_FOLDER`, `EVAL_STEPS`, and `BEST_EVAL_LOSS_DIR`.
+- `train_full_dinov3_qwen3vl-8b_deepstack_train_best_npu.sh` sets train-loss best checkpointing internally and writes the current best training-loss checkpoint to `output/best/` by default. Edit `BEST_TRAIN_LOSS_START_STEP` and `BEST_TRAIN_LOSS_DIR` inside the script when needed.
+- `train_full_dinov3_qwen3vl-8b_deepstack_eval_best_npu.sh` uses the validation jsonl configured inside the script, evaluates every `EVAL_STEPS`, and writes the current best eval-loss checkpoint to `output/eval_best/` by default. Edit `EVAL_PATH`, `EVAL_IMAGE_FOLDER`, `EVAL_STEPS`, and `BEST_EVAL_LOSS_DIR` inside the script when needed.
 - Both best directories are copied from a normal `checkpoint-*` directory after that checkpoint is fully saved, and include `config.json`, `model.safetensors`, optimizer/scheduler state, and `qwen_multimodal_checkpoint.json`.
 
 Centerline geometry evaluation:
@@ -54,8 +54,14 @@ Centerline geometry evaluation:
 
 Distributed logging defaults to `LLAVA_LOG_RANK0_ONLY=1`, so normal stdout logs are printed by global rank 0 only. Error tracebacks on stderr are kept for nonzero ranks unless `LLAVA_SUPPRESS_NONZERO_STDERR=1` is set.
 
-Full training scripts keep the Hugging Face tqdm progress bar enabled by default and write full logs to `train_metrics.log`, `eval_metrics.log`, and `checkpoint_events.log`. Set `USE_HF_PROGRESS_BAR=False` to use compact step metric lines instead:
+Full training scripts keep the Hugging Face tqdm progress bar enabled by default and write full logs to `train_metrics.log`, `eval_metrics.log`, and `checkpoint_events.log`. In tqdm mode, `DI_throughput` is also printed with the step metric line through `tqdm.write(...)`.
 
-```bash
-USE_HF_PROGRESS_BAR=False bash scripts/train_full_dinov3_qwen3vl-8b_deepstack_npu.sh
-```
+Do not pass experiment knobs as one-off shell prefixes. Edit the parameter block inside the target script. The main block contains comments for:
+
+- `TARGET_GLOBAL_BATCH_SIZE`, `PER_DEVICE_TRAIN_BATCH_SIZE`: total batch control.
+- `LR`, `MM_PROJECTOR_LR`, `WEIGHT_DECAY`, `WARMUP_STEPS`, `LR_SCHEDULER_TYPE`: optimizer schedule.
+- `NUM_EPOCHS`, `MODEL_MAX_LENGTH`, `SAVE_STEPS`, `LOGGING_STEPS`: training length and logging.
+- `DEEPSTACK_VISUAL_INDEXES`, `DISABLE_DEEPSTACK`: DeepStack on/off and selected ViT layers.
+- `SAVE_BEST_TRAIN_LOSS`, `BEST_TRAIN_LOSS_START_STEP`, `BEST_TRAIN_LOSS_DIR`: train-loss best checkpoint.
+- `SAVE_BEST_EVAL_LOSS`, `EVAL_STEPS`, `BEST_EVAL_LOSS_DIR`: eval-loss best checkpoint in eval-best scripts.
+- `USE_HF_PROGRESS_BAR`: console progress style.

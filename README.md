@@ -8,14 +8,23 @@ Current working branch:
 unimapgen
 ```
 
+## Current Capabilities
+
 This branch supports:
 
 - Qwen2.5 / Qwen3-VL language backbones.
 - DINOv2 / DINOv3 vision towers.
 - Qwen3-VL-style DeepStack visual injection.
 - Training with or without DeepStack.
-- LoRA and full-parameter checkpoint loading.
+- Full-parameter and LoRA training.
+- Per-module learning rates for projector and vision tower.
+- DeepSpeed ZeRO2/ZeRO3 training.
+- Checkpoint metadata for Qwen multimodal checkpoints.
+- Best checkpoint maintenance by training loss or eval loss.
+- LoRA and full-parameter checkpoint loading for inference.
 - Inference that recovers DeepStack settings from checkpoint metadata.
+- Centerline geometric evaluation with buffer-IoU + Hungarian matching.
+- Visualization of ground truth vs prediction after inference.
 - Rank-0-only clean training logs with `DI_throughput: ... tokens/s/npu`.
 - UniMapGen-style 256 patch state-update data flow for centerline and intersection prediction.
 
@@ -56,17 +65,120 @@ bash scripts/train_full_dinov3_qwen3vl-8b_deepstack_train_best_npu.sh
 bash scripts/train_full_dinov3_qwen3vl-8b_deepstack_eval_best_npu.sh
 ```
 
-Useful environment overrides:
+Do not pass experiment knobs as one-off shell prefixes. Edit the parameter block inside the target script instead, especially batch size, LR, epoch/step count, DeepStack, and best-checkpoint settings.
+
+## Training Parameters
+
+Most training scripts are shell wrappers around:
 
 ```bash
-SAVE_BEST_TRAIN_LOSS=True
-BEST_TRAIN_LOSS_START_STEP=3000
-BEST_TRAIN_LOSS_DIR=best
-EVAL_PATH=/path/to/eval.jsonl
-EVAL_IMAGE_FOLDER=/path/to/images
-EVAL_STEPS=300
-BEST_EVAL_LOSS_DIR=eval_best
+python -m llava.train.train_qwen
 ```
+
+Core model/data parameters:
+
+| Parameter | Purpose |
+|---|---|
+| `--model_name_or_path` | Qwen/Qwen3-VL base model or an existing checkpoint. |
+| `--vision_tower` | DINOv2/DINOv3 vision tower path. |
+| `--mm_vision_tower_type` | Optional explicit type: `dinov2` or `dinov3`. Usually inferred from metadata/path. |
+| `--data_path` | Train json/jsonl path. |
+| `--image_folder` | Root directory for train images. |
+| `--eval_data_path` | Eval json/jsonl path, only needed when running eval. |
+| `--eval_image_folder` | Root directory for eval images. |
+| `--train_sample_limit` / `--eval_sample_limit` | Debug limits for small smoke runs. |
+
+DeepStack parameters:
+
+| Parameter | Default | Purpose |
+|---|---:|---|
+| `--disable_deepstack` | `True` | Raw Python entry disables DeepStack unless explicitly enabled. |
+| `--deepstack_visual_indexes 6 12 18 23` | unset | ViT layers used for DeepStack. Fixed DeepStack scripts pass this explicitly. |
+| `--input_image_size` | inferred | Override DINO input size. DINOv2-L defaults to 518, DINOv3-L/B to 224. |
+
+Optimization parameters:
+
+| Parameter | Purpose |
+|---|---|
+| `--learning_rate` | Main optimizer LR. |
+| `--mm_projector_lr` | Optional separate LR for `mm_projector`. |
+| `--mm_vision_tower_lr` | Optional separate LR for the vision tower. |
+| `--weight_decay` | AdamW weight decay. |
+| `--num_train_epochs` / `--max_steps` | Epoch-based or step-based training length. |
+| `--per_device_train_batch_size` | Per-card batch size. Total batch is per-card batch x cards x gradient accumulation. |
+| `--gradient_accumulation_steps` | Accumulates gradients to reach the intended total batch size. |
+| `--lr_scheduler_type` | Scheduler, usually `cosine` or `constant` for debug. |
+| `--warmup_ratio` / `--warmup_steps` | Warmup configuration. |
+| `--gradient_checkpointing True` | Recommended for large full-parameter runs. |
+| `--deepspeed scripts/deepspeed_zero2.json` | ZeRO2 training. |
+| `--deepspeed scripts/deepspeed_zero3.json` | ZeRO3 training with gathered saves. |
+
+LoRA parameters:
+
+| Parameter | Purpose |
+|---|---|
+| `--lora_enable True` | Enable LoRA training. |
+| `--lora_r` | LoRA rank. |
+| `--lora_alpha` | LoRA alpha. |
+| `--lora_dropout` | LoRA dropout. |
+
+Best checkpoint parameters:
+
+| Parameter | Default | Purpose |
+|---|---:|---|
+| `--save_best_train_loss` | `False` | Copy lower train-loss checkpoint to best dir. |
+| `--best_train_loss_start_step` | `0` | Ignore train loss before this step. |
+| `--best_train_loss_dir` | `best` | Output directory for best train-loss checkpoint. |
+| `--save_best_eval_loss` | `False` | Copy lower eval-loss checkpoint to eval best dir. |
+| `--best_eval_loss_dir` | `eval_best` | Output directory for best eval-loss checkpoint. |
+| `--eval_strategy steps` | off by default | Required for eval-loss checkpointing. |
+| `--eval_steps` | unset | Eval interval. Keep `save_steps` compatible with `eval_steps` if using HF best-model logic. |
+
+Logging/output parameters:
+
+| Parameter | Default | Purpose |
+|---|---:|---|
+| `--use_hf_progress_bar` | `False` in raw entry | Keep Hugging Face tqdm progress bar. Full scripts set it to `True`. |
+| `--logging_steps` | script-specific | Metric logging interval. |
+| `--save_steps` | script-specific | Normal checkpoint interval. |
+| `--output_dir` | required | Run output directory. |
+
+## Inference And Evaluation
+
+Single/checkpoint inference:
+
+```bash
+python scripts/infer_centerline_checkpoint.py \
+  --checkpoint-dir outputs/my_run/checkpoint-1000 \
+  --test-json data/test.jsonl \
+  --image-folder data/images \
+  --prompt-mode dataset \
+  --conv-template conv_qwen_3_Dinov2_huawei \
+  --output-dir outputs/my_run/infer \
+  --output-json outputs/my_run/infer/summary.json \
+  --eval-centerline
+```
+
+State-update patch inference:
+
+```bash
+python scripts/infer_centerline_state_update.py \
+  --checkpoint-dir outputs/my_run/best \
+  --patch-json data/test.jsonl \
+  --image-folder data/images \
+  --output-json outputs/my_run/state_update_summary.json \
+  --eval-centerline
+```
+
+Visualization with metrics:
+
+```bash
+python scripts/visualize_centerline.py \
+  --input-dir outputs/my_run/infer \
+  --image-folder data/images
+```
+
+When ground truth exists, visualization writes and prints `centerline_eval.json`. The metric backend is `infer_index/line_eval.py`, using LineString buffer IoU plus Hungarian matching. The default scale is `--eval-meter-per-pixel 0.2`.
 
 Full-checkpoint testing:
 

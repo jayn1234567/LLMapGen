@@ -1,6 +1,6 @@
 # Qwen3-VL + DINOv2/DINOv3 + DeepStack Notes
 
-This document records the current behavior of branch `qwen3vl_deepstack_checkpointing`.
+This document records the current behavior of branch `unimapgen`.
 
 ## Scope
 
@@ -11,6 +11,9 @@ The branch is for BEV road centerline reconstruction with:
 - Optional DeepStack visual injection.
 - Full-parameter or LoRA training.
 - Checkpoint-driven inference that avoids manual DeepStack flags.
+- Best checkpoint maintenance by training loss or eval loss.
+- Centerline geometry evaluation after inference/visualization.
+- UniMapGen-style patch/state-update inference for centerline and intersection maps.
 
 ## Model Data Flow
 
@@ -120,6 +123,115 @@ dinov2/dinov3    selected vision tower family
 
 The raw Python training entry defaults to DeepStack disabled. DeepStack fixed scripts explicitly pass `--disable_deepstack False` together with `--deepstack_visual_indexes ...`; non-DeepStack align scripts leave `DEEPSTACK_VISUAL_INDEXES` empty unless the caller overrides it.
 
+## Training Parameter Reference
+
+The canonical entrypoint is:
+
+```bash
+python -m llava.train.train_qwen
+```
+
+Model and data:
+
+```text
+--model_name_or_path          Qwen/Qwen3-VL base model or existing checkpoint.
+--vision_tower                DINOv2/DINOv3 checkpoint path.
+--mm_vision_tower_type        Optional explicit dinov2/dinov3 override.
+--version                     Conversation template, e.g. conv_qwen_3_Dinov2_huawei.
+--data_path                   Training json/jsonl path.
+--image_folder                Training image root.
+--eval_data_path              Eval json/jsonl path when using eval.
+--eval_image_folder           Eval image root.
+--train_sample_limit          Debug-only sample cap.
+--eval_sample_limit           Debug-only eval sample cap.
+```
+
+DeepStack and vision:
+
+```text
+--disable_deepstack           Defaults to True in the raw Python entry.
+--deepstack_visual_indexes    ViT layers for DeepStack, e.g. 6 12 18 23.
+--input_image_size            Optional override; otherwise inferred from DINO type.
+--mm_vision_select_layer      Main ViT feature layer.
+--mm_projector_type           Usually mlp2x_gelu.
+--unfreeze_mm_vision_tower    Train/freeze the vision tower.
+```
+
+Optimization:
+
+```text
+--learning_rate               Main LR.
+--mm_projector_lr             Optional projector LR.
+--mm_vision_tower_lr          Optional vision tower LR.
+--weight_decay                AdamW weight decay.
+--num_train_epochs            Epoch-based training length.
+--max_steps                   Step-based training length, overrides epochs.
+--per_device_train_batch_size Per-card batch size.
+--gradient_accumulation_steps Total batch multiplier.
+--lr_scheduler_type           cosine/constant/etc.
+--warmup_ratio                Warmup fraction.
+--gradient_checkpointing      Recommended True for large runs.
+--bf16                        Preferred dtype on supported GPU/NPU.
+--deepspeed                   DeepSpeed config path.
+```
+
+LoRA:
+
+```text
+--lora_enable True
+--lora_r 8
+--lora_alpha 16
+--lora_dropout 0.05
+```
+
+Best checkpoint controls:
+
+```text
+--save_best_train_loss True
+--best_train_loss_start_step 3000
+--best_train_loss_dir best
+--save_best_eval_loss True
+--best_eval_loss_dir eval_best
+--eval_strategy steps
+--eval_steps 300
+```
+
+Best checkpoints are copied from fully written `checkpoint-*` directories. Under DeepSpeed, the best directory is the checkpoint directory copy, not a separate manual weight merge. LoRA best checkpoints include `adapter_model.safetensors`, `non_lora_trainables.bin`, `config.json`, and `qwen_multimodal_checkpoint.json`.
+
+Logging:
+
+```text
+--use_hf_progress_bar True    Keep tqdm progress bar; full scripts default to this.
+--logging_steps              Metric interval.
+--save_steps                 Normal checkpoint interval.
+--output_dir                 Run output directory.
+```
+
+The current Transformers version in `fastvlm` uses `--eval_strategy`, not `--evaluation_strategy`. The eval-best script detects this automatically.
+
+## Checkpoint Metadata
+
+Every normal checkpoint and final output writes:
+
+```text
+qwen_multimodal_checkpoint.json
+config.json
+```
+
+The metadata includes:
+
+```text
+mm_vision_tower
+vision_tower
+mm_vision_tower_type
+input_image_size
+deepstack_visual_indexes
+disable_deepstack
+bundled_vision_tower
+```
+
+For DeepStack runs, `deepstack_visual_indexes` is synchronized from the actual runtime vision tower, not only from CLI arguments. This matters because the vision tower builder may fill default layers such as `[6, 12, 18, 23]`.
+
 ## Inference Behavior
 
 Inference does not need the user to manually say whether a checkpoint used DeepStack.
@@ -142,6 +254,55 @@ Behavior:
 - Full checkpoint -> loads full tensors directly.
 
 `llava_checkpoint.json` is treated as legacy metadata only. Qwen checkpoints should use the Qwen multimodal loading path.
+
+## Inference And Evaluation
+
+Checkpoint inference:
+
+```bash
+python scripts/infer_centerline_checkpoint.py \
+  --checkpoint-dir outputs/my_run/checkpoint-1000 \
+  --test-json data/test.jsonl \
+  --image-folder data/images \
+  --prompt-mode dataset \
+  --conv-template conv_qwen_3_Dinov2_huawei \
+  --output-dir outputs/my_run/infer \
+  --output-json outputs/my_run/infer/summary.json \
+  --eval-centerline
+```
+
+State-update inference:
+
+```bash
+python scripts/infer_centerline_state_update.py \
+  --checkpoint-dir outputs/my_run/best \
+  --patch-json data/test.jsonl \
+  --image-folder data/images \
+  --output-json outputs/my_run/state_update_summary.json \
+  --eval-centerline
+```
+
+Visualization:
+
+```bash
+python scripts/visualize_centerline.py \
+  --input-dir outputs/my_run/infer \
+  --image-folder data/images
+```
+
+When records contain `ground_truth`, visualization automatically writes and prints `centerline_eval.json`. Use `--no-eval-centerline` to disable this.
+
+The metric backend is `infer_index/line_eval.py`:
+
+```text
+LineString buffer IoU
+Hungarian matching
+instance precision/recall/F1
+length precision/recall/F1
+valid format ratio
+```
+
+The default metric scale is `--eval-meter-per-pixel 0.2`, matching `infer_index/param.py`.
 
 ## Test Scripts
 
@@ -168,7 +329,7 @@ Direct `python -m llava.train.train_qwen` runs print compact step metrics by def
 time: 2026-05-13 15:43:14  global_step: 1  epoch: 1  loss: 1.23  learning_rate: 2e-05  DI_throughput: 12716.48 tokens/s/npu
 ```
 
-Full training scripts set `USE_HF_PROGRESS_BAR=True` internally, so they keep the Hugging Face tqdm progress bar by default. In that mode, the custom metric callback still writes `train_metrics.log` and `eval_metrics.log`, but does not print its compact step line to stdout. Set `USE_HF_PROGRESS_BAR=False` in the script environment if compact step lines are preferred.
+Full training scripts set `USE_HF_PROGRESS_BAR=True` in the script parameter block, so they keep the Hugging Face tqdm progress bar by default. In that mode, the custom metric callback writes `train_metrics.log` and `eval_metrics.log`, and also prints the step metric line with `DI_throughput` through `tqdm.write(...)`. Edit `USE_HF_PROGRESS_BAR=False` inside the script if compact step lines without tqdm are preferred.
 
 Compact mode does not print Hugging Face dict logs such as:
 

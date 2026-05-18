@@ -32,6 +32,7 @@ import torch
 
 import transformers
 import tokenizers
+from tqdm.auto import tqdm as tqdm_auto
 
 from llava.constants import IGNORE_INDEX, IMAGE_TOKEN_INDEX, DEFAULT_IMAGE_TOKEN, DEFAULT_IM_START_TOKEN, DEFAULT_IM_END_TOKEN
 from torch.utils.data import Dataset
@@ -227,8 +228,12 @@ class JsonlMetricLoggerCallback(TrainerCallback):
             line = self._append_log_line(self.eval_log_path, payload)
         else:
             line = self._append_log_line(self.train_log_path, payload)
-        if not is_train_runtime_summary and not getattr(args, "use_hf_progress_bar", False):
-            print(line)
+        if not is_train_runtime_summary:
+            if getattr(args, "use_hf_progress_bar", False):
+                if throughput_str:
+                    tqdm_auto.write(line)
+            else:
+                print(line)
 
     def on_save(self, args, state, control, **kwargs):
         if not self._is_rank0(args, state):

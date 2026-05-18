@@ -8,6 +8,23 @@ Current working branch:
 unimapgen
 ```
 
+## Stable Baseline
+
+Baseline before reinforcement-learning work:
+
+```text
+tag:    baseline-before-rl-20260518
+commit: 9ba4d59a2cd532bdf0fa050e7e11899af8d9edca
+branch: unimapgen
+note:   Stable supervised-training/inference baseline before adding RL/DPO/GRPO experiments.
+```
+
+Rollback or branch from this baseline:
+
+```bash
+git switch -c rl-debug-baseline baseline-before-rl-20260518
+```
+
 ## Current Capabilities
 
 This branch supports:

@@ -1,5 +1,21 @@
 # State Update 复现交接文档
 
+## 0. RL 前稳定基线
+
+后续加入强化学习、DPO、GRPO 或 reward 相关代码前，当前监督训练/推理链路的稳定基线已备份为 Git tag：
+
+```text
+tag:    baseline-before-rl-20260518
+commit: 9ba4d59a2cd532bdf0fa050e7e11899af8d9edca
+branch: unimapgen
+```
+
+需要回滚或从该版本开新分支时：
+
+```bash
+git switch -c rl-debug-baseline baseline-before-rl-20260518
+```
+
 ## 1. 当前目标
 
 当前工作目标不是完整逐项复现论文全部内容，而是先在现有项目框架上复现论文的核心流程：

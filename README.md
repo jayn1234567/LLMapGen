@@ -411,7 +411,7 @@ bash scripts/npu/test_full_dinov3_qwen3vl-8b_npu.sh
 ```
 
 The test scripts do not need a manual DeepStack flag. They infer whether DeepStack is enabled from the checkpoint configuration.
-They split eval records out of the downloaded test set first, then infer on the remaining final test set. `NUM_TEST_SAMPLES=0` means all final-test rows; use a positive value only for a debug subset.
+They infer directly on the dataset's prebuilt `test.jsonl`; `eval.jsonl` is produced during data processing at raw-sample level. `NUM_TEST_SAMPLES=0` means all final-test rows; use a positive value only for a debug subset.
 
 ## Validation
 

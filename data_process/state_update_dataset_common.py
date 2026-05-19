@@ -208,35 +208,37 @@ def discover_samples(
     return samples
 
 
-def split_samples(samples, train_ratio: float, seed: int):
+def split_samples(samples, train_ratio: float, eval_ratio: float, eval_count: int, seed: int):
     ordered = list(samples)
     rng = random.Random(seed)
     rng.shuffle(ordered)
     if len(ordered) <= 1:
-        return ordered, []
-    n_train = int(len(ordered) * train_ratio)
-    n_train = max(1, min(len(ordered) - 1, n_train))
-    return ordered[:n_train], ordered[n_train:]
+        return ordered, [], []
+    if train_ratio <= 0 or train_ratio >= 1:
+        raise ValueError("--train-ratio must be in (0, 1)")
+    if eval_ratio < 0:
+        raise ValueError("--eval-ratio must be >= 0")
+    if eval_count < 0 and train_ratio + eval_ratio >= 1:
+        raise ValueError("--train-ratio + --eval-ratio must be < 1 so test samples remain")
 
+    total = len(ordered)
+    n_train = int(total * train_ratio)
+    n_train = max(1, min(total - 1, n_train))
+    remaining = total - n_train
 
-def choose_eval_count(total: int, eval_ratio: float, eval_count: int):
-    if total <= 1:
-        return 0
-    count = eval_count if eval_count >= 0 else int(round(total * eval_ratio))
-    count = max(0, count)
-    # Keep at least one record for the final held-out test split.
-    return min(count, total - 1)
+    if eval_count >= 0:
+        n_eval = eval_count
+    else:
+        n_eval = int(round(total * eval_ratio))
+    n_eval = max(0, n_eval)
+    # Keep at least one raw sample for the final held-out test split whenever possible.
+    max_eval = remaining - 1 if remaining > 1 else 0
+    n_eval = min(n_eval, max_eval)
 
-
-def split_eval_from_test_rows(test_rows, eval_ratio: float, eval_count: int, seed: int):
-    count = choose_eval_count(len(test_rows), eval_ratio, eval_count)
-    if count <= 0:
-        return test_rows, []
-    rng = random.Random(seed)
-    eval_indices = set(rng.sample(range(len(test_rows)), count))
-    final_test = [row for idx, row in enumerate(test_rows) if idx not in eval_indices]
-    eval_rows = [row for idx, row in enumerate(test_rows) if idx in eval_indices]
-    return final_test, eval_rows
+    train_samples = ordered[:n_train]
+    eval_samples = ordered[n_train:n_train + n_eval]
+    test_samples = ordered[n_train + n_eval:]
+    return train_samples, eval_samples, test_samples
 
 
 def read_masked_image(image_path: Path, mask_path: Path):
@@ -1151,40 +1153,39 @@ def build_dataset(include_intersections: bool, args):
     )
     if not samples:
         raise FileNotFoundError(f"no valid samples found under {input_root}")
-    train_samples, test_samples = split_samples(samples, args.train_ratio, args.split_seed)
+    train_samples, eval_samples, test_samples = split_samples(
+        samples,
+        args.train_ratio,
+        args.eval_ratio,
+        args.eval_count,
+        args.split_seed,
+    )
     split_manifest = {
         "split_unit": "raw_sample_folder",
         "train_ratio": args.train_ratio,
-        "split_seed": args.split_seed,
-        "eval_split_unit": "patch_from_test_split",
         "eval_ratio": args.eval_ratio,
+        "actual_train_ratio": len(train_samples) / len(samples),
+        "actual_eval_ratio": len(eval_samples) / len(samples),
+        "actual_test_ratio": len(test_samples) / len(samples),
+        "split_seed": args.split_seed,
+        "eval_split_unit": "raw_sample_folder",
         "eval_count": args.eval_count,
-        "eval_seed": args.eval_seed,
         "include_intersections": include_intersections,
         "coord_mode": args.coord_mode,
         "coord_range": args.coord_range,
         "train_ids": [sample.sample_id for sample in train_samples],
+        "eval_ids": [sample.sample_id for sample in eval_samples],
         "test_ids": [sample.sample_id for sample in test_samples],
     }
     write_json(output_root / "split_manifest.json", split_manifest)
 
     split_rows = {}
-    for split_name, split_samples_list in [("train", train_samples), ("test", test_samples)]:
+    for split_name, split_samples_list in [("train", train_samples), ("eval", eval_samples), ("test", test_samples)]:
         rows = []
         for sample in split_samples_list:
             rows.extend(process_sample(sample, output_root, split_name, include_intersections, args))
         validate_rows(rows, include_intersections, args.patch_size)
         split_rows[split_name] = rows
-    split_rows["test_full"] = list(split_rows["test"])
-    final_test_rows, eval_rows = split_eval_from_test_rows(
-        split_rows["test"],
-        args.eval_ratio,
-        args.eval_count,
-        args.eval_seed,
-    )
-    split_rows["test"] = final_test_rows
-    if eval_rows:
-        split_rows["eval"] = eval_rows
 
     for phase in ["a", "b"]:
         phase_dir = output_root / f"phase_{phase}"
@@ -1209,10 +1210,10 @@ def build_dataset(include_intersections: bool, args):
         "task": "lane_intersection" if include_intersections else "lane_only",
         "num_raw_samples": len(samples),
         "num_train_raw_samples": len(train_samples),
+        "num_eval_raw_samples": len(eval_samples),
         "num_test_raw_samples": len(test_samples),
         "num_train_patches": len(split_rows["train"]),
-        "num_test_full_patches": len(split_rows["test_full"]),
-        "num_eval_patches": len(split_rows.get("eval", [])),
+        "num_eval_patches": len(split_rows["eval"]),
         "num_test_patches": len(split_rows["test"]),
         "patch_size": args.patch_size,
         "stride": args.stride,
@@ -1222,16 +1223,13 @@ def build_dataset(include_intersections: bool, args):
         "max_empty_ratio": args.max_empty_ratio,
         "eval_ratio": args.eval_ratio,
         "eval_count": args.eval_count,
-        "eval_seed": args.eval_seed,
         "allow_empty_intersection_files": args.allow_empty_intersection_files,
         "phase_a_train_jsonl": str(output_root / "phase_a" / "train.jsonl"),
-        "phase_a_eval_jsonl": str(output_root / "phase_a" / "eval.jsonl") if "eval" in split_rows else "",
+        "phase_a_eval_jsonl": str(output_root / "phase_a" / "eval.jsonl"),
         "phase_a_test_jsonl": str(output_root / "phase_a" / "test.jsonl"),
-        "phase_a_test_full_jsonl": str(output_root / "phase_a" / "test_full.jsonl"),
         "phase_b_train_jsonl": str(output_root / "phase_b" / "train.jsonl"),
-        "phase_b_eval_jsonl": str(output_root / "phase_b" / "eval.jsonl") if "eval" in split_rows else "",
+        "phase_b_eval_jsonl": str(output_root / "phase_b" / "eval.jsonl"),
         "phase_b_test_jsonl": str(output_root / "phase_b" / "test.jsonl"),
-        "phase_b_test_full_jsonl": str(output_root / "phase_b" / "test_full.jsonl"),
     }
     write_json(output_root / "dataset_info.json", info)
     print(json.dumps(info, ensure_ascii=False, indent=2))
@@ -1246,9 +1244,8 @@ def add_common_args(parser):
     parser.add_argument("--coord-range", type=int, default=DEFAULT_COORD_RANGE)
     parser.add_argument("--train-ratio", type=float, default=0.9)
     parser.add_argument("--split-seed", type=int, default=42)
-    parser.add_argument("--eval-ratio", type=float, default=0.0, help="Split this ratio from test into eval; final test excludes eval rows.")
-    parser.add_argument("--eval-count", type=int, default=-1, help="Explicit eval count split from test; -1 uses eval-ratio.")
-    parser.add_argument("--eval-seed", type=int, default=42)
+    parser.add_argument("--eval-ratio", type=float, default=0.05, help="Raw-sample ratio reserved for eval before patch generation; test gets the remaining samples.")
+    parser.add_argument("--eval-count", type=int, default=-1, help="Explicit raw-sample eval count; -1 uses eval-ratio.")
     parser.add_argument("--max-empty-ratio", type=float, default=0.1)
     parser.add_argument("--boundary-tol", type=float, default=1.0)
     parser.add_argument("--simplify-tolerance", type=float, default=0.5)

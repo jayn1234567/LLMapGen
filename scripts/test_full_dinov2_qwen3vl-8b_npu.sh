@@ -141,34 +141,23 @@ if [ ! -d "$DATASET_PATH" ]; then
     exit 1
 fi
 
-# Use the same cloud split policy as training: eval is split from the downloaded
-# test set, and final testing excludes eval records.
+# Use the dataset's prebuilt raw-sample-level split. Eval is no longer carved
+# out of test at runtime.
 DATASET_PHASE=${DATASET_PHASE:-phase_a}
 MAP_TASK=${MAP_TASK:-lane}
 COORD_MODE=${COORD_MODE:-auto}     # auto reads meta.coord_mode; new datasets use normalized 0-1000 coordinates.
 COORD_RANGE=${COORD_RANGE:-1000}
-EVAL_RATIO=${EVAL_RATIO:-0.2}
-EVAL_COUNT=${EVAL_COUNT:--1}
-EVAL_SPLIT_SEED=${EVAL_SPLIT_SEED:-42}
 if [ -f "${DATASET_PATH}/${DATASET_PHASE}/test.jsonl" ]; then
-    TEST_SOURCE_JSON="${DATASET_PATH}/${DATASET_PHASE}/test.jsonl"
+    TEST_JSON="${DATASET_PATH}/${DATASET_PHASE}/test.jsonl"
+    EVAL_JSON="${DATASET_PATH}/${DATASET_PHASE}/eval.jsonl"
 else
-    TEST_SOURCE_JSON="${DATASET_PATH}/test.jsonl"
+    TEST_JSON="${DATASET_PATH}/test.jsonl"
+    EVAL_JSON="${DATASET_PATH}/eval.jsonl"
 fi
-if [ ! -f "$TEST_SOURCE_JSON" ]; then
-    echo "ERROR: source test json missing: $TEST_SOURCE_JSON"
+if [ ! -f "$TEST_JSON" ]; then
+    echo "ERROR: test json missing: $TEST_JSON"
     exit 1
 fi
-SPLIT_DIR="${OBS_CACHE}/eval_split/${DATASET_PHASE}_${MAP_TASK}_test"
-python "${SCRIPT_DIR}/data/split_eval_from_test.py" \
-  --test-json "${TEST_SOURCE_JSON}" \
-  --output-test "${SPLIT_DIR}/test.jsonl" \
-  --output-eval "${SPLIT_DIR}/eval.jsonl" \
-  --eval-ratio "${EVAL_RATIO}" \
-  --eval-count "${EVAL_COUNT}" \
-  --seed "${EVAL_SPLIT_SEED}"
-TEST_JSON="${SPLIT_DIR}/test.jsonl"
-EVAL_JSON="${SPLIT_DIR}/eval.jsonl"
 
 # ====================== download DINOv2 ======================
 echo ">>>>>>>>>>>>>>>>>>>>>>>>>>>>> Downloading DINOv2 >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>"

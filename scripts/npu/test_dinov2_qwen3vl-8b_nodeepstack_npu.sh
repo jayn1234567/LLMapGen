@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Current production test entry: DINOv2 + Qwen3VL-8B + no DeepStack.
-# It delegates to the cloud test script, which splits eval out of test before inference.
+# It delegates to the cloud test script and reads the prebuilt test.jsonl directly.
 
 SCRIPT_DIR=$(cd "$(dirname "$0")/.." && pwd)
 export DISABLE_DEEPSTACK=True

@@ -2,8 +2,14 @@
 # set -euo pipefail
 
 # ============================================================
-# NPU (Ascend) llava training + eval script
-# Qwen3-VL-8B LLM (auto-extract) + DINOv2 + no DeepStack
+# NPU (Ascend) SFT recipe for larger 33w-scale data.
+# Qwen3-VL-8B LLM (auto-extract) + DINOv2 + no DeepStack.
+# Default recipe:
+# - Global batch 128, per-device batch 4.
+# - 3 epochs as the first large-data run.
+# - LLM/projector LR 2e-5, DINO vision tower LR 2e-6.
+# - Weight decay 0.0, cosine scheduler, warmup ratio 0.03.
+# - Eval every EVAL_STEPS and keep the best eval-loss checkpoint in eval_best/.
 # ============================================================
 
 SCRIPT_PATH=$(readlink -f "$0")
@@ -240,7 +246,7 @@ echo ">>> Actual global batch: ${ACTUAL_GLOBAL_BATCH_SIZE}"
 
 # ====================== training ======================
 echo ">>>>>>>>>>>>>>>>>>>>>>>>>>>>>>> start training >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>"
-cd "$SCRIPT_DIR/../.."
+cd "$SCRIPT_DIR/.."
 
 export PYTHONPATH="$(pwd):${PYTHONPATH:-}"
 
@@ -252,23 +258,24 @@ UNFREEZE_MM_VISION_TOWER=True          # --unfreeze_mm_vision_tower; True means 
 DISABLE_DEEPSTACK=True                  # Fixed no-DeepStack mode.
 GRADIENT_CHECKPOINTING=True            # --gradient_checkpointing; keep enabled for large full-param jobs.
 DEEPSPEED_CONFIG="scripts/deepspeed_zero3.json" # --deepspeed; ZeRO3 with gathered checkpoint saves.
-NUM_EPOCHS=6                           # --num_train_epochs.
-LR=2e-5                                # --learning_rate.
-MM_PROJECTOR_LR=2e-5                   # --mm_projector_lr.
+NUM_EPOCHS=3                           # --num_train_epochs; first 33w run targets roughly the old 3.4w/6ep update count.
+LR=2e-5                                # --learning_rate for LLM and any non-special trainable modules.
+MM_PROJECTOR_LR=2e-5                   # --mm_projector_lr; projector follows the LLM LR.
+MM_VISION_TOWER_LR=2e-6                # --mm_vision_tower_lr; keep DINO updates conservative during full-param finetune.
 WEIGHT_DECAY=0.0                       # --weight_decay; keep disabled for this full-param Qwen3VL+DINO recipe.
-WARMUP_RATIO=0.03                      # --warmup_ratio; about 155 warmup steps for 11w data and 465 for 33w at batch 128, 6 epochs.
+WARMUP_RATIO=0.03                      # --warmup_ratio; about 232 warmup steps for 33w data, batch 128, 3 epochs.
 LR_SCHEDULER_TYPE=cosine               # --lr_scheduler_type.
 MODEL_MAX_LENGTH=4096                  # --model_max_length.
-SAVE_STEPS=300                         # --save_steps.
+SAVE_STEPS=500                         # --save_steps; should be aligned with EVAL_STEPS when keeping eval_best.
 SAVE_TOTAL_LIMIT=10                    # --save_total_limit.
 LOGGING_STEPS=10                       # --logging_steps.
-EVAL_STEPS=300                         # --eval_steps; only used when ENABLE_EVAL=True.
+EVAL_STEPS=500                         # --eval_steps; eval loss is computed during training when ENABLE_EVAL=True.
 SAMPLE_SEED=42                         # --sample_seed.
 SAVE_BEST_TRAIN_LOSS=${SAVE_BEST_TRAIN_LOSS:-False} # --save_best_train_loss.
 BEST_TRAIN_LOSS_START_STEP=${BEST_TRAIN_LOSS_START_STEP:-3000} # --best_train_loss_start_step.
 BEST_TRAIN_LOSS_DIR=${BEST_TRAIN_LOSS_DIR:-best} # --best_train_loss_dir.
-ENABLE_EVAL=${ENABLE_EVAL:-False}       # If True, run eval_loss on EVAL_PATH by steps.
-SAVE_BEST_EVAL_LOSS=${SAVE_BEST_EVAL_LOSS:-False} # If True with ENABLE_EVAL, maintain OUTPUT_PATH/eval_best.
+ENABLE_EVAL=${ENABLE_EVAL:-True}        # If True, run eval_loss on EVAL_PATH by steps.
+SAVE_BEST_EVAL_LOSS=${SAVE_BEST_EVAL_LOSS:-True} # Maintain OUTPUT_PATH/eval_best.
 BEST_EVAL_LOSS_DIR=${BEST_EVAL_LOSS_DIR:-eval_best}
 USE_HF_PROGRESS_BAR=True               # --use_hf_progress_bar; True prints HF tqdm progress on console.
 EVAL_STRATEGY_ARG=$(python -c "import inspect, transformers; print('--eval_strategy' if 'eval_strategy' in inspect.signature(transformers.TrainingArguments.__init__).parameters else '--evaluation_strategy')")
@@ -299,6 +306,7 @@ echo "ViT:        ${DINOV2_PATH}"
 echo "DeepStack:  ${DEEPSTACK_LABEL}"
 echo "Grad ckpt:  ${GRADIENT_CHECKPOINTING}"
 echo "DeepSpeed:  ${DEEPSPEED_CONFIG}"
+echo "LR:         llm=${LR}, projector=${MM_PROJECTOR_LR}, vision=${MM_VISION_TOWER_LR}"
 echo "Best train: ${SAVE_BEST_TRAIN_LOSS}, start_step=${BEST_TRAIN_LOSS_START_STEP}, dir=${BEST_TRAIN_LOSS_DIR}"
 echo "Eval:       ${ENABLE_EVAL}, eval_steps=${EVAL_STEPS}, best_eval=${SAVE_BEST_EVAL_LOSS}, dir=${BEST_EVAL_LOSS_DIR}"
 echo "HF tqdm:    ${USE_HF_PROGRESS_BAR}"
@@ -330,6 +338,7 @@ torchrun \
     --gradient_accumulation_steps ${gradient_accumulation_steps} \
     --learning_rate "${LR}" \
     --mm_projector_lr "${MM_PROJECTOR_LR}" \
+    --mm_vision_tower_lr "${MM_VISION_TOWER_LR}" \
     --weight_decay "${WEIGHT_DECAY}" \
     --warmup_ratio "${WARMUP_RATIO}" \
     --lr_scheduler_type "${LR_SCHEDULER_TYPE}" \

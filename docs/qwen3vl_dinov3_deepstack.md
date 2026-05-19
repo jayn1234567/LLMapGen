@@ -368,7 +368,7 @@ bash scripts/npu/test_full_dinov3_qwen3vl-8b_npu.sh
 ```
 
 They only distinguish DINOv2 vs DINOv3. They do not distinguish DeepStack vs no-DeepStack, because that is recovered from checkpoint metadata.
-Both scripts split eval rows out of the downloaded test set first and then run inference on the remaining final test set. `NUM_TEST_SAMPLES=0` runs all final-test rows; positive values are only for quick smoke tests.
+Both scripts infer directly on the dataset's prebuilt `test.jsonl`; `eval.jsonl` is produced during data processing at raw-sample level. `NUM_TEST_SAMPLES=0` runs all final-test rows; positive values are only for quick smoke tests.
 
 ## Logging
 

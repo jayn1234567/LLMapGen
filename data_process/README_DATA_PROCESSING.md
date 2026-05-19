@@ -38,26 +38,23 @@ output_root/
 ├── dataset_info.json
 ├── phase_a/
 │   ├── train.jsonl
-│   ├── eval.jsonl              # optional, split from test when eval-ratio/count is set
+│   ├── eval.jsonl
 │   ├── test.jsonl
-│   ├── test_full.jsonl         # original test before eval split
 │   ├── meta_train.jsonl
 │   ├── meta_eval.jsonl
 │   └── meta_test.jsonl
 └── phase_b/
     ├── train.jsonl
-    ├── eval.jsonl              # optional, split from test when eval-ratio/count is set
+    ├── eval.jsonl
     ├── test.jsonl
-    ├── test_full.jsonl         # original test before eval split
     ├── meta_train.jsonl
     ├── meta_eval.jsonl
     └── meta_test.jsonl
 ```
 
 `phase_a` uses empty incoming hints. `phase_b` uses GT left/top hints from already-processed neighboring patches.
-The train/test split unit is the raw sample folder, not a patch, so test patches cannot leak into either Phase A or Phase B training data.
-If `--eval-ratio` or `--eval-count` is set, `eval.jsonl` is split from the original test patch rows and the final `test.jsonl` excludes those eval rows.
-`test_full.jsonl` keeps the original unmodified test rows for auditing only.
+The train/eval/test split unit is the raw sample folder, not a patch, so eval/test patches cannot leak into either Phase A or Phase B training data.
+`--train-ratio` controls the raw-sample train share, `--eval-ratio` or `--eval-count` reserves raw samples for eval, and the remaining raw samples become final test.
 Images are padded with black pixels to a patch-size multiple before patching; metadata keeps both padded `source_image_size` and `original_source_image_size`.
 
 ## Prompt Shape
@@ -186,7 +183,8 @@ python data_process/build_lane_dataset.py \
   --patch-size 256 \
   --stride 256 \
   --coord-mode norm1000 \
-  --eval-ratio 0.2
+  --train-ratio 0.9 \
+  --eval-ratio 0.05
 ```
 
 Lane + intersection:
@@ -198,17 +196,8 @@ python data_process/build_lane_intersection_dataset.py \
   --patch-size 256 \
   --stride 256 \
   --coord-mode norm1000 \
-  --eval-ratio 0.2
-```
-
-For an already-built dataset that only has `test.jsonl`, split eval without regenerating images:
-
-```bash
-python scripts/data/split_eval_from_test.py \
-  --dataset-root /path/to/output_lane \
-  --phases phase_a phase_b \
-  --eval-ratio 0.2 \
-  --seed 42
+  --train-ratio 0.9 \
+  --eval-ratio 0.05
 ```
 
 For a small smoke run:

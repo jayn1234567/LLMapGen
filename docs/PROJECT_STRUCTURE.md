@@ -71,8 +71,8 @@ data_process/
 
 Current generated datasets use:
 
-- `phase_a/{train,eval,test,test_full}.jsonl`: single-patch recognition data with empty hints.
-- `phase_b/{train,eval,test,test_full}.jsonl`: state-update data with left/top incoming hints.
+- `phase_a/{train,eval,test}.jsonl`: single-patch recognition data with empty hints.
+- `phase_b/{train,eval,test}.jsonl`: state-update data with left/top incoming hints.
 - `meta_*.jsonl`: raw pixel-coordinate patch metadata for auditing/debugging.
 - `coord_mode=norm1000` by default for SFT JSONL; raw meta rows remain patch-pixel oriented.
 

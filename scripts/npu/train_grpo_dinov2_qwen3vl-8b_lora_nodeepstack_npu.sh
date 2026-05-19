@@ -33,9 +33,6 @@ MAP_TASK="lane"                          # lane or lane_intersection.
 TRAINING_BRANCH="phase_a_lane"           # phase_a_lane, phase_b_lane, phase_a_lane_intersection, phase_b_lane_intersection.
 COORD_MODE=auto                          # auto reads meta.coord_mode; new datasets use normalized 0-1000 coordinates.
 COORD_RANGE=1000
-EVAL_RATIO=0.2                            # Split from test; final TEST_PATH excludes eval rows.
-EVAL_COUNT=-1                             # >=0 overrides EVAL_RATIO.
-EVAL_SPLIT_SEED=42
 
 # ---------- Model ----------
 VERSION="conv_qwen_3_Dinov2_huawei"
@@ -99,22 +96,13 @@ cd "${REPO_ROOT}"
 
 if [ -f "${DATASET_PATH}/${DATASET_PHASE}/train.jsonl" ]; then
     TRAIN_JSONL="${DATASET_PATH}/${DATASET_PHASE}/train.jsonl"
-    TEST_SOURCE_JSONL="${DATASET_PATH}/${DATASET_PHASE}/test.jsonl"
+    EVAL_JSONL="${DATASET_PATH}/${DATASET_PHASE}/eval.jsonl"
+    TEST_JSONL="${DATASET_PATH}/${DATASET_PHASE}/test.jsonl"
 else
     TRAIN_JSONL="${DATASET_PATH}/train.jsonl"
-    TEST_SOURCE_JSONL="${DATASET_PATH}/test.jsonl"
+    EVAL_JSONL="${DATASET_PATH}/eval.jsonl"
+    TEST_JSONL="${DATASET_PATH}/test.jsonl"
 fi
-
-SPLIT_DIR="${OBS_CACHE}/eval_split/${DATASET_PHASE}_${MAP_TASK}_grpo"
-python scripts/data/split_eval_from_test.py \
-    --test-json "${TEST_SOURCE_JSONL}" \
-    --output-test "${SPLIT_DIR}/test.jsonl" \
-    --output-eval "${SPLIT_DIR}/eval.jsonl" \
-    --eval-ratio "${EVAL_RATIO}" \
-    --eval-count "${EVAL_COUNT}" \
-    --seed "${EVAL_SPLIT_SEED}"
-TEST_JSONL="${SPLIT_DIR}/test.jsonl"
-EVAL_JSONL="${SPLIT_DIR}/eval.jsonl"
 
 OUTPUT_DIR="${CLUSTER_SAVE:-outputs/grpo_dinov2_qwen3vl_nodeepstack_${TRAINING_BRANCH}}"
 mkdir -p "${OUTPUT_DIR}"

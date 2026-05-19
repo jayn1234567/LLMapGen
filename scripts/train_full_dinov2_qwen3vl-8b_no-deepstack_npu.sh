@@ -180,41 +180,30 @@ if [ ! -d "$DATASET_PATH" ]; then
     exit 1
 fi
 
-# ====================== dataset split ======================
+# ====================== dataset paths ======================
 # DATASET_PHASE selects the A/B state-update axis. MAP_TASK selects the output schema.
+# New datasets are split at raw-sample level and already contain train/eval/test.
 # If the dataset has phase_a/phase_b directories, use those; otherwise fall back
-# to the legacy flat train.jsonl/test.jsonl layout.
+# to the legacy flat train.jsonl/eval.jsonl/test.jsonl layout.
 DATASET_PHASE=${DATASET_PHASE:-phase_a}   # phase_a or phase_b.
 MAP_TASK=${MAP_TASK:-lane}                # lane or lane_intersection; used by inference/eval scripts.
-EVAL_RATIO=${EVAL_RATIO:-0.2}             # Split this ratio from test as eval.
-EVAL_COUNT=${EVAL_COUNT:--1}              # >=0 overrides EVAL_RATIO.
-EVAL_SPLIT_SEED=${EVAL_SPLIT_SEED:-42}
 
 if [ -f "${DATASET_PATH}/${DATASET_PHASE}/train.jsonl" ]; then
     TRAIN_PATH="${DATASET_PATH}/${DATASET_PHASE}/train.jsonl"
-    TEST_SOURCE_PATH="${DATASET_PATH}/${DATASET_PHASE}/test.jsonl"
+    EVAL_PATH="${DATASET_PATH}/${DATASET_PHASE}/eval.jsonl"
+    TEST_PATH="${DATASET_PATH}/${DATASET_PHASE}/test.jsonl"
 else
     TRAIN_PATH="${DATASET_PATH}/train.jsonl"
-    TEST_SOURCE_PATH="${DATASET_PATH}/test.jsonl"
+    EVAL_PATH="${DATASET_PATH}/eval.jsonl"
+    TEST_PATH="${DATASET_PATH}/test.jsonl"
 fi
-SPLIT_DIR="${OBS_CACHE}/eval_split/${DATASET_PHASE}_${MAP_TASK}"
-mkdir -p "${SPLIT_DIR}"
-python "${SCRIPT_DIR}/data/split_eval_from_test.py" \
-    --test-json "${TEST_SOURCE_PATH}" \
-    --output-test "${SPLIT_DIR}/test.jsonl" \
-    --output-eval "${SPLIT_DIR}/eval.jsonl" \
-    --eval-ratio "${EVAL_RATIO}" \
-    --eval-count "${EVAL_COUNT}" \
-    --seed "${EVAL_SPLIT_SEED}"
-TEST_PATH="${SPLIT_DIR}/test.jsonl"
-EVAL_PATH="${SPLIT_DIR}/eval.jsonl"
 EVAL_IMAGE_FOLDER="${IMAGE_FOLDER}"
 if [ ! -f "$TRAIN_PATH" ]; then
     echo "ERROR: $TRAIN_PATH not found"
     exit 1
 fi
 if [ ! -f "$TEST_PATH" ]; then
-    echo "ERROR: split test path $TEST_PATH not found"
+    echo "ERROR: $TEST_PATH not found"
     exit 1
 fi
 
@@ -278,14 +267,18 @@ SAMPLE_SEED=42                         # --sample_seed.
 SAVE_BEST_TRAIN_LOSS=${SAVE_BEST_TRAIN_LOSS:-False} # --save_best_train_loss.
 BEST_TRAIN_LOSS_START_STEP=${BEST_TRAIN_LOSS_START_STEP:-3000} # --best_train_loss_start_step.
 BEST_TRAIN_LOSS_DIR=${BEST_TRAIN_LOSS_DIR:-best} # --best_train_loss_dir.
-ENABLE_EVAL=${ENABLE_EVAL:-True}        # If True, run eval_loss on EVAL_PATH by steps.
-SAVE_BEST_EVAL_LOSS=${SAVE_BEST_EVAL_LOSS:-True} # Maintain OUTPUT_PATH/eval_best.
+ENABLE_EVAL=${ENABLE_EVAL:-False}       # If True, run eval_loss on EVAL_PATH by steps.
+SAVE_BEST_EVAL_LOSS=${SAVE_BEST_EVAL_LOSS:-False} # If True with ENABLE_EVAL, maintain OUTPUT_PATH/eval_best.
 BEST_EVAL_LOSS_DIR=${BEST_EVAL_LOSS_DIR:-eval_best}
 USE_HF_PROGRESS_BAR=True               # --use_hf_progress_bar; True prints HF tqdm progress on console.
 EVAL_STRATEGY_ARG=$(python -c "import inspect, transformers; print('--eval_strategy' if 'eval_strategy' in inspect.signature(transformers.TrainingArguments.__init__).parameters else '--evaluation_strategy')")
 
 EVAL_ARGS=()
-if [[ "${ENABLE_EVAL}" =~ ^(1|true|True|TRUE|yes|YES)$ ]] && [ -s "${EVAL_PATH}" ]; then
+if [[ "${ENABLE_EVAL}" =~ ^(1|true|True|TRUE|yes|YES)$ ]]; then
+    if [ ! -s "${EVAL_PATH}" ]; then
+        echo "ERROR: ENABLE_EVAL=True but eval json is missing or empty: ${EVAL_PATH}"
+        exit 1
+    fi
     EVAL_ARGS=(
         --eval_data_path "${EVAL_PATH}"
         --eval_image_folder "${EVAL_IMAGE_FOLDER}"

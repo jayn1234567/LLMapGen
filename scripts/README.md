@@ -4,10 +4,12 @@ Top-level `scripts/` keeps the current NPU full-parameter train/test entrypoints
 
 - `train_full_*_deepstack_npu.sh`: train LLM, ViT, projector, and DeepStack mergers.
 - `train_full_*_no-deepstack_npu.sh`: standalone train script for LLM, ViT, and projector with DeepStack disabled; it does not delegate to the DeepStack script.
+- `train_sft_dinov2_qwen3vl-8b_nodeepstack_33w_evalbest_npu.sh`: 330k-sample no-DeepStack full-parameter SFT recipe for DINOv2 + Qwen3VL-8B.
+- `train_sft_dinov3_qwen3vl-8b_nodeepstack_33w_evalbest_npu.sh`: 330k-sample no-DeepStack full-parameter SFT recipe for DINOv3 + Qwen3VL-8B; it sets `INPUT_IMAGE_SIZE=512`.
 - `scripts/npu/train_sft_dinov2_qwen3vl-8b_nodeepstack_npu.sh`: current SFT cloud entry for DINOv2 + Qwen3VL + no DeepStack.
-- `scripts/npu/train_sft_dinov2_qwen3vl-8b_nodeepstack_33w_evalbest_npu.sh`: recommended first 330k-sample full-parameter run, with 3 epochs, separate DINO LR, eval during training, and `eval_best/`.
+- `scripts/npu/train_sft_dinov2_qwen3vl-8b_nodeepstack_33w_evalbest_npu.sh`: same DINOv2 330k recipe kept under the NPU subdirectory for compatibility.
 - `scripts/npu/train_grpo_dinov2_qwen3vl-8b_lora_nodeepstack_npu.sh`: current GRPO cloud entry for DINOv2 + Qwen3VL + no DeepStack.
-- `scripts/npu/test_dinov2_qwen3vl-8b_nodeepstack_npu.sh`: current NPU test/infer entry; splits eval from test before final testing.
+- `scripts/npu/test_dinov2_qwen3vl-8b_nodeepstack_npu.sh`: current NPU test/infer entry; reads the prebuilt final `test.jsonl`.
 - `train_full_*_train_best_npu.sh`: train with DeepStack and maintain a best checkpoint by lowest training loss.
 - `train_full_*_eval_best_npu.sh`: train with DeepStack, run a validation set by steps, and maintain a best checkpoint by lowest eval loss.
 - `train_grpo_*_lane_npu.sh`: GRPO-style RL on centerline + cut rewards.
@@ -57,9 +59,9 @@ Qwen multimodal checkpoints write `qwen_multimodal_checkpoint.json`. `llava_chec
 
 Best checkpoint behavior:
 
-- The current DINOv2 no-DeepStack SFT cloud script can split eval from test after dataset download. `EVAL_RATIO`/`EVAL_COUNT` control eval size; the final `TEST_PATH` excludes eval rows.
-- NPU test scripts use the same split policy before inference. `NUM_TEST_SAMPLES=0` means run all remaining final-test rows; set a positive value only for a quick smoke subset.
-- Normal full training scripts do not maintain best-loss directories unless the script enables the relevant `SAVE_BEST_*` flag.
+- Current SFT/GRPO cloud scripts use the dataset's prebuilt raw-sample-level split: `train.jsonl`, `eval.jsonl`, and `test.jsonl`; they no longer split eval from test at runtime.
+- NPU test scripts infer directly on the prebuilt `test.jsonl`. `NUM_TEST_SAMPLES=0` means run all final-test rows; set a positive value only for a quick smoke subset.
+- Normal full training scripts keep `ENABLE_EVAL=False` and do not maintain best-loss directories unless the script enables the relevant `SAVE_BEST_*` flag.
 - `train_full_dinov3_qwen3vl-8b_deepstack_train_best_npu.sh` sets train-loss best checkpointing internally and writes the current best training-loss checkpoint to `output/best/` by default. Edit `BEST_TRAIN_LOSS_START_STEP` and `BEST_TRAIN_LOSS_DIR` inside the script when needed.
 - `train_full_dinov3_qwen3vl-8b_deepstack_eval_best_npu.sh` uses the validation jsonl configured inside the script, evaluates every `EVAL_STEPS`, and writes the current best eval-loss checkpoint to `output/eval_best/` by default. Edit `EVAL_PATH`, `EVAL_IMAGE_FOLDER`, `EVAL_STEPS`, and `BEST_EVAL_LOSS_DIR` inside the script when needed.
 - Both best directories are copied from a normal `checkpoint-*` directory after that checkpoint is fully saved, and include `config.json`, `model.safetensors`, optimizer/scheduler state, and `qwen_multimodal_checkpoint.json`.

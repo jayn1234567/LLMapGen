@@ -122,7 +122,7 @@ bash scripts/npu/train_grpo_dinov2_qwen3vl-8b_lora_nodeepstack_npu.sh
 - `MAP_TASK`：选择 `lane` 或 `lane_intersection`。
 - `TRAINING_BRANCH`：严格指定 `phase_a_lane`、`phase_b_lane`、`phase_a_lane_intersection` 或 `phase_b_lane_intersection`。
 - `COORD_MODE=auto`、`COORD_RANGE=1000`：自动兼容新 `norm1000` 数据和旧 pixel 数据。
-- `EVAL_RATIO` / `EVAL_COUNT`：从 test 划分 eval，最终 test 会排除 eval 样本。
+- `eval.jsonl`：直接使用数据处理阶段按原始样本级切好的验证集；不再从 `test.jsonl` 动态切分。
 - `LORA_TARGET_SCOPE`、`LORA_R`、`LORA_ALPHA`、`LORA_DROPOUT`：LoRA 插入范围和规模。
 - `NUM_GENERATIONS`、`KL_BETA`、`REWARD_*_WEIGHT`：GRPO 采样、KL 和 reward 权重。
 - `DEEPSPEED_CONFIG=scripts/deepspeed_zero3.json`：NPU 多卡 ZeRO-3 训练。

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import argparse
 import json
+import math
 import random
 import sys
 import tarfile
@@ -222,15 +223,22 @@ def split_samples(samples, train_ratio: float, eval_ratio: float, eval_count: in
         raise ValueError("--train-ratio + --eval-ratio must be < 1 so test samples remain")
 
     total = len(ordered)
+    wants_eval = eval_count > 0 or (eval_count < 0 and eval_ratio > 0)
+    min_holdout = 1 + (1 if wants_eval else 0)
+    if total <= min_holdout:
+        min_holdout = min(1, total - 1)
+
     n_train = int(total * train_ratio)
-    n_train = max(1, min(total - 1, n_train))
+    n_train = max(1, min(total - min_holdout, n_train))
     remaining = total - n_train
 
     if eval_count >= 0:
         n_eval = eval_count
     else:
-        n_eval = int(round(total * eval_ratio))
+        n_eval = int(math.ceil(total * eval_ratio))
     n_eval = max(0, n_eval)
+    if wants_eval:
+        n_eval = max(1, n_eval)
     # Keep at least one raw sample for the final held-out test split whenever possible.
     max_eval = remaining - 1 if remaining > 1 else 0
     n_eval = min(n_eval, max_eval)
@@ -1008,7 +1016,7 @@ def cap_empty_rows(rows, max_empty_ratio):
     return nonempty + empty[:max_empty]
 
 
-def process_sample(sample: RawSample, output_root: Path, split_name: str, include_intersections: bool, args):
+def process_sample(sample: RawSample, output_root: Path, split_name: str, include_intersections: bool, args, write_images: bool = True):
     image_arr, meta, transform, crs = read_masked_image(sample.image_tiff, sample.mask_tiff)
     image_arr, original_image_size = pad_image_to_patch_grid(image_arr, args.patch_size)
     lines = load_line_geometries(sample.lane_geojson, crs, transform, args.simplify_tolerance)
@@ -1098,13 +1106,14 @@ def process_sample(sample: RawSample, output_root: Path, split_name: str, includ
         })
         patch_count += 1
     rows = cap_empty_rows(rows, args.max_empty_ratio)
-    for row in rows:
-        x0 = row["meta"]["x0"]
-        y0 = row["meta"]["y0"]
-        out_image = output_root / row["image"]
-        out_image.parent.mkdir(parents=True, exist_ok=True)
-        chunk = image_arr[:, y0:y0 + args.patch_size, x0:x0 + args.patch_size]
-        image_chunk_to_pil(chunk).save(out_image)
+    if write_images:
+        for row in rows:
+            x0 = row["meta"]["x0"]
+            y0 = row["meta"]["y0"]
+            out_image = output_root / row["image"]
+            out_image.parent.mkdir(parents=True, exist_ok=True)
+            chunk = image_arr[:, y0:y0 + args.patch_size, x0:x0 + args.patch_size]
+            image_chunk_to_pil(chunk).save(out_image)
     return rows
 
 
@@ -1153,26 +1162,61 @@ def build_dataset(include_intersections: bool, args):
     )
     if not samples:
         raise FileNotFoundError(f"no valid samples found under {input_root}")
+
+    eligible_samples = []
+    dropped_empty_sample_ids = []
+    for sample in samples:
+        preview_rows = process_sample(
+            sample,
+            output_root,
+            "_precheck",
+            include_intersections,
+            args,
+            write_images=False,
+        )
+        if preview_rows:
+            eligible_samples.append(sample)
+        else:
+            dropped_empty_sample_ids.append(sample.sample_id)
+    if not eligible_samples:
+        raise ValueError(
+            f"all {len(samples)} discovered raw samples produced zero usable patches; "
+            "check lane/intersection labels, masks, --max-empty-ratio, and --max-patches-per-sample."
+        )
+
     train_samples, eval_samples, test_samples = split_samples(
-        samples,
+        eligible_samples,
         args.train_ratio,
         args.eval_ratio,
         args.eval_count,
         args.split_seed,
     )
+    wants_eval = args.eval_count > 0 or (args.eval_count < 0 and args.eval_ratio > 0)
+    if not args.allow_empty_splits and (not train_samples or not test_samples or (wants_eval and not eval_samples)):
+        raise ValueError(
+            "empty split after filtering zero-patch raw samples: "
+            f"train={len(train_samples)}, eval={len(eval_samples)}, test={len(test_samples)}. "
+            "Increase --limit-samples, lower/disable eval, or pass --allow-empty-splits for a format-only smoke run."
+        )
+
     split_manifest = {
         "split_unit": "raw_sample_folder",
         "train_ratio": args.train_ratio,
         "eval_ratio": args.eval_ratio,
-        "actual_train_ratio": len(train_samples) / len(samples),
-        "actual_eval_ratio": len(eval_samples) / len(samples),
-        "actual_test_ratio": len(test_samples) / len(samples),
+        "discovered_raw_sample_count": len(samples),
+        "eligible_raw_sample_count": len(eligible_samples),
+        "dropped_empty_raw_sample_count": len(dropped_empty_sample_ids),
+        "dropped_empty_raw_sample_ids": dropped_empty_sample_ids,
+        "actual_train_ratio": len(train_samples) / len(eligible_samples),
+        "actual_eval_ratio": len(eval_samples) / len(eligible_samples),
+        "actual_test_ratio": len(test_samples) / len(eligible_samples),
         "split_seed": args.split_seed,
         "eval_split_unit": "raw_sample_folder",
         "eval_count": args.eval_count,
         "include_intersections": include_intersections,
         "coord_mode": args.coord_mode,
         "coord_range": args.coord_range,
+        "allow_empty_splits": args.allow_empty_splits,
         "train_ids": [sample.sample_id for sample in train_samples],
         "eval_ids": [sample.sample_id for sample in eval_samples],
         "test_ids": [sample.sample_id for sample in test_samples],
@@ -1208,7 +1252,9 @@ def build_dataset(include_intersections: bool, args):
         "input_root": str(input_root),
         "output_root": str(output_root),
         "task": "lane_intersection" if include_intersections else "lane_only",
-        "num_raw_samples": len(samples),
+        "num_discovered_raw_samples": len(samples),
+        "num_raw_samples": len(eligible_samples),
+        "num_dropped_empty_raw_samples": len(dropped_empty_sample_ids),
         "num_train_raw_samples": len(train_samples),
         "num_eval_raw_samples": len(eval_samples),
         "num_test_raw_samples": len(test_samples),
@@ -1224,6 +1270,7 @@ def build_dataset(include_intersections: bool, args):
         "eval_ratio": args.eval_ratio,
         "eval_count": args.eval_count,
         "allow_empty_intersection_files": args.allow_empty_intersection_files,
+        "allow_empty_splits": args.allow_empty_splits,
         "phase_a_train_jsonl": str(output_root / "phase_a" / "train.jsonl"),
         "phase_a_eval_jsonl": str(output_root / "phase_a" / "eval.jsonl"),
         "phase_a_test_jsonl": str(output_root / "phase_a" / "test.jsonl"),
@@ -1259,6 +1306,11 @@ def add_common_args(parser):
         "--allow-empty-intersection-files",
         action="store_true",
         help="In lane+intersection mode, keep raw samples whose Intersection.geojson has zero features.",
+    )
+    parser.add_argument(
+        "--allow-empty-splits",
+        action="store_true",
+        help="Allow empty eval/test JSONL outputs. Intended only for one-sample format smoke tests.",
     )
     parser.add_argument("--keep-archives", action="store_true", help="Do not delete .tar.gz archives after successful extraction.")
 

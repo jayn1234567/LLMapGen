@@ -55,6 +55,8 @@ output_root/
 `phase_a` uses empty incoming hints. `phase_b` uses GT left/top hints from already-processed neighboring patches.
 The train/eval/test split unit is the raw sample folder, not a patch, so eval/test patches cannot leak into either Phase A or Phase B training data.
 `--train-ratio` controls the raw-sample train share, `--eval-ratio` or `--eval-count` reserves raw samples for eval, and the remaining raw samples become final test.
+Raw sample folders that produce zero usable patches are filtered before splitting. `dataset_info.json` records both `num_discovered_raw_samples` and `num_dropped_empty_raw_samples`, and `split_manifest.json` records the dropped raw sample ids.
+By default the script fails if train/eval/test would be empty after this filtering. Use `--allow-empty-splits` only for one-sample format smoke tests.
 Images are padded with black pixels to a patch-size multiple before patching; metadata keeps both padded `source_image_size` and `original_source_image_size`.
 
 ## Prompt Shape
@@ -209,6 +211,7 @@ python data_process/build_lane_dataset.py \
   --limit-samples 1 \
   --max-patches-per-sample 20 \
   --coord-mode norm1000 \
+  --allow-empty-splits \
   --keep-archives
 ```
 
@@ -221,6 +224,7 @@ python data_process/build_lane_intersection_dataset.py \
   --limit-samples 1 \
   --max-patches-per-sample 20 \
   --coord-mode norm1000 \
+  --allow-empty-splits \
   --keep-archives
 ```
 

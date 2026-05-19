@@ -11,6 +11,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from infer_index.line_eval import evaluate_records
+from mllm.coord_utils import COORD_MODE_PIXEL, convert_payload_text, record_coord_config
 
 
 def load_json_maybe(text: str):
@@ -26,6 +27,36 @@ def normalize_lines(payload):
     if isinstance(payload, list):
         return payload
     return []
+
+
+def first_text(record: dict, keys: list[str], default: str = "[]") -> str:
+    for key in keys:
+        value = record.get(key)
+        if value:
+            return value
+    return default
+
+
+def payload_for_draw(record: dict, pixel_keys: list[str], raw_keys: list[str]):
+    pixel_text = first_text(record, pixel_keys, default="")
+    if pixel_text:
+        return load_json_maybe(pixel_text)
+    raw_text = first_text(record, raw_keys)
+    coord_cfg = record_coord_config(record, default_mode=COORD_MODE_PIXEL)
+    if coord_cfg["coord_mode"] != COORD_MODE_PIXEL:
+        try:
+            raw_text = convert_payload_text(
+                raw_text,
+                coord_cfg["coord_mode"],
+                COORD_MODE_PIXEL,
+                coord_cfg["patch_width"],
+                coord_cfg["patch_height"],
+                coord_range=coord_cfg["coord_range"],
+                clamp=True,
+            )
+        except Exception:
+            pass
+    return load_json_maybe(raw_text)
 
 
 def draw_map_lines(image: Image.Image, payload, centerline_color: tuple, intersection_color: tuple, width: int = 3) -> Image.Image:
@@ -148,9 +179,10 @@ def main():
             continue
 
         base_image = Image.open(image_path).convert("RGB")
-        gt_image = draw_map_lines(base_image.copy(), load_json_maybe(result.get("ground_truth", "[]")), gt_color, colors["yellow"])
-        pred_text = result.get("prediction_json") or result.get("prediction", "[]")
-        pred_image = draw_map_lines(base_image.copy(), load_json_maybe(pred_text), pred_color, colors["blue"])
+        gt_payload = payload_for_draw(result, ["ground_truth_pixel", "labels_pixel"], ["ground_truth", "labels"])
+        pred_payload = payload_for_draw(result, ["prediction_json_pixel", "response_pixel", "prediction_pixel"], ["prediction_json", "response", "prediction"])
+        gt_image = draw_map_lines(base_image.copy(), gt_payload, gt_color, colors["yellow"])
+        pred_image = draw_map_lines(base_image.copy(), pred_payload, pred_color, colors["blue"])
 
         gt_panel = add_title(gt_image, "Ground Truth")
         pred_panel = add_title(pred_image, "Prediction")

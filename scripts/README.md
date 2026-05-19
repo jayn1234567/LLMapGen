@@ -3,9 +3,19 @@
 Top-level `scripts/` keeps the current NPU full-parameter train/test entrypoints:
 
 - `train_full_*_deepstack_npu.sh`: train LLM, ViT, projector, and DeepStack mergers.
-- `train_full_*_no-deepstack_npu.sh`: train LLM, ViT, and projector with DeepStack disabled.
+- `train_full_*_no-deepstack_npu.sh`: standalone train script for LLM, ViT, and projector with DeepStack disabled; it does not delegate to the DeepStack script.
+- `scripts/npu/train_sft_dinov2_qwen3vl-8b_nodeepstack_npu.sh`: current SFT cloud entry for DINOv2 + Qwen3VL + no DeepStack.
+- `scripts/npu/train_sft_dinov2_qwen3vl-8b_nodeepstack_33w_evalbest_npu.sh`: recommended first 330k-sample full-parameter run, with 3 epochs, separate DINO LR, eval during training, and `eval_best/`.
+- `scripts/npu/train_grpo_dinov2_qwen3vl-8b_lora_nodeepstack_npu.sh`: current GRPO cloud entry for DINOv2 + Qwen3VL + no DeepStack.
+- `scripts/npu/test_dinov2_qwen3vl-8b_nodeepstack_npu.sh`: current NPU test/infer entry; splits eval from test before final testing.
 - `train_full_*_train_best_npu.sh`: train with DeepStack and maintain a best checkpoint by lowest training loss.
 - `train_full_*_eval_best_npu.sh`: train with DeepStack, run a validation set by steps, and maintain a best checkpoint by lowest eval loss.
+- `train_grpo_*_lane_npu.sh`: GRPO-style RL on centerline + cut rewards.
+- `train_grpo_*_lane_intersection_npu.sh`: GRPO-style RL on centerline + cut + intersection rewards.
+- `scripts/gpu/train_grpo_debug_*_dinov2_qwen3vl_nodeepstack_gpu.sh`: local GPU GRPO smoke tests for the current DINOv2 + Qwen3VL + no-DeepStack path.
+- `scripts/gpu/train_grpo_debug_*_deepspeed_gpu.sh`: local GPU DeepSpeed GRPO smoke tests, defaulting to physical GPU0 and GPU2.
+- `scripts/gpu/train_sft_debug_phase_a_*_zero3_gpu.sh`: local GPU SFT Phase A smoke tests with empty incoming hints.
+- `scripts/gpu/train_sft_debug_phase_b_*_zero3_gpu.sh`: local GPU SFT Phase B smoke tests with incoming hints and state-update inference.
 - `test_full_*`: cloud inference/eval for the corresponding full-parameter checkpoint.
 - `debug.sh`: local NPU DINOv3 smoke training with no OBS transfer and no dependency installation.
 
@@ -13,6 +23,7 @@ Subdirectories keep non-full or local platform-specific scripts:
 
 - `scripts/npu/`: NPU training scripts that freeze one side of the model.
 - `scripts/gpu/`: GPU training/inference/visualization utilities.
+- `docs/grpo_中文说明.md`: Chinese GRPO design, reward, scripts, and validation notes.
 
 Training mode in filenames:
 
@@ -23,6 +34,8 @@ Training mode in filenames:
 - `no-deepstack`: disable DeepStack during training.
 - `train_best`: copy the best training-loss checkpoint to `BEST_TRAIN_LOSS_DIR` (default `best`).
 - `eval_best`: copy the best validation-loss checkpoint to `BEST_EVAL_LOSS_DIR` (default `eval_best`).
+- `phase_a`: supervised patch-recognition data without incoming state hints.
+- `phase_b`: supervised state-update data with left/top incoming lane and intersection hints.
 - `ckpt3200`: starts from the local/cloud checkpoint-3200 variant instead of the base Qwen3-VL checkpoint.
 
 DINO type and platform are explicit:
@@ -30,17 +43,23 @@ DINO type and platform are explicit:
 - `dinov2` or `dinov3` identifies the vision tower family.
 - `_npu` or `_gpu` identifies the target platform.
 
-Common DINOv3 scripts infer DINO type from checkpoint metadata, `mm_vision_tower_type`, or the `vision_tower` path. They also avoid hard-coded `--input_image_size` unless a specific experiment needs an override.
+Common DINOv3 scripts infer DINO type from checkpoint metadata, `mm_vision_tower_type`, or the `vision_tower` path. For this BEV task they set `INPUT_IMAGE_SIZE=512` inside the scripts: 256x256 patches are resized to 512x512, and DINOv3 patch16 produces 32x32 = 1024 visual tokens.
 
 DeepStack and gradient checkpointing are intended to work together. Training scripts keep `GRADIENT_CHECKPOINTING=True` by default, including DeepStack runs. Inference scripts do not hard-code DeepStack settings; they recover DeepStack enabled/disabled state from the checkpoint config unless an override is passed.
 
 The Python training entry defaults to DeepStack disabled. Only scripts explicitly named `*_deepstack_*` enable it by passing both `--disable_deepstack False` and `--deepstack_visual_indexes ...`. Other align/debug scripts keep `DEEPSTACK_VISUAL_INDEXES` empty by default; set it only when you intentionally want DeepStack.
 
-Qwen multimodal checkpoints write `qwen_multimodal_checkpoint.json`. `llava_checkpoint.json` is treated as legacy metadata only. Inference refuses to use the old generic LLaVA loader for directories that contain full model weights, because that route can silently skip Qwen projector, ViT, or DeepStack tensors.
+No-DeepStack training scripts are kept independent from DeepStack scripts. They pass `--disable_deepstack True` directly and should not be implemented as wrappers around `*_deepstack_*`.
+
+Qwen multimodal checkpoints write `qwen_multimodal_checkpoint.json`. `llava_checkpoint.json` is treated as legacy metadata only. Inference refuses to use the old generic multimodal loader for directories that contain full model weights, because that route can silently skip Qwen projector, ViT, or DeepStack tensors.
+
+`config.json` keeps the real base language-model type in `model_type`, for example `qwen2` or `qwen3`. Framework-specific multimodal fields live in normal config fields and `qwen_multimodal_checkpoint.json`; do not encode project names in `model_type`.
 
 Best checkpoint behavior:
 
-- Normal full training scripts do not run eval and do not maintain best-loss directories by default.
+- The current DINOv2 no-DeepStack SFT cloud script can split eval from test after dataset download. `EVAL_RATIO`/`EVAL_COUNT` control eval size; the final `TEST_PATH` excludes eval rows.
+- NPU test scripts use the same split policy before inference. `NUM_TEST_SAMPLES=0` means run all remaining final-test rows; set a positive value only for a quick smoke subset.
+- Normal full training scripts do not maintain best-loss directories unless the script enables the relevant `SAVE_BEST_*` flag.
 - `train_full_dinov3_qwen3vl-8b_deepstack_train_best_npu.sh` sets train-loss best checkpointing internally and writes the current best training-loss checkpoint to `output/best/` by default. Edit `BEST_TRAIN_LOSS_START_STEP` and `BEST_TRAIN_LOSS_DIR` inside the script when needed.
 - `train_full_dinov3_qwen3vl-8b_deepstack_eval_best_npu.sh` uses the validation jsonl configured inside the script, evaluates every `EVAL_STEPS`, and writes the current best eval-loss checkpoint to `output/eval_best/` by default. Edit `EVAL_PATH`, `EVAL_IMAGE_FOLDER`, `EVAL_STEPS`, and `BEST_EVAL_LOSS_DIR` inside the script when needed.
 - Both best directories are copied from a normal `checkpoint-*` directory after that checkpoint is fully saved, and include `config.json`, `model.safetensors`, optimizer/scheduler state, and `qwen_multimodal_checkpoint.json`.
@@ -51,17 +70,47 @@ Centerline geometry evaluation:
 - `scripts/infer_centerline_checkpoint.py --eval-centerline` and `scripts/infer_centerline_state_update.py --eval-centerline` write these metrics with the inference summary.
 - `scripts/visualize_centerline.py` automatically prints and saves `centerline_eval.json` after visualization when ground truth is present. Use `--no-eval-centerline` to disable it.
 - The default metric scale is `--eval-meter-per-pixel 0.2`, matching `infer_index/param.py`.
+- New data uses `coord_mode=norm1000` by default. Inference/test scripts keep `COORD_MODE=auto` and `COORD_RANGE=1000`, so JSONL metadata controls whether labels are normalized or legacy pixels.
+- Inference summaries keep raw model-coordinate JSON in `prediction_json` and write pixel-converted JSON to `prediction_json_pixel`. Visualization, state-update stitching, and line metrics use the pixel-converted fields.
 
-Distributed logging defaults to `LLAVA_LOG_RANK0_ONLY=1`, so normal stdout logs are printed by global rank 0 only. Error tracebacks on stderr are kept for nonzero ranks unless `LLAVA_SUPPRESS_NONZERO_STDERR=1` is set.
+Phase A / Phase B debug flow:
+
+- Build small A/B data with `python scripts/gpu/build_ab_debug_data.py --limit 20 --test-count 4`.
+- Phase A JSONL clears incoming hints and is used for single-patch recognition smoke tests.
+- Phase B JSONL keeps generated left/top continuity hints and is used for state-update smoke tests.
+- `scripts/infer_centerline_state_update.py` uses predictions as the next state in normal inference. The `--dry-run-prompts` mode is only for GT replay checks of stitching logic.
+- Current GPU ZeRO3 SFT smoke scripts cover Phase A lane patch inference and Phase B lane+intersection patch inference plus state-update inference.
+
+GRPO DeepSpeed notes:
+
+- ZeRO2 GRPO smoke keeps the frozen reference/KL path enabled.
+- Custom GRPO ZeRO3 LoRA keeps `KL_BETA=0.02` by using the same DeepSpeed-wrapped policy with LoRA adapters temporarily disabled as the reference model.
+- Full-parameter ZeRO3 still requires `KL_BETA=0.0`; a positive KL for full-parameter ZeRO3 needs a separately wrapped reference DeepSpeed engine.
+
+Distributed logging defaults to `MLLM_LOG_RANK0_ONLY=1`, so normal stdout logs are printed by global rank 0 only. Error tracebacks on stderr are kept for nonzero ranks unless `MLLM_SUPPRESS_NONZERO_STDERR=1` is set.
 
 Full training scripts keep the Hugging Face tqdm progress bar enabled by default and write full logs to `train_metrics.log`, `eval_metrics.log`, and `checkpoint_events.log`. In tqdm mode, `DI_throughput` is also printed with the step metric line through `tqdm.write(...)`.
 
 Do not pass experiment knobs as one-off shell prefixes. Edit the parameter block inside the target script. The main block contains comments for:
 
 - `TARGET_GLOBAL_BATCH_SIZE`, `PER_DEVICE_TRAIN_BATCH_SIZE`: total batch control.
-- `LR`, `MM_PROJECTOR_LR`, `WEIGHT_DECAY`, `WARMUP_STEPS`, `LR_SCHEDULER_TYPE`: optimizer schedule.
+- `LR`, `MM_PROJECTOR_LR`, `MM_VISION_TOWER_LR`, `WEIGHT_DECAY`, `WARMUP_RATIO`, `LR_SCHEDULER_TYPE`: optimizer schedule.
 - `NUM_EPOCHS`, `MODEL_MAX_LENGTH`, `SAVE_STEPS`, `LOGGING_STEPS`: training length and logging.
+
+Current full-parameter Qwen3VL-8B + DINO scripts use global batch 128,
+per-device batch 4, LR 2e-5, projector LR 2e-5, 6 epochs, weight decay 0.0,
+cosine scheduler, and warmup ratio 0.03. With batch 128 and 6 epochs this is
+about 5156 optimizer steps for 110k samples and 15469 steps for 330k samples;
+the 0.03 warmup ratio corresponds to about 155 and 465 warmup steps.
+
+The 330k first-run recipe script uses 3 epochs instead of 6 and sets
+`MM_VISION_TOWER_LR=2e-6`, so DINO is updated more conservatively than the LLM
+and projector. It enables eval-by-steps and writes the best eval-loss checkpoint
+to `eval_best/`.
 - `DEEPSTACK_VISUAL_INDEXES`, `DISABLE_DEEPSTACK`: DeepStack on/off and selected ViT layers.
 - `SAVE_BEST_TRAIN_LOSS`, `BEST_TRAIN_LOSS_START_STEP`, `BEST_TRAIN_LOSS_DIR`: train-loss best checkpoint.
 - `SAVE_BEST_EVAL_LOSS`, `EVAL_STEPS`, `BEST_EVAL_LOSS_DIR`: eval-loss best checkpoint in eval-best scripts.
 - `USE_HF_PROGRESS_BAR`: console progress style.
+- `LORA_TARGET_SCOPE`, `LORA_R`, `LORA_ALPHA`, `LORA_DROPOUT`: LoRA module selection in GRPO scripts.
+- `TRAINING_BRANCH`, `MAP_TASK`, `NUM_GENERATIONS`, `KL_BETA`, `REWARD_*_WEIGHT`: GRPO branch, task, and reward settings. Strict branches are `phase_a_lane`, `phase_b_lane`, `phase_a_lane_intersection`, and `phase_b_lane_intersection`; `auto_lane` and `auto_lane_intersection` skip phase checks for debug data.
+- `COORD_MODE`, `COORD_RANGE`: coordinate parsing for inference/GRPO reward. Keep `COORD_MODE=auto` for datasets generated by `data_process`; override only when testing legacy pixel JSONL.

@@ -16,6 +16,7 @@ OUTPUT_DIR=outputs/dinov3_qwen2_1.5b
 # ---------- Model ----------
 VERSION=conv_qwen_2_Dinov2_huawei
 MM_VISION_SELECT_LAYER=-2
+INPUT_IMAGE_SIZE=512
 MM_PROJECTOR_TYPE=mlp2x_gelu
 MM_VISION_SELECT_FEATURE=patch
 UNFREEZE_MM_VISION_TOWER=False
@@ -79,16 +80,18 @@ DEEPSPEED_CMD=()
 echo "============================================================"
 echo "Model:    ${MODEL_NAME_OR_PATH}"
 echo "ViT:      ${VISION_TOWER}"
+echo "Input:    ${INPUT_IMAGE_SIZE}"
 echo "Version:  ${VERSION}"
 echo "DeepStack:${DEEPSTACK_LABEL}"
 echo "DeepSpeed:${DEEPSPEED_CONFIG:-disabled}"
 echo "GPU:      ${CUDA_VISIBLE_DEVICES}"
 echo "============================================================"
 
-python -m llava.train.train_qwen \
+python -m mllm.train.train_qwen \
     --model_name_or_path "${MODEL_NAME_OR_PATH}" \
     --version "${VERSION}" \
     --vision_tower "${VISION_TOWER}" \
+    --input_image_size "${INPUT_IMAGE_SIZE}" \
     --mm_vision_select_layer "${MM_VISION_SELECT_LAYER}" \
     --mm_vision_select_feature "${MM_VISION_SELECT_FEATURE}" \
     --mm_projector_type "${MM_PROJECTOR_TYPE}" \

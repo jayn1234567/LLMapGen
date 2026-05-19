@@ -135,7 +135,7 @@ export WITHOUT_JIT_COMPILE=1
 export HCCL_OP_BASE_FFTS_MODE_ENABLE=FALSE
 export COMBINED_ENABLE=1
 export OMP_NUM_THREADS=1
-export LLAVA_LOG_RANK0_ONLY=${LLAVA_LOG_RANK0_ONLY:-1}
+export MLLM_LOG_RANK0_ONLY=${MLLM_LOG_RANK0_ONLY:-1}
 
 # ====================== output management ======================
 CLUSTER_SAVE=${OUTPUT_URL}
@@ -216,6 +216,7 @@ export PYTHONPATH="$(pwd):${PYTHONPATH:-}"
 
 # ---------- Training params ----------
 MM_VISION_SELECT_LAYER=-2
+INPUT_IMAGE_SIZE=512
 MM_PROJECTOR_TYPE=mlp2x_gelu
 UNFREEZE_MM_VISION_TOWER=False
 DEEPSTACK_VISUAL_INDEXES=${DEEPSTACK_VISUAL_INDEXES:-}
@@ -251,6 +252,7 @@ fi
 echo "============================================================"
 echo "Model:      ${LLM_PATH}"
 echo "ViT:        ${DINOV3_PATH}"
+echo "Input size: ${INPUT_IMAGE_SIZE}"
 echo "DeepStack:  ${DEEPSTACK_LABEL}"
 echo "DeepSpeed:  ${DEEPSPEED_CONFIG}"
 echo "============================================================"
@@ -261,10 +263,11 @@ torchrun \
     --node_rank="${NODE_RANK}" \
     --master_addr="${MASTER_ADDR}" \
     --master_port="${MASTER_PORT}" \
-    -m llava.train.train_qwen \
+    -m mllm.train.train_qwen \
     --model_name_or_path "${LLM_PATH}" \
     --version conv_qwen_2_Dinov2_huawei \
     --vision_tower "${DINOV3_PATH}" \
+    --input_image_size "${INPUT_IMAGE_SIZE}" \
     --mm_vision_select_layer "${MM_VISION_SELECT_LAYER}" \
     --mm_projector_type "${MM_PROJECTOR_TYPE}" \
     --unfreeze_mm_vision_tower "${UNFREEZE_MM_VISION_TOWER}" \

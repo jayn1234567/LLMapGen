@@ -4,7 +4,7 @@ This document records the current behavior of branch `unimapgen`.
 
 ## Scope
 
-The branch is for BEV road centerline reconstruction with:
+The framework is generic MLLM code; this branch uses it for BEV road centerline reconstruction with:
 
 - Qwen2.5 or Qwen3-VL as the language model.
 - DINOv2 or DINOv3 as the vision tower.
@@ -13,7 +13,7 @@ The branch is for BEV road centerline reconstruction with:
 - Checkpoint-driven inference that avoids manual DeepStack flags.
 - Best checkpoint maintenance by training loss or eval loss.
 - Centerline geometry evaluation after inference/visualization.
-- UniMapGen-style patch/state-update inference for centerline and intersection maps.
+- Patch/state-update inference for centerline and intersection maps.
 
 ## Model Data Flow
 
@@ -90,6 +90,11 @@ DINOv3-L      224
 DINOv3-B      224
 ```
 
+For this BEV centerline project, DINOv3 training/inference scripts explicitly pass
+`--input_image_size 512`. A 256x256 patch is resized to 512x512 before DINOv3,
+so a patch16 DINOv3-L tower produces 32x32 = 1024 visual tokens. The registry
+default remains 224 for compatibility with generic DINOv3 checkpoints.
+
 Training and inference derive the DINO type from checkpoint metadata, `mm_vision_tower_type`, or the `vision_tower` path. Vision tower paths should include a recognizable DINO key or alias such as `dinov3-vitl16`.
 
 ## Training Modes
@@ -99,8 +104,8 @@ Full-parameter NPU scripts:
 ```bash
 bash scripts/train_full_dinov2_qwen3vl-8b_deepstack_npu.sh
 bash scripts/train_full_dinov2_qwen3vl-8b_no-deepstack_npu.sh
-bash scripts/train_full_dinov3_qwen3vl-8b_deepstack_npu.sh
-bash scripts/train_full_dinov3_qwen3vl-8b_no-deepstack_npu.sh
+bash scripts/npu/train_full_dinov3_qwen3vl-8b_deepstack_npu.sh
+bash scripts/npu/train_full_dinov3_qwen3vl-8b_no-deepstack_npu.sh
 ```
 
 Non-full training scripts are under:
@@ -123,12 +128,16 @@ dinov2/dinov3    selected vision tower family
 
 The raw Python training entry defaults to DeepStack disabled. DeepStack fixed scripts explicitly pass `--disable_deepstack False` together with `--deepstack_visual_indexes ...`; non-DeepStack align scripts leave `DEEPSTACK_VISUAL_INDEXES` empty unless the caller overrides it.
 
+No-DeepStack NPU training scripts are standalone entries. They pass
+`--disable_deepstack True` directly and do not delegate to the corresponding
+DeepStack script.
+
 ## Training Parameter Reference
 
 The canonical entrypoint is:
 
 ```bash
-python -m llava.train.train_qwen
+python -m mllm.train.train_qwen
 ```
 
 Model and data:
@@ -252,8 +261,21 @@ Behavior:
 - No-DeepStack checkpoint -> inference disables DeepStack automatically.
 - LoRA checkpoint -> loads adapter weights plus `non_lora_trainables.bin`.
 - Full checkpoint -> loads full tensors directly.
+- Generation output is decoded as completion-only when Hugging Face returns
+  prompt+completion tokens. This prevents incoming-trace prompt JSON from being
+  parsed as the model prediction.
+- LoRA inference loads compatible base checkpoint tensors before applying the
+  adapter. If the base checkpoint vision tower differs from the requested
+  `vision_tower`, base `model.vision_tower.*` tensors are skipped and the
+  requested external tower is used.
 
 `llava_checkpoint.json` is treated as legacy metadata only. Qwen checkpoints should use the Qwen multimodal loading path.
+
+`config.json` keeps the real base language-model architecture in `model_type`.
+For Qwen3 runs this should be `qwen3`; for Qwen2 runs this should be `qwen2`.
+Project/framework details are stored separately in `qwen_multimodal_checkpoint.json`
+and fields such as `mm_vision_tower`, `mm_vision_tower_type`, `deepstack_visual_indexes`,
+and `input_image_size`.
 
 ## Inference And Evaluation
 
@@ -294,6 +316,8 @@ When records contain `ground_truth`, visualization automatically writes and prin
 
 The metric backend is `infer_index/line_eval.py`:
 
+New data-processing output uses `coord_mode=norm1000` by default. Inference keeps raw model-coordinate JSON in `prediction_json`, writes pixel-converted JSON to `prediction_json_pixel`, and line evaluation/visualization consume the pixel-converted fields. Legacy pixel JSONL still works when `meta.coord_mode` is absent or `--coord-mode pixel` is passed.
+
 ```text
 LineString buffer IoU
 Hungarian matching
@@ -304,26 +328,57 @@ valid format ratio
 
 The default metric scale is `--eval-meter-per-pixel 0.2`, matching `infer_index/param.py`.
 
+## Phase A / Phase B
+
+The BEV patch workflow uses two supervised stages:
+
+```text
+Phase A: recognize one patch without incoming state hints.
+Phase B: predict the patch while consuming left/top incoming state hints.
+```
+
+Phase A is the cleaner recognition task. It is useful for learning the output
+schema and local centerline/intersection geometry before adding cross-patch
+continuity pressure.
+
+Phase B keeps the same JSON schema but includes incoming lane traces and, for
+`lane_intersection`, incoming intersection hints generated from previous
+patches. During normal inference, `scripts/infer_centerline_state_update.py`
+feeds model predictions forward as the next patch state. Its
+`--dry-run-prompts` mode is a debug-only GT replay mode used to validate the
+stitching and hint-generation code.
+
+Current local GPU ZeRO3 smoke scripts:
+
+```bash
+bash scripts/gpu/train_sft_debug_phase_a_lane_dinov2_qwen3vl_nodeepstack_zero3_gpu.sh
+bash scripts/gpu/train_sft_debug_phase_b_lane_intersection_dinov2_qwen3vl_nodeepstack_zero3_gpu.sh
+```
+
+The Phase B script runs both checkpoint inference and state-update inference
+after the 1-step training smoke test.
+
 ## Test Scripts
 
 NPU full-checkpoint test scripts:
 
 ```bash
 bash scripts/test_full_dinov2_qwen3vl-8b_npu.sh
-bash scripts/test_full_dinov3_qwen3vl-8b_npu.sh
+bash scripts/npu/test_full_dinov3_qwen3vl-8b_npu.sh
 ```
 
 They only distinguish DINOv2 vs DINOv3. They do not distinguish DeepStack vs no-DeepStack, because that is recovered from checkpoint metadata.
+Both scripts split eval rows out of the downloaded test set first and then run inference on the remaining final test set. `NUM_TEST_SAMPLES=0` runs all final-test rows; positive values are only for quick smoke tests.
 
 ## Logging
 
 Normal stdout is rank-0 only by default:
 
 ```bash
-LLAVA_LOG_RANK0_ONLY=1
+MLLM_LOG_RANK0_ONLY=1
 ```
 
-Direct `python -m llava.train.train_qwen` runs print compact step metrics by default:
+Direct `python -m mllm.train.train_qwen` runs print compact step metrics by default:
 
 ```text
 time: 2026-05-13 15:43:14  global_step: 1  epoch: 1  loss: 1.23  learning_rate: 2e-05  DI_throughput: 12716.48 tokens/s/npu

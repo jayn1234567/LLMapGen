@@ -2,7 +2,7 @@
 
 ## 项目概述
 
-基于 LLaVA 架构的 BEV 道路几何理解多模态大模型（VLM），使用 DINOv2/DINOv3 作为视觉编码器 + Qwen2/Qwen3 作为语言模型，完成 BEV 图像的道路中心线重建。
+基于通用 MLLM 框架的 BEV 道路几何理解多模态大模型（VLM），使用 DINOv2/DINOv3 作为视觉编码器 + Qwen2/Qwen3 作为语言模型，完成 BEV 图像的道路中心线重建。
 
 本分支实现 **Qwen3-VL DeepStack 真实架构**：每层 ViT 特征通过独立 merger 注入 LLM 不同层。
 
@@ -23,7 +23,7 @@ MLLM_project/
 │   ├── deepspeed_zero2.json
 │   └── deepspeed_zero3.json
 │
-├── llava/
+├── mllm/
 │   ├── conversation.py                # 对话模板
 │   ├── constants.py
 │   ├── mm_utils.py
@@ -117,10 +117,10 @@ LayerNorm(vit_dim) → Linear(vit_dim → llm_dim) → GELU → Linear(llm_dim �
 | 路径关键字 | 编码器 | 默认 DeepStack | 默认 image_size |
 |-----------|--------|---------------|-----------------|
 | `dinov2` | DINOv2VisionTower | [6,12,18,23] | 518 |
-| `dinov3-vitl16` | DINOv3VisionTower | [6,12,18,23] | 224 |
-| `dinov3-vitb16` | DINOv3VisionTower | [3,6,9,11] | 224 |
+| `dinov3-vitl16` | DINOv3VisionTower | [6,12,18,23] | 224；项目 DINOv3 脚本显式传 512 |
+| `dinov3-vitb16` | DINOv3VisionTower | [3,6,9,11] | 224；项目 DINOv3 脚本显式传 512 |
 
-自动检测由 `dino_config.py` 实现，`builder.py` 调用。可通过 `--deepstack_visual_indexes` 和 `--input_image_size` 覆盖。
+自动检测由 `dino_config.py` 实现，`builder.py` 调用。可通过 `--deepstack_visual_indexes` 和 `--input_image_size` 覆盖。目前 DINOv3 训练/推理脚本使用 `--input_image_size 512`，即 256x256 BEV patch resize 到 512x512，DINOv3 patch16 产生 32x32=1024 个视觉 token。
 
 ### DINO 路径别名
 
@@ -147,6 +147,27 @@ LayerNorm(vit_dim) → Linear(vit_dim → llm_dim) → GELU → Linear(llm_dim �
 ---
 
 ## 训练参数
+
+### 数据坐标约定
+
+当前数据处理脚本默认生成 `coord_mode=norm1000` 的训练 JSONL：图像 patch 仍是原始 patch 尺寸（默认 `256x256`），但 prompt、GT、模型输出中的点坐标使用 patch 内归一化 `0..1000` 网格。这样不会把标签绑定到 DINOv2 的 518 输入尺寸或某个固定视觉编码器。
+
+- `data_process/*` 默认 `--coord-mode norm1000 --coord-range 1000`。
+- Phase B 的 left/top incoming hints 使用同样坐标模式，但可以出现负值或大于 1000，表示来自相邻 patch。
+- 推理阶段 `COORD_MODE=auto` 会读取 `meta.coord_mode`；`prediction_json` 保留模型坐标，`prediction_json_pixel` 是转回 patch 像素后的结果。
+- state-update 拼图、可视化、`infer_index/line_eval.py` 评估都使用 pixel 转换结果。
+- 老的 pixel JSONL 仍可用：没有 `meta.coord_mode` 时默认按 pixel 处理，或显式传 `--coord-mode pixel`。
+
+归一化公式：
+
+```text
+x_norm = round(x_pixel / (patch_width  - 1) * coord_range)
+y_norm = round(y_pixel / (patch_height - 1) * coord_range)
+x_pixel = round(x_norm / coord_range * (patch_width  - 1))
+y_pixel = round(y_norm / coord_range * (patch_height - 1))
+```
+
+默认 `patch_size=256, coord_range=1000` 时，`[255,255] -> [1000,1000]`，`[128,128] -> [502,502]`。GT/模型输出会 clamp 到 patch 内，Phase B incoming hints 不 clamp。
 
 ### ModelArguments (新增参数以 ★ 标注)
 
@@ -178,7 +199,7 @@ LayerNorm(vit_dim) → Linear(vit_dim → llm_dim) → GELU → Linear(llm_dim �
 
 ```bash
 # Qwen2 + DINOv2 + DeepStack
-python -m llava.train.train_qwen \
+python -m mllm.train.train_qwen \
     --model_name_or_path checkpoints/llava-fastvithd_7b_stage2 \
     --version conv_qwen_2_Dinov2_huawei \
     --vision_tower checkpoints/facebook_dinov2-large \

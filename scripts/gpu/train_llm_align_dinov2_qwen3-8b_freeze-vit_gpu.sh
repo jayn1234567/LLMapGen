@@ -92,7 +92,7 @@ echo "============================================================"
 torchrun \
     --nproc_per_node="${NUM_GPUS}" \
     --master_port="${MASTER_PORT}" \
-    -m llava.train.train_qwen \
+    -m mllm.train.train_qwen \
     --model_name_or_path "${MODEL_NAME_OR_PATH}" \
     --version "${VERSION}" \
     --vision_tower "${VISION_TOWER}" \

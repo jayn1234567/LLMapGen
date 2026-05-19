@@ -24,7 +24,7 @@ TEST_JSON=${TEST_JSON:-data/test.jsonl}
 IMAGE_FOLDER=${IMAGE_FOLDER:-data/images}
 CONV_TEMPLATE=${CONV_TEMPLATE:-conv_qwen_3_Dinov2_huawei}
 DEEPSTACK_VISUAL_INDEXES=${DEEPSTACK_VISUAL_INDEXES:-"6 12 18 23"}
-INPUT_IMAGE_SIZE=${INPUT_IMAGE_SIZE:-224}
+INPUT_IMAGE_SIZE=${INPUT_IMAGE_SIZE:-512}
 MAX_STEPS=${MAX_STEPS:-2}
 TRAIN_SAMPLE_LIMIT=${TRAIN_SAMPLE_LIMIT:-4}
 NUM_INFER_SAMPLES=${NUM_INFER_SAMPLES:-2}
@@ -45,7 +45,7 @@ source "${CONDA_SH}"
 conda activate "${CONDA_ENV}"
 
 export PYTHONPATH="${REPO_ROOT}:${PYTHONPATH:-}"
-export LLAVA_LOG_RANK0_ONLY=${LLAVA_LOG_RANK0_ONLY:-1}
+export MLLM_LOG_RANK0_ONLY=${MLLM_LOG_RANK0_ONLY:-1}
 export TRANSFORMERS_VERBOSITY=${TRANSFORMERS_VERBOSITY:-warning}
 
 echo "repo: ${REPO_ROOT}"
@@ -94,8 +94,8 @@ from pathlib import Path
 import torch
 from PIL import Image
 
-from llava.constants import IMAGE_TOKEN_INDEX
-from llava.mm_utils import process_images, tokenizer_image_token
+from mllm.constants import IMAGE_TOKEN_INDEX
+from mllm.mm_utils import process_images, tokenizer_image_token
 from scripts.infer_centerline_checkpoint import _load_full_finetune_model, build_prompt
 
 checkpoint_dir = Path(os.environ["DEBUG_INFER_CHECKPOINT_DIR"])
@@ -183,7 +183,7 @@ torchrun \
     --nproc_per_node="${NPROC_PER_NODE}" \
     --master_addr=127.0.0.1 \
     --master_port="${MASTER_PORT}" \
-    -m llava.train.train_qwen \
+    -m mllm.train.train_qwen \
     --model_name_or_path "${QWEN3VL_PATH}" \
     --version "${CONV_TEMPLATE}" \
     --vision_tower "${DINOV3_PATH}" \

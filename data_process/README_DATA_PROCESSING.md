@@ -38,18 +38,26 @@ output_root/
 ├── dataset_info.json
 ├── phase_a/
 │   ├── train.jsonl
+│   ├── eval.jsonl              # optional, split from test when eval-ratio/count is set
 │   ├── test.jsonl
+│   ├── test_full.jsonl         # original test before eval split
 │   ├── meta_train.jsonl
+│   ├── meta_eval.jsonl
 │   └── meta_test.jsonl
 └── phase_b/
     ├── train.jsonl
+    ├── eval.jsonl              # optional, split from test when eval-ratio/count is set
     ├── test.jsonl
+    ├── test_full.jsonl         # original test before eval split
     ├── meta_train.jsonl
+    ├── meta_eval.jsonl
     └── meta_test.jsonl
 ```
 
 `phase_a` uses empty incoming hints. `phase_b` uses GT left/top hints from already-processed neighboring patches.
 The train/test split unit is the raw sample folder, not a patch, so test patches cannot leak into either Phase A or Phase B training data.
+If `--eval-ratio` or `--eval-count` is set, `eval.jsonl` is split from the original test patch rows and the final `test.jsonl` excludes those eval rows.
+`test_full.jsonl` keeps the original unmodified test rows for auditing only.
 Images are padded with black pixels to a patch-size multiple before patching; metadata keeps both padded `source_image_size` and `original_source_image_size`.
 
 ## Prompt Shape
@@ -61,6 +69,7 @@ Phase A lane-only:
 ```text
 <image>
 Please construct the complete road map in the current BEV (Bird's Eye View) image patch.
+Coordinates use a normalized 0-1000 grid over the original 256x256 image patch.
 
 Incoming traces JSON:
 []
@@ -71,12 +80,13 @@ Phase B lane + intersection:
 ```text
 <image>
 Please construct the complete road map in the current BEV (Bird's Eye View) image patch.
+Coordinates use a normalized 0-1000 grid over the original 256x256 image patch.
 
 Incoming traces JSON:
-[{"id":"L0","side":"left","points":[[-25,170],[-13,149],[-1,128]]}]
+[{"id":"L0","side":"left","points":[[-98,667],[-51,584],[-4,502]]}]
 
 Incoming intersections JSON:
-[{"id":"IL0","side":"left","points":[[-1,164]]}]
+[{"id":"IL0","side":"left","points":[[-4,643]]}]
 
 Each incoming trace has 1 to 3 points. If multiple points are present, they are ordered from the previous patch interior toward the current patch boundary.
 Incoming traces are continuity hints only; they may be incomplete or absent.
@@ -88,21 +98,45 @@ Each incoming intersection has 1 to 3 boundary points from neighboring patches.
 Centerline-only:
 
 ```json
-{"lines":[{"category":"centerline","start_type":"cut","end_type":"inside","points":[[0,126],[91,140]]}]}
+{"lines":[{"category":"centerline","start_type":"cut","end_type":"inside","points":[[0,494],[357,549]]}]}
 ```
 
 Centerline + intersection:
 
 ```json
-{"lines":[{"category":"centerline","start_type":"cut","end_type":"inside","points":[[0,126],[91,140]]},{"category":"intersection","is_cut":true,"points":[[0,92],[164,92],[164,164],[0,164],[0,92]]}]}
+{"lines":[{"category":"centerline","start_type":"cut","end_type":"inside","points":[[0,494],[357,549]]},{"category":"intersection","is_cut":true,"points":[[0,361],[643,361],[643,643],[0,643],[0,361]]}]}
 ```
 
 Rules:
 
 - `centerline` uses `start_type/end_type = cut|inside`.
 - `intersection` uses `is_cut = true|false` and stays a closed polyline.
-- All assistant target points are patch-local integers in `[0, patch_size - 1]`.
+- SFT JSONL defaults to `coord_mode=norm1000`: all assistant target points are integers in `[0,1000]`, normalized over the original patch. Images are still 256x256 by default.
+- `--coord-mode pixel` keeps the legacy `[0, patch_size - 1]` pixel labels when explicitly needed.
+- Phase B incoming hints use the same coordinate mode as targets. Left/top hints may be outside the `[0,1000]` range because they come from neighboring patches.
 - GeoJSON properties such as `Id`, `IntersectionType`, `IsRegular`, and `IntersectionSubType` are retained in meta outputs, not assistant targets.
+
+Normalization formula:
+
+```text
+x_norm = round(x_pixel / (patch_width  - 1) * coord_range)
+y_norm = round(y_pixel / (patch_height - 1) * coord_range)
+
+x_pixel = round(x_norm / coord_range * (patch_width  - 1))
+y_pixel = round(y_norm / coord_range * (patch_height - 1))
+```
+
+For the default `patch_size=256` and `coord_range=1000`:
+
+```text
+[0, 0]     -> [0, 0]
+[255,255]  -> [1000,1000]
+[128,128]  -> [502,502]
+```
+
+Target points and parsed model outputs are clamped into the valid in-patch range.
+Incoming hints are not clamped, so a left-neighbor pixel point like `[-1,128]`
+becomes approximately `[-4,502]`.
 
 ## Cut Rules
 
@@ -139,7 +173,7 @@ Target line order:
 ```
 
 For centerlines that continue an incoming trace, target points start at the current patch boundary and continue inward.
-Target points never include out-of-patch hint coordinates such as `[-1, y]`.
+Target points never include out-of-patch hint coordinates such as negative x/y or values above the coordinate range.
 
 ## Example Commands
 
@@ -150,7 +184,9 @@ python data_process/build_lane_dataset.py \
   --input-root /path/to/train \
   --output-root /path/to/output_lane \
   --patch-size 256 \
-  --stride 256
+  --stride 256 \
+  --coord-mode norm1000 \
+  --eval-ratio 0.2
 ```
 
 Lane + intersection:
@@ -160,7 +196,19 @@ python data_process/build_lane_intersection_dataset.py \
   --input-root /path/to/train \
   --output-root /path/to/output_lane_intersection \
   --patch-size 256 \
-  --stride 256
+  --stride 256 \
+  --coord-mode norm1000 \
+  --eval-ratio 0.2
+```
+
+For an already-built dataset that only has `test.jsonl`, split eval without regenerating images:
+
+```bash
+python scripts/data/split_eval_from_test.py \
+  --dataset-root /path/to/output_lane \
+  --phases phase_a phase_b \
+  --eval-ratio 0.2 \
+  --seed 42
 ```
 
 For a small smoke run:
@@ -171,6 +219,7 @@ python data_process/build_lane_dataset.py \
   --output-root /tmp/lane_smoke \
   --limit-samples 1 \
   --max-patches-per-sample 20 \
+  --coord-mode norm1000 \
   --keep-archives
 ```
 
@@ -182,6 +231,7 @@ python data_process/build_lane_intersection_dataset.py \
   --output-root /tmp/lane_intersection_smoke \
   --limit-samples 1 \
   --max-patches-per-sample 20 \
+  --coord-mode norm1000 \
   --keep-archives
 ```
 

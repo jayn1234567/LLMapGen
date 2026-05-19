@@ -25,7 +25,7 @@ TEST_JSON=${TEST_JSON:-data/test.jsonl}
 IMAGE_FOLDER=${IMAGE_FOLDER:-data/images}
 OUTPUT_ROOT=${OUTPUT_ROOT:-/tmp/mllm_lora_matrix_multigpu_debug}
 
-INPUT_IMAGE_SIZE=${INPUT_IMAGE_SIZE:-224}
+INPUT_IMAGE_SIZE=${INPUT_IMAGE_SIZE:-512}
 MAX_STEPS=${MAX_STEPS:-2}
 TRAIN_SAMPLE_LIMIT=${TRAIN_SAMPLE_LIMIT:-8}
 NUM_INFER_SAMPLES=${NUM_INFER_SAMPLES:-2}
@@ -36,7 +36,7 @@ source "${CONDA_SH}"
 conda activate "${CONDA_ENV}"
 
 export PYTHONPATH="${REPO_ROOT}:${PYTHONPATH:-}"
-export LLAVA_LOG_RANK0_ONLY=${LLAVA_LOG_RANK0_ONLY:-1}
+export MLLM_LOG_RANK0_ONLY=${MLLM_LOG_RANK0_ONLY:-1}
 export TRANSFORMERS_VERBOSITY=${TRANSFORMERS_VERBOSITY:-warning}
 
 mkdir -p "${OUTPUT_ROOT}"
@@ -108,7 +108,7 @@ run_case() {
         --nproc_per_node="${NPROC_PER_NODE}" \
         --master_addr=127.0.0.1 \
         --master_port="${train_port}" \
-        -m llava.train.train_qwen \
+        -m mllm.train.train_qwen \
         --model_name_or_path "${model_path}" \
         --version "${conv_template}" \
         --vision_tower "${vision_path}" \

@@ -11,10 +11,21 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from llava.constants import IMAGE_TOKEN_INDEX
-from llava.mm_utils import process_images, tokenizer_image_token
+from mllm.constants import IMAGE_TOKEN_INDEX
+from mllm.coord_utils import (
+    COORD_MODE_PIXEL,
+    COORD_MODE_NORM1000,
+    DEFAULT_COORD_RANGE,
+    convert_items,
+    convert_payload_text,
+    payload_to_text,
+    record_coord_config,
+)
+from mllm.mm_utils import process_images, tokenizer_image_token
 from scripts.infer_centerline_checkpoint import (
     build_prompt,
+    completion_token_ids,
+    extract_json_payload,
     load_model_components,
     normalize_prediction_text,
     parse_map_json,
@@ -31,7 +42,12 @@ def load_json_or_jsonl(path: Path):
         return []
     if text[0] in "[{":
         try:
-            return json.loads(text)
+            payload = json.loads(text)
+            if isinstance(payload, dict) and isinstance(payload.get("patch_results"), list):
+                return payload["patch_results"]
+            if isinstance(payload, dict):
+                return [payload]
+            return payload
         except json.JSONDecodeError:
             pass
     return [json.loads(line) for line in text.splitlines() if line.strip()]
@@ -68,11 +84,19 @@ def sort_patch_records(records):
     return sorted(records, key=key_fn)
 
 
-def make_user_prompt(patch_size: int, incoming_traces, incoming_intersections=None, include_intersections=False):
+def coord_description(coord_mode: str, coord_range: int, patch_size: int) -> str:
+    if coord_mode == COORD_MODE_NORM1000:
+        return f"Coordinates use a normalized 0-{coord_range} grid over the original {patch_size}x{patch_size} image patch."
+    return f"Coordinates use original patch pixel coordinates in [0,{patch_size - 1}]."
+
+
+def make_user_prompt(patch_size: int, incoming_traces, incoming_intersections=None,
+                     include_intersections=False, coord_mode=COORD_MODE_PIXEL, coord_range=DEFAULT_COORD_RANGE):
     traces_json = json.dumps(incoming_traces, ensure_ascii=False, separators=(",", ":"))
     parts = [
         "<image>",
         TASK_TEXT,
+        coord_description(coord_mode, coord_range, patch_size),
         "",
         "Incoming traces JSON:",
         traces_json,
@@ -88,6 +112,19 @@ def make_user_prompt(patch_size: int, incoming_traces, incoming_intersections=No
     if include_intersections:
         parts.append("Each incoming intersection has 1 to 3 boundary points from neighboring patches.")
     return "\n".join(parts)
+
+
+def resolve_coord_config(record, args):
+    cfg = record_coord_config(
+        record,
+        default_mode=COORD_MODE_PIXEL,
+        default_patch_size=args.patch_size,
+        default_coord_range=args.coord_range,
+    )
+    if args.coord_mode != "auto":
+        cfg["coord_mode"] = args.coord_mode
+        cfg["coord_range"] = args.coord_range
+    return cfg
 
 
 def near(value, target, tol):
@@ -243,26 +280,32 @@ def run_patch_inference(record, prompt_text, image_folder, tokenizer, model, ima
     prompt = build_prompt(prompt_text, conv_template)
     input_ids = tokenizer_image_token(prompt, tokenizer, IMAGE_TOKEN_INDEX, return_tensors="pt")
     input_ids = input_ids.unsqueeze(0).to(model.device)
-    attention_mask = input_ids.ne(tokenizer.pad_token_id).to(model.device)
+    generation_config = getattr(model, "generation_config", None)
+    pad_token_id = getattr(generation_config, "pad_token_id", None) or tokenizer.pad_token_id
+    eos_token_id = getattr(generation_config, "eos_token_id", None) or tokenizer.eos_token_id
+    attention_mask = input_ids.ne(pad_token_id).to(model.device)
+
+    generate_kwargs = {
+        "attention_mask": attention_mask,
+        "images": images_tensor,
+        "image_sizes": [image.size],
+        "max_new_tokens": max_new_tokens,
+        "use_cache": True,
+        "do_sample": temperature > 0,
+        "num_beams": 1,
+        "pad_token_id": pad_token_id,
+        "eos_token_id": eos_token_id,
+    }
+    if temperature > 0:
+        generate_kwargs["temperature"] = temperature
 
     with torch.inference_mode():
-        output_ids = model.generate(
-            input_ids,
-            attention_mask=attention_mask,
-            images=images_tensor,
-            image_sizes=[image.size],
-            max_new_tokens=max_new_tokens,
-            use_cache=True,
-            do_sample=temperature > 0,
-            temperature=max(temperature, 1e-5),
-            num_beams=1,
-            pad_token_id=tokenizer.pad_token_id,
-            eos_token_id=tokenizer.eos_token_id,
-        )
+        output_ids = model.generate(input_ids, **generate_kwargs)
 
-    raw_prediction = tokenizer.batch_decode(output_ids, skip_special_tokens=False)[0].strip()
+    decoded_ids, decoded_mode = completion_token_ids(output_ids, input_ids)
+    raw_prediction = tokenizer.batch_decode(decoded_ids.unsqueeze(0), skip_special_tokens=False)[0].strip()
     prediction = normalize_prediction_text(raw_prediction)
-    return image_path, prompt, raw_prediction, prediction, int(input_ids.shape[1]), int(output_ids.shape[1])
+    return image_path, prompt, raw_prediction, prediction, int(input_ids.shape[1]), int(output_ids.shape[1]), int(decoded_ids.numel()), decoded_mode
 
 
 def main():
@@ -272,9 +315,13 @@ def main():
     parser.add_argument("--image-folder", required=True)
     parser.add_argument("--output-json", required=True)
     parser.add_argument("--output-dir", default="")
+    parser.add_argument("--sample-json-dir", default="", help="Directory for per-patch JSON files. Defaults to output-dir.")
+    parser.add_argument("--merged-output-json", default="", help="Optional path for merged global map JSON.")
     parser.add_argument("--conv-template", default="conv_qwen_3_state_update_centerline")
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--patch-size", type=int, default=256)
+    parser.add_argument("--coord-mode", choices=["auto", COORD_MODE_PIXEL, COORD_MODE_NORM1000], default="auto")
+    parser.add_argument("--coord-range", type=int, default=DEFAULT_COORD_RANGE)
     parser.add_argument("--boundary-tol", type=float, default=2.0)
     parser.add_argument("--trace-points", type=int, default=3)
     parser.add_argument("--intersection-hint-points", type=int, default=3)
@@ -282,6 +329,7 @@ def main():
     parser.add_argument("--temperature", type=float, default=0.0)
     parser.add_argument("--include-intersections", action="store_true")
     parser.add_argument("--eval-centerline", action="store_true")
+    parser.add_argument("--eval-output-json", default="", help="Path for aggregate centerline metrics JSON.")
     parser.add_argument("--eval-meter-per-pixel", type=float, default=0.2)
     parser.add_argument("--eval-buffer-size", type=float, default=1.0)
     parser.add_argument("--eval-match-threshold", type=float, default=0.33)
@@ -304,6 +352,9 @@ def main():
     output_dir = Path(args.output_dir) if args.output_dir else None
     if output_dir is not None:
         output_dir.mkdir(parents=True, exist_ok=True)
+    sample_json_dir = Path(args.sample_json_dir) if args.sample_json_dir else output_dir
+    if sample_json_dir is not None:
+        sample_json_dir.mkdir(parents=True, exist_ok=True)
 
     state_by_pos = {}
     patch_results = []
@@ -313,38 +364,61 @@ def main():
         row = get_meta_int(record, "row", get_meta_int(record, "patch_row", 0))
         col = get_meta_int(record, "col", get_meta_int(record, "patch_col", 0))
         meta = record.get("meta") or {}
+        coord_cfg = resolve_coord_config(record, args)
+        patch_size_px = coord_cfg["patch_size"]
         tile_id = meta.get("tile_id", record.get("tile_id", ""))
-        x0 = int(meta.get("x0", col * args.patch_size))
-        y0 = int(meta.get("y0", row * args.patch_size))
+        x0 = int(meta.get("x0", col * patch_size_px))
+        y0 = int(meta.get("y0", row * patch_size_px))
 
-        incoming_traces = build_incoming_traces(
+        incoming_traces_pixel = build_incoming_traces(
             state_by_pos,
             tile_id,
             row,
             col,
-            args.patch_size,
+            patch_size_px,
             args.boundary_tol,
             args.trace_points,
         )
-        incoming_intersections = []
+        incoming_intersections_pixel = []
         if args.include_intersections:
-            incoming_intersections = build_incoming_intersections(
+            incoming_intersections_pixel = build_incoming_intersections(
                 state_by_pos,
                 tile_id,
                 row,
                 col,
-                args.patch_size,
+                patch_size_px,
                 args.boundary_tol,
                 args.intersection_hint_points,
             )
+        incoming_traces = convert_items(
+            incoming_traces_pixel,
+            COORD_MODE_PIXEL,
+            coord_cfg["coord_mode"],
+            coord_cfg["patch_width"],
+            coord_cfg["patch_height"],
+            coord_range=coord_cfg["coord_range"],
+            clamp=False,
+        )
+        incoming_intersections = convert_items(
+            incoming_intersections_pixel,
+            COORD_MODE_PIXEL,
+            coord_cfg["coord_mode"],
+            coord_cfg["patch_width"],
+            coord_cfg["patch_height"],
+            coord_range=coord_cfg["coord_range"],
+            clamp=False,
+        )
         prompt_text = make_user_prompt(
-            args.patch_size,
+            patch_size_px,
             incoming_traces,
             incoming_intersections,
             include_intersections=args.include_intersections,
+            coord_mode=coord_cfg["coord_mode"],
+            coord_range=coord_cfg["coord_range"],
         )
 
         parse_ok = False
+        parsed_lines_model = []
         parsed_lines = []
         parse_error = ""
         raw_prediction = ""
@@ -352,13 +426,15 @@ def main():
         prompt = ""
         input_token_len = 0
         output_token_len = 0
+        decoded_token_len = 0
+        decoded_mode = ""
         image_path = resolve_image_path(record["image"], image_folder).resolve()
 
         if args.dry_run_prompts:
             prompt = prompt_text
             prediction = record["conversations"][1]["value"] if len(record.get("conversations", [])) > 1 else "{}"
         else:
-            image_path, prompt, raw_prediction, prediction, input_token_len, output_token_len = run_patch_inference(
+            image_path, prompt, raw_prediction, prediction, input_token_len, output_token_len, decoded_token_len, decoded_mode = run_patch_inference(
                 record,
                 prompt_text,
                 image_folder,
@@ -371,10 +447,27 @@ def main():
             )
 
         try:
-            parsed_lines = parse_map_json(prediction)
+            parsed_lines_model = parse_map_json(
+                prediction,
+                map_task="lane_intersection" if args.include_intersections else "lane",
+                patch_size=coord_cfg["patch_size"],
+                coord_mode=coord_cfg["coord_mode"],
+                coord_range=coord_cfg["coord_range"],
+            )
+            parsed_lines = convert_items(
+                parsed_lines_model,
+                coord_cfg["coord_mode"],
+                COORD_MODE_PIXEL,
+                coord_cfg["patch_width"],
+                coord_cfg["patch_height"],
+                coord_range=coord_cfg["coord_range"],
+                clamp=True,
+            )
             parse_ok = True
         except Exception as exc:
             parse_error = str(exc)
+        prediction_json = payload_to_text({"lines": parsed_lines_model}) if parse_ok else extract_json_payload(prediction)
+        prediction_json_pixel = payload_to_text({"lines": parsed_lines}) if parse_ok else ""
 
         state_by_pos[(tile_id, row, col)] = parsed_lines if parse_ok else []
         global_lines = local_to_global_lines(parsed_lines, x0, y0) if parse_ok else []
@@ -389,25 +482,49 @@ def main():
             "col": col,
             "x0": x0,
             "y0": y0,
-            "patch_size": args.patch_size,
+            "patch_size": coord_cfg["patch_size"],
+            "patch_width": coord_cfg["patch_width"],
+            "patch_height": coord_cfg["patch_height"],
+            "coord_mode": coord_cfg["coord_mode"],
+            "coord_range": coord_cfg["coord_range"],
+            "meta": meta,
             "incoming_traces": incoming_traces,
+            "incoming_traces_pixel": incoming_traces_pixel,
             "incoming_intersections": incoming_intersections,
+            "incoming_intersections_pixel": incoming_intersections_pixel,
             "prompt": prompt,
             "raw_prediction": raw_prediction,
             "prediction": prediction,
+            "prediction_json": prediction_json,
+            "prediction_json_pixel": prediction_json_pixel,
             "parse_ok": parse_ok,
             "parse_error": parse_error,
             "lines_local": parsed_lines,
+            "lines_local_model": parsed_lines_model,
             "lines_global": global_lines,
             "input_token_len": input_token_len,
             "output_token_len": output_token_len,
+            "decoded_token_len": decoded_token_len,
+            "decoded_mode": decoded_mode,
         }
         if len(record.get("conversations", [])) > 1:
             result["ground_truth"] = record["conversations"][1]["value"]
+            try:
+                result["ground_truth_pixel"] = convert_payload_text(
+                    result["ground_truth"],
+                    coord_cfg["coord_mode"],
+                    COORD_MODE_PIXEL,
+                    coord_cfg["patch_width"],
+                    coord_cfg["patch_height"],
+                    coord_range=coord_cfg["coord_range"],
+                    clamp=True,
+                )
+            except Exception:
+                result["ground_truth_pixel"] = result["ground_truth"]
         patch_results.append(result)
 
-        if output_dir is not None:
-            out_path = output_dir / f"{idx:04d}_{row:03d}_{col:03d}.json"
+        if sample_json_dir is not None:
+            out_path = sample_json_dir / f"{idx:04d}_{row:03d}_{col:03d}.json"
             dump_json(out_path, result)
 
         print(json.dumps({
@@ -440,6 +557,10 @@ def main():
             buffer_size=args.eval_buffer_size,
             match_threshold=args.eval_match_threshold,
         )
+        if args.eval_output_json:
+            dump_json(Path(args.eval_output_json), summary["centerline_eval"])
+    if args.merged_output_json:
+        dump_json(Path(args.merged_output_json), summary["merged_global"])
     dump_json(Path(args.output_json), summary)
 
 

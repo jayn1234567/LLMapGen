@@ -11,9 +11,9 @@ import torch
 import numpy as np
 import coremltools
 
-from llava.model.builder import load_pretrained_model
-from llava.utils import disable_torch_init
-from llava.mm_utils import get_model_name_from_path
+from mllm.model.builder import load_pretrained_model
+from mllm.utils import disable_torch_init
+from mllm.mm_utils import get_model_name_from_path
 
 
 def export(args):

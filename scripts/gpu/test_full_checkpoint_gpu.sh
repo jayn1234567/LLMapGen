@@ -126,8 +126,11 @@ if [ ! -f "${CHECKPOINT_DIR}/model.safetensors" ] && [ ! -f "${CHECKPOINT_DIR}/p
 fi
 echo "ViT base must be supplied separately during inference."
 
+COORD_MODE=${COORD_MODE:-auto}
+COORD_RANGE=${COORD_RANGE:-1000}
 echo "CHECKPOINT_DIR: $CHECKPOINT_DIR"
 echo "TEST_JSON: $TEST_JSON"
+echo "COORD_MODE: ${COORD_MODE} (range=${COORD_RANGE})"
 
 # ====================== inference ======================
 TEST_OUTPUT_LOCAL="/cache/test_output"
@@ -146,6 +149,10 @@ torchrun --nproc_per_node=8 \
   --num-samples -1 \
   --image-folder "${IMAGE_FOLDER}" \
   --prompt-mode dataset \
+  --map-task lane \
+  --patch-size 256 \
+  --coord-mode "${COORD_MODE}" \
+  --coord-range "${COORD_RANGE}" \
   --conv-template "conv_qwen_2_Dinov2_huawei" \
   --output-dir "${TEST_OUTPUT_LOCAL}" \
   --output-json "${TEST_OUTPUT_LOCAL}/summary.json" \

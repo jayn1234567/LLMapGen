@@ -19,19 +19,29 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from llava import conversation as conversation_lib
-from llava.constants import (
+from mllm import conversation as conversation_lib
+from mllm.constants import (
     DEFAULT_IMAGE_TOKEN,
     DEFAULT_IMAGE_PATCH_TOKEN,
     DEFAULT_IM_END_TOKEN,
     DEFAULT_IM_START_TOKEN,
     IMAGE_TOKEN_INDEX,
 )
-from llava.mm_utils import process_images, tokenizer_image_token
-from llava.model.builder import load_pretrained_model
-from llava.model.language_model.llava_qwen import LlavaConfig as LlavaQwen2Config, LlavaQwen2ForCausalLM
-from llava.model.language_model.llava_qwen3 import LlavaQwen3ForCausalLM
-from llava.model.qwen_token_utils import qwen_tokenizer_kwargs, sync_qwen_token_config
+from mllm.coord_utils import (
+    COORD_MODE_PIXEL,
+    COORD_MODE_NORM1000,
+    DEFAULT_COORD_RANGE,
+    convert_items,
+    convert_payload_text,
+    payload_to_text,
+    record_coord_config,
+)
+from mllm.mm_utils import process_images, tokenizer_image_token
+from mllm.model.builder import load_pretrained_model
+from mllm.model.language_model.llava_qwen import Qwen2MultimodalConfig as LlavaQwen2Config, Qwen2MultimodalForCausalLM
+from mllm.model.language_model.llava_qwen3 import Qwen3MultimodalForCausalLM
+from mllm.model.qwen_token_utils import qwen_tokenizer_kwargs, sync_qwen_token_config
+from mllm.reward.map_schema import parse_map_json as parse_map_schema_json
 
 DEFAULT_PROMPT = DEFAULT_IMAGE_TOKEN
 
@@ -42,14 +52,14 @@ def _env_flag(name, default="0"):
 
 def silence_non_primary_rank_output():
     """Keep normal inference logs on global rank 0 only."""
-    if not _env_flag("LLAVA_LOG_RANK0_ONLY", "1"):
+    if not _env_flag("MLLM_LOG_RANK0_ONLY", "1"):
         return
     rank = int(os.environ.get("RANK", os.environ.get("LOCAL_RANK", "0")))
     if rank == 0:
         return
     sys.stdout.flush()
     sys.stdout = open(os.devnull, "w")
-    if _env_flag("LLAVA_SUPPRESS_NONZERO_STDERR", "0"):
+    if _env_flag("MLLM_SUPPRESS_NONZERO_STDERR", "0"):
         sys.stderr.flush()
         sys.stderr = open(os.devnull, "w")
 
@@ -137,6 +147,15 @@ def prediction_preview(text: str, limit: int = 240) -> str:
     if len(text) <= limit:
         return text
     return text[:limit] + "..."
+
+
+def completion_token_ids(output_ids: torch.Tensor, input_ids: torch.Tensor):
+    """Return generated completion ids for both HF and completion-only generate paths."""
+    output = output_ids[0] if output_ids.ndim == 2 else output_ids
+    prompt = input_ids[0] if input_ids.ndim == 2 else input_ids
+    if output.numel() >= prompt.numel() and torch.equal(output[:prompt.numel()], prompt):
+        return output[prompt.numel():], "completion_sliced"
+    return output, "completion_only"
 
 
 def read_manifest(checkpoint_dir: Path) -> dict:
@@ -274,7 +293,7 @@ def _has_adapter_weights(checkpoint_dir: Path) -> bool:
     return (checkpoint_dir / "adapter_model.safetensors").exists() or (checkpoint_dir / "adapter_model.bin").exists()
 
 
-def _looks_like_full_llava_checkpoint(checkpoint_dir: Path) -> bool:
+def _looks_like_full_mllm_checkpoint(checkpoint_dir: Path) -> bool:
     if not _has_model_weights(checkpoint_dir):
         return False
     try:
@@ -283,7 +302,7 @@ def _looks_like_full_llava_checkpoint(checkpoint_dir: Path) -> bool:
         return False
 
     model_type = str(getattr(config, "model_type", "")).lower()
-    if model_type.startswith("llava_") or "llava" in model_type:
+    if model_type.startswith(("mllm_", "llava_")) or "mllm" in model_type or "llava" in model_type:
         return True
 
     return any(
@@ -324,6 +343,34 @@ def _apply_checkpoint_metadata_defaults(config, metadata: dict):
             setattr(config, key, value)
 
 
+def _same_path_or_value(left, right) -> bool:
+    if left is None or right is None:
+        return False
+    left_s = str(left)
+    right_s = str(right)
+    if left_s == right_s:
+        return True
+    try:
+        return Path(left_s).expanduser().resolve() == Path(right_s).expanduser().resolve()
+    except Exception:
+        return False
+
+
+def _has_tokenizer_files(path: Path) -> bool:
+    return any((path / name).exists() for name in ("tokenizer.json", "tokenizer.model", "vocab.json", "merges.txt"))
+
+
+def _load_lora_tokenizer(checkpoint_dir: Path, resolved_model_base: Path, config):
+    tokenizer_source = checkpoint_dir if _has_tokenizer_files(checkpoint_dir) else resolved_model_base
+    tokenizer = AutoTokenizer.from_pretrained(
+        str(tokenizer_source),
+        use_fast=False,
+        local_files_only=True,
+        **qwen_tokenizer_kwargs(str(tokenizer_source), config=config),
+    )
+    return tokenizer, tokenizer_source
+
+
 def _is_dinov3_config(config) -> bool:
     values = [
         getattr(config, "mm_vision_tower_type", ""),
@@ -350,7 +397,7 @@ def _load_full_finetune_model(checkpoint_dir: Path, device: str, config_override
     if not getattr(config, "mm_vision_tower", None) and not getattr(config, "vision_tower", None):
         raise RuntimeError(
             "Full Qwen multimodal checkpoint is missing a vision tower path in config. "
-            "Pass --vision_tower explicitly; do not rely on legacy LLaVA fallback loading."
+            "Pass --vision_tower explicitly; do not rely on legacy generic fallback loading."
         )
 
     tokenizer = AutoTokenizer.from_pretrained(
@@ -371,9 +418,9 @@ def _load_full_finetune_model(checkpoint_dir: Path, device: str, config_override
     config.fastvit_pretrained_path = None
 
     if 'qwen3' in model_type.lower():
-        model = LlavaQwen3ForCausalLM(config)
+        model = Qwen3MultimodalForCausalLM(config)
     else:
-        model = LlavaQwen2ForCausalLM(config)
+        model = Qwen2MultimodalForCausalLM(config)
     model.resize_token_embeddings(len(tokenizer))
     sync_qwen_token_config(
         tokenizer=tokenizer,
@@ -531,41 +578,47 @@ def _load_lora_finetune_model(checkpoint_dir: Path, device: str, config_override
     _apply_config_overrides(config, config_overrides or {})
     config.unfreeze_mm_vision_tower = False
     config.tune_vision_tower = False
-    tokenizer = AutoTokenizer.from_pretrained(
-        str(resolved_model_base),
-        use_fast=False,
-        local_files_only=True,
-        **qwen_tokenizer_kwargs(str(resolved_model_base), config=config),
-    )
+    tokenizer, tokenizer_source = _load_lora_tokenizer(checkpoint_dir, resolved_model_base, config)
     _add_multimodal_tokens(tokenizer, config)
 
     dtype = _runtime_dtype(config, device)
     model_type = getattr(config, "model_type", "")
     if "qwen3" in model_type.lower():
-        model = LlavaQwen3ForCausalLM(config)
+        model = Qwen3MultimodalForCausalLM(config)
     else:
-        model = LlavaQwen2ForCausalLM(config)
+        model = Qwen2MultimodalForCausalLM(config)
     model.resize_token_embeddings(len(tokenizer))
     sync_qwen_token_config(
         tokenizer=tokenizer,
         model=model,
-        model_name_or_path=str(resolved_model_base),
+        model_name_or_path=str(tokenizer_source),
     )
-
-    base_state = _load_state_dict(resolved_model_base)
-    _, _, loaded_base = _load_compatible_state_dict(
-        model,
-        base_state,
-        skip_prefixes=("model.vision_tower.", "model.mm_projector.", "model.image_newline"),
-        source_name=f"base model {resolved_model_base}",
-    )
-    print(f"Loaded {loaded_base} compatible base tensors for LoRA inference.")
 
     vision_tower = model.get_vision_tower()
     if vision_tower is not None and not vision_tower.is_loaded:
         vision_tower.load_model()
     if vision_tower is not None and hasattr(vision_tower, "set_llm_hidden_size"):
         vision_tower.set_llm_hidden_size(model.config.hidden_size)
+
+    base_metadata = _read_checkpoint_metadata(resolved_model_base) if resolved_model_base.is_dir() else {}
+    base_vision_tower = base_metadata.get("mm_vision_tower") or base_metadata.get("vision_tower")
+    requested_vision_tower = getattr(config, "mm_vision_tower", None) or getattr(config, "vision_tower", None)
+    skip_prefixes = []
+    if base_vision_tower and requested_vision_tower and not _same_path_or_value(base_vision_tower, requested_vision_tower):
+        skip_prefixes.append("model.vision_tower.")
+        print(
+            "[WARN] LoRA base checkpoint vision tower differs from requested vision_tower; "
+            "skipping base model.vision_tower.* tensors."
+        )
+
+    base_state = _load_state_dict(resolved_model_base)
+    _, _, loaded_base = _load_compatible_state_dict(
+        model,
+        base_state,
+        skip_prefixes=tuple(skip_prefixes),
+        source_name=f"base model {resolved_model_base}",
+    )
+    print(f"Loaded {loaded_base} compatible base tensors for LoRA inference.")
 
     non_lora_state = torch.load(non_lora_path, map_location="cpu")
     non_lora_state = _normalize_non_lora_state_dict(non_lora_state)
@@ -592,10 +645,10 @@ def load_model_components(checkpoint_dir: Path, manifest: dict, device: str, con
         return _load_lora_finetune_model(checkpoint_dir, device, config_overrides=config_overrides)
 
     if _has_model_weights(checkpoint_dir):
-        if not _looks_like_full_llava_checkpoint(checkpoint_dir):
+        if not _looks_like_full_mllm_checkpoint(checkpoint_dir):
             raise RuntimeError(
                 f"{checkpoint_dir} contains full model weights but does not look like a Qwen multimodal checkpoint. "
-                "Refusing to use the legacy LLaVA loader because it can silently skip projector/ViT weights. "
+                "Refusing to use the legacy generic loader because it can silently skip projector/ViT weights. "
                 "Check config.json for mm_vision_tower/vision_tower/mm_projector_type or use the correct checkpoint dir."
             )
         return _load_full_finetune_model(checkpoint_dir, device, config_overrides=config_overrides)
@@ -606,7 +659,7 @@ def load_model_components(checkpoint_dir: Path, manifest: dict, device: str, con
             f"{checkpoint_dir} has neither LoRA adapter weights nor full model weights. "
             "Legacy base+projector loading requires an inference_manifest.json/run_config.json with model_name_or_path."
         )
-    model_name = f"llava_{checkpoint_dir.name}"
+    model_name = f"mllm_{checkpoint_dir.name}"
     tokenizer, model, image_processor, _ = load_pretrained_model(
         model_path=str(checkpoint_dir),
         model_base=model_base,
@@ -630,53 +683,52 @@ def _validate_points(points):
             raise ValueError("point coordinates must be numeric")
 
 
-def parse_map_json(prediction_text: str):
-    parsed = json.loads(prediction_text)
-    if isinstance(parsed, list):
-        parsed_items = parsed
-    elif isinstance(parsed, dict) and isinstance(parsed.get("lines"), list):
-        parsed_items = parsed["lines"]
-    else:
-        raise ValueError("prediction must be a JSON list or an object with lines")
-
-    normalized = []
-    for item in parsed_items:
-        if not isinstance(item, dict):
-            raise ValueError("prediction item is not an object")
-        category = str(item.get("category", "")).strip()
-        category_lower = "centerline" if category == "CenterLine" else category.lower()
-        if category_lower not in {"centerline", "intersection"}:
-            raise ValueError(f"unsupported category: {category}")
-
-        points = item.get("points")
-        _validate_points(points)
-        clean_points = [[int(round(point[0])), int(round(point[1]))] for point in points]
-
-        if category_lower == "centerline":
-            start_type = item.get("start_type", "inside")
-            end_type = item.get("end_type", "inside")
-            if start_type not in {"cut", "inside"} or end_type not in {"cut", "inside"}:
-                raise ValueError("centerline start_type/end_type must be cut or inside")
-            normalized.append({
-                "category": "centerline",
-                "start_type": start_type,
-                "end_type": end_type,
-                "points": clean_points,
-            })
-        else:
-            is_cut = item.get("is_cut", False)
-            if not isinstance(is_cut, bool):
-                raise ValueError("intersection is_cut must be a boolean")
-            normalized.append({
-                "category": "intersection",
-                "is_cut": is_cut,
-                "points": clean_points,
-            })
-    return normalized
+def resolve_coord_config(record, args):
+    cfg = record_coord_config(
+        record,
+        default_mode=COORD_MODE_PIXEL,
+        default_patch_size=args.patch_size,
+        default_coord_range=args.coord_range,
+    )
+    if args.coord_mode != "auto":
+        cfg["coord_mode"] = args.coord_mode
+        cfg["coord_range"] = args.coord_range
+    return cfg
 
 
-def parse_centerline_json(prediction_text: str):
-    return parse_map_json(prediction_text)
+def parse_map_json(
+    prediction_text: str,
+    map_task: str = "lane_intersection",
+    patch_size: int = 256,
+    coord_mode: str = COORD_MODE_PIXEL,
+    coord_range: int = DEFAULT_COORD_RANGE,
+):
+    parse_result = parse_map_schema_json(
+        prediction_text,
+        map_task=map_task,
+        patch_size=patch_size,
+        coord_mode=coord_mode,
+        coord_range=coord_range,
+    )
+    if not parse_result.ok:
+        raise ValueError(parse_result.error or "prediction parse failed")
+    return parse_result.items
+
+
+def parse_centerline_json(
+    prediction_text: str,
+    map_task: str = "lane_intersection",
+    patch_size: int = 256,
+    coord_mode: str = COORD_MODE_PIXEL,
+    coord_range: int = DEFAULT_COORD_RANGE,
+):
+    return parse_map_json(
+        prediction_text,
+        map_task=map_task,
+        patch_size=patch_size,
+        coord_mode=coord_mode,
+        coord_range=coord_range,
+    )
 
 
 def sanitize_filename(name: str) -> str:
@@ -712,7 +764,12 @@ def main():
     parser.add_argument("--image", default="")
     parser.add_argument("--test-json", default="")
     parser.add_argument("--image-folder", default="")
-    parser.add_argument("--num-samples", type=int, default=1)
+    parser.add_argument(
+        "--num-samples",
+        type=int,
+        default=0,
+        help="Number of records to infer from --test-json. 0 or negative means all records.",
+    )
     parser.add_argument("--sample-offset", type=int, default=0)
     parser.add_argument("--prompt-mode", choices=["default", "dataset"], default="default")
     parser.add_argument("--conv-template", default="")
@@ -722,15 +779,21 @@ def main():
     parser.add_argument("--temperature", type=float, default=0.0)
     parser.add_argument("--output-json", default="")
     parser.add_argument("--output-dir", default="")
+    parser.add_argument("--sample-json-dir", default="", help="Directory for per-sample JSON files. Defaults to output-dir.")
     parser.add_argument("--print-full-output", action="store_true")
     parser.add_argument("--vision_tower", default="")
     parser.add_argument("--input_image_size", type=int, default=None)
     parser.add_argument("--disable_deepstack", action="store_true", default=None)
     parser.add_argument("--deepstack_visual_indexes", type=int, nargs="*", default=None)
     parser.add_argument("--eval-centerline", action="store_true")
+    parser.add_argument("--eval-output-json", default="", help="Path for aggregate centerline metrics JSON.")
     parser.add_argument("--eval-meter-per-pixel", type=float, default=0.2)
     parser.add_argument("--eval-buffer-size", type=float, default=1.0)
     parser.add_argument("--eval-match-threshold", type=float, default=0.33)
+    parser.add_argument("--map-task", choices=["lane", "lane_intersection"], default="lane_intersection")
+    parser.add_argument("--patch-size", type=int, default=256)
+    parser.add_argument("--coord-mode", choices=["auto", COORD_MODE_PIXEL, COORD_MODE_NORM1000], default="auto")
+    parser.add_argument("--coord-range", type=int, default=DEFAULT_COORD_RANGE)
     args = parser.parse_args()
     args.device = device_str
 
@@ -783,6 +846,9 @@ def main():
     output_dir = Path(args.output_dir) if args.output_dir else None
     if output_dir is not None:
         output_dir.mkdir(parents=True, exist_ok=True)
+    sample_json_dir = Path(args.sample_json_dir) if args.sample_json_dir else output_dir
+    if sample_json_dir is not None:
+        sample_json_dir.mkdir(parents=True, exist_ok=True)
     rank_suffix = ""
     if torch.distributed.is_initialized():
         rank_suffix = f"rank{torch.distributed.get_rank()}_"
@@ -834,51 +900,86 @@ def main():
         with torch.inference_mode():
             output_ids = model.generate(input_ids, **generate_kwargs)
 
-        # Keep the full generated sequence. For this task the model is expected
-        # to output the JSON directly, and length-based slicing can remove valid
-        # prefixes when generate() already returns completion-only tokens.
-        decoded_ids = output_ids
+        decoded_ids, decoded_mode = completion_token_ids(output_ids, input_ids)
 
         raw_prediction = tokenizer.batch_decode(
-            decoded_ids,
+            decoded_ids.unsqueeze(0),
             skip_special_tokens=False,
         )[0].strip()
         prediction = normalize_prediction_text(raw_prediction)
         prediction_json = extract_json_payload(prediction)
+        coord_cfg = resolve_coord_config(record, args)
 
         parse_ok = False
         parsed_items = []
+        parsed_items_pixel = []
         parse_error = ""
         try:
-            parsed_items = parse_centerline_json(prediction_json)
+            parsed_items = parse_centerline_json(
+                prediction_json,
+                map_task=args.map_task,
+                patch_size=coord_cfg["patch_size"],
+                coord_mode=coord_cfg["coord_mode"],
+                coord_range=coord_cfg["coord_range"],
+            )
+            parsed_items_pixel = convert_items(
+                parsed_items,
+                coord_cfg["coord_mode"],
+                COORD_MODE_PIXEL,
+                coord_cfg["patch_width"],
+                coord_cfg["patch_height"],
+                coord_range=coord_cfg["coord_range"],
+                clamp=True,
+            )
+            prediction_json = payload_to_text({"lines": parsed_items})
             parse_ok = True
         except Exception as exc:
             parse_error = str(exc)
+        prediction_json_pixel = payload_to_text({"lines": parsed_items_pixel}) if parse_ok else ""
 
         result = {
             "checkpoint_dir": str(checkpoint_dir),
             "image": str(image_path),
             "record_id": record.get("id", f"sample_{idx}"),
+            "meta": record.get("meta", {}),
+            "coord_mode": coord_cfg["coord_mode"],
+            "coord_range": coord_cfg["coord_range"],
+            "patch_size": coord_cfg["patch_size"],
+            "patch_width": coord_cfg["patch_width"],
+            "patch_height": coord_cfg["patch_height"],
             "prompt": prompt,
             "conv_template": conv_template,
             "raw_prediction": raw_prediction,
             "prediction": prediction,
             "prediction_json": prediction_json,
+            "prediction_json_pixel": prediction_json_pixel,
             "parse_ok": parse_ok,
             "num_items": len(parsed_items) if parse_ok else 0,
             "parse_error": parse_error,
             "input_token_len": int(input_ids.shape[1]),
             "output_token_len": int(output_ids.shape[1]),
-            "decoded_token_len": int(decoded_ids.shape[1]),
-            "decoded_mode": "full_output",
+            "decoded_token_len": int(decoded_ids.numel()),
+            "decoded_mode": decoded_mode,
             "manifest": manifest,
         }
         if len(record.get("conversations", [])) > 1:
             result["ground_truth"] = record["conversations"][1]["value"]
+            try:
+                result["ground_truth_pixel"] = convert_payload_text(
+                    result["ground_truth"],
+                    coord_cfg["coord_mode"],
+                    COORD_MODE_PIXEL,
+                    coord_cfg["patch_width"],
+                    coord_cfg["patch_height"],
+                    coord_range=coord_cfg["coord_range"],
+                    clamp=True,
+                )
+            except Exception:
+                result["ground_truth_pixel"] = result["ground_truth"]
             if args.eval_centerline:
                 result["centerline_eval"] = vars(evaluate_one_sample(
-                    result["ground_truth"],
-                    prediction_json,
+                    result["ground_truth_pixel"],
+                    prediction_json_pixel or prediction_json,
                     parse_ok=parse_ok,
                     meter_per_pixel=args.eval_meter_per_pixel,
                     buffer_size=args.eval_buffer_size,
@@ -886,8 +987,8 @@ def main():
                 ))
         results.append(result)
 
-        if output_dir is not None:
-            sample_path = output_dir / f"{rank_suffix}{idx:03d}_{sanitize_filename(str(result['record_id']))}.json"
+        if sample_json_dir is not None:
+            sample_path = sample_json_dir / f"{rank_suffix}{idx:03d}_{sanitize_filename(str(result['record_id']))}.json"
             sample_path.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
 
         print(
@@ -930,7 +1031,7 @@ def main():
                 buffer_size=args.eval_buffer_size,
                 match_threshold=args.eval_match_threshold,
             )
-            eval_path = output_json_path.with_name(f"{output_json_path.stem}_centerline_eval.json")
+            eval_path = Path(args.eval_output_json) if args.eval_output_json else output_json_path.with_name(f"{output_json_path.stem}_centerline_eval.json")
             eval_path.write_text(json.dumps(eval_summary, ensure_ascii=False, indent=2), encoding="utf-8")
             print(json.dumps({"centerline_eval_json": str(eval_path), "centerline_eval": eval_summary}, ensure_ascii=False))
 

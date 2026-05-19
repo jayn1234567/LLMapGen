@@ -100,7 +100,7 @@ OUTPUT_PATH=$OSB_SHARE_PATH
 
 echo "Platform OUTPUT_URL: $OUTPUT_URL"
 echo "OSB_SHARE_PATH: $OSB_SHARE_PATH"
-export LLAVA_LOG_RANK0_ONLY=${LLAVA_LOG_RANK0_ONLY:-1}
+export MLLM_LOG_RANK0_ONLY=${MLLM_LOG_RANK0_ONLY:-1}
 
 # ====================== OBS paths ======================
 OBS_CACHE=${OBS_CACHE:-/cache}
@@ -141,11 +141,34 @@ if [ ! -d "$DATASET_PATH" ]; then
     exit 1
 fi
 
-TEST_JSON="${DATASET_PATH}/test.jsonl"
-if [ ! -f "$TEST_JSON" ]; then
-    echo "ERROR: test.jsonl missing."
+# Use the same cloud split policy as training: eval is split from the downloaded
+# test set, and final testing excludes eval records.
+DATASET_PHASE=${DATASET_PHASE:-phase_a}
+MAP_TASK=${MAP_TASK:-lane}
+COORD_MODE=${COORD_MODE:-auto}     # auto reads meta.coord_mode; new datasets use normalized 0-1000 coordinates.
+COORD_RANGE=${COORD_RANGE:-1000}
+EVAL_RATIO=${EVAL_RATIO:-0.2}
+EVAL_COUNT=${EVAL_COUNT:--1}
+EVAL_SPLIT_SEED=${EVAL_SPLIT_SEED:-42}
+if [ -f "${DATASET_PATH}/${DATASET_PHASE}/test.jsonl" ]; then
+    TEST_SOURCE_JSON="${DATASET_PATH}/${DATASET_PHASE}/test.jsonl"
+else
+    TEST_SOURCE_JSON="${DATASET_PATH}/test.jsonl"
+fi
+if [ ! -f "$TEST_SOURCE_JSON" ]; then
+    echo "ERROR: source test json missing: $TEST_SOURCE_JSON"
     exit 1
 fi
+SPLIT_DIR="${OBS_CACHE}/eval_split/${DATASET_PHASE}_${MAP_TASK}_test"
+python "${SCRIPT_DIR}/data/split_eval_from_test.py" \
+  --test-json "${TEST_SOURCE_JSON}" \
+  --output-test "${SPLIT_DIR}/test.jsonl" \
+  --output-eval "${SPLIT_DIR}/eval.jsonl" \
+  --eval-ratio "${EVAL_RATIO}" \
+  --eval-count "${EVAL_COUNT}" \
+  --seed "${EVAL_SPLIT_SEED}"
+TEST_JSON="${SPLIT_DIR}/test.jsonl"
+EVAL_JSON="${SPLIT_DIR}/eval.jsonl"
 
 # ====================== download DINOv2 ======================
 echo ">>>>>>>>>>>>>>>>>>>>>>>>>>>>> Downloading DINOv2 >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>"
@@ -171,15 +194,24 @@ if [ ! -f "${CHECKPOINT_DIR}/pytorch_model.bin" ] && [ ! -f "${CHECKPOINT_DIR}/m
     echo "If weights are in a subdir, you may need to adjust CHECKPOINT_DIR."
 fi
 
+NUM_TEST_SAMPLES=${NUM_TEST_SAMPLES:-0} # 0 means all final-test rows after eval split.
+
 echo "CHECKPOINT_DIR: $CHECKPOINT_DIR"
 echo "TEST_JSON: $TEST_JSON"
+echo "EVAL_JSON: $EVAL_JSON"
 echo "DINOV2_PATH: $DINOV2_PATH"
+echo "MAP_TASK: ${MAP_TASK}"
+echo "COORD_MODE: ${COORD_MODE} (range=${COORD_RANGE})"
+echo "NUM_TEST_SAMPLES: ${NUM_TEST_SAMPLES} (0 means all final-test rows)"
 echo "DeepStack: ${DEEPSTACK_LABEL}"
 echo "DeepStack is auto-detected from checkpoint config unless DISABLE_DEEPSTACK or DEEPSTACK_VISUAL_INDEXES is set."
 
 # ====================== inference ======================
 TEST_OUTPUT_LOCAL="/cache/test_output"
-mkdir -p "$TEST_OUTPUT_LOCAL"
+SAMPLE_JSON_DIR="${TEST_OUTPUT_LOCAL}/json"
+VIZ_DIR="${TEST_OUTPUT_LOCAL}/viz"
+METRICS_JSON="${TEST_OUTPUT_LOCAL}/centerline_eval.json"
+mkdir -p "$TEST_OUTPUT_LOCAL" "$SAMPLE_JSON_DIR" "$VIZ_DIR"
 
 cd "$SCRIPT_DIR/.."
 export PYTHONPATH="$(pwd):${PYTHONPATH:-}"
@@ -193,11 +225,16 @@ torchrun --nproc_per_node=8 \
   --vision_tower "${DINOV2_PATH}" \
   "${DEEPSTACK_ARGS[@]}" \
   --test-json "${TEST_JSON}" \
-  --num-samples 533 \
+  --num-samples "${NUM_TEST_SAMPLES}" \
   --image-folder "${IMAGE_FOLDER}" \
   --prompt-mode dataset \
+  --map-task "${MAP_TASK}" \
+  --patch-size 256 \
+  --coord-mode "${COORD_MODE}" \
+  --coord-range "${COORD_RANGE}" \
   --conv-template "conv_qwen_3_Dinov2_huawei" \
   --output-dir "${TEST_OUTPUT_LOCAL}" \
+  --sample-json-dir "${SAMPLE_JSON_DIR}" \
   --output-json "${TEST_OUTPUT_LOCAL}/summary.json" \
   --temperature 0.0 \
   --max-new-tokens 2048
@@ -252,11 +289,22 @@ merged = []
 bad = 0
 for f in files:
     with open(f, "r", encoding="utf-8-sig") as fp:
-        data = fp.read()
+        data = fp.read().strip()
+    try:
+        parsed = json.loads(data)
+        if isinstance(parsed, list):
+            merged.extend(parsed)
+            continue
+        if isinstance(parsed, dict):
+            merged.append(parsed)
+            continue
+    except json.JSONDecodeError:
+        pass
     for idx, obj_str in enumerate(extract_json_objects(data)):
         try:
             obj = json.loads(obj_str)
-            merged.append(obj)
+            if isinstance(obj, dict) and "record_id" in obj:
+                merged.append(obj)
         except json.JSONDecodeError as e:
             bad += 1
             print(f"⚠️ 解析失败 {f} 对象{idx}: {e}", file=sys.stderr)
@@ -285,7 +333,8 @@ if [ -f "scripts/visualize_centerline.py" ]; then
     python scripts/visualize_centerline.py \
       --input-dir "${TEST_OUTPUT_LOCAL}" \
       --image-folder "${IMAGE_FOLDER}" \
-      --output-dir "${TEST_OUTPUT_LOCAL}/viz"
+      --output-dir "${VIZ_DIR}" \
+      --eval-output-json "${METRICS_JSON}"
 fi
 
 echo "=== Testing finished ==="

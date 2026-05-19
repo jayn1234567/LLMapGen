@@ -1,5 +1,6 @@
 from pathlib import Path
 import json
+import sys
 from dataclasses import fields
 from dataclasses import asdict
 
@@ -20,6 +21,12 @@ except ImportError:
     from param import Parameter
     from eval_report_format import LineMatchRes, LineEvalRes
     from utils import hungarian_match, read_jsonl, convert_QA_data, convert_img_coord_to_meter
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from mllm.coord_utils import COORD_MODE_PIXEL, convert_payload_text, record_coord_config
 
 
 def line_match_matric(line1: LineString, line2: LineString, buffer) -> float:
@@ -87,14 +94,47 @@ def convert_str_2_linestring(data: str) -> list[LineString]:
     return res
 
 
+def _first_text(record: dict, keys: list[str], default: str = "[]") -> str:
+    for key in keys:
+        value = record.get(key)
+        if value:
+            return value
+    return default
+
+
+def _text_in_pixel_coords(record: dict, pixel_keys: list[str], raw_keys: list[str]) -> str:
+    pixel_text = _first_text(record, pixel_keys, default="")
+    if pixel_text:
+        return pixel_text
+    raw_text = _first_text(record, raw_keys)
+    coord_cfg = record_coord_config(record, default_mode=COORD_MODE_PIXEL)
+    if coord_cfg["coord_mode"] == COORD_MODE_PIXEL:
+        return raw_text
+    try:
+        return convert_payload_text(
+            raw_text,
+            coord_cfg["coord_mode"],
+            COORD_MODE_PIXEL,
+            coord_cfg["patch_width"],
+            coord_cfg["patch_height"],
+            coord_range=coord_cfg["coord_range"],
+            clamp=True,
+        )
+    except Exception:
+        return raw_text
+
 
 def eval_one_line_sample(one_sample, buffer_size: float, match_thres: float) -> LineMatchRes:
     ''' buffer_size: 对linestring取buffer时要取多大
         match_thres: 两个linestring的交并比大于该阈值时才认为他们匹配上了
     '''
     valid_string_format = True
-    gt_text = one_sample.get('labels', one_sample.get('ground_truth', '[]'))
-    pred_text = one_sample.get('response', one_sample.get('prediction_json', one_sample.get('prediction', '[]')))
+    gt_text = _text_in_pixel_coords(one_sample, ["labels_pixel", "ground_truth_pixel"], ["labels", "ground_truth"])
+    pred_text = _text_in_pixel_coords(
+        one_sample,
+        ["response_pixel", "prediction_json_pixel", "prediction_pixel"],
+        ["response", "prediction_json", "prediction"],
+    )
     parse_ok = one_sample.get('parse_ok', True)
     try:
         gt = convert_str_2_linestring(gt_text)
@@ -138,7 +178,7 @@ def evaluate_records(
         sample_results = []
         sample_payloads = []
         for idx, record in enumerate(records):
-            if not isinstance(record, dict) or "ground_truth" not in record and "labels" not in record:
+            if not isinstance(record, dict) or not any(key in record for key in ("ground_truth", "labels", "ground_truth_pixel", "labels_pixel")):
                 continue
             one = eval_one_line_sample(record, buffer_size, match_threshold)
             sample_results.append(one)
@@ -168,6 +208,9 @@ def evaluate_one_sample(
     meter_per_pixel: float = Parameter.METER_PER_PIXEL,
     buffer_size: float = 1.0,
     match_threshold: float = 0.33,
+    coord_mode: str = COORD_MODE_PIXEL,
+    coord_range: int = 1000,
+    patch_size: int = 256,
     **kwargs,
 ) -> LineMatchRes:
     old_meter_per_pixel = Parameter.METER_PER_PIXEL
@@ -178,6 +221,9 @@ def evaluate_one_sample(
                 "ground_truth": ground_truth,
                 "prediction_json": prediction,
                 "parse_ok": parse_ok,
+                "coord_mode": coord_mode,
+                "coord_range": coord_range,
+                "patch_size": patch_size,
             },
             buffer_size,
             match_threshold,

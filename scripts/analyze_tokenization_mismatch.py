@@ -11,9 +11,9 @@ if str(REPO_ROOT) not in sys.path:
 
 from transformers import AutoTokenizer
 
-from llava import conversation as conversation_lib
-from llava.train.train_qwen import preprocess_multimodal
-from llava.mm_utils import tokenizer_image_token
+from mllm import conversation as conversation_lib
+from mllm.train.train_qwen import preprocess_multimodal
+from mllm.mm_utils import tokenizer_image_token
 
 
 def build_conversation(source, conv_template):

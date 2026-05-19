@@ -16,9 +16,12 @@ CHECKPOINT_DIR=outputs/dinov2_qwen2_1.5b
 IMAGE=data/test.png
 IMAGE_FOLDER=""
 TEST_JSON=""
-NUM_SAMPLES=1
+# 0 means all records in TEST_JSON. Set a positive value only for a quick debug subset.
+NUM_SAMPLES=0
 SAMPLE_OFFSET=0
 PROMPT_MODE=default
+COORD_MODE=auto
+COORD_RANGE=1000
 CONV_TEMPLATE=conv_qwen_2_Dinov2_huawei
 PROMPT="<image>\nPredict the complete road map from the current patch in the BEV image."
 OUTPUT_JSON=outputs/prediction.json
@@ -41,6 +44,7 @@ echo "============================================================"
 echo "Checkpoint: ${CHECKPOINT_DIR}"
 echo "Image:      ${IMAGE:-<from test_json>}"
 echo "Template:   ${CONV_TEMPLATE}"
+echo "Coords:     ${COORD_MODE} (range=${COORD_RANGE})"
 echo "Device:     ${DEVICE}"
 echo "============================================================"
 
@@ -52,6 +56,10 @@ python scripts/infer_centerline_checkpoint.py \
     --num-samples "${NUM_SAMPLES}" \
     --sample-offset "${SAMPLE_OFFSET}" \
     --prompt-mode "${PROMPT_MODE}" \
+    --map-task lane \
+    --patch-size 256 \
+    --coord-mode "${COORD_MODE}" \
+    --coord-range "${COORD_RANGE}" \
     --conv-template "${CONV_TEMPLATE}" \
     --prompt "${PROMPT}" \
     --device "${DEVICE}" \

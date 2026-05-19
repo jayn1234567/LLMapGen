@@ -21,6 +21,7 @@ OUTPUT_DIR=outputs/dinov3_qwen3vl_8b
 # ---------- Model ----------
 VERSION=conv_qwen_3_Dinov2_huawei
 MM_VISION_SELECT_LAYER=-2
+INPUT_IMAGE_SIZE=512
 MM_PROJECTOR_TYPE=mlp2x_gelu
 MM_VISION_SELECT_FEATURE=patch
 UNFREEZE_MM_VISION_TOWER=False
@@ -88,6 +89,7 @@ echo "GPUs:     ${CUDA_VISIBLE_DEVICES} (${NUM_GPUS} processes)"
 echo "Model:    ${MODEL_NAME_OR_PATH} (Qwen3-VL-8B → auto-extract)"
 echo "Version:  ${VERSION}"
 echo "ViT:      ${VISION_TOWER}"
+echo "Input:    ${INPUT_IMAGE_SIZE}"
 echo "DeepStack:${DEEPSTACK_LABEL}"
 echo "DeepSpeed:${DEEPSPEED_CONFIG:-disabled}"
 echo "Batch:    ${PER_DEVICE_BATCH_SIZE}/gpu x ${GRADIENT_ACCUMULATION} x ${NUM_GPUS} = $((PER_DEVICE_BATCH_SIZE * GRADIENT_ACCUMULATION * NUM_GPUS))"
@@ -96,10 +98,11 @@ echo "============================================================"
 torchrun \
     --nproc_per_node="${NUM_GPUS}" \
     --master_port="${MASTER_PORT}" \
-    -m llava.train.train_qwen \
+    -m mllm.train.train_qwen \
     --model_name_or_path "${MODEL_NAME_OR_PATH}" \
     --version "${VERSION}" \
     --vision_tower "${VISION_TOWER}" \
+    --input_image_size "${INPUT_IMAGE_SIZE}" \
     --mm_vision_select_layer "${MM_VISION_SELECT_LAYER}" \
     --mm_vision_select_feature "${MM_VISION_SELECT_FEATURE}" \
     --mm_projector_type "${MM_PROJECTOR_TYPE}" \

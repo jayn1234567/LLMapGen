@@ -2,6 +2,7 @@
 import argparse
 import json
 import random
+import sys
 import tarfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -19,6 +20,19 @@ except ModuleNotFoundError:
     rasterio = None
     from_origin = None
     GeometryCollection = LineString = MultiLineString = MultiPolygon = Polygon = box = shape = None
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from mllm.coord_utils import (
+    COORD_MODE_NORM1000,
+    COORD_MODE_PIXEL,
+    DEFAULT_COORD_RANGE,
+    coord_system_name,
+    normalize_coord_mode,
+    pixel_point_to_coord,
+)
 
 
 TASK_TEXT = "Please construct the complete road map in the current BEV (Bird's Eye View) image patch."
@@ -203,6 +217,26 @@ def split_samples(samples, train_ratio: float, seed: int):
     n_train = int(len(ordered) * train_ratio)
     n_train = max(1, min(len(ordered) - 1, n_train))
     return ordered[:n_train], ordered[n_train:]
+
+
+def choose_eval_count(total: int, eval_ratio: float, eval_count: int):
+    if total <= 1:
+        return 0
+    count = eval_count if eval_count >= 0 else int(round(total * eval_ratio))
+    count = max(0, count)
+    # Keep at least one record for the final held-out test split.
+    return min(count, total - 1)
+
+
+def split_eval_from_test_rows(test_rows, eval_ratio: float, eval_count: int, seed: int):
+    count = choose_eval_count(len(test_rows), eval_ratio, eval_count)
+    if count <= 0:
+        return test_rows, []
+    rng = random.Random(seed)
+    eval_indices = set(rng.sample(range(len(test_rows)), count))
+    final_test = [row for idx, row in enumerate(test_rows) if idx not in eval_indices]
+    eval_rows = [row for idx, row in enumerate(test_rows) if idx in eval_indices]
+    return final_test, eval_rows
 
 
 def read_masked_image(image_path: Path, mask_path: Path):
@@ -820,6 +854,51 @@ def public_line(line):
     return {key: value for key, value in line.items() if not key.startswith("_")}
 
 
+def coord_description(coord_mode: str, coord_range: int, patch_size: int) -> str:
+    mode = normalize_coord_mode(coord_mode)
+    if mode == COORD_MODE_NORM1000:
+        return f"Coordinates use a normalized 0-{coord_range} grid over the original {patch_size}x{patch_size} image patch."
+    return f"Coordinates use original patch pixel coordinates in [0,{patch_size - 1}]."
+
+
+def convert_points_to_model_coord(points, patch_size: int, coord_mode: str, coord_range: int, clamp: bool):
+    return [
+        pixel_point_to_coord(
+            point,
+            patch_size,
+            patch_size,
+            coord_mode=coord_mode,
+            coord_range=coord_range,
+            clamp=clamp,
+        )
+        for point in points
+    ]
+
+
+def public_line_in_model_coord(line, patch_size: int, coord_mode: str, coord_range: int):
+    item = public_line(line)
+    item["points"] = convert_points_to_model_coord(
+        item.get("points") or [],
+        patch_size,
+        coord_mode,
+        coord_range,
+        clamp=True,
+    )
+    return item
+
+
+def trace_in_model_coord(trace, patch_size: int, coord_mode: str, coord_range: int):
+    item = dict(trace)
+    item["points"] = convert_points_to_model_coord(
+        item.get("points") or [],
+        patch_size,
+        coord_mode,
+        coord_range,
+        clamp=False,
+    )
+    return item
+
+
 def sort_target_lines(lines, patch_size, boundary_tol):
     ordered = []
     for idx, line in enumerate(lines):
@@ -833,11 +912,13 @@ def sort_target_lines(lines, patch_size, boundary_tol):
     return [item[-1] for item in sorted(ordered)]
 
 
-def make_prompt(include_intersections: bool, incoming_traces, incoming_intersections=None, phase="a"):
+def make_prompt(include_intersections: bool, incoming_traces, incoming_intersections=None, phase="a",
+                coord_mode: str = COORD_MODE_NORM1000, coord_range: int = DEFAULT_COORD_RANGE, patch_size: int = 256):
     trace_json = json.dumps(incoming_traces, ensure_ascii=False, separators=(",", ":"))
     parts = [
         "<image>",
         TASK_TEXT,
+        coord_description(coord_mode, coord_range, patch_size),
         "",
         "Incoming traces JSON:",
         trace_json,
@@ -856,10 +937,31 @@ def make_prompt(include_intersections: bool, incoming_traces, incoming_intersect
     return "\n".join(parts)
 
 
-def build_sft_record(row, patch_size, include_intersections, phase):
+def build_sft_record(row, patch_size, include_intersections, phase, coord_mode=COORD_MODE_NORM1000, coord_range=DEFAULT_COORD_RANGE):
+    coord_mode = normalize_coord_mode(coord_mode)
     incoming_traces = row["incoming_traces"] if phase == "b" else []
     incoming_intersections = row.get("incoming_intersections", []) if phase == "b" else []
-    prompt = make_prompt(include_intersections, incoming_traces, incoming_intersections, phase=phase)
+    incoming_traces = [
+        trace_in_model_coord(trace, patch_size, coord_mode, coord_range)
+        for trace in incoming_traces
+    ]
+    incoming_intersections = [
+        trace_in_model_coord(hint, patch_size, coord_mode, coord_range)
+        for hint in incoming_intersections
+    ]
+    target_lines = [
+        public_line_in_model_coord(line, patch_size, coord_mode, coord_range)
+        for line in row["target_lines"]
+    ]
+    prompt = make_prompt(
+        include_intersections,
+        incoming_traces,
+        incoming_intersections,
+        phase=phase,
+        coord_mode=coord_mode,
+        coord_range=coord_range,
+        patch_size=patch_size,
+    )
     meta = dict(row["meta"])
     meta.update({
         "scan_order": "row_major_top_to_bottom_left_to_right",
@@ -868,10 +970,16 @@ def build_sft_record(row, patch_size, include_intersections, phase):
         "trace_source_train": "gt_left_top_neighbors" if phase == "b" else "none",
         "trace_source_infer": "predicted_left_top_neighbors",
         "phase": f"phase_{phase}",
+        "coord_mode": coord_mode,
+        "coord_range": coord_range,
+        "coord_system": coord_system_name(coord_mode, patch_size, coord_range),
+        "pixel_patch_size": patch_size,
+        "patch_width": patch_size,
+        "patch_height": patch_size,
     })
     if include_intersections:
         meta["intersection_hint_source_train"] = "gt_left_top_neighbors" if phase == "b" else "none"
-    target_text = json.dumps({"lines": row["target_lines"]}, ensure_ascii=False, separators=(",", ":"))
+    target_text = json.dumps({"lines": target_lines}, ensure_ascii=False, separators=(",", ":"))
     return {
         "id": row["id"],
         "image": row["image"],
@@ -1020,8 +1128,8 @@ def validate_rows(rows, include_intersections, patch_size):
             else:
                 errors.append(f"{row['id']}: unsupported category {category}")
         for trace in row.get("incoming_traces", []):
-            if len(trace.get("points", [])) < 2:
-                errors.append(f"{row['id']}: centerline trace has fewer than 2 points")
+            if len(trace.get("points", [])) < 1:
+                errors.append(f"{row['id']}: centerline trace has no points")
         for hint in row.get("incoming_intersections", []):
             if len(hint.get("points", [])) < 1:
                 errors.append(f"{row['id']}: intersection hint has no points")
@@ -1048,7 +1156,13 @@ def build_dataset(include_intersections: bool, args):
         "split_unit": "raw_sample_folder",
         "train_ratio": args.train_ratio,
         "split_seed": args.split_seed,
+        "eval_split_unit": "patch_from_test_split",
+        "eval_ratio": args.eval_ratio,
+        "eval_count": args.eval_count,
+        "eval_seed": args.eval_seed,
         "include_intersections": include_intersections,
+        "coord_mode": args.coord_mode,
+        "coord_range": args.coord_range,
         "train_ids": [sample.sample_id for sample in train_samples],
         "test_ids": [sample.sample_id for sample in test_samples],
     }
@@ -1061,11 +1175,31 @@ def build_dataset(include_intersections: bool, args):
             rows.extend(process_sample(sample, output_root, split_name, include_intersections, args))
         validate_rows(rows, include_intersections, args.patch_size)
         split_rows[split_name] = rows
+    split_rows["test_full"] = list(split_rows["test"])
+    final_test_rows, eval_rows = split_eval_from_test_rows(
+        split_rows["test"],
+        args.eval_ratio,
+        args.eval_count,
+        args.eval_seed,
+    )
+    split_rows["test"] = final_test_rows
+    if eval_rows:
+        split_rows["eval"] = eval_rows
 
     for phase in ["a", "b"]:
         phase_dir = output_root / f"phase_{phase}"
         for split_name, rows in split_rows.items():
-            sft_rows = [build_sft_record(row, args.patch_size, include_intersections, phase) for row in rows]
+            sft_rows = [
+                build_sft_record(
+                    row,
+                    args.patch_size,
+                    include_intersections,
+                    phase,
+                    coord_mode=args.coord_mode,
+                    coord_range=args.coord_range,
+                )
+                for row in rows
+            ]
             write_jsonl(phase_dir / f"{split_name}.jsonl", sft_rows)
             write_jsonl(phase_dir / f"meta_{split_name}.jsonl", rows)
 
@@ -1077,15 +1211,27 @@ def build_dataset(include_intersections: bool, args):
         "num_train_raw_samples": len(train_samples),
         "num_test_raw_samples": len(test_samples),
         "num_train_patches": len(split_rows["train"]),
+        "num_test_full_patches": len(split_rows["test_full"]),
+        "num_eval_patches": len(split_rows.get("eval", [])),
         "num_test_patches": len(split_rows["test"]),
         "patch_size": args.patch_size,
         "stride": args.stride,
+        "coord_mode": args.coord_mode,
+        "coord_range": args.coord_range,
+        "coord_system": coord_system_name(args.coord_mode, args.patch_size, args.coord_range),
         "max_empty_ratio": args.max_empty_ratio,
+        "eval_ratio": args.eval_ratio,
+        "eval_count": args.eval_count,
+        "eval_seed": args.eval_seed,
         "allow_empty_intersection_files": args.allow_empty_intersection_files,
         "phase_a_train_jsonl": str(output_root / "phase_a" / "train.jsonl"),
+        "phase_a_eval_jsonl": str(output_root / "phase_a" / "eval.jsonl") if "eval" in split_rows else "",
         "phase_a_test_jsonl": str(output_root / "phase_a" / "test.jsonl"),
+        "phase_a_test_full_jsonl": str(output_root / "phase_a" / "test_full.jsonl"),
         "phase_b_train_jsonl": str(output_root / "phase_b" / "train.jsonl"),
+        "phase_b_eval_jsonl": str(output_root / "phase_b" / "eval.jsonl") if "eval" in split_rows else "",
         "phase_b_test_jsonl": str(output_root / "phase_b" / "test.jsonl"),
+        "phase_b_test_full_jsonl": str(output_root / "phase_b" / "test_full.jsonl"),
     }
     write_json(output_root / "dataset_info.json", info)
     print(json.dumps(info, ensure_ascii=False, indent=2))
@@ -1096,8 +1242,13 @@ def add_common_args(parser):
     parser.add_argument("--output-root", required=True, help="Output dataset directory.")
     parser.add_argument("--patch-size", type=int, default=256)
     parser.add_argument("--stride", type=int, default=256)
+    parser.add_argument("--coord-mode", choices=[COORD_MODE_PIXEL, COORD_MODE_NORM1000], default=COORD_MODE_NORM1000)
+    parser.add_argument("--coord-range", type=int, default=DEFAULT_COORD_RANGE)
     parser.add_argument("--train-ratio", type=float, default=0.9)
     parser.add_argument("--split-seed", type=int, default=42)
+    parser.add_argument("--eval-ratio", type=float, default=0.0, help="Split this ratio from test into eval; final test excludes eval rows.")
+    parser.add_argument("--eval-count", type=int, default=-1, help="Explicit eval count split from test; -1 uses eval-ratio.")
+    parser.add_argument("--eval-seed", type=int, default=42)
     parser.add_argument("--max-empty-ratio", type=float, default=0.1)
     parser.add_argument("--boundary-tol", type=float, default=1.0)
     parser.add_argument("--simplify-tolerance", type=float, default=0.5)

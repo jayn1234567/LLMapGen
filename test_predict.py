@@ -5,11 +5,11 @@ import os
 import argparse
 from transformers import AutoImageProcessor
 
-from llava.utils import disable_torch_init
-from llava.conversation import conv_templates
-from llava.model.builder import load_pretrained_model
-from llava.mm_utils import tokenizer_image_token, process_images, get_model_name_from_path
-from llava.constants import IMAGE_TOKEN_INDEX, DEFAULT_IMAGE_TOKEN, DEFAULT_IM_START_TOKEN, DEFAULT_IM_END_TOKEN
+from mllm.utils import disable_torch_init
+from mllm.conversation import conv_templates
+from mllm.model.builder import load_pretrained_model
+from mllm.mm_utils import tokenizer_image_token, process_images, get_model_name_from_path
+from mllm.constants import IMAGE_TOKEN_INDEX, DEFAULT_IMAGE_TOKEN, DEFAULT_IM_START_TOKEN, DEFAULT_IM_END_TOKEN
 
 
 def predict(model_path, image_file, prompt, conv_mode="conv_qwen_2_Dinov2_huawei", output_file=None):

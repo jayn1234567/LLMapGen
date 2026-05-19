@@ -135,7 +135,7 @@ export WITHOUT_JIT_COMPILE=1
 export HCCL_OP_BASE_FFTS_MODE_ENABLE=FALSE
 export COMBINED_ENABLE=1
 export OMP_NUM_THREADS=1
-export LLAVA_LOG_RANK0_ONLY=${LLAVA_LOG_RANK0_ONLY:-1}
+export MLLM_LOG_RANK0_ONLY=${MLLM_LOG_RANK0_ONLY:-1}
 
 # ====================== output management ======================
 CLUSTER_SAVE=${OUTPUT_URL}
@@ -180,15 +180,49 @@ if [ ! -d "$DATASET_PATH" ]; then
     exit 1
 fi
 
-TRAIN_PATH="${DATASET_PATH}/train.jsonl"
-TEST_PATH="${DATASET_PATH}/test.jsonl"
+# ====================== dataset split ======================
+# DATASET_PHASE selects the A/B state-update axis. MAP_TASK selects the output schema.
+# If the dataset has phase_a/phase_b directories, use those; otherwise fall back
+# to the legacy flat train.jsonl/test.jsonl layout.
+DATASET_PHASE=${DATASET_PHASE:-phase_a}   # phase_a or phase_b.
+MAP_TASK=${MAP_TASK:-lane}                # lane or lane_intersection; used by inference/eval scripts.
+EVAL_RATIO=${EVAL_RATIO:-0.2}             # Split this ratio from test as eval.
+EVAL_COUNT=${EVAL_COUNT:--1}              # >=0 overrides EVAL_RATIO.
+EVAL_SPLIT_SEED=${EVAL_SPLIT_SEED:-42}
+
+if [ -f "${DATASET_PATH}/${DATASET_PHASE}/train.jsonl" ]; then
+    TRAIN_PATH="${DATASET_PATH}/${DATASET_PHASE}/train.jsonl"
+    TEST_SOURCE_PATH="${DATASET_PATH}/${DATASET_PHASE}/test.jsonl"
+else
+    TRAIN_PATH="${DATASET_PATH}/train.jsonl"
+    TEST_SOURCE_PATH="${DATASET_PATH}/test.jsonl"
+fi
+SPLIT_DIR="${OBS_CACHE}/eval_split/${DATASET_PHASE}_${MAP_TASK}"
+mkdir -p "${SPLIT_DIR}"
+python "${SCRIPT_DIR}/data/split_eval_from_test.py" \
+    --test-json "${TEST_SOURCE_PATH}" \
+    --output-test "${SPLIT_DIR}/test.jsonl" \
+    --output-eval "${SPLIT_DIR}/eval.jsonl" \
+    --eval-ratio "${EVAL_RATIO}" \
+    --eval-count "${EVAL_COUNT}" \
+    --seed "${EVAL_SPLIT_SEED}"
+TEST_PATH="${SPLIT_DIR}/test.jsonl"
+EVAL_PATH="${SPLIT_DIR}/eval.jsonl"
+EVAL_IMAGE_FOLDER="${IMAGE_FOLDER}"
 if [ ! -f "$TRAIN_PATH" ]; then
     echo "ERROR: $TRAIN_PATH not found"
     exit 1
 fi
+if [ ! -f "$TEST_PATH" ]; then
+    echo "ERROR: split test path $TEST_PATH not found"
+    exit 1
+fi
 
 echo "DATASET_PATH: $DATASET_PATH"
+echo "DATASET_PHASE:$DATASET_PHASE"
+echo "MAP_TASK:     $MAP_TASK"
 echo "TRAIN_PATH:   $TRAIN_PATH"
+echo "EVAL_PATH:    $EVAL_PATH"
 echo "TEST_PATH:    $TEST_PATH"
 echo ">>>>>>>>>>>>>>>>>>>>>>>>>>>>>>> finish moxing >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>"
 
@@ -196,20 +230,24 @@ echo ">>>>>>>>>>>>>>>>>>>>>>>>>>>>>>> finish moxing >>>>>>>>>>>>>>>>>>>>>>>>>>>>
 # Edit these values in this script. Do not pass them as one-off shell prefixes.
 # Target total train batch = TARGET_GLOBAL_BATCH_SIZE.
 # Actual total batch = NNODES * NPROC_PER_NODE * PER_DEVICE_TRAIN_BATCH_SIZE * gradient_accumulation_steps.
-TARGET_GLOBAL_BATCH_SIZE=32
-PER_DEVICE_TRAIN_BATCH_SIZE=2
+TARGET_GLOBAL_BATCH_SIZE=128
+PER_DEVICE_TRAIN_BATCH_SIZE=4
 
 total_gpus=$(( NNODES * NPROC_PER_NODE ))
-gas=$((TARGET_GLOBAL_BATCH_SIZE / (total_gpus * PER_DEVICE_TRAIN_BATCH_SIZE) ))
-if [ $gas -lt 1 ]; then
+micro_batch=$(( total_gpus * PER_DEVICE_TRAIN_BATCH_SIZE ))
+gradient_accumulation_steps=$(( (TARGET_GLOBAL_BATCH_SIZE + micro_batch - 1) / micro_batch ))
+if [ "${gradient_accumulation_steps}" -lt 1 ]; then
     gradient_accumulation_steps=1
-else
-    gradient_accumulation_steps=$gas
+fi
+ACTUAL_GLOBAL_BATCH_SIZE=$(( micro_batch * gradient_accumulation_steps ))
+if [ "${ACTUAL_GLOBAL_BATCH_SIZE}" -ne "${TARGET_GLOBAL_BATCH_SIZE}" ]; then
+    echo "WARNING: actual global batch is ${ACTUAL_GLOBAL_BATCH_SIZE}, not target ${TARGET_GLOBAL_BATCH_SIZE}, because total_gpus*per_device=${micro_batch} does not divide the target."
 fi
 
 echo ">>> Target global batch: ${TARGET_GLOBAL_BATCH_SIZE}"
 echo ">>> Per-device batch: ${PER_DEVICE_TRAIN_BATCH_SIZE}, Total GPUs: ${total_gpus}"
 echo ">>> Gradient accumulation steps: ${gradient_accumulation_steps}"
+echo ">>> Actual global batch: ${ACTUAL_GLOBAL_BATCH_SIZE}"
 
 # ====================== training ======================
 echo ">>>>>>>>>>>>>>>>>>>>>>>>>>>>>>> start training >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>"
@@ -229,18 +267,35 @@ DEEPSPEED_CONFIG="scripts/deepspeed_zero3.json" # --deepspeed; ZeRO3 with gather
 NUM_EPOCHS=6                           # --num_train_epochs.
 LR=2e-5                                # --learning_rate.
 MM_PROJECTOR_LR=2e-5                   # --mm_projector_lr.
-WEIGHT_DECAY=0.1                       # --weight_decay.
-WARMUP_STEPS=100                       # --warmup_steps.
+WEIGHT_DECAY=0.0                       # --weight_decay; keep disabled for this full-param Qwen3VL+DINO recipe.
+WARMUP_RATIO=0.03                      # --warmup_ratio; about 155 warmup steps for 11w data and 465 for 33w at batch 128, 6 epochs.
 LR_SCHEDULER_TYPE=cosine               # --lr_scheduler_type.
 MODEL_MAX_LENGTH=4096                  # --model_max_length.
 SAVE_STEPS=300                         # --save_steps.
 SAVE_TOTAL_LIMIT=10                    # --save_total_limit.
 LOGGING_STEPS=10                       # --logging_steps.
+EVAL_STEPS=300                         # --eval_steps; only used when ENABLE_EVAL=True.
 SAMPLE_SEED=42                         # --sample_seed.
 SAVE_BEST_TRAIN_LOSS=${SAVE_BEST_TRAIN_LOSS:-False} # --save_best_train_loss.
 BEST_TRAIN_LOSS_START_STEP=${BEST_TRAIN_LOSS_START_STEP:-3000} # --best_train_loss_start_step.
 BEST_TRAIN_LOSS_DIR=${BEST_TRAIN_LOSS_DIR:-best} # --best_train_loss_dir.
+ENABLE_EVAL=${ENABLE_EVAL:-True}        # If True, run eval_loss on EVAL_PATH by steps.
+SAVE_BEST_EVAL_LOSS=${SAVE_BEST_EVAL_LOSS:-True} # Maintain OUTPUT_PATH/eval_best.
+BEST_EVAL_LOSS_DIR=${BEST_EVAL_LOSS_DIR:-eval_best}
 USE_HF_PROGRESS_BAR=True               # --use_hf_progress_bar; True prints HF tqdm progress on console.
+EVAL_STRATEGY_ARG=$(python -c "import inspect, transformers; print('--eval_strategy' if 'eval_strategy' in inspect.signature(transformers.TrainingArguments.__init__).parameters else '--evaluation_strategy')")
+
+EVAL_ARGS=()
+if [[ "${ENABLE_EVAL}" =~ ^(1|true|True|TRUE|yes|YES)$ ]] && [ -s "${EVAL_PATH}" ]; then
+    EVAL_ARGS=(
+        --eval_data_path "${EVAL_PATH}"
+        --eval_image_folder "${EVAL_IMAGE_FOLDER}"
+        "${EVAL_STRATEGY_ARG}" steps
+        --eval_steps "${EVAL_STEPS}"
+        --save_best_eval_loss "${SAVE_BEST_EVAL_LOSS}"
+        --best_eval_loss_dir "${BEST_EVAL_LOSS_DIR}"
+    )
+fi
 
 # ---------- DeepStack ----------
 DEEPSTACK_ARGS=()
@@ -261,6 +316,7 @@ echo "DeepStack:  ${DEEPSTACK_LABEL}"
 echo "Grad ckpt:  ${GRADIENT_CHECKPOINTING}"
 echo "DeepSpeed:  ${DEEPSPEED_CONFIG}"
 echo "Best train: ${SAVE_BEST_TRAIN_LOSS}, start_step=${BEST_TRAIN_LOSS_START_STEP}, dir=${BEST_TRAIN_LOSS_DIR}"
+echo "Eval:       ${ENABLE_EVAL}, eval_steps=${EVAL_STEPS}, best_eval=${SAVE_BEST_EVAL_LOSS}, dir=${BEST_EVAL_LOSS_DIR}"
 echo "HF tqdm:    ${USE_HF_PROGRESS_BAR}"
 echo "============================================================"
 
@@ -270,7 +326,7 @@ torchrun \
     --node_rank="${NODE_RANK}" \
     --master_addr="${MASTER_ADDR}" \
     --master_port="${MASTER_PORT}" \
-    -m llava.train.train_qwen \
+    -m mllm.train.train_qwen \
     --model_name_or_path "${Qwen3VL_PATH}" \
     --version conv_qwen_3_Dinov2_huawei \
     --vision_tower "${DINOV2_PATH}" \
@@ -280,6 +336,7 @@ torchrun \
     "${DEEPSTACK_ARGS[@]}" \
     --data_path "${TRAIN_PATH}" \
     --image_folder "${IMAGE_FOLDER}" \
+    "${EVAL_ARGS[@]}" \
     --sample_seed "${SAMPLE_SEED}" \
     --image_aspect_ratio pad \
     --bf16 True \
@@ -290,7 +347,7 @@ torchrun \
     --learning_rate "${LR}" \
     --mm_projector_lr "${MM_PROJECTOR_LR}" \
     --weight_decay "${WEIGHT_DECAY}" \
-    --warmup_steps "${WARMUP_STEPS}" \
+    --warmup_ratio "${WARMUP_RATIO}" \
     --lr_scheduler_type "${LR_SCHEDULER_TYPE}" \
     --model_max_length "${MODEL_MAX_LENGTH}" \
     --gradient_checkpointing "${GRADIENT_CHECKPOINTING}" \

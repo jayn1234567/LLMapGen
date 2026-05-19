@@ -135,7 +135,7 @@ export WITHOUT_JIT_COMPILE=1
 export HCCL_OP_BASE_FFTS_MODE_ENABLE=FALSE
 export COMBINED_ENABLE=1
 export OMP_NUM_THREADS=1
-export LLAVA_LOG_RANK0_ONLY=${LLAVA_LOG_RANK0_ONLY:-1}
+export MLLM_LOG_RANK0_ONLY=${MLLM_LOG_RANK0_ONLY:-1}
 
 # ====================== output management ======================
 CLUSTER_SAVE=${OUTPUT_URL}
@@ -261,7 +261,7 @@ torchrun \
     --node_rank="${NODE_RANK}" \
     --master_addr="${MASTER_ADDR}" \
     --master_port="${MASTER_PORT}" \
-    -m llava.train.train_qwen \
+    -m mllm.train.train_qwen \
     --model_name_or_path "${LLM_PATH}" \
     --version conv_qwen_2_Dinov2_huawei \
     --vision_tower "${DINOV2_PATH}" \

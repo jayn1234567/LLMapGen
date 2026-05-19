@@ -170,8 +170,43 @@ def _checkpoint_has_multimodal_config(model_path):
     return any(cfg.get(key) is not None for key in ("mm_vision_tower", "vision_tower", "mm_projector_type"))
 
 
+def _coerce_optional_bool(value, name):
+    if value is None or isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        text = value.strip().lower()
+        if text in {"1", "true", "yes", "y", "on"}:
+            return True
+        if text in {"0", "false", "no", "n", "off"}:
+            return False
+        raise ValueError(f"Invalid boolean value for {name}: {value!r}")
+    return bool(value)
+
+
 def _resolve_tokenizer_use_fast(default_value, override_value):
-    return default_value if override_value is None else bool(override_value)
+    override_value = _coerce_optional_bool(override_value, "tokenizer_use_fast")
+    if override_value is None:
+        return bool(default_value)
+    return override_value
+
+
+def _load_tokenizer_with_fast_fallback(model_path, use_fast, **kwargs):
+    use_fast = _resolve_tokenizer_use_fast(False, use_fast)
+    try:
+        return AutoTokenizer.from_pretrained(model_path, use_fast=use_fast, **kwargs)
+    except ValueError as exc:
+        message = str(exc)
+        fast_backend_error = (
+            "Couldn't instantiate the backend tokenizer" in message
+            or "sentencepiece or tiktoken" in message
+        )
+        if use_fast and fast_backend_error:
+            warnings.warn(
+                f"Fast tokenizer failed for {model_path}; retrying with use_fast=False. "
+                f"Original error: {exc}"
+            )
+            return AutoTokenizer.from_pretrained(model_path, use_fast=False, **kwargs)
+        raise
 
 
 def load_pretrained_model(model_path, model_base, model_name, load_8bit=False, load_4bit=False, device_map="auto", device="cuda", use_flash_attn=False, model_config_overrides=None, tokenizer_use_fast=None, **kwargs):
@@ -297,7 +332,11 @@ def load_pretrained_model(model_path, model_base, model_name, load_8bit=False, l
                     **kwargs
                 )
             else:
-                tokenizer = AutoTokenizer.from_pretrained(model_path, use_fast=_resolve_tokenizer_use_fast(True, tokenizer_use_fast), **qwen_tokenizer_kwargs(model_path))
+                tokenizer = _load_tokenizer_with_fast_fallback(
+                    model_path,
+                    use_fast=_resolve_tokenizer_use_fast(False, tokenizer_use_fast),
+                    **qwen_tokenizer_kwargs(model_path),
+                )
                 cfg = AutoConfig.from_pretrained(model_path)
                 _apply_model_config_overrides(cfg, model_config_overrides)
                 model_type = getattr(cfg, 'model_type', '')

@@ -170,7 +170,11 @@ def _checkpoint_has_multimodal_config(model_path):
     return any(cfg.get(key) is not None for key in ("mm_vision_tower", "vision_tower", "mm_projector_type"))
 
 
-def load_pretrained_model(model_path, model_base, model_name, load_8bit=False, load_4bit=False, device_map="auto", device="cuda", use_flash_attn=False, model_config_overrides=None, **kwargs):
+def _resolve_tokenizer_use_fast(default_value, override_value):
+    return default_value if override_value is None else bool(override_value)
+
+
+def load_pretrained_model(model_path, model_base, model_name, load_8bit=False, load_4bit=False, device_map="auto", device="cuda", use_flash_attn=False, model_config_overrides=None, tokenizer_use_fast=None, **kwargs):
     kwargs = ({} if device_map is None else {"device_map": device_map}) | kwargs
     is_mllm_model = (
         any(key in model_name.lower() for key in ("mllm", "llava"))
@@ -293,7 +297,7 @@ def load_pretrained_model(model_path, model_base, model_name, load_8bit=False, l
                     **kwargs
                 )
             else:
-                tokenizer = AutoTokenizer.from_pretrained(model_path, use_fast=True, **qwen_tokenizer_kwargs(model_path))
+                tokenizer = AutoTokenizer.from_pretrained(model_path, use_fast=_resolve_tokenizer_use_fast(True, tokenizer_use_fast), **qwen_tokenizer_kwargs(model_path))
                 cfg = AutoConfig.from_pretrained(model_path)
                 _apply_model_config_overrides(cfg, model_config_overrides)
                 model_type = getattr(cfg, 'model_type', '')

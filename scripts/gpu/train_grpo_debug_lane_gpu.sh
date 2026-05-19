@@ -61,6 +61,7 @@ python -m mllm.train.train_grpo \
     --version "${VERSION}" \
     --vision_tower "${VISION_TOWER}" \
     --input_image_size "${INPUT_IMAGE_SIZE}" \
+    --tokenizer_use_fast False \
     --disable_deepstack "${DISABLE_DEEPSTACK}" \
     --data_path "${TRAIN_JSONL}" \
     --image_folder "${IMAGE_FOLDER}" \

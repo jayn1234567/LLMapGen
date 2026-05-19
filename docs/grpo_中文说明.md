@@ -104,6 +104,7 @@ python scripts/gpu/build_grpo_debug_data.py --limit 20 --test-count 4
 | `CLIP_RANGE` | GRPO/PPO 风格 ratio clip 范围。 |
 | `REWARD_*_WEIGHT` | reward 各组件权重。 |
 | `LORA_TARGET_SCOPE` | LoRA 插入模块，可选 `llm`、`projector`、`vision`、`deepstack`、`all`。 |
+| `tokenizer_use_fast` | GRPO 默认设为 `False`，和 SFT 慢 tokenizer 路径保持一致，避免 Qwen tokenizer fast 路径在部分环境报错。 |
 
 坐标说明：GRPO reward 会先按数据坐标模式解析预测和 GT；如果是 `norm1000`，会转换回 patch 像素坐标后再调用 `infer_index/line_eval.py`。因此强化学习优化的几何指标和推理后的评估指标保持一致。
 

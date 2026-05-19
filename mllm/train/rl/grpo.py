@@ -51,6 +51,7 @@ class GRPOModelArguments:
     input_image_size: Optional[int] = None
     deepstack_visual_indexes: Optional[list[int]] = None
     disable_deepstack: bool = False
+    tokenizer_use_fast: bool = False
 
 
 @dataclass
@@ -505,6 +506,7 @@ def _load_policy_components(model_args: GRPOModelArguments, training_args: GRPOT
         device_map=device_map,
         device=str(training_args.device),
         model_config_overrides=_model_config_overrides(model_args),
+        tokenizer_use_fast=model_args.tokenizer_use_fast,
     )
     if device_map is None:
         model.to(training_args.device)

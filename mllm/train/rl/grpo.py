@@ -11,6 +11,10 @@ from typing import Any, Optional, Sequence
 
 from PIL import Image
 import torch
+try:
+    import torch_npu  # noqa: F401
+except ModuleNotFoundError:
+    torch_npu = None
 from torch.utils.data import Dataset
 import transformers
 from transformers import Trainer

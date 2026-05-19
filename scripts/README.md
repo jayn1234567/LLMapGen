@@ -9,6 +9,7 @@ Top-level `scripts/` keeps the current NPU full-parameter train/test entrypoints
 - `scripts/npu/train_sft_dinov2_qwen3vl-8b_nodeepstack_npu.sh`: current SFT cloud entry for DINOv2 + Qwen3VL + no DeepStack.
 - `scripts/npu/train_sft_dinov2_qwen3vl-8b_nodeepstack_33w_evalbest_npu.sh`: same DINOv2 330k recipe kept under the NPU subdirectory for compatibility.
 - `scripts/npu/train_grpo_dinov2_qwen3vl-8b_lora_nodeepstack_npu.sh`: current GRPO cloud entry for DINOv2 + Qwen3VL + no DeepStack.
+- `scripts/npu/train_grpo_debug_lane_dinov2_qwen3vl_nodeepstack_local_npu.sh`: local NPU GRPO smoke test; no OBS download and no dependency installation.
 - `scripts/npu/test_dinov2_qwen3vl-8b_nodeepstack_npu.sh`: current NPU test/infer entry; reads the prebuilt final `test.jsonl`.
 - `train_full_*_train_best_npu.sh`: train with DeepStack and maintain a best checkpoint by lowest training loss.
 - `train_full_*_eval_best_npu.sh`: train with DeepStack, run a validation set by steps, and maintain a best checkpoint by lowest eval loss.

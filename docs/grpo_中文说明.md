@@ -166,6 +166,24 @@ bash scripts/gpu/train_grpo_debug_lane_intersection_dinov2_qwen3vl_nodeepstack_z
 
 正式实验时建议把 `SFT_CHECKPOINT` 改成已经 SFT 稳定收敛的 checkpoint，而不是 base model。
 
+## 本地 NPU Debug 脚本
+
+本地 NPU smoke test 入口：
+
+```bash
+bash scripts/npu/train_grpo_debug_lane_dinov2_qwen3vl_nodeepstack_local_npu.sh
+```
+
+这个脚本不安装依赖、不下载 OBS，只使用本地路径。运行前需要直接编辑脚本顶部参数块：
+
+- `CONDA_ENV`：必须是已经安装 `torch_npu` 的 NPU 环境。
+- `NPU_IDS` / `NPROC_PER_NODE`：本地使用的 NPU 编号和进程数。
+- `SFT_CHECKPOINT`：稳定 SFT checkpoint。
+- `VISION_TOWER`：DINOv2 checkpoint。
+- `TRAIN_JSONL` / `TEST_JSONL` / `IMAGE_FOLDER`：debug 数据和图片目录。
+
+默认是 1 step、LoRA、lane-only、no DeepStack。为了减少单 NPU 显存占用，默认 `KL_BETA=0.0`，不会额外加载 reference model。若要测试 LoRA ZeRO3 reference KL，可以在脚本内设置多 NPU、`DEEPSPEED_CONFIG=scripts/deepspeed_zero3.json`，并把 `KL_BETA` 调到大于 0。
+
 ## Checkpoint 和推理
 
 GRPO 默认保存 LoRA checkpoint。正常输出目录包含：

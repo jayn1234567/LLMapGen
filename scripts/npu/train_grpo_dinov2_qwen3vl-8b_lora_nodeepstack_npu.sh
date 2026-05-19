@@ -126,7 +126,6 @@ torchrun \
     --version "${VERSION}" \
     --vision_tower "${DINOV2_PATH}" \
     --input_image_size "${INPUT_IMAGE_SIZE}" \
-    --tokenizer_use_fast False \
     --disable_deepstack "${DISABLE_DEEPSTACK}" \
     --data_path "${TRAIN_JSONL}" \
     --image_folder "${IMAGE_FOLDER}" \

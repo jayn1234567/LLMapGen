@@ -77,7 +77,6 @@ torchrun \
     --version "${VERSION}" \
     --vision_tower "${VISION_TOWER}" \
     --input_image_size "${INPUT_IMAGE_SIZE}" \
-    --tokenizer_use_fast False \
     "${DEEPSTACK_ARGS[@]}" \
     --data_path "${TRAIN_JSONL}" \
     --image_folder "${IMAGE_FOLDER}" \

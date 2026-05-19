@@ -3,6 +3,13 @@ set -euo pipefail
 
 # GRPO lane-only RL finetuning for the generic MLLM framework.
 # Edit the values below in this script before launching.
+# Tokenizer handling is internal to mllm/model/builder.py: GRPO does not pass
+# --tokenizer_use_fast and does not install tiktoken/sentencepiece at runtime.
+
+SCRIPT_PATH=$(readlink -f "$0")
+SCRIPT_DIR=$(dirname "$SCRIPT_PATH")
+REPO_ROOT=$(cd "${SCRIPT_DIR}/../.." && pwd)
+cd "${REPO_ROOT}"
 
 # ---------- Runtime ----------
 NPUS="0,1,2"                              # Visible NPU ids.
@@ -58,6 +65,7 @@ LOGGING_STEPS=1
 SAVE_STEPS=100
 BF16=True
 MODEL_MAX_LENGTH=4096
+DEEPSPEED_CONFIG="scripts/deepspeed_zero3.json"
 
 DEEPSTACK_ARGS=()
 if [[ "${DISABLE_DEEPSTACK}" =~ ^(1|true|True|TRUE|yes|YES)$ ]]; then
@@ -67,7 +75,17 @@ elif [ -n "${DEEPSTACK_VISUAL_INDEXES}" ]; then
 fi
 
 export ASCEND_RT_VISIBLE_DEVICES="${NPUS}"
+export PYTHONPATH="${REPO_ROOT}:${PYTHONPATH:-}"
+export MLLM_LOG_RANK0_ONLY=${MLLM_LOG_RANK0_ONLY:-1}
 mkdir -p "${OUTPUT_DIR}"
+
+echo "============================================================"
+echo "GRPO NPU lane: DINOv3 + Qwen3VL + no DeepStack"
+echo "Train JSONL:   ${TRAIN_JSONL}"
+echo "Output:        ${OUTPUT_DIR}"
+echo "DeepSpeed:     ${DEEPSPEED_CONFIG}"
+echo "Tokenizer:     slow/fallback in mllm/model/builder.py"
+echo "============================================================"
 
 torchrun \
     --nproc_per_node "${NPROC_PER_NODE}" \
@@ -112,4 +130,8 @@ torchrun \
     --save_steps "${SAVE_STEPS}" \
     --bf16 "${BF16}" \
     --model_max_length "${MODEL_MAX_LENGTH}" \
-    --remove_unused_columns False
+    --remove_unused_columns False \
+    --report_to none \
+    --ddp_find_unused_parameters False \
+    --ddp_backend hccl \
+    --deepspeed "${DEEPSPEED_CONFIG}"

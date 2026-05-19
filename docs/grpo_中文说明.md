@@ -107,7 +107,7 @@ python scripts/gpu/build_grpo_debug_data.py --limit 20 --test-count 4
 
 坐标说明：GRPO reward 会先按数据坐标模式解析预测和 GT；如果是 `norm1000`，会转换回 patch 像素坐标后再调用 `infer_index/line_eval.py`。因此强化学习优化的几何指标和推理后的评估指标保持一致。
 
-GRPO 训练入口内部固定使用 slow tokenizer，脚本不暴露 `--tokenizer_use_fast` 参数，避免云端不同代码版本的参数解析器不兼容。
+GRPO 训练入口内部固定使用 slow tokenizer，脚本不暴露 `--tokenizer_use_fast` 参数，也不通过临时 `pip install tiktoken sentencepiece` 来绕过问题。`mllm/model/builder.py` 会正确处理 `"False"` 这类字符串布尔值；如果某个路径显式请求 fast tokenizer 且云端 backend 初始化失败，会自动退回 slow tokenizer。
 
 ## 正式 NPU 脚本
 
@@ -137,6 +137,8 @@ bash scripts/npu/train_grpo_dinov3_qwen3vl-8b_lora_nodeepstack_auto_lane_interse
 ```
 
 这些脚本同样不要通过外部一次性环境变量临时覆盖核心参数；正式实验前直接编辑脚本顶部参数块，保证实验配置可复现。
+
+这些 GRPO NPU 脚本会打印当前 tokenizer 策略；期望输出中能看到 `Tokenizer: slow/fallback in mllm/model/builder.py`。
 
 ## GPU Debug 脚本
 
@@ -221,11 +223,11 @@ python scripts/infer_centerline_checkpoint.py \
 
 已完成 smoke test：
 
-- 单卡 `lane`：`DINOv2 + Qwen3VL + no DeepStack`，训练 1 step，checkpoint 推理通过。
-- 单卡 `lane_intersection`：`DINOv2 + Qwen3VL + no DeepStack`，训练 1 step，checkpoint 推理通过。
-- 多卡 DeepSpeed：物理 `GPU0,2`，`DINOv2 + Qwen3VL + no DeepStack`，ZeRO-2，训练 1 step，checkpoint 推理通过。
-- 多卡 ZeRO-3：物理 `GPU0,2`，`DINOv2 + Qwen3VL + no DeepStack`，`lane` 与 `lane_intersection` 均训练 1 step，checkpoint 推理通过。
-- DINOv3 单卡 `lane` 和 `lane_intersection` debug 脚本也完成了训练和 checkpoint 推理 smoke test。
+- 2026-05-19，提交 `c1774b3` 后，单卡 `lane`：`DINOv2 + Qwen3VL + no DeepStack`，训练 1 step，checkpoint 推理和 `summary_centerline_eval.json` 输出通过。
+- 2026-05-19，提交 `c1774b3` 后，物理 `GPU0,2` ZeRO-3 `lane`：`DINOv2 + Qwen3VL + no DeepStack`，训练 1 step，checkpoint 推理和 `summary_centerline_eval.json` 输出通过。
+- 2026-05-19，提交 `c1774b3` 后，单卡 `lane_intersection`：`DINOv2 + Qwen3VL + no DeepStack`，训练 1 step，checkpoint 推理和 `summary_centerline_eval.json` 输出通过。
+
+当前本地没有完成 NPU 运行验证。NPU 脚本已经按 tokenizer 修复更新，但是否通过需要在云端 NPU 环境实际重跑后再记录。
 
 当前 smoke test 只验证工程链路。由于只训练 1 step，模型输出仍可能不是合法 JSON，中心线评估结果为 0 是正常现象，不代表正式 GRPO 训练效果。
 

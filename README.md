@@ -205,7 +205,7 @@ LoRA module selection:
 
 Chinese details are in `docs/grpo_中文说明.md`.
 
-Two NPU GRPO script templates are provided:
+NPU GRPO script templates are provided:
 
 ```bash
 bash scripts/npu/train_grpo_dinov2_qwen3vl-8b_lora_nodeepstack_npu.sh
@@ -246,6 +246,11 @@ Important script-local parameters:
 | `KL_BETA` | Frozen SFT reference-model KL penalty weight. |
 | `LORA_TARGET_SCOPE` | Which model parts receive LoRA adapters. |
 | `REWARD_*_WEIGHT` | Reward component weights for format, centerline, cut, and intersection terms. |
+
+GRPO scripts do not expose or pass `--tokenizer_use_fast`. Tokenizer loading is
+handled inside `mllm/model/builder.py`: the multimodal Qwen path defaults to the
+slow tokenizer, parses string booleans correctly, and falls back to slow
+tokenizer if a requested fast tokenizer fails on cloud dependencies.
 
 `TRAINING_BRANCH` has two independent axes. Phase A/B controls whether incoming
 state hints are present; `lane`/`lane_intersection` controls the output schema.

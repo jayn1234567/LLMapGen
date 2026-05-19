@@ -5,6 +5,8 @@ set -euo pipefail
 # Phase and task are independent:
 #   phase_a/phase_b controls incoming hints.
 #   lane/lane_intersection controls reward schema.
+# Tokenizer handling is internal to mllm/model/builder.py: GRPO does not pass
+# --tokenizer_use_fast and does not install tiktoken/sentencepiece at runtime.
 
 SCRIPT_PATH=$(readlink -f "$0")
 NPU_SCRIPT_DIR=$(dirname "$SCRIPT_PATH")
@@ -115,6 +117,7 @@ echo "Eval JSONL:    ${EVAL_JSONL}"
 echo "Final test:    ${TEST_JSONL}"
 echo "Coords:        ${COORD_MODE} (range=${COORD_RANGE})"
 echo "DeepSpeed:     ${DEEPSPEED_CONFIG}"
+echo "Tokenizer:     slow/fallback in mllm/model/builder.py"
 echo "Output:        ${OUTPUT_DIR}"
 echo "============================================================"
 

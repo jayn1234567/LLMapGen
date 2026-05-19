@@ -4,6 +4,8 @@ set -euo pipefail
 # Local NPU GRPO smoke test: DINOv2 + Qwen3VL + no DeepStack + lane.
 # This script does not install dependencies and does not use OBS.
 # Edit the parameter block below to match the local NPU conda environment and paths.
+# Tokenizer handling is internal to mllm/model/builder.py: GRPO does not pass
+# --tokenizer_use_fast and does not install tiktoken/sentencepiece at runtime.
 
 SCRIPT_PATH=$(readlink -f "$0")
 SCRIPT_DIR=$(dirname "$SCRIPT_PATH")
@@ -115,6 +117,7 @@ echo "Train:      ${TRAIN_JSONL}"
 echo "Output:     ${OUTPUT_DIR}"
 echo "KL beta:    ${KL_BETA}"
 echo "DeepSpeed:  ${DEEPSPEED_CONFIG:-disabled}"
+echo "Tokenizer:  slow/fallback in mllm/model/builder.py"
 echo "============================================================"
 
 torchrun \

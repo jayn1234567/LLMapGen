@@ -93,6 +93,7 @@ class GRPOTrainingArguments(transformers.TrainingArguments):
     reward_cut_type_weight: float = 0.05
     reward_cut_continuity_weight: float = 0.05
     reward_intersection_weight: float = 0.0
+    npu_zero3_disable_synced_generation: bool = True
 
 
 def _unwrap_module(model):
@@ -328,6 +329,7 @@ class MapGRPOTrainer(Trainer):
         if self.processing_class is None and tokenizer is not None:
             self.processing_class = tokenizer
         self.use_lora_reference = use_lora_reference
+        self._logged_npu_zero3_generation_workaround = False
         if self.ref_model is not None:
             self.ref_model.eval()
             for param in self.ref_model.parameters():
@@ -424,6 +426,19 @@ class MapGRPOTrainer(Trainer):
                 "pad_token_id": pad_token_id,
                 "eos_token_id": eos_token_id,
             }
+            if _should_disable_synced_generation_on_npu_zero3(self.args):
+                # torch_npu can fail inside HF GenerationMixin's synced_gpus
+                # scalar all-reduce path under ZeRO-3. Disable that path and
+                # force fixed-length generation so every rank still executes
+                # the same number of ZeRO-3 forward calls.
+                generation_kwargs["synced_gpus"] = False
+                generation_kwargs["eos_token_id"] = None
+                if not self._logged_npu_zero3_generation_workaround and self.is_world_process_zero():
+                    print(
+                        "[mllm-grpo] NPU ZeRO3 generation: disabled HF synced_gpus "
+                        "and EOS early-stop; generating fixed max_new_tokens per rank."
+                    )
+                    self._logged_npu_zero3_generation_workaround = True
             if gen_images is not None:
                 generation_kwargs["images"] = gen_images
                 generation_kwargs["image_sizes"] = [image_size] * self.args.num_generations
@@ -497,6 +512,16 @@ def _uses_deepspeed_zero3(training_args: GRPOTrainingArguments) -> bool:
         return False
     zero_config = deepspeed_config.get("zero_optimization", {})
     return int(zero_config.get("stage", 0) or 0) == 3
+
+
+def _is_npu_device(device) -> bool:
+    return str(device or "").lower().startswith("npu")
+
+
+def _should_disable_synced_generation_on_npu_zero3(training_args: GRPOTrainingArguments) -> bool:
+    if not getattr(training_args, "npu_zero3_disable_synced_generation", True):
+        return False
+    return _uses_deepspeed_zero3(training_args) and _is_npu_device(getattr(training_args, "device", None))
 
 
 def _load_policy_components(model_args: GRPOModelArguments, training_args: GRPOTrainingArguments):

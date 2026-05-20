@@ -123,6 +123,16 @@ def _unwrap_module(model):
     return model
 
 
+def _generation_model(model):
+    """Return the object that owns generate(); DDP keeps it on model.module."""
+    if hasattr(model, "generate"):
+        return model
+    unwrapped = _unwrap_module(model)
+    if hasattr(unwrapped, "generate"):
+        return unwrapped
+    raise AttributeError(f"{type(model).__name__} does not expose generate().")
+
+
 @contextmanager
 def _temporarily_eval(model):
     was_training = model.training
@@ -464,7 +474,7 @@ class MapGRPOTrainer(Trainer):
                 generation_kwargs["images"] = gen_images
                 generation_kwargs["image_sizes"] = [image_size] * self.args.num_generations
             with torch.no_grad():
-                generated = model.generate(gen_inputs, **generation_kwargs)
+                generated = _generation_model(model).generate(gen_inputs, **generation_kwargs)
             rewards = []
             completions = []
             for out in generated:

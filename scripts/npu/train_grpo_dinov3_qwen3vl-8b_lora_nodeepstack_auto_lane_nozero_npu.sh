@@ -2,8 +2,10 @@
 set -euo pipefail
 
 # GRPO lane-only LoRA finetuning without DeepSpeed ZeRO.
-# Default target: one 60GB Ascend NPU, Qwen3-VL-8B LLM + DINOv3-L, no DeepStack.
+# Default target: multi-NPU DDP on 60GB Ascend NPUs, Qwen3-VL-8B LLM + DINOv3-L, no DeepStack.
 # This avoids the NPU ZeRO3 + HF generate synced_gpus path.
+# Note: DDP does not shard model memory. Each NPU holds a full policy model and
+# a full frozen reference model when KL_BETA > 0.
 
 SCRIPT_PATH=$(readlink -f "$0")
 SCRIPT_DIR=$(dirname "$SCRIPT_PATH")
@@ -11,9 +13,11 @@ REPO_ROOT=$(cd "${SCRIPT_DIR}/../.." && pwd)
 cd "${REPO_ROOT}"
 
 # ---------- Runtime ----------
-# Use one NPU first. With no ZeRO, every process holds a full model copy.
-NPUS=${NPUS:-0}
-NPROC_PER_NODE=${NPROC_PER_NODE:-1}
+# With no ZeRO, every process holds a full model copy. Use fewer NPUs for debug
+# by overriding NPUS and NPROC_PER_NODE together.
+NPUS=${NPUS:-0,1,2,3,4,5,6,7}
+NPROC_PER_NODE=${NPROC_PER_NODE:-8}
+MASTER_ADDR=${MASTER_ADDR:-127.0.0.1}
 MASTER_PORT=${MASTER_PORT:-29641}
 
 # ---------- Paths ----------
@@ -39,7 +43,7 @@ NUM_GENERATIONS=${NUM_GENERATIONS:-2}
 MAX_NEW_TOKENS=${MAX_NEW_TOKENS:-128}
 TEMPERATURE=${TEMPERATURE:-0.7}
 TOP_P=${TOP_P:-1.0}
-KL_BETA=${KL_BETA:-0.0}
+KL_BETA=${KL_BETA:-0.02}
 CLIP_RANGE=${CLIP_RANGE:-0.2}
 
 # Reward weights. Centerline metrics use infer_index line matching.
@@ -86,13 +90,16 @@ export MLLM_LOG_RANK0_ONLY=${MLLM_LOG_RANK0_ONLY:-1}
 mkdir -p "${OUTPUT_DIR}"
 
 LAUNCHER=(python -m mllm.train.train_grpo)
+DDP_ARGS=()
 if [ "${NPROC_PER_NODE}" -gt 1 ]; then
     LAUNCHER=(
         torchrun
         --nproc_per_node "${NPROC_PER_NODE}"
+        --master_addr "${MASTER_ADDR}"
         --master_port "${MASTER_PORT}"
         -m mllm.train.train_grpo
     )
+    DDP_ARGS=(--ddp_backend hccl --ddp_find_unused_parameters False)
 fi
 
 echo "============================================================"
@@ -104,7 +111,9 @@ echo "ViT:          ${VISION_TOWER}"
 echo "Train JSONL:  ${TRAIN_JSONL}"
 echo "Output:       ${OUTPUT_DIR}"
 echo "DeepSpeed:    disabled"
+echo "DDP:          $([ "${NPROC_PER_NODE}" -gt 1 ] && echo "enabled/hccl" || echo "disabled")"
 echo "Sampling:     num_generations=${NUM_GENERATIONS}, max_new_tokens=${MAX_NEW_TOKENS}, temperature=${TEMPERATURE}, top_p=${TOP_P}"
+echo "KL beta:      ${KL_BETA} (loads a frozen reference model when > 0)"
 echo "LoRA:         scope=${LORA_TARGET_SCOPE}, r=${LORA_R}, alpha=${LORA_ALPHA}"
 echo "============================================================"
 
@@ -150,6 +159,7 @@ echo "============================================================"
     --bf16 "${BF16}" \
     --model_max_length "${MODEL_MAX_LENGTH}" \
     --remove_unused_columns False \
-    --report_to none
+    --report_to none \
+    "${DDP_ARGS[@]}"
 
 echo "=== GRPO no-ZeRO training finished ==="

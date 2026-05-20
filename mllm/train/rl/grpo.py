@@ -501,6 +501,11 @@ def _uses_deepspeed_zero3(training_args: GRPOTrainingArguments) -> bool:
 
 def _load_policy_components(model_args: GRPOModelArguments, training_args: GRPOTrainingArguments):
     device_map = None if _uses_deepspeed_zero3(training_args) else {"": training_args.device}
+    load_kwargs = {}
+    if training_args.bf16:
+        load_kwargs["torch_dtype"] = torch.bfloat16
+    elif training_args.fp16:
+        load_kwargs["torch_dtype"] = torch.float16
     tokenizer, model, image_processor, _ = load_pretrained_model(
         model_path=model_args.model_name_or_path,
         model_base=model_args.model_base,
@@ -511,6 +516,7 @@ def _load_policy_components(model_args: GRPOModelArguments, training_args: GRPOT
         # GRPO generation/reward follows the SFT slow-tokenizer path. Keep it
         # internal so cloud scripts stay compatible with older argument parsers.
         tokenizer_use_fast=False,
+        **load_kwargs,
     )
     if device_map is None:
         model.to(training_args.device)

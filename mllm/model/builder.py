@@ -247,7 +247,81 @@ def _load_tokenizer_with_fast_fallback(model_path, use_fast, **kwargs):
 
 def _load_auto_config(model_path, **kwargs):
     kwargs.setdefault("trust_remote_code", True)
-    return AutoConfig.from_pretrained(model_path, **kwargs)
+    try:
+        return AutoConfig.from_pretrained(model_path, **kwargs)
+    except ValueError as exc:
+        message = str(exc)
+        if "Should have a `model_type` key in its config.json" not in message:
+            raise
+        config_path = os.path.join(str(model_path), "config.json")
+        if not os.path.isfile(config_path):
+            raise
+        with open(config_path, "r", encoding="utf-8") as f:
+            config_dict = json.load(f)
+
+        metadata_path = os.path.join(str(model_path), "qwen_multimodal_checkpoint.json")
+        metadata = {}
+        if os.path.isfile(metadata_path):
+            try:
+                with open(metadata_path, "r", encoding="utf-8") as f:
+                    metadata = json.load(f)
+            except Exception:
+                metadata = {}
+
+        raw_model_type = (
+            config_dict.get("model_type")
+            or metadata.get("model_type")
+            or ("qwen3" if "qwen3" in str(model_path).lower() else None)
+            or ("qwen2" if "qwen2" in str(model_path).lower() else None)
+        )
+        if raw_model_type is None:
+            architectures = config_dict.get("architectures") or metadata.get("architectures") or []
+            joined_architectures = " ".join(str(item).lower() for item in architectures)
+            if "qwen3" in joined_architectures:
+                raw_model_type = "qwen3"
+            elif "qwen2" in joined_architectures:
+                raw_model_type = "qwen2"
+
+        model_type_text = str(raw_model_type or "").lower()
+        if "qwen3" in model_type_text:
+            model_type = "qwen3"
+        elif "qwen2" in model_type_text:
+            model_type = "qwen2"
+        else:
+            model_type = None
+
+        if model_type is None:
+            raise ValueError(
+                f"{model_path} config.json is missing model_type and qwen_multimodal_checkpoint.json "
+                "does not provide one. Please use a valid checkpoint-* directory or repair config.json."
+            ) from exc
+
+        config_dict["model_type"] = model_type
+        if model_type == "qwen3":
+            config_dict.setdefault("architectures", ["Qwen3MultimodalForCausalLM"])
+            config_class = Qwen3MultimodalConfig
+        elif model_type == "qwen2":
+            config_dict.setdefault("architectures", ["Qwen2MultimodalForCausalLM"])
+            config_class = Qwen2MultimodalConfig
+        else:
+            raise ValueError(f"Unsupported inferred model_type for {model_path}: {model_type}") from exc
+
+        for key in (
+            "mm_vision_tower",
+            "vision_tower",
+            "mm_vision_tower_type",
+            "input_image_size",
+            "deepstack_visual_indexes",
+            "disable_deepstack",
+        ):
+            if config_dict.get(key) is None and metadata.get(key) is not None:
+                config_dict[key] = metadata[key]
+
+        warnings.warn(
+            f"{model_path}/config.json is missing model_type; inferred model_type={model_type} "
+            "for multimodal checkpoint loading."
+        )
+        return config_class.from_dict(config_dict)
 
 
 def load_pretrained_model(model_path, model_base, model_name, load_8bit=False, load_4bit=False, device_map="auto", device="cuda", use_flash_attn=False, model_config_overrides=None, tokenizer_use_fast=None, **kwargs):
@@ -286,7 +360,7 @@ def load_pretrained_model(model_path, model_base, model_name, load_8bit=False, l
             bnb_4bit_quant_type='nf4'
         )
     else:
-        kwargs['torch_dtype'] = torch.float16
+        kwargs.setdefault('torch_dtype', torch.float16)
 
     if use_flash_attn:
         kwargs['attn_implementation'] = 'flash_attention_2'

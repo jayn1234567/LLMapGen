@@ -176,6 +176,8 @@ class LLaVATrainer(Trainer):
 
     def save_model(self, output_dir: Optional[str] = None, _internal_call: bool = False):
         if not getattr(self.args, "lora_enable", False):
+            sync_qwen_token_config(model=self.model)
+            sync_qwen_multimodal_config(self.model)
             return super().save_model(output_dir=output_dir, _internal_call=_internal_call)
 
         output_dir = output_dir or self.args.output_dir

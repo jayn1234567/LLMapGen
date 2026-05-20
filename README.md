@@ -219,6 +219,12 @@ Keep the SFT entrypoint as `python -m mllm.train.train_qwen` or
 `python -m mllm.train.train_sft`. GRPO uses `python -m mllm.train.train_grpo`
 with `--rollout_backend vllm_prompt_embeds`.
 
+Current training priority is still SFT. If larger data still produces missing
+or under-predicted centerlines, collect those parseable low-recall cases from
+SFT inference summaries and use them later as RL hard samples. The future GRPO
+reward should add explicit instance/length recall and under-prediction
+penalties while keeping precision/F1 terms to avoid hallucinated extra lines.
+
 RL task selection:
 
 | Parameter | Purpose |

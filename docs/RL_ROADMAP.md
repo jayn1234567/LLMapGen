@@ -23,6 +23,17 @@ The first supported training mode is no-DeepStack + LLM LoRA. DeepStack needs
 layer-level visual residual injection, so it cannot be represented by prompt
 embeddings alone.
 
+## Current Priority
+
+Continue SFT training first. When the dataset grows, missing or under-predicted
+centerlines should be treated as a supervised-learning baseline issue before RL
+is used. RL should start after the SFT checkpoint can mostly produce valid JSON
+and reasonable line topology.
+
+Use SFT inference summaries to identify hard samples for RL. Do not start RL
+from a model that still has broad format failures, because invalid outputs only
+receive the invalid reward and provide weak learning signal.
+
 ## Task Selection
 
 Use `--map_task` to choose what the reward/parser should optimize:
@@ -58,6 +69,30 @@ conversations[1]  ground truth
 
 RL audit data is stored under `meta.rl_pool`, including bucket, source summary,
 parse status, centerline F1, reward components, and prediction preview.
+
+For the current missing-line failure mode, add a future hard-sample bucket for
+under-predicted centerlines. The bucket should be selected from inference/eval
+records where the output is parseable but line coverage is low, for example low
+`instance_recall`, low `length_recall`, or `pred_line_num < gt_line_num`.
+
+## Reward Direction
+
+The current reward already uses the same `infer_index.line_eval` matcher as
+post-inference evaluation and includes `instance_f1` plus `length_f1`. This
+penalizes missing lines because recall drops when matched predicted lines cover
+only part of the ground truth.
+
+If under-prediction remains after stronger SFT, add explicit recall/coverage
+components to the GRPO reward:
+
+- `centerline_instance_recall`: reward matching more GT line instances.
+- `centerline_length_recall`: reward covering more GT centerline length.
+- `under_prediction_penalty`: penalize parseable predictions where
+  `pred_line_num < gt_line_num`.
+
+Keep precision/F1 terms in the reward when adding recall terms. A pure count or
+recall reward can push the model to hallucinate extra lines, so recall should be
+balanced by precision, matched-length quality, and cut-continuity checks.
 
 ## vLLM Text Export
 

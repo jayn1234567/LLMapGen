@@ -20,6 +20,7 @@ Subdirectories keep non-full or local platform-specific scripts:
 
 - `scripts/npu/`: NPU training scripts that freeze one side of the model.
 - `scripts/gpu/`: GPU training/inference/visualization utilities.
+- `scripts/rl/`: post-training RL utilities that do not change SFT scripts.
 
 Training mode in filenames:
 
@@ -84,6 +85,7 @@ RL notes:
 - Future RL should be added as a separate post-training stack that reuses SFT
   checkpoints, inference summaries, hard-sample pools, and `infer_index`
   metrics without changing the stable SFT scripts.
+- Build an initial hard-sample pool with `python scripts/rl/build_hard_pool.py`.
 
 Distributed logging defaults to `MLLM_LOG_RANK0_ONLY=1`, so normal stdout logs are printed by global rank 0 only. Error tracebacks on stderr are kept for nonzero ranks unless `MLLM_SUPPRESS_NONZERO_STDERR=1` is set.
 

@@ -71,6 +71,8 @@ Fixes from this audit:
   [docs/qwen3vl_dinov3_deepstack.md](docs/qwen3vl_dinov3_deepstack.md)
 - Script naming and placement:
   [scripts/README.md](scripts/README.md)
+- RL post-training roadmap:
+  [docs/RL_ROADMAP.md](docs/RL_ROADMAP.md)
 - Project reproduction plan:
   [REPRODUCTION_PLAN.md](REPRODUCTION_PLAN.md)
 - AV2 4096-to-256 patch processing notes:

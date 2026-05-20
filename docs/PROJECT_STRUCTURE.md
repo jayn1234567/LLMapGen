@@ -34,6 +34,7 @@ mllm/
 ├── mm_utils.py                       # Image/token multimodal helper functions.
 ├── model/                            # Model loading and multimodal architecture.
 ├── reward/                           # Map JSON parsing and geometry reward/metric helpers.
+├── rl/                               # Post-training RL data/rollout/reward interfaces.
 ├── train/                            # SFT training entrypoints and Trainer customizations.
 └── serve/                            # Legacy/optional serving utilities.
 ```
@@ -51,6 +52,8 @@ Important subdirectories:
 - `mllm/train/checkpoint_metadata.py`: Qwen multimodal checkpoint metadata sync/write helpers.
 - `mllm/reward/map_schema.py`: JSON schema extraction and validation.
 - `mllm/reward/map_reward.py`: map-output scoring helpers using line metrics; reusable by future RL.
+- `mllm/rl/data_pool.py`: hard-sample pool builder from SFT inference summaries.
+- `mllm/rl/schemas.py`: shared post-training data structures for rollout/reward outputs.
 
 ## Data Processing: `data_process/`
 
@@ -107,6 +110,7 @@ scripts/
 ├── train_full_*.sh                    # Top-level full-parameter NPU entrypoints.
 ├── test_full_*.sh                     # Top-level NPU inference/eval entrypoints.
 ├── data/                              # Dataset split utilities.
+├── rl/                                # RL post-training utilities.
 ├── gpu/                               # Local GPU smoke/debug scripts.
 └── npu/                               # NPU cloud training/testing scripts.
 ```
@@ -125,6 +129,7 @@ Script naming rules:
 ```text
 docs/
 ├── PROJECT_STRUCTURE.md               # This file.
+├── RL_ROADMAP.md                       # Post-training RL migration plan.
 ├── qwen3vl_dinov3_deepstack.md        # Architecture, checkpoint, train/infer details.
 └── 交接文档.md                         # Legacy handover notes.
 ```

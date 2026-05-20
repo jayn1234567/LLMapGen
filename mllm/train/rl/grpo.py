@@ -93,7 +93,28 @@ class GRPOTrainingArguments(transformers.TrainingArguments):
     reward_cut_type_weight: float = 0.05
     reward_cut_continuity_weight: float = 0.05
     reward_intersection_weight: float = 0.0
-    npu_zero3_disable_synced_generation: bool = True
+    npu_zero3_disable_synced_generation: bool = False
+
+
+def _bind_npu_device_from_local_rank() -> Optional[int]:
+    """Bind each torchrun worker to its visible NPU before distributed init."""
+    if torch_npu is None or not hasattr(torch, "npu"):
+        return None
+    is_available = getattr(torch.npu, "is_available", None)
+    if not callable(is_available) or not is_available():
+        return None
+
+    local_rank = int(os.environ.get("LOCAL_RANK", "-1"))
+    if local_rank < 0:
+        local_rank = 0
+    device_count = int(torch.npu.device_count())
+    if local_rank >= device_count:
+        raise ValueError(
+            f"LOCAL_RANK={local_rank} but only {device_count} visible NPU device(s). "
+            "Check ASCEND_RT_VISIBLE_DEVICES and torchrun --nproc_per_node."
+        )
+    torch.npu.set_device(local_rank)
+    return local_rank
 
 
 def _unwrap_module(model):
@@ -574,6 +595,7 @@ def _apply_lora(model, training_args: GRPOTrainingArguments):
 
 
 def train():
+    bound_npu_device = _bind_npu_device_from_local_rank()
     parser = transformers.HfArgumentParser((GRPOModelArguments, GRPODataArguments, GRPOTrainingArguments))
     model_args, data_args, training_args = parser.parse_args_into_dataclasses()
     if str(os.environ.get("RANK", "0")) in {"0", "-1"}:
@@ -584,7 +606,9 @@ def train():
             f"grpo_file={__file__}, builder_file={builder_module.__file__}, "
             f"model={model_args.model_name_or_path}, vision={model_args.vision_tower}, "
             f"zero3={_uses_deepspeed_zero3(training_args)}, lora={training_args.lora_enable}, "
-            f"kl_beta={training_args.kl_beta}, bf16={training_args.bf16}, fp16={training_args.fp16}"
+            f"kl_beta={training_args.kl_beta}, bf16={training_args.bf16}, fp16={training_args.fp16}, "
+            f"bound_npu_device={bound_npu_device}, "
+            f"npu_zero3_disable_synced_generation={training_args.npu_zero3_disable_synced_generation}"
         )
     resolved_branch, resolved_task, _ = _normalize_training_branch(data_args.training_branch, data_args.map_task)
     data_args.training_branch = resolved_branch

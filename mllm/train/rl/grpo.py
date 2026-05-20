@@ -325,6 +325,8 @@ class MapGRPOTrainer(Trainer):
         self.ref_model = ref_model
         self.reward_config = reward_config or MapRewardConfig()
         self.tokenizer = tokenizer or self.processing_class
+        if self.processing_class is None and tokenizer is not None:
+            self.processing_class = tokenizer
         self.use_lora_reference = use_lora_reference
         if self.ref_model is not None:
             self.ref_model.eval()
@@ -344,8 +346,9 @@ class MapGRPOTrainer(Trainer):
                 os.makedirs(output_dir, exist_ok=True)
                 model.config.save_pretrained(output_dir)
                 model.save_pretrained(output_dir, state_dict=lora_state)
-                if self.processing_class is not None:
-                    self.processing_class.save_pretrained(output_dir)
+                tokenizer_to_save = self.processing_class or self.tokenizer
+                if tokenizer_to_save is not None and hasattr(tokenizer_to_save, "save_pretrained"):
+                    tokenizer_to_save.save_pretrained(output_dir)
                 torch.save(non_lora_state, os.path.join(output_dir, "non_lora_trainables.bin"))
                 write_qwen_multimodal_checkpoint_metadata(model, output_dir, self)
             return
@@ -542,6 +545,16 @@ def _apply_lora(model, training_args: GRPOTrainingArguments):
 def train():
     parser = transformers.HfArgumentParser((GRPOModelArguments, GRPODataArguments, GRPOTrainingArguments))
     model_args, data_args, training_args = parser.parse_args_into_dataclasses()
+    if str(os.environ.get("RANK", "0")) in {"0", "-1"}:
+        import mllm.model.builder as builder_module
+
+        print(
+            "[mllm-grpo] startup: "
+            f"grpo_file={__file__}, builder_file={builder_module.__file__}, "
+            f"model={model_args.model_name_or_path}, vision={model_args.vision_tower}, "
+            f"zero3={_uses_deepspeed_zero3(training_args)}, lora={training_args.lora_enable}, "
+            f"kl_beta={training_args.kl_beta}, bf16={training_args.bf16}, fp16={training_args.fp16}"
+        )
     resolved_branch, resolved_task, _ = _normalize_training_branch(data_args.training_branch, data_args.map_task)
     data_args.training_branch = resolved_branch
     data_args.map_task = resolved_task

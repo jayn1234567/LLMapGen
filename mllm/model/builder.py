@@ -190,11 +190,47 @@ def _resolve_tokenizer_use_fast(default_value, override_value):
     return override_value
 
 
+def _has_tokenizer_files(path):
+    if not path or not os.path.isdir(str(path)):
+        return False
+    tokenizer_files = (
+        "tokenizer.json",
+        "tokenizer.model",
+        "tokenizer_config.json",
+        "vocab.json",
+        "merges.txt",
+    )
+    return any(os.path.isfile(os.path.join(str(path), name)) for name in tokenizer_files)
+
+
+def _resolve_tokenizer_source(model_path):
+    if _has_tokenizer_files(model_path):
+        return model_path
+    parent = os.path.dirname(os.path.abspath(str(model_path)))
+    if parent and parent != os.path.abspath(str(model_path)) and _has_tokenizer_files(parent):
+        warnings.warn(
+            f"Tokenizer files were not found in {model_path}; loading tokenizer from parent directory {parent}."
+        )
+        return parent
+    return model_path
+
+
+def _rank0_print(message):
+    if str(os.environ.get("RANK", "0")) in {"0", "-1"}:
+        print(message)
+
+
 def _load_tokenizer_with_fast_fallback(model_path, use_fast, **kwargs):
     use_fast = _resolve_tokenizer_use_fast(False, use_fast)
+    tokenizer_source = _resolve_tokenizer_source(model_path)
+    _rank0_print(
+        "[mllm] Loading tokenizer: "
+        f"source={tokenizer_source}, requested_use_fast={use_fast}, "
+        f"trust_remote_code={kwargs.get('trust_remote_code', False)}"
+    )
     try:
-        return AutoTokenizer.from_pretrained(model_path, use_fast=use_fast, **kwargs)
-    except ValueError as exc:
+        return AutoTokenizer.from_pretrained(tokenizer_source, use_fast=use_fast, **kwargs)
+    except (ImportError, ValueError) as exc:
         message = str(exc)
         fast_backend_error = (
             "Couldn't instantiate the backend tokenizer" in message
@@ -202,11 +238,16 @@ def _load_tokenizer_with_fast_fallback(model_path, use_fast, **kwargs):
         )
         if use_fast and fast_backend_error:
             warnings.warn(
-                f"Fast tokenizer failed for {model_path}; retrying with use_fast=False. "
+                f"Fast tokenizer failed for {tokenizer_source}; retrying with use_fast=False. "
                 f"Original error: {exc}"
             )
-            return AutoTokenizer.from_pretrained(model_path, use_fast=False, **kwargs)
+            return AutoTokenizer.from_pretrained(tokenizer_source, use_fast=False, **kwargs)
         raise
+
+
+def _load_auto_config(model_path, **kwargs):
+    kwargs.setdefault("trust_remote_code", True)
+    return AutoConfig.from_pretrained(model_path, **kwargs)
 
 
 def load_pretrained_model(model_path, model_base, model_name, load_8bit=False, load_4bit=False, device_map="auto", device="cuda", use_flash_attn=False, model_config_overrides=None, tokenizer_use_fast=None, **kwargs):
@@ -256,9 +297,13 @@ def load_pretrained_model(model_path, model_base, model_name, load_8bit=False, l
             warnings.warn('There is `lora` in model name but no `model_base` is provided. If you are loading a LoRA model, please provide the `model_base` argument. Detailed instruction: https://github.com/haotian-liu/LLaVA#launch-a-model-worker-lora-weights-unmerged.')
         if 'lora' in model_name.lower() and model_base is not None:
             from mllm.model.language_model.llava_llama import LlavaConfig
-            lora_cfg_pretrained = LlavaConfig.from_pretrained(model_path)
+            lora_cfg_pretrained = LlavaConfig.from_pretrained(model_path, trust_remote_code=True)
             _apply_model_config_overrides(lora_cfg_pretrained, model_config_overrides)
-            tokenizer = AutoTokenizer.from_pretrained(model_base, use_fast=False, **qwen_tokenizer_kwargs(model_base))
+            tokenizer = _load_tokenizer_with_fast_fallback(
+                model_base,
+                use_fast=False,
+                **qwen_tokenizer_kwargs(model_base, config=lora_cfg_pretrained),
+            )
             print('Loading multimodal model from base model...')
             model = LlavaLlamaForCausalLM.from_pretrained(model_base, low_cpu_mem_usage=True, config=lora_cfg_pretrained, **kwargs)
             token_num, tokem_dim = model.lm_head.out_features, model.lm_head.in_features
@@ -297,13 +342,21 @@ def load_pretrained_model(model_path, model_base, model_name, load_8bit=False, l
             if 'mpt' in model_name.lower():
                 if not os.path.isfile(os.path.join(model_path, 'configuration_mpt.py')):
                     shutil.copyfile(os.path.join(model_base, 'configuration_mpt.py'), os.path.join(model_path, 'configuration_mpt.py'))
-                tokenizer = AutoTokenizer.from_pretrained(model_base, use_fast=True, **qwen_tokenizer_kwargs(model_base))
-                cfg_pretrained = AutoConfig.from_pretrained(model_path, trust_remote_code=True)
+                tokenizer = _load_tokenizer_with_fast_fallback(
+                    model_base,
+                    use_fast=False,
+                    **qwen_tokenizer_kwargs(model_base),
+                )
+                cfg_pretrained = _load_auto_config(model_path)
                 model = LlavaMptForCausalLM.from_pretrained(model_base, low_cpu_mem_usage=True, config=cfg_pretrained, **kwargs)
             else:
-                tokenizer = AutoTokenizer.from_pretrained(model_base, use_fast=False, **qwen_tokenizer_kwargs(model_base))
-                cfg_pretrained = AutoConfig.from_pretrained(model_path)
+                cfg_pretrained = _load_auto_config(model_path)
                 _apply_model_config_overrides(cfg_pretrained, model_config_overrides)
+                tokenizer = _load_tokenizer_with_fast_fallback(
+                    model_base,
+                    use_fast=False,
+                    **qwen_tokenizer_kwargs(model_base, config=cfg_pretrained),
+                )
                 model_type = getattr(cfg_pretrained, 'model_type', '')
                 if 'qwen3' in model_type.lower():
                     model = LlavaQwen3ForCausalLM.from_pretrained(model_base, low_cpu_mem_usage=True, config=cfg_pretrained, **kwargs)
@@ -315,30 +368,42 @@ def load_pretrained_model(model_path, model_base, model_name, load_8bit=False, l
             model.load_state_dict(mm_projector_weights, strict=False)
         else:
             if 'mpt' in model_name.lower():
-                tokenizer = AutoTokenizer.from_pretrained(model_path, use_fast=True, **qwen_tokenizer_kwargs(model_path))
+                tokenizer = _load_tokenizer_with_fast_fallback(
+                    model_path,
+                    use_fast=False,
+                    **qwen_tokenizer_kwargs(model_path),
+                )
                 model = LlavaMptForCausalLM.from_pretrained(model_path, low_cpu_mem_usage=True, **kwargs)
             elif 'mistral' in model_name.lower():
-                tokenizer = AutoTokenizer.from_pretrained(model_path, **qwen_tokenizer_kwargs(model_path))
+                tokenizer = _load_tokenizer_with_fast_fallback(
+                    model_path,
+                    use_fast=False,
+                    **qwen_tokenizer_kwargs(model_path),
+                )
                 model = LlavaMistralForCausalLM.from_pretrained(
                     model_path,
                     low_cpu_mem_usage=True,
                     **kwargs
                 )
             elif 'dclm' in model_name.lower():
-                tokenizer = AutoTokenizer.from_pretrained(model_path, **qwen_tokenizer_kwargs(model_path))
+                tokenizer = _load_tokenizer_with_fast_fallback(
+                    model_path,
+                    use_fast=False,
+                    **qwen_tokenizer_kwargs(model_path),
+                )
                 model = LlavaOpenlmForCausalLM.from_pretrained(
                     model_path,
                     low_cpu_mem_usage=True,
                     **kwargs
                 )
             else:
+                cfg = _load_auto_config(model_path)
+                _apply_model_config_overrides(cfg, model_config_overrides)
                 tokenizer = _load_tokenizer_with_fast_fallback(
                     model_path,
                     use_fast=_resolve_tokenizer_use_fast(False, tokenizer_use_fast),
-                    **qwen_tokenizer_kwargs(model_path),
+                    **qwen_tokenizer_kwargs(model_path, config=cfg),
                 )
-                cfg = AutoConfig.from_pretrained(model_path)
-                _apply_model_config_overrides(cfg, model_config_overrides)
                 model_type = getattr(cfg, 'model_type', '')
                 if 'qwen3' in model_type.lower():
                     model = LlavaQwen3ForCausalLM.from_pretrained(
@@ -359,7 +424,11 @@ def load_pretrained_model(model_path, model_base, model_name, load_8bit=False, l
         if model_base is not None:
             # PEFT model
             from peft import PeftModel
-            tokenizer = AutoTokenizer.from_pretrained(model_base, use_fast=False, **qwen_tokenizer_kwargs(model_base))
+            tokenizer = _load_tokenizer_with_fast_fallback(
+                model_base,
+                use_fast=False,
+                **qwen_tokenizer_kwargs(model_base),
+            )
             model = AutoModelForCausalLM.from_pretrained(model_base, low_cpu_mem_usage=True, **kwargs)
             print(f"Loading LoRA weights from {model_path}")
             model = PeftModel.from_pretrained(model, model_path)
@@ -370,11 +439,20 @@ def load_pretrained_model(model_path, model_base, model_name, load_8bit=False, l
         else:
             use_fast = False
             if 'mpt' in model_name.lower():
-                tokenizer = AutoTokenizer.from_pretrained(model_path, use_fast=True, **qwen_tokenizer_kwargs(model_path))
+                tokenizer = _load_tokenizer_with_fast_fallback(
+                    model_path,
+                    use_fast=False,
+                    **qwen_tokenizer_kwargs(model_path),
+                )
                 model = AutoModelForCausalLM.from_pretrained(model_path, low_cpu_mem_usage=True, trust_remote_code=True, **kwargs)
             else:
-                tokenizer = AutoTokenizer.from_pretrained(model_path, use_fast=False, **qwen_tokenizer_kwargs(model_path))
-                model = AutoModelForCausalLM.from_pretrained(model_path, low_cpu_mem_usage=True, **kwargs)
+                cfg = _load_auto_config(model_path)
+                tokenizer = _load_tokenizer_with_fast_fallback(
+                    model_path,
+                    use_fast=False,
+                    **qwen_tokenizer_kwargs(model_path, config=cfg),
+                )
+                model = AutoModelForCausalLM.from_pretrained(model_path, config=cfg, low_cpu_mem_usage=True, **kwargs)
 
     image_processor = None
 

@@ -1,3 +1,6 @@
+import json
+import os
+
 QWEN_BOS_TOKEN_ID = 151643
 QWEN_PAD_TOKEN_ID = 151643
 QWEN_EOS_TOKEN_ID = 151645
@@ -21,6 +24,23 @@ def _looks_like_qwen(config=None, tokenizer=None, model_name_or_path=None):
         return True
 
     return "qwen" in _as_lower(model_name_or_path)
+
+
+def _looks_like_qwen_config_file(model_name_or_path=None):
+    if model_name_or_path is None:
+        return False
+    config_path = os.path.join(str(model_name_or_path), "config.json")
+    if not os.path.isfile(config_path):
+        return False
+    try:
+        with open(config_path, "r", encoding="utf-8") as f:
+            config_dict = json.load(f)
+    except Exception:
+        return False
+    model_type = _as_lower(config_dict.get("model_type"))
+    if "qwen" in model_type:
+        return True
+    return any("qwen" in _as_lower(arch) for arch in config_dict.get("architectures", []) or [])
 
 
 def _token_from_id(tokenizer, token_id):
@@ -79,8 +99,14 @@ def sync_qwen_token_config(tokenizer=None, model=None, config=None, generation_c
 
 
 def qwen_tokenizer_kwargs(model_name_or_path=None, config=None):
-    if _looks_like_qwen(config=config, model_name_or_path=model_name_or_path):
-        return {"fix_mistral_regex": True}
+    if _looks_like_qwen(config=config, model_name_or_path=model_name_or_path) or _looks_like_qwen_config_file(model_name_or_path):
+        return {
+            "fix_mistral_regex": True,
+            # Some cloud Transformers/Qwen3-VL combinations still require the
+            # remote tokenizer/config code path even when local SFT checkpoints
+            # can be loaded by the supervised training entry.
+            "trust_remote_code": True,
+        }
     return {}
 
 

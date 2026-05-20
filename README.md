@@ -46,7 +46,6 @@ This branch supports:
 - Visualization of ground truth vs prediction after inference.
 - Rank-0-only clean training logs with `DI_throughput: ... tokens/s/npu`.
 - 256 patch state-update data flow for centerline and intersection prediction.
-- GRPO-style RL finetuning with map-task rewards for `lane` and `lane_intersection`.
 
 ## Latest Flow Audit
 
@@ -55,15 +54,13 @@ This branch supports:
 - LoRA ZeRO3 SFT on GPU0,2: train 1 step, save checkpoint, reload checkpoint, run inference.
 - Full-parameter ZeRO3 SFT on GPU0,2: train 1 step, save `model.safetensors`, reload checkpoint, run inference.
 - State-update inference: real model-prediction path and GT dry-run path both checked.
-- GRPO ZeRO3 LoRA: lane and lane+intersection debug scripts use adapter-disabled reference KL with `KL_BETA=0.02`.
 
 Fixes from this audit:
 
 - Inference now decodes completion tokens only when `generate()` returns prompt+completion, so prompt JSON is not parsed as prediction.
 - LoRA inference now loads compatible base checkpoint tensors, including projector/vision tensors when the configured vision tower matches.
-- LoRA saves now include tokenizer files in both SFT and GRPO paths.
+- LoRA saves now include tokenizer files in SFT paths.
 - `lora_bias=lora_only` state extraction was fixed.
-- GRPO ZeRO3 LoRA now supports reference KL by temporarily disabling LoRA adapters on the same DeepSpeed-wrapped policy. Full-parameter ZeRO3 still raises early when `kl_beta > 0`.
 - Debug/test scripts pass `--map-task lane` or `--map-task lane_intersection` explicitly.
 
 ## Documentation
@@ -201,76 +198,28 @@ LoRA module selection:
 | `--lora_target_modules` | Optional exact module-name override. If set, scope auto-detection is skipped. |
 | `--lora_exclude_modules` | Comma-separated filters to exclude, defaulting to `lm_head,embed_tokens`. |
 
-## GRPO
+## RL Roadmap
 
-Chinese details are in `docs/grpo_中文说明.md`.
+The previous in-Trainer GRPO prototype has been removed. It was useful for
+debugging but is not the long-term architecture for large-scale RL on this
+project.
 
-NPU GRPO script templates are provided:
+The next RL implementation should be added as a separate post-training stack
+without changing the stable SFT/data-processing path:
 
-```bash
-bash scripts/npu/train_grpo_dinov2_qwen3vl-8b_lora_nodeepstack_npu.sh
-bash scripts/npu/train_grpo_dinov3_qwen3vl-8b_lora_nodeepstack_auto_lane_npu.sh
-bash scripts/npu/train_grpo_dinov3_qwen3vl-8b_lora_nodeepstack_auto_lane_intersection_npu.sh
+```text
+SFT checkpoint + SFT inference summary
+    -> hard-sample pool
+    -> rollout backend
+    -> reward workers using infer_index metrics
+    -> Ray/verl-style actor training
+    -> eval and checkpoint selection
 ```
 
-GPU debug scripts for the current priority path, DINOv2 + Qwen3VL + no DeepStack:
-
-```bash
-bash scripts/gpu/train_grpo_debug_lane_dinov2_qwen3vl_nodeepstack_gpu.sh
-bash scripts/gpu/train_grpo_debug_lane_intersection_dinov2_qwen3vl_nodeepstack_gpu.sh
-bash scripts/gpu/train_grpo_debug_lane_dinov2_qwen3vl_nodeepstack_deepspeed_gpu.sh
-bash scripts/gpu/train_grpo_debug_lane_dinov2_qwen3vl_nodeepstack_zero3_gpu.sh
-bash scripts/gpu/train_grpo_debug_lane_intersection_dinov2_qwen3vl_nodeepstack_zero3_gpu.sh
-```
-
-The main GRPO entrypoint is:
-
-```bash
-python -m mllm.train.train_grpo
-```
-
-This is a compatibility wrapper. The actual RL implementation lives in
-`mllm/train/rl/grpo.py` and can also be launched as:
-
-```bash
-python -m mllm.train.rl.grpo
-```
-
-Important script-local parameters:
-
-| Parameter | Purpose |
-|---|---|
-| `TRAINING_BRANCH` | Optional branch check: `auto_lane`, `auto_lane_intersection`, or one of the four A/B task combinations. |
-| `MAP_TASK` | `lane` for centerlines+cut, `lane_intersection` for centerlines+intersection polygons. |
-| `NUM_GENERATIONS` | Number of sampled candidates per prompt for group-relative rewards. |
-| `KL_BETA` | Frozen SFT reference-model KL penalty weight. |
-| `LORA_TARGET_SCOPE` | Which model parts receive LoRA adapters. |
-| `REWARD_*_WEIGHT` | Reward component weights for format, centerline, cut, and intersection terms. |
-
-GRPO scripts do not expose or pass `--tokenizer_use_fast`. Tokenizer loading is
-handled inside `mllm/model/builder.py`: the multimodal Qwen path defaults to the
-slow tokenizer, parses string booleans correctly, and falls back to slow
-tokenizer if a requested fast tokenizer fails on cloud dependencies.
-
-`TRAINING_BRANCH` has two independent axes. Phase A/B controls whether incoming
-state hints are present; `lane`/`lane_intersection` controls the output schema.
-Valid strict branches are `phase_a_lane`, `phase_b_lane`,
-`phase_a_lane_intersection`, and `phase_b_lane_intersection`. The `auto_*`
-branches only check task type and are useful for debug JSONL that does not carry
-phase metadata. The training entry checks sample metadata when present and fails
-fast if a script points at the wrong branch data.
-
-`--grpo_backend custom` is the default production path. `--grpo_backend trl`
-checks that TRL is installed, then uses the same image-aware MLLM adapter because
-native TRL trainers do not know this project's `images/image_sizes` batch format.
-
-DeepSpeed can be enabled through normal HF arguments, for example
-`--deepspeed scripts/deepspeed_zero2.json` or `--deepspeed scripts/deepspeed_zero3.json`.
-For custom GRPO ZeRO3 LoRA, no separate frozen reference model is loaded outside
-the DeepSpeed engine. The reference policy is the same model with LoRA adapters
-temporarily disabled, so ZeRO3 lane and lane+intersection debug scripts can keep
-`KL_BETA=0.02`. Full-parameter ZeRO3 still requires `KL_BETA=0.0` until a
-separate DeepSpeed-wrapped reference engine is added.
+Keep the SFT entrypoint as `python -m mllm.train.train_qwen` or
+`python -m mllm.train.train_sft`. Do not use old `train_grpo` commands; those
+entrypoints and scripts are intentionally removed until the Ray/verl/SGLang
+design is implemented and verified.
 
 LoRA parameters:
 

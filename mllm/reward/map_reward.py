@@ -140,8 +140,9 @@ def compute_map_reward(prediction: str, ground_truth: str, config: MapRewardConf
         clamp=True,
     )
 
-    # Main geometry reward: reuse the same infer_index matcher used after
-    # inference, so GRPO optimizes the metric we actually care about.
+    # Main geometry score: reuse the same infer_index matcher used after
+    # inference, so future post-training rewards can optimize the metric we
+    # actually care about.
     line_res = evaluate_records(
         [{
             "ground_truth_pixel": _as_line_payload(_centerline_items(gt_items)),

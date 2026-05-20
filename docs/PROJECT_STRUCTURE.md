@@ -33,8 +33,8 @@ mllm/
 ├── coord_utils.py                    # Pixel <-> norm1000 coordinate conversion utilities.
 ├── mm_utils.py                       # Image/token multimodal helper functions.
 ├── model/                            # Model loading and multimodal architecture.
-├── reward/                           # GRPO/reward parsing and map rewards.
-├── train/                            # SFT/GRPO training entrypoints and Trainer customizations.
+├── reward/                           # Map JSON parsing and geometry reward/metric helpers.
+├── train/                            # SFT training entrypoints and Trainer customizations.
 └── serve/                            # Legacy/optional serving utilities.
 ```
 
@@ -47,12 +47,10 @@ Important subdirectories:
 - `mllm/model/multimodal_projector/`: vision-to-LLM projector builders.
 - `mllm/train/train_qwen.py`: main SFT training implementation.
 - `mllm/train/train_sft.py`: SFT wrapper entrypoint.
-- `mllm/train/rl/grpo.py`: custom image-aware GRPO implementation.
-- `mllm/train/train_grpo.py`: compatibility wrapper for `python -m mllm.train.train_grpo`.
 - `mllm/train/llava_trainer.py`: Trainer subclass, checkpoint save behavior, grouped LR, best-loss callbacks.
 - `mllm/train/checkpoint_metadata.py`: Qwen multimodal checkpoint metadata sync/write helpers.
 - `mllm/reward/map_schema.py`: JSON schema extraction and validation.
-- `mllm/reward/map_reward.py`: GRPO reward composition using line metrics.
+- `mllm/reward/map_reward.py`: map-output scoring helpers using line metrics; reusable by future RL.
 
 ## Data Processing: `data_process/`
 
@@ -120,7 +118,6 @@ Script naming rules:
 - `vit_align_*_freeze-llm`: freeze LLM, train vision/projector/related modules.
 - `deepstack` / `no-deepstack`: whether DeepStack is enabled.
 - `phase_a` / `phase_b`: supervised patch-recognition vs state-update data.
-- `grpo`: reinforcement-learning finetuning with map rewards.
 - `_gpu` / `_npu`: target runtime platform.
 
 ## Docs
@@ -129,7 +126,6 @@ Script naming rules:
 docs/
 ├── PROJECT_STRUCTURE.md               # This file.
 ├── qwen3vl_dinov3_deepstack.md        # Architecture, checkpoint, train/infer details.
-├── grpo_中文说明.md                    # GRPO design and usage notes.
 └── 交接文档.md                         # Legacy handover notes.
 ```
 
@@ -167,9 +163,6 @@ For inference/evaluation, read:
 3. `infer_index/line_eval.py`
 4. `scripts/visualize_centerline.py`
 
-For GRPO/RL, read:
-
-1. `docs/grpo_中文说明.md`
-2. `mllm/train/rl/grpo.py`
-3. `mllm/reward/map_reward.py`
-4. `scripts/npu/train_grpo_dinov2_qwen3vl-8b_lora_nodeepstack_npu.sh`
+For future RL work, start from the stable SFT/inference stack and add a new
+post-training implementation alongside it. The old in-Trainer GRPO prototype
+has been removed; reusable map scoring helpers remain in `mllm/reward/`.

@@ -8,17 +8,9 @@ Top-level `scripts/` keeps the current NPU full-parameter train/test entrypoints
 - `train_sft_dinov3_qwen3vl-8b_nodeepstack_33w_evalbest_npu.sh`: 330k-sample no-DeepStack full-parameter SFT recipe for DINOv3 + Qwen3VL-8B; it sets `INPUT_IMAGE_SIZE=512`.
 - `scripts/npu/train_sft_dinov2_qwen3vl-8b_nodeepstack_npu.sh`: current SFT cloud entry for DINOv2 + Qwen3VL + no DeepStack.
 - `scripts/npu/train_sft_dinov2_qwen3vl-8b_nodeepstack_33w_evalbest_npu.sh`: same DINOv2 330k recipe kept under the NPU subdirectory for compatibility.
-- `scripts/npu/train_grpo_dinov2_qwen3vl-8b_lora_nodeepstack_npu.sh`: current GRPO cloud entry for DINOv2 + Qwen3VL + no DeepStack.
-- `scripts/npu/train_grpo_dinov3_qwen3vl-8b_lora_nodeepstack_auto_lane_npu.sh`: DINOv3 lane-only NPU GRPO template with no DeepStack and ZeRO3.
-- `scripts/npu/train_grpo_dinov3_qwen3vl-8b_lora_nodeepstack_auto_lane_intersection_npu.sh`: DINOv3 lane+intersection NPU GRPO template with no DeepStack and ZeRO3.
-- `scripts/npu/train_grpo_debug_lane_dinov2_qwen3vl_nodeepstack_local_npu.sh`: local NPU GRPO smoke test; no OBS download and no dependency installation.
 - `scripts/npu/test_dinov2_qwen3vl-8b_nodeepstack_npu.sh`: current NPU test/infer entry; reads the prebuilt final `test.jsonl`.
 - `train_full_*_train_best_npu.sh`: train with DeepStack and maintain a best checkpoint by lowest training loss.
 - `train_full_*_eval_best_npu.sh`: train with DeepStack, run a validation set by steps, and maintain a best checkpoint by lowest eval loss.
-- `train_grpo_*_lane_npu.sh`: GRPO-style RL on centerline + cut rewards.
-- `train_grpo_*_lane_intersection_npu.sh`: GRPO-style RL on centerline + cut + intersection rewards.
-- `scripts/gpu/train_grpo_debug_*_dinov2_qwen3vl_nodeepstack_gpu.sh`: local GPU GRPO smoke tests for the current DINOv2 + Qwen3VL + no-DeepStack path.
-- `scripts/gpu/train_grpo_debug_*_deepspeed_gpu.sh`: local GPU DeepSpeed GRPO smoke tests, defaulting to physical GPU0 and GPU2.
 - `scripts/gpu/train_sft_debug_phase_a_*_zero3_gpu.sh`: local GPU SFT Phase A smoke tests with empty incoming hints.
 - `scripts/gpu/train_sft_debug_phase_b_*_zero3_gpu.sh`: local GPU SFT Phase B smoke tests with incoming hints and state-update inference.
 - `test_full_*`: cloud inference/eval for the corresponding full-parameter checkpoint.
@@ -28,7 +20,6 @@ Subdirectories keep non-full or local platform-specific scripts:
 
 - `scripts/npu/`: NPU training scripts that freeze one side of the model.
 - `scripts/gpu/`: GPU training/inference/visualization utilities.
-- `docs/grpo_中文说明.md`: Chinese GRPO design, reward, scripts, and validation notes.
 
 Training mode in filenames:
 
@@ -62,7 +53,7 @@ Qwen multimodal checkpoints write `qwen_multimodal_checkpoint.json`. `llava_chec
 
 Best checkpoint behavior:
 
-- Current SFT/GRPO cloud scripts use the dataset's prebuilt raw-sample-level split: `train.jsonl`, `eval.jsonl`, and `test.jsonl`; they no longer split eval from test at runtime.
+- Current SFT cloud scripts use the dataset's prebuilt raw-sample-level split: `train.jsonl`, `eval.jsonl`, and `test.jsonl`; they no longer split eval from test at runtime.
 - NPU test scripts infer directly on the prebuilt `test.jsonl`. `NUM_TEST_SAMPLES=0` means run all final-test rows; set a positive value only for a quick smoke subset.
 - Normal full training scripts keep `ENABLE_EVAL=False` and do not maintain best-loss directories unless the script enables the relevant `SAVE_BEST_*` flag.
 - `train_full_dinov3_qwen3vl-8b_deepstack_train_best_npu.sh` sets train-loss best checkpointing internally and writes the current best training-loss checkpoint to `output/best/` by default. Edit `BEST_TRAIN_LOSS_START_STEP` and `BEST_TRAIN_LOSS_DIR` inside the script when needed.
@@ -86,11 +77,13 @@ Phase A / Phase B debug flow:
 - `scripts/infer_centerline_state_update.py` uses predictions as the next state in normal inference. The `--dry-run-prompts` mode is only for GT replay checks of stitching logic.
 - Current GPU ZeRO3 SFT smoke scripts cover Phase A lane patch inference and Phase B lane+intersection patch inference plus state-update inference.
 
-GRPO DeepSpeed notes:
+RL notes:
 
-- ZeRO2 GRPO smoke keeps the frozen reference/KL path enabled.
-- Custom GRPO ZeRO3 LoRA keeps `KL_BETA=0.02` by using the same DeepSpeed-wrapped policy with LoRA adapters temporarily disabled as the reference model.
-- Full-parameter ZeRO3 still requires `KL_BETA=0.0`; a positive KL for full-parameter ZeRO3 needs a separately wrapped reference DeepSpeed engine.
+- The previous in-Trainer GRPO prototype and its GPU/NPU scripts have been
+  removed. Do not use old `train_grpo` commands.
+- Future RL should be added as a separate post-training stack that reuses SFT
+  checkpoints, inference summaries, hard-sample pools, and `infer_index`
+  metrics without changing the stable SFT scripts.
 
 Distributed logging defaults to `MLLM_LOG_RANK0_ONLY=1`, so normal stdout logs are printed by global rank 0 only. Error tracebacks on stderr are kept for nonzero ranks unless `MLLM_SUPPRESS_NONZERO_STDERR=1` is set.
 
@@ -116,8 +109,5 @@ to `eval_best/`.
 - `SAVE_BEST_TRAIN_LOSS`, `BEST_TRAIN_LOSS_START_STEP`, `BEST_TRAIN_LOSS_DIR`: train-loss best checkpoint.
 - `SAVE_BEST_EVAL_LOSS`, `EVAL_STEPS`, `BEST_EVAL_LOSS_DIR`: eval-loss best checkpoint in eval-best scripts.
 - `USE_HF_PROGRESS_BAR`: console progress style.
-- `LORA_TARGET_SCOPE`, `LORA_R`, `LORA_ALPHA`, `LORA_DROPOUT`: LoRA module selection in GRPO scripts.
-- `TRAINING_BRANCH`, `MAP_TASK`, `NUM_GENERATIONS`, `KL_BETA`, `REWARD_*_WEIGHT`: GRPO branch, task, and reward settings. Strict branches are `phase_a_lane`, `phase_b_lane`, `phase_a_lane_intersection`, and `phase_b_lane_intersection`; `auto_lane` and `auto_lane_intersection` skip phase checks for debug data.
-- `COORD_MODE`, `COORD_RANGE`: coordinate parsing for inference/GRPO reward. Keep `COORD_MODE=auto` for datasets generated by `data_process`; override only when testing legacy pixel JSONL.
-- GRPO training keeps Qwen tokenization on the slow-tokenizer path internally; scripts do not pass a tokenizer CLI flag and do not install `tiktoken`/`sentencepiece` as a workaround.
+- `COORD_MODE`, `COORD_RANGE`: coordinate parsing for inference and metrics. Keep `COORD_MODE=auto` for datasets generated by `data_process`; override only when testing legacy pixel JSONL.
 - `mllm/model/builder.py` also parses string boolean overrides such as `"False"` correctly and falls back from fast tokenizer to slow tokenizer if a fast backend initialization fails.

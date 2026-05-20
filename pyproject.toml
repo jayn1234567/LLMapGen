@@ -24,7 +24,13 @@ dependencies = [
 
 [project.optional-dependencies]
 train = ["deepspeed==0.13.1", "ninja", "wandb"]
-rl = ["trl", "wandb"]
+rl = [
+    "transformers==4.56.2",
+    "huggingface-hub==0.36.2",
+    "ray[default]==2.55.1",
+    "vllm==0.9.2",
+    "wandb",
+]
 build = ["build", "twine"]
 
 [tool.setuptools.packages.find]

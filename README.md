@@ -200,28 +200,33 @@ LoRA module selection:
 | `--lora_target_modules` | Optional exact module-name override. If set, scope auto-detection is skipped. |
 | `--lora_exclude_modules` | Comma-separated filters to exclude, defaulting to `lm_head,embed_tokens`. |
 
-## RL Roadmap
+## RL Post-Training
 
-The previous in-Trainer GRPO prototype has been removed. It was useful for
-debugging but is not the long-term architecture for large-scale RL on this
-project.
-
-The next RL implementation should be added as a separate post-training stack
-without changing the stable SFT/data-processing path:
+RL is a separate post-training stack and does not change the stable SFT/data
+processing path:
 
 ```text
 SFT checkpoint + SFT inference summary
     -> hard-sample pool
-    -> rollout backend
-    -> reward workers using infer_index metrics
-    -> Ray/verl-style actor training
-    -> eval and checkpoint selection
+    -> actor worker computes multimodal prompt embeddings
+    -> vLLM text-decoder rollout
+    -> reward worker using infer_index metrics
+    -> GRPO actor update
+    -> adapter checkpoint + final merged checkpoint
 ```
 
 Keep the SFT entrypoint as `python -m mllm.train.train_qwen` or
-`python -m mllm.train.train_sft`. Do not use old `train_grpo` commands; those
-entrypoints and scripts are intentionally removed until the Ray/verl/SGLang
-design is implemented and verified.
+`python -m mllm.train.train_sft`. GRPO uses `python -m mllm.train.train_grpo`
+with `--rollout_backend vllm_prompt_embeds`.
+
+RL task selection:
+
+| Parameter | Purpose |
+|---|---|
+| `--map_task lane` | Current lane-only reward/parser mode. Intersection reward is forced off. |
+| `--map_task lane_intersection` | Future lane+intersection reward/parser mode. |
+| `--rollout_backend vllm_prompt_embeds` | Required formal rollout path. HF-local generation is not a training backend. |
+| `--vllm_model_path` | Optional pre-exported text-decoder checkpoint. If unset, GRPO exports one from the SFT checkpoint. |
 
 LoRA parameters:
 
@@ -231,6 +236,21 @@ LoRA parameters:
 | `--lora_r` | LoRA rank. |
 | `--lora_alpha` | LoRA alpha. |
 | `--lora_dropout` | LoRA dropout. |
+| `--lora_target_scope llm` | First supported RL mode; vLLM online LoRA rollout is LLM-only. |
+
+GRPO checkpoint outputs:
+
+| Output | Purpose |
+|---|---|
+| `checkpoint-*` / `final` | Adapter checkpoint for resume. |
+| `best_reward/` | Adapter checkpoint with the best mean reward. |
+| `merged/` | Final SFT+LoRA merged full checkpoint for inference or second-stage training. |
+
+RL environment:
+
+Use the dedicated `unimapgen` conda environment. The GPU debug path has been
+validated with `torch==2.7.0+cu126`, `vllm==0.9.2`, `ray==2.55.1`,
+`transformers==4.56.2`, and `huggingface-hub==0.36.2`.
 
 Best checkpoint parameters:
 

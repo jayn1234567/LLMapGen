@@ -53,7 +53,10 @@ Important subdirectories:
 - `mllm/reward/map_schema.py`: JSON schema extraction and validation.
 - `mllm/reward/map_reward.py`: map-output scoring helpers using line metrics; reusable by future RL.
 - `mllm/rl/data_pool.py`: hard-sample pool builder from SFT inference summaries.
-- `mllm/rl/schemas.py`: shared post-training data structures for rollout/reward outputs.
+- `mllm/rl/grpo_trainer.py`: Ray/verl-style GRPO coordinator, actor, rollout, and reward roles.
+- `mllm/rl/rollout.py`: vLLM prompt-embedding rollout contracts.
+- `mllm/rl/export.py`: text-decoder export for vLLM and LoRA merged-checkpoint export.
+- `mllm/rl/schemas.py`: shared post-training data structures for pool/audit outputs.
 
 ## Data Processing: `data_process/`
 
@@ -168,6 +171,6 @@ For inference/evaluation, read:
 3. `infer_index/line_eval.py`
 4. `scripts/visualize_centerline.py`
 
-For future RL work, start from the stable SFT/inference stack and add a new
-post-training implementation alongside it. The old in-Trainer GRPO prototype
-has been removed; reusable map scoring helpers remain in `mllm/reward/`.
+For RL work, start from `docs/RL_ROADMAP.md`, `scripts/rl/build_hard_pool.py`,
+and `mllm/train/train_grpo.py`. The formal rollout path is vLLM prompt
+embeddings; HF-local generation is not a training backend.

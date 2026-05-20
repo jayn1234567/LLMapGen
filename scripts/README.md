@@ -80,12 +80,25 @@ Phase A / Phase B debug flow:
 
 RL notes:
 
-- The previous in-Trainer GRPO prototype and its GPU/NPU scripts have been
-  removed. Do not use old `train_grpo` commands.
-- Future RL should be added as a separate post-training stack that reuses SFT
-  checkpoints, inference summaries, hard-sample pools, and `infer_index`
-  metrics without changing the stable SFT scripts.
+- GRPO uses the formal vLLM prompt-embedding rollout path. The actor computes
+  DINO/projector prompt embeddings with the HF multimodal model; vLLM runs the
+  Qwen text decoder rollout from those embeddings.
+- Run RL scripts from the dedicated `unimapgen` conda environment. The verified
+  local GPU stack is `torch==2.7.0+cu126`, `vllm==0.9.2`, `ray==2.55.1`,
+  `transformers==4.56.2`, and `huggingface-hub==0.36.2`.
+- Use `scripts/gpu/train_grpo_dinov3_qwen3vl_nodeepstack_vllm_debug_gpu.sh`
+  for local GPU debug. It is not an HF-local generation script.
+- The RL task is selected by `MAP_TASK` / `--map_task`: `lane` for current
+  centerline-only RL, `lane_intersection` for future centerline+intersection RL.
+- The first supported RL mode is no-DeepStack + LLM LoRA. DeepStack is blocked
+  because prompt embeddings cannot represent layer-level visual residual
+  injection.
 - Build an initial hard-sample pool with `python scripts/rl/build_hard_pool.py`.
+- Export a vLLM text-decoder checkpoint manually with
+  `python scripts/rl/export_text_decoder_for_vllm.py` when you do not want the
+  training entry to create `output_dir/vllm_text_model`.
+- Export a specific LoRA adapter to a full merged checkpoint with
+  `python scripts/rl/export_merged_lora_checkpoint.py`.
 
 Distributed logging defaults to `MLLM_LOG_RANK0_ONLY=1`, so normal stdout logs are printed by global rank 0 only. Error tracebacks on stderr are kept for nonzero ranks unless `MLLM_SUPPRESS_NONZERO_STDERR=1` is set.
 

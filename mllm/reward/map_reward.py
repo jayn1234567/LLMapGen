@@ -88,9 +88,9 @@ def _intersection_basic_score(gt_items: list[dict[str, Any]], pred_items: list[d
 
 
 def _uses_intersection_reward(map_task: str) -> bool:
-    # Phase A/lane runs must not be affected by intersection criteria. The
-    # parser also rejects intersection outputs for lane, and this guard keeps
-    # the scalar reward aligned with that branch split.
+    # Lane-only runs must not be affected by intersection criteria. The parser
+    # also rejects intersection outputs for lane, and this guard keeps the
+    # scalar reward aligned with the selected task.
     return str(map_task).strip().lower() in {"lane_intersection", "intersection", "all"}
 
 

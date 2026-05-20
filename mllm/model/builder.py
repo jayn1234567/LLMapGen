@@ -203,6 +203,25 @@ def _has_tokenizer_files(path):
     return any(os.path.isfile(os.path.join(str(path), name)) for name in tokenizer_files)
 
 
+def _has_slow_tokenizer_files(path):
+    if not path or not os.path.isdir(str(path)):
+        return False
+    slow_tokenizer_files = ("tokenizer.model", "vocab.json", "merges.txt")
+    return any(os.path.isfile(os.path.join(str(path), name)) for name in slow_tokenizer_files)
+
+
+def _tokenizer_config_has_list_extra_special_tokens(path):
+    config_path = os.path.join(str(path), "tokenizer_config.json")
+    if not os.path.isfile(config_path):
+        return False
+    try:
+        with open(config_path, "r", encoding="utf-8") as f:
+            cfg = json.load(f)
+    except Exception:
+        return False
+    return isinstance(cfg.get("extra_special_tokens"), list)
+
+
 def _resolve_tokenizer_source(model_path):
     if _has_tokenizer_files(model_path):
         return model_path
@@ -223,13 +242,22 @@ def _rank0_print(message):
 def _load_tokenizer_with_fast_fallback(model_path, use_fast, **kwargs):
     use_fast = _resolve_tokenizer_use_fast(False, use_fast)
     tokenizer_source = _resolve_tokenizer_source(model_path)
+    tokenizer_kwargs = dict(kwargs)
+    if _tokenizer_config_has_list_extra_special_tokens(tokenizer_source):
+        tokenizer_kwargs.setdefault("extra_special_tokens", {})
+    if not use_fast and not _has_slow_tokenizer_files(tokenizer_source):
+        warnings.warn(
+            f"Slow tokenizer was requested for {tokenizer_source}, but no slow tokenizer "
+            "vocab files were found. Retrying with use_fast=True."
+        )
+        use_fast = True
     _rank0_print(
         "[mllm] Loading tokenizer: "
         f"source={tokenizer_source}, requested_use_fast={use_fast}, "
-        f"trust_remote_code={kwargs.get('trust_remote_code', False)}"
+        f"trust_remote_code={tokenizer_kwargs.get('trust_remote_code', False)}"
     )
     try:
-        return AutoTokenizer.from_pretrained(tokenizer_source, use_fast=use_fast, **kwargs)
+        return AutoTokenizer.from_pretrained(tokenizer_source, use_fast=use_fast, **tokenizer_kwargs)
     except (ImportError, ValueError) as exc:
         message = str(exc)
         fast_backend_error = (
@@ -241,7 +269,7 @@ def _load_tokenizer_with_fast_fallback(model_path, use_fast, **kwargs):
                 f"Fast tokenizer failed for {tokenizer_source}; retrying with use_fast=False. "
                 f"Original error: {exc}"
             )
-            return AutoTokenizer.from_pretrained(tokenizer_source, use_fast=False, **kwargs)
+            return AutoTokenizer.from_pretrained(tokenizer_source, use_fast=False, **tokenizer_kwargs)
         raise
 
 

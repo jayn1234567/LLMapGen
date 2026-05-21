@@ -23,13 +23,14 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-train = ["deepspeed==0.13.1", "ninja", "wandb"]
+train = ["deepspeed==0.13.1", "ninja", "wandb", "swanlab"]
 rl = [
     "transformers==4.56.2",
     "huggingface-hub==0.36.2",
     "ray[default]==2.55.1",
     "vllm==0.9.2",
     "wandb",
+    "swanlab",
 ]
 build = ["build", "twine"]
 

@@ -1,3 +1,4 @@
+import json
 import os
 import torch
 import torch.nn as nn
@@ -22,6 +23,30 @@ from mllm.model.qwen_token_utils import sync_qwen_token_config
 
 
 ALL_LAYERNORM_LAYERS = [nn.LayerNorm, nn.BatchNorm2d]
+
+
+def _ensure_generation_config(model):
+    if getattr(model, "generation_config", None) is not None:
+        return
+
+    config = getattr(model, "config", None)
+    if hasattr(config, "to_dict"):
+        model.generation_config = transformers.GenerationConfig.from_model_config(config)
+    elif isinstance(config, dict):
+        model.generation_config = transformers.GenerationConfig.from_dict(config)
+    else:
+        model.generation_config = transformers.GenerationConfig()
+
+
+def _save_config_pretrained(model, output_dir):
+    config = getattr(model, "config", None)
+    if hasattr(config, "save_pretrained"):
+        config.save_pretrained(output_dir)
+        return
+    if isinstance(config, dict):
+        os.makedirs(output_dir, exist_ok=True)
+        with open(os.path.join(output_dir, "config.json"), "w", encoding="utf-8") as f:
+            json.dump(config, f, ensure_ascii=False, indent=2)
 
 
 def maybe_zero_3(param, ignore_status=False, name=None):
@@ -196,11 +221,10 @@ class LLaVATrainer(Trainer):
 
         if self.is_world_process_zero():
             os.makedirs(output_dir, exist_ok=True)
-            if getattr(model, "generation_config", None) is None:
-                model.generation_config = transformers.GenerationConfig.from_model_config(model.config)
+            _ensure_generation_config(model)
             model.generation_config.temperature = None
             model.generation_config.top_p = None
-            model.config.save_pretrained(output_dir)
+            _save_config_pretrained(model, output_dir)
             model.save_pretrained(output_dir, state_dict=lora_state_dict)
             if self.processing_class is not None:
                 self.processing_class.save_pretrained(output_dir)
@@ -331,13 +355,12 @@ class LLaVATrainer(Trainer):
 
             if self.is_world_process_zero():
                 sync_qwen_multimodal_config(self.model)
-                self.model.config.save_pretrained(output_dir)
+                _save_config_pretrained(self.model, output_dir)
                 torch.save(weight_to_save, os.path.join(output_dir, f'mm_projector.bin'))
                 write_qwen_multimodal_checkpoint_metadata(self.model, output_dir, self)
         else:
             # Workaround for the issue: https://github.com/haotian-liu/LLaVA/issues/1144
-            if getattr(model, "generation_config", None) is None:
-                model.generation_config = transformers.GenerationConfig.from_model_config(model.config)
+            _ensure_generation_config(model)
             model.generation_config.temperature = None
             model.generation_config.top_p = None
             sync_qwen_token_config(model=model)
@@ -349,8 +372,7 @@ class LLaVATrainer(Trainer):
             pass
         else:
             # Workaround for the issue: https://github.com/haotian-liu/LLaVA/issues/1144
-            if getattr(self.model, "generation_config", None) is None:
-                self.model.generation_config = transformers.GenerationConfig.from_model_config(self.model.config)
+            _ensure_generation_config(self.model)
             self.model.generation_config.temperature = None
             self.model.generation_config.top_p = None
             sync_qwen_token_config(model=self.model)
@@ -362,6 +384,6 @@ class LLaVATrainer(Trainer):
                 non_lora_state_dict = get_peft_state_non_lora_maybe_zero_3(self.model.named_parameters())
             super(LLaVATrainer, self)._save(output_dir, state_dict)
             if getattr(self.args, "lora_enable", False) and self.is_world_process_zero():
-                self.model.config.save_pretrained(output_dir)
+                _save_config_pretrained(self.model, output_dir)
                 torch.save(non_lora_state_dict, os.path.join(output_dir, "non_lora_trainables.bin"))
             write_qwen_multimodal_checkpoint_metadata(self.model, output_dir, self)

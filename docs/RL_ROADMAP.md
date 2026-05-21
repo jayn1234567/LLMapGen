@@ -23,6 +23,42 @@ The first supported training mode is no-DeepStack + LLM LoRA. DeepStack needs
 layer-level visual residual injection, so it cannot be represented by prompt
 embeddings alone.
 
+## Current Implementation
+
+The code implements a Ray-style separation of roles:
+
+| Role | Code | Responsibility |
+|---|---|---|
+| Entry | `mllm/train/train_grpo.py` | Parse RL args, reject unsupported modes, start coordinator. |
+| Coordinator | `mllm/rl/grpo_trainer.py` | Launch Ray actor/rollout/reward workers and drive the GRPO loop. |
+| Actor | `mllm/rl/grpo_trainer.py::ActorWorker` | Load multimodal policy, compute DINO/projector/Qwen prompt embeddings, update trainable weights. |
+| Rollout | `mllm/rl/rollout.py::VLLMPromptEmbedRolloutWorker` | Use vLLM `enable_prompt_embeds=True` to sample text completions from actor-provided prompt embeddings. |
+| Reward | `mllm/rl/grpo_trainer.py::RewardWorker` | Score completions using map JSON parsing plus metric-aligned rewards. |
+| Reward metric | `mllm/reward/map_reward.py` | Convert normalized coordinates to pixels and call `infer_index.line_eval.evaluate_records()`. |
+| Export | `mllm/rl/export.py` | Export Qwen text decoder for vLLM and merge LoRA checkpoints into full checkpoints. |
+
+One training step is:
+
+1. Actor reads SFT-format JSONL and images, then computes multimodal prompt
+   embeddings from the current policy.
+2. If LoRA is enabled, actor saves a temporary runtime LoRA adapter so vLLM can
+   sample from the current policy state.
+3. vLLM samples `num_generations` completions for each prompt from prompt
+   embeddings.
+4. Reward worker parses each completion and computes reward components.
+5. Actor rebuilds full prompt+completion sequences, computes old/current log
+   probabilities, normalizes advantages within each prompt group, and applies a
+   clipped GRPO/PPO-style loss.
+6. If `kl_beta > 0`, LoRA actors compute reference logprobs by temporarily
+   disabling the adapter, so the reference is the SFT base policy.
+7. The actor saves adapter checkpoints, `best_reward/`, and finally exports a
+   `merged/` full checkpoint when `export_merged_checkpoints=True`.
+
+This keeps the project-specific vision side in the HF actor and uses vLLM only
+for high-throughput text-decoder rollout. It avoids writing a full custom vLLM
+multimodal model plugin while still using the rollout backend intended for
+large-scale RL.
+
 ## Current Priority
 
 Continue SFT training first. When the dataset grows, missing or under-predicted
@@ -94,6 +130,22 @@ Keep precision/F1 terms in the reward when adding recall terms. A pure count or
 recall reward can push the model to hallucinate extra lines, so recall should be
 balanced by precision, matched-length quality, and cut-continuity checks.
 
+Current reward components:
+
+| Component | Default weight | Notes |
+|---|---:|---|
+| `format` | 0.08 | Valid task JSON receives format credit. Invalid JSON receives `invalid_reward`. |
+| `centerline_instance_f1` | 0.37 | Main instance-level metric from `infer_index.line_eval`. |
+| `centerline_length_f1` | 0.45 | Main length-coverage metric from `infer_index.line_eval`. |
+| `cut_type` | 0.05 | Checks predicted `cut/inside` endpoint labels against GT order. |
+| `cut_continuity` | 0.05 | Checks cut endpoints lie on patch boundary after pixel conversion. |
+| `intersection` | 0.0 by default | Forced to zero for `--map_task lane`; enabled only for lane+intersection tasks. |
+
+For lane-only training, intersection reward does not affect optimization. The
+parser/reward mode is selected by `--map_task lane`. When switching to
+`--map_task lane_intersection`, set a nonzero `--reward_intersection_weight`
+only after the SFT model can produce stable lane+intersection JSON.
+
 ## vLLM Text Export
 
 vLLM receives prompt embeddings, so it only needs the Qwen text decoder weights.
@@ -143,6 +195,36 @@ Important parameters:
 | `--rollout_num_gpus` | Ray GPU allocation for vLLM rollout. |
 | `--num_generations` | GRPO group size; must be at least 2. |
 | `--kl_beta` | KL penalty against the adapter-disabled SFT reference. |
+| `--swanlab_enable True` | Enable SwanLab tracking for GRPO config and scalar metrics. |
+| `--swanlab_project` | Project name, usually including GRPO, phase/task, and backbone. |
+| `--swanlab_experiment_name` | Run name. |
+
+Coordinate parameters:
+
+| Parameter | Purpose |
+|---|---|
+| `--coord_mode auto` | Reads `meta.coord_mode` from SFT JSONL. New datasets use `norm1000`. |
+| `--coord_range 1000` | Normalized coordinate range when `coord_mode=norm1000`. |
+| `--patch_size 256` | Original patch size used for pixel conversion and boundary checks. |
+| `--meter_per_pixel 0.2` | Scale used by `infer_index` length/buffer metrics. |
+
+The model may generate normalized `0..1000` coordinates, but reward geometry is
+computed after conversion back to patch pixels. This matches visualization and
+post-inference evaluation.
+
+SwanLab monitoring:
+
+- `mllm.train.train_grpo` initializes one SwanLab run in the coordinator.
+- `grpo_run_config.json` content is also sent as the SwanLab config.
+- Each GRPO step logs `reward_mean`, `reward_min`, `reward_max`, `loss`,
+  `policy_loss`, `approx_kl`, `clip_fraction`, `action_tokens`, and `lr`.
+- Reward diagnostics are also logged. `reward/parse_ok_rate` tracks format
+  validity; `reward_component/*` contains parseable component averages such as
+  instance/length precision, recall, and F1; `reward_count/*` contains
+  GT/pred/matched line counts, missing/extra line counts, under-prediction rate,
+  and intersection counts; `rollout/completion_tokens_*` and `reward/group_*`
+  monitor generation length and GRPO group reward variance.
+- Final checkpoint information is logged after `final/` and `merged/` are saved.
 
 ## Checkpoints
 
@@ -152,6 +234,26 @@ GRPO saves LoRA checkpoints for resume and final inference export:
   multimodal metadata.
 - `best_reward/`: best adapter checkpoint by mean reward.
 - `merged/`: final SFT+LoRA merged full checkpoint, written after training.
+
+Recommended continuation policy:
+
+- Use `merged/` when you want a single self-contained checkpoint for inference,
+  SFT continuation, or another RL run.
+- Use adapter checkpoints (`checkpoint-*`, `final`, `best_reward/`) when you
+  want to resume exactly from an RL adapter. The adapter path must contain
+  `adapter_config.json`; if the base checkpoint cannot be recovered from that
+  file, pass `--model_base`.
+- SFT LoRA continuation does not depend on the checkpoint directory name. It is
+  controlled by `--lora_enable True`.
+
+Verified smoke path:
+
+```text
+SFT checkpoint -> GRPO LoRA -> merged/ -> SFT LoRA continuation -> inference/eval table
+```
+
+The verified run was a tiny GPU0,2 smoke test, not a quality claim. It confirms
+the checkpoint/load/save path, not that the reward has improved the model.
 
 Use manual merge when exporting a specific adapter checkpoint:
 

@@ -34,6 +34,21 @@ import transformers
 import tokenizers
 from tqdm.auto import tqdm as tqdm_auto
 
+# Transformers 4.56 exposes TrainingArguments.parallelism_config annotated as
+# ForwardRef("ParallelismConfig") but does not export that symbol in all wheels.
+# HfArgumentParser resolves inherited annotations in this module's globals, so a
+# local placeholder keeps argument parsing compatible. We never set this field.
+try:
+    from transformers.training_args import ParallelismConfig  # type: ignore
+except Exception:  # pragma: no cover - version compatibility shim
+    class ParallelismConfig:  # type: ignore
+        pass
+    try:
+        import transformers.training_args as _transformers_training_args
+        _transformers_training_args.ParallelismConfig = ParallelismConfig
+    except Exception:
+        pass
+
 from mllm.constants import IGNORE_INDEX, IMAGE_TOKEN_INDEX, DEFAULT_IMAGE_TOKEN, DEFAULT_IM_START_TOKEN, DEFAULT_IM_END_TOKEN
 from torch.utils.data import Dataset
 from mllm.train.llava_trainer import LLaVATrainer
@@ -41,13 +56,14 @@ from mllm.train.checkpoint_metadata import (
     sync_qwen_multimodal_config,
     write_qwen_multimodal_checkpoint_metadata,
 )
+from mllm.train.swanlab_utils import build_swanlab_callback
 from transformers import TrainerCallback
 from transformers.trainer_callback import PrinterCallback, ProgressCallback
 
 from mllm import conversation as conversation_lib
 from mllm.model import *
 from mllm.mm_utils import tokenizer_image_token, process_anyres_image
-from mllm.model.builder import _load_multimodal_weights_if_present
+from mllm.model.builder import _load_multimodal_weights_if_present, _load_tokenizer_with_fast_fallback
 from mllm.model.qwen3vl_extractor import is_qwen3vl_checkpoint, is_llava_checkpoint, ensure_extracted_llm_from_qwen3vl
 from mllm.model.qwen_token_utils import qwen_tokenizer_kwargs, sync_qwen_token_config
 
@@ -587,6 +603,15 @@ class TrainingArguments(transformers.TrainingArguments):
     save_best_eval_loss: bool = field(default=False)
     best_eval_loss_dir: str = field(default="eval_best")
     use_hf_progress_bar: bool = field(default=False)
+    swanlab_enable: bool = field(default=False)
+    swanlab_project: Optional[str] = field(default=None)
+    swanlab_experiment_name: Optional[str] = field(default=None)
+    swanlab_description: Optional[str] = field(default=None)
+    swanlab_tags: Optional[str] = field(default=None)
+    swanlab_mode: Optional[str] = field(default=None)
+    swanlab_log_dir: Optional[str] = field(default=None)
+    swanlab_api_host: Optional[str] = field(default=None)
+    swanlab_web_host: Optional[str] = field(default=None)
 
 
 def maybe_zero_3(param, ignore_status=False, name=None):
@@ -1783,20 +1808,21 @@ def train(attn_implementation=None):
         model = get_peft_model(model, lora_config)
 
     if 'mpt' in model_args.model_name_or_path:
-        tokenizer = transformers.AutoTokenizer.from_pretrained(
+        tokenizer = _load_tokenizer_with_fast_fallback(
             model_args.model_name_or_path,
+            use_fast=None,
             cache_dir=training_args.cache_dir,
             model_max_length=training_args.model_max_length,
             padding_side="right",
             **qwen_tokenizer_kwargs(model_args.model_name_or_path),
         )
     else:
-        tokenizer = transformers.AutoTokenizer.from_pretrained(
+        tokenizer = _load_tokenizer_with_fast_fallback(
             model_args.model_name_or_path,
+            use_fast=False,
             cache_dir=training_args.cache_dir,
             model_max_length=training_args.model_max_length,
             padding_side="right",
-            use_fast=False,
             **qwen_tokenizer_kwargs(model_args.model_name_or_path),
         )
 
@@ -1908,14 +1934,18 @@ def train(attn_implementation=None):
 
     data_module = make_supervised_data_module(tokenizer=tokenizer,
                                               data_args=data_args)
+    callbacks = [
+        JsonlMetricLoggerCallback(training_args.output_dir),
+        BestTrainLossCallback(),
+        BestEvalLossCallback(),
+    ]
+    swanlab_callback = build_swanlab_callback(model_args, data_args, training_args)
+    if swanlab_callback is not None:
+        callbacks.append(swanlab_callback)
     trainer = LLaVATrainer(model=model,
                            processing_class=tokenizer,
                            args=training_args,
-                           callbacks=[
-                               JsonlMetricLoggerCallback(training_args.output_dir),
-                               BestTrainLossCallback(),
-                               BestEvalLossCallback(),
-                           ],
+                           callbacks=callbacks,
                            **data_module)
     trainer.remove_callback(PrinterCallback)
     if not training_args.use_hf_progress_bar:

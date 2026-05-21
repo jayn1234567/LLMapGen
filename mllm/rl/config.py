@@ -141,4 +141,13 @@ class GRPOArguments:
     mm_vision_tower_lr: Optional[float] = None
 
     report_to: str = "none"
+    swanlab_enable: bool = False
+    swanlab_project: Optional[str] = None
+    swanlab_experiment_name: Optional[str] = None
+    swanlab_description: Optional[str] = None
+    swanlab_tags: Optional[str] = None
+    swanlab_mode: Optional[str] = None
+    swanlab_log_dir: Optional[str] = None
+    swanlab_api_host: Optional[str] = None
+    swanlab_web_host: Optional[str] = None
     local_rank: int = -1

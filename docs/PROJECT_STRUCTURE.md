@@ -8,19 +8,20 @@ explicitly imports them.
 
 ```text
 .
-├── AGENTS.md                         # Working notes for agents and maintainers.
-├── README.md                         # Main project overview and common workflows.
-├── pyproject.toml                    # Python package metadata and dependencies.
-├── configs/                          # Shared DeepSpeed configs.
-├── data_process/                     # Raw BEV/GeoJSON data processing into JSONL.
-├── docs/                             # Detailed design and operation docs.
-├── infer_index/                      # Geometry metric backend.
-├── mllm/                             # Active multimodal framework code.
-├── scripts/                          # Runnable training/inference/debug entrypoints.
-├── model_export/                     # Export utilities for model components.
-├── data/                             # Local debug/sample datasets. Do not treat as source code.
-├── outputs/                          # Local experiment outputs. Do not treat as source code.
-└── tests / test_*.py                  # Lightweight checks and legacy smoke tests.
+├── README.md                         # Main overview, verified flows, train/RL/infer usage.
+├── AGENTS.md                         # Maintainer working notes and branch conventions.
+├── pyproject.toml                    # Python package metadata and dependency hints.
+├── configs/                          # Shared DeepSpeed config templates.
+├── data_process/                     # Raw BEV/GeoJSON/tar -> normalized SFT JSONL.
+├── docs/                             # Detailed design docs and handover notes.
+├── infer_index/                      # Official line metric implementation used by eval/reward.
+├── mllm/                             # Active framework code: model, SFT, RL, rewards, coordinates.
+├── scripts/                          # Executable train/infer/eval/visualize/export/debug scripts.
+├── model_export/                     # Model conversion/export helpers.
+├── data/                             # Local debug/sample datasets; generated artifacts.
+├── outputs/                          # Local training/inference outputs; generated artifacts.
+├── test_*.py                         # Lightweight legacy/debug smoke tests.
+└── UniMapGen.pdf                     # Local paper/reference artifact when present; not committed.
 ```
 
 ## Core Framework: `mllm/`
@@ -30,11 +31,11 @@ mllm/
 ├── __init__.py                       # Lazy package exports; avoids importing model deps for utility-only imports.
 ├── constants.py                      # Shared token/constants.
 ├── conversation.py                   # Qwen/LLaVA-style conversation templates.
-├── coord_utils.py                    # Pixel <-> norm1000 coordinate conversion utilities.
+├── coord_utils.py                    # Pixel <-> norm1000 conversion and coord metadata helpers.
 ├── mm_utils.py                       # Image/token multimodal helper functions.
 ├── model/                            # Model loading and multimodal architecture.
-├── reward/                           # Map JSON parsing and geometry reward/metric helpers.
-├── rl/                               # Post-training RL data/rollout/reward interfaces.
+├── reward/                           # Map JSON parser plus metric-aligned reward functions.
+├── rl/                               # Ray + vLLM GRPO stack and export utilities.
 ├── train/                            # SFT training entrypoints and Trainer customizations.
 └── serve/                            # Legacy/optional serving utilities.
 ```
@@ -50,11 +51,14 @@ Important subdirectories:
 - `mllm/train/train_sft.py`: SFT wrapper entrypoint.
 - `mllm/train/llava_trainer.py`: Trainer subclass, checkpoint save behavior, grouped LR, best-loss callbacks.
 - `mllm/train/checkpoint_metadata.py`: Qwen multimodal checkpoint metadata sync/write helpers.
-- `mllm/reward/map_schema.py`: JSON schema extraction and validation.
-- `mllm/reward/map_reward.py`: map-output scoring helpers using line metrics; reusable by future RL.
+- `mllm/reward/map_schema.py`: JSON schema extraction and task-specific validation for `lane` / `lane_intersection`.
+- `mllm/reward/map_reward.py`: reward function that converts model coordinates to pixels and reuses `infer_index.line_eval`.
+- `mllm/rl/config.py`: GRPO/RL dataclass arguments.
 - `mllm/rl/data_pool.py`: hard-sample pool builder from SFT inference summaries.
-- `mllm/rl/grpo_trainer.py`: Ray/verl-style GRPO coordinator, actor, rollout, and reward roles.
-- `mllm/rl/rollout.py`: vLLM prompt-embedding rollout contracts.
+- `mllm/rl/dataset.py`: SFT JSONL reader reused by RL training.
+- `mllm/rl/grpo_trainer.py`: Ray-style GRPO coordinator, HF actor, vLLM rollout worker, and reward worker.
+- `mllm/rl/rollout.py`: prompt-embedding rollout contracts and vLLM wrapper.
+- `mllm/rl/modeling.py`: policy loading, LoRA/full-train scope selection, optimizer, checkpoint save.
 - `mllm/rl/export.py`: text-decoder export for vLLM and LoRA merged-checkpoint export.
 - `mllm/rl/schemas.py`: shared post-training data structures for pool/audit outputs.
 
@@ -104,6 +108,14 @@ Inference summaries keep both coordinate spaces when needed:
 - `prediction_json_pixel`: pixel-converted output for visualization, stitching, and metrics.
 - `ground_truth_pixel`: pixel-converted GT when the dataset is normalized.
 
+Metric printing:
+
+- `infer_centerline_checkpoint.py`, `infer_centerline_state_update.py`, and
+  `visualize_centerline.py` write metric JSON and print the table produced by
+  `LineEvalRes.show_res()`.
+- The metric is computed in pixel/meter space. Normalized model coordinates are
+  converted to pixels before `infer_index.line_eval.py` runs.
+
 ## Scripts
 
 ```text
@@ -112,9 +124,9 @@ scripts/
 ├── deepspeed_zero*.json               # Script-local DeepSpeed configs.
 ├── train_full_*.sh                    # Top-level full-parameter NPU entrypoints.
 ├── test_full_*.sh                     # Top-level NPU inference/eval entrypoints.
-├── data/                              # Dataset split utilities.
-├── rl/                                # RL post-training utilities.
-├── gpu/                               # Local GPU smoke/debug scripts.
+├── data/                              # Dataset split and eval/test helper utilities.
+├── rl/                                # RL hard-pool and checkpoint export command-line tools.
+├── gpu/                               # Local GPU smoke/debug scripts for SFT/GRPO/inference.
 └── npu/                               # NPU cloud training/testing scripts.
 ```
 
@@ -174,3 +186,13 @@ For inference/evaluation, read:
 For RL work, start from `docs/RL_ROADMAP.md`, `scripts/rl/build_hard_pool.py`,
 and `mllm/train/train_grpo.py`. The formal rollout path is vLLM prompt
 embeddings; HF-local generation is not a training backend.
+
+Current tested RL continuation path:
+
+1. Train or choose an SFT checkpoint.
+2. Run GRPO with `python -m mllm.train.train_grpo` and
+   `--rollout_backend vllm_prompt_embeds`.
+3. Use GRPO `merged/` as a self-contained full checkpoint for inference or for
+   later SFT/RL continuation.
+4. If continuing with LoRA SFT, `--lora_enable True` controls adapter creation;
+   the directory name does not need to contain `lora`.

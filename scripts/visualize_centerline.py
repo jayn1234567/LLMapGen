@@ -10,7 +10,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from infer_index.line_eval import evaluate_records
+from infer_index.line_eval import evaluate_records, print_eval_table
 from mllm.coord_utils import COORD_MODE_PIXEL, convert_payload_text, record_coord_config
 
 
@@ -206,6 +206,7 @@ def main():
         )
         eval_path = Path(args.eval_output_json) if args.eval_output_json else input_dir / "centerline_eval.json"
         eval_path.write_text(json.dumps(eval_summary, ensure_ascii=False, indent=2), encoding="utf-8")
+        print_eval_table(eval_summary)
         print(json.dumps({"centerline_eval_json": str(eval_path), "centerline_eval": eval_summary}, ensure_ascii=False))
 
 

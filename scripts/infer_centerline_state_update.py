@@ -336,9 +336,9 @@ def main():
     parser.add_argument("--dry-run-prompts", action="store_true")
     args = parser.parse_args()
 
-    evaluate_records = None
+    evaluate_records = print_eval_table = None
     if args.eval_centerline:
-        from infer_index.line_eval import evaluate_records
+        from infer_index.line_eval import evaluate_records, print_eval_table
 
     records = sort_patch_records(load_json_or_jsonl(Path(args.patch_json)))
     image_folder = Path(args.image_folder)
@@ -557,8 +557,12 @@ def main():
             buffer_size=args.eval_buffer_size,
             match_threshold=args.eval_match_threshold,
         )
-        if args.eval_output_json:
-            dump_json(Path(args.eval_output_json), summary["centerline_eval"])
+        eval_path = Path(args.eval_output_json) if args.eval_output_json else Path(args.output_json).with_name(
+            f"{Path(args.output_json).stem}_centerline_eval.json"
+        )
+        dump_json(eval_path, summary["centerline_eval"])
+        print_eval_table(summary["centerline_eval"])
+        print(json.dumps({"centerline_eval_json": str(eval_path), "centerline_eval": summary["centerline_eval"]}, ensure_ascii=False))
     if args.merged_output_json:
         dump_json(Path(args.merged_output_json), summary["merged_global"])
     dump_json(Path(args.output_json), summary)

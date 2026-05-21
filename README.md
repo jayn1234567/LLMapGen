@@ -44,16 +44,61 @@ This branch supports:
 - Inference that recovers DeepStack settings from checkpoint metadata.
 - Centerline geometric evaluation with buffer-IoU + Hungarian matching.
 - Visualization of ground truth vs prediction after inference.
+- Evaluation-table printing after inference/visualization using the same
+  `infer_index` metric format.
 - Rank-0-only clean training logs with `DI_throughput: ... tokens/s/npu`.
 - 256 patch state-update data flow for centerline and intersection prediction.
+- Post-SFT GRPO training with Ray + vLLM prompt-embedding rollout, LoRA actor
+  updates, metric-based rewards, adapter checkpoints, and merged full-checkpoint
+  export.
+- Optional SwanLab experiment tracking for SFT and GRPO hyperparameters, run
+  config, and scalar metrics.
+
+## Project Structure
+
+The active package is `mllm/`. Names such as `llava` are legacy compatibility
+history unless a script explicitly imports them.
+
+```text
+.
+├── README.md                         # Main overview, recommended workflows, and current verified behavior.
+├── AGENTS.md                         # Maintainer/agent working notes and branch conventions.
+├── pyproject.toml                    # Python package metadata.
+├── configs/                          # Shared DeepSpeed configs used by training scripts.
+├── data_process/                     # Raw BEV image/GeoJSON/tar processing into SFT JSONL.
+├── docs/                             # Detailed design docs: project structure, RL, DeepStack, handover.
+├── infer_index/                      # Centerline metric backend: buffer-IoU + Hungarian matching.
+├── mllm/                             # Active multimodal framework: model, SFT, RL, reward, coordinate utilities.
+├── scripts/                          # Runnable data, train, inference, visualization, export, debug entrypoints.
+├── model_export/                     # Model-component export helpers.
+├── data/                             # Local debug/sample datasets; generated data, not framework source.
+├── outputs/                          # Local experiment outputs; generated artifacts.
+└── test_*.py                         # Lightweight legacy/debug smoke tests.
+```
+
+More detail is maintained in [docs/PROJECT_STRUCTURE.md](docs/PROJECT_STRUCTURE.md).
 
 ## Latest Flow Audit
 
-2026-05-19 audit covered both LoRA and full-parameter paths:
+2026-05-20 GPU audit covered SFT, GRPO, inference, and state-update paths on
+GPU0,2:
 
-- LoRA ZeRO3 SFT on GPU0,2: train 1 step, save checkpoint, reload checkpoint, run inference.
-- Full-parameter ZeRO3 SFT on GPU0,2: train 1 step, save `model.safetensors`, reload checkpoint, run inference.
-- State-update inference: real model-prediction path and GT dry-run path both checked.
+- Phase-A lane and lane+intersection debug data follow the same JSONL structure
+  as generated data.
+- DINOv2 and DINOv3 no-DeepStack SFT smoke paths were run for LoRA and
+  full-parameter modes.
+- LoRA ZeRO3 SFT on GPU0,2: train 1 step, save checkpoint, reload checkpoint,
+  run patch inference.
+- Full-parameter ZeRO3 SFT on GPU0,2: train 1 step, save full checkpoint,
+  reload checkpoint, run patch inference.
+- DINOv3 phase-B lane+intersection LoRA path was checked with state-update
+  inference using model predictions as state.
+- GRPO with Ray + vLLM prompt embeddings was run from SFT checkpoints for
+  lane-only and lane+intersection debug data. Outputs include `final/`,
+  `best_reward/`, and `merged/`.
+- A GRPO `merged/` full checkpoint was then used as `MODEL_NAME_OR_PATH` for a
+  second SFT LoRA smoke run on GPU0,2. The path name did not contain `lora`, and
+  `--lora_enable True` still correctly added LoRA adapters.
 
 Fixes from this audit:
 
@@ -62,6 +107,9 @@ Fixes from this audit:
 - LoRA saves now include tokenizer files in SFT paths.
 - `lora_bias=lora_only` state extraction was fixed.
 - Debug/test scripts pass `--map-task lane` or `--map-task lane_intersection` explicitly.
+- Checkpoint config saving handles both dict-like and object-like configs.
+- Inference, state-update inference, and visualization print the standard
+  `Line Evaluation Results` table when centerline ground truth is available.
 
 ## Documentation
 
@@ -200,6 +248,20 @@ LoRA module selection:
 | `--lora_target_modules` | Optional exact module-name override. If set, scope auto-detection is skipped. |
 | `--lora_exclude_modules` | Comma-separated filters to exclude, defaulting to `lm_head,embed_tokens`. |
 
+SwanLab monitoring:
+
+| Parameter | Purpose |
+|---|---|
+| `--swanlab_enable True` | Enable SwanLab logging. Default scripts keep it off unless changed in the script parameter block. |
+| `--swanlab_project` | Project name. Main scripts default to task-specific names such as `mllm-sft-33w-phase_a-lane-dinov2-nodeepstack`. |
+| `--swanlab_experiment_name` | Run name, usually including SFT/GRPO, data scale, phase, task, backbone, and DeepStack mode. |
+| `--swanlab_tags` | Comma-separated run tags. |
+| `--swanlab_mode` | Optional SwanLab mode, for example `cloud`, `offline`, or `disabled`. Leave empty for SwanLab default. |
+
+The provided SFT/GRPO scripts define `SWANLAB_API_KEY`, `SWANLAB_PROJECT`, and
+`SWANLAB_EXPERIMENT_NAME` in their parameter blocks. Edit those blocks for
+reproducible runs instead of passing one-off shell prefixes.
+
 ## RL Post-Training
 
 RL is a separate post-training stack and does not change the stable SFT/data
@@ -219,6 +281,28 @@ Keep the SFT entrypoint as `python -m mllm.train.train_qwen` or
 `python -m mllm.train.train_sft`. GRPO uses `python -m mllm.train.train_grpo`
 with `--rollout_backend vllm_prompt_embeds`.
 
+Current GRPO implementation:
+
+- Actor role: loads the multimodal SFT checkpoint, runs DINO/projector/Qwen
+  multimodal prompt preparation, and trains the policy.
+- Rollout role: uses vLLM with `enable_prompt_embeds=True` to decode from the
+  actor-computed multimodal prompt embeddings. vLLM only needs the Qwen text
+  decoder export.
+- Reward role: parses generated JSON and ground truth, converts normalized
+  coordinates back to pixels, then reuses `infer_index.line_eval` for the main
+  centerline geometry score.
+- Update rule: grouped completions are scored, advantages are normalized within
+  each prompt group, and the actor is updated with a clipped GRPO/PPO-style
+  objective plus optional KL to the adapter-disabled SFT reference.
+- Checkpoints: `checkpoint-*` and `final/` are adapter checkpoints, `best_reward/`
+  tracks highest mean reward, and `merged/` is the exported full checkpoint for
+  inference or later SFT/RL continuation.
+
+Current supported RL mode is no-DeepStack + LoRA, with `lora_target_scope=llm`
+as the safest default. DeepStack is intentionally rejected by the vLLM
+prompt-embedding path because layer-level visual residual injection cannot be
+represented as text-decoder prompt embeddings.
+
 Current training priority is still SFT. If larger data still produces missing
 or under-predicted centerlines, collect those parseable low-recall cases from
 SFT inference summaries and use them later as RL hard samples. The future GRPO
@@ -233,6 +317,13 @@ RL task selection:
 | `--map_task lane_intersection` | Future lane+intersection reward/parser mode. |
 | `--rollout_backend vllm_prompt_embeds` | Required formal rollout path. HF-local generation is not a training backend. |
 | `--vllm_model_path` | Optional pre-exported text-decoder checkpoint. If unset, GRPO exports one from the SFT checkpoint. |
+
+GRPO SwanLab logging records the full run config plus step metrics such as
+`reward_mean`, `loss`, `policy_loss`, `approx_kl`, `clip_fraction`,
+`action_tokens`, and learning rate. It also logs reward diagnostics:
+`reward/parse_ok_rate`, `reward_component/*` for parseable completions,
+`reward_count/*` for GT/pred/matched line counts and under-prediction signals,
+`rollout/completion_tokens_*`, and `reward/group_*` group-variance statistics.
 
 LoRA parameters:
 
@@ -251,6 +342,16 @@ GRPO checkpoint outputs:
 | `checkpoint-*` / `final` | Adapter checkpoint for resume. |
 | `best_reward/` | Adapter checkpoint with the best mean reward. |
 | `merged/` | Final SFT+LoRA merged full checkpoint for inference or second-stage training. |
+
+LoRA path behavior:
+
+- SFT training enters LoRA mode by `--lora_enable True`; the checkpoint path name
+  does not need to contain `lora`.
+- Inference and RL adapter loading should identify adapters by
+  `adapter_config.json`.
+- For a self-contained continuation path, prefer GRPO/SFT `merged/` as
+  `--model_name_or_path`. Adapter-only checkpoints can also be used, but they
+  need a valid `adapter_config.json` and base-model reference.
 
 RL environment:
 
@@ -327,8 +428,11 @@ Important behavior:
 
 - Data processing defaults to `--coord-mode norm1000 --coord-range 1000`.
 - Phase B incoming left/top hints use the same coordinate mode as targets; hints may be negative or above 1000 because they come from neighboring patches.
-- Model outputs are parsed in the dataset coordinate mode, then converted back to pixel coordinates for state-update stitching, visualization, and `infer_index/line_eval.py`.
+- Model outputs are parsed in the dataset coordinate mode, then converted back to pixel coordinates for state-update stitching, visualization, reward scoring, and `infer_index/line_eval.py`.
 - Inference and test scripts expose `COORD_MODE=auto` and `COORD_RANGE=1000`; `auto` reads `meta.coord_mode` from JSONL and remains compatible with old pixel datasets.
+- The metric result is therefore a pixel/meter-space evaluation, not a
+  normalized-coordinate distance. `meter_per_pixel` controls the final conversion
+  used by `infer_index`.
 
 Conversion formula:
 
@@ -382,7 +486,23 @@ python scripts/visualize_centerline.py \
   --image-folder data/images
 ```
 
-When ground truth exists, visualization writes and prints `centerline_eval.json`. The metric backend is `infer_index/line_eval.py`, using LineString buffer IoU plus Hungarian matching. The default scale is `--eval-meter-per-pixel 0.2`.
+When ground truth exists, inference/visualization writes metric JSON and prints
+the same table format from `infer_index.LineEvalRes.show_res()`, for example:
+
+```text
+==========================================================
+                 Line Evaluation Results
+==========================================================
+Metric             Precision    Recall       F1
+----------------------------------------------------------
+Instance Level     0.0000       0.0000       0.0000
+Length Level       0.0000       0.0000       0.0000
+==========================================================
+格式合法的推理结果占比: 0.0000(0/1)
+```
+
+The metric backend is `infer_index/line_eval.py`, using LineString buffer IoU
+plus Hungarian matching. The default scale is `--eval-meter-per-pixel 0.2`.
 
 Full-checkpoint testing:
 

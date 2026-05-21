@@ -201,6 +201,22 @@ def evaluate_records(
         Parameter.METER_PER_PIXEL = old_meter_per_pixel
 
 
+def line_eval_res_from_summary(summary) -> LineEvalRes:
+    if isinstance(summary, LineEvalRes):
+        return summary
+    res = LineEvalRes()
+    if not isinstance(summary, dict):
+        return res
+    for field in fields(LineEvalRes):
+        if field.name in summary:
+            setattr(res, field.name, summary[field.name])
+    return res
+
+
+def print_eval_table(summary, logger=None) -> None:
+    line_eval_res_from_summary(summary).show_res(logger)
+
+
 def evaluate_one_sample(
     ground_truth: str,
     prediction: str,

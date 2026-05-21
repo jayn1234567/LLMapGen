@@ -79,6 +79,7 @@ pip install fastapi
 pip install 'einops>=0.6'
 pip install 'einops-exts>=0.0.4'
 pip install 'timm>=0.9.0'
+pip install swanlab
 
 pip install "huggingface-hub>=0.25.1" --force-reinstall
 pip install urllib3==1.26.15
@@ -278,6 +279,13 @@ ENABLE_EVAL=${ENABLE_EVAL:-True}        # If True, run eval_loss on EVAL_PATH by
 SAVE_BEST_EVAL_LOSS=${SAVE_BEST_EVAL_LOSS:-True} # Maintain OUTPUT_PATH/eval_best.
 BEST_EVAL_LOSS_DIR=${BEST_EVAL_LOSS_DIR:-eval_best}
 USE_HF_PROGRESS_BAR=True               # --use_hf_progress_bar; True prints HF tqdm progress on console.
+SWANLAB_ENABLE=${SWANLAB_ENABLE:-False} # --swanlab_enable; enable SwanLab monitoring when True.
+SWANLAB_API_KEY=${SWANLAB_API_KEY:-"5gIH7zqSwmo8dl1Ia5vRN"}  # Runtime API key; can be overridden by exporting SWANLAB_API_KEY.
+SWANLAB_PROJECT=${SWANLAB_PROJECT:-mllm-sft-33w-${DATASET_PHASE}-${MAP_TASK}-dinov2-nodeepstack}
+SWANLAB_EXPERIMENT_NAME=${SWANLAB_EXPERIMENT_NAME:-sft_33w_${DATASET_PHASE}_${MAP_TASK}_dinov2_qwen3vl8b_nodeepstack}
+SWANLAB_TAGS=${SWANLAB_TAGS:-sft,33w,${DATASET_PHASE},${MAP_TASK},dinov2,qwen3vl8b,nodeepstack}
+SWANLAB_MODE=${SWANLAB_MODE:-}
+export SWANLAB_API_KEY
 EVAL_STRATEGY_ARG=$(python -c "import inspect, transformers; print('--eval_strategy' if 'eval_strategy' in inspect.signature(transformers.TrainingArguments.__init__).parameters else '--evaluation_strategy')")
 
 EVAL_ARGS=()
@@ -310,6 +318,7 @@ echo "LR:         llm=${LR}, projector=${MM_PROJECTOR_LR}, vision=${MM_VISION_TO
 echo "Best train: ${SAVE_BEST_TRAIN_LOSS}, start_step=${BEST_TRAIN_LOSS_START_STEP}, dir=${BEST_TRAIN_LOSS_DIR}"
 echo "Eval:       ${ENABLE_EVAL}, eval_steps=${EVAL_STEPS}, best_eval=${SAVE_BEST_EVAL_LOSS}, dir=${BEST_EVAL_LOSS_DIR}"
 echo "HF tqdm:    ${USE_HF_PROGRESS_BAR}"
+echo "SwanLab:    ${SWANLAB_ENABLE}, project=${SWANLAB_PROJECT}, exp=${SWANLAB_EXPERIMENT_NAME}"
 echo "============================================================"
 
 torchrun \
@@ -355,6 +364,11 @@ torchrun \
     --use_hf_progress_bar "${USE_HF_PROGRESS_BAR}" \
     --logging_steps "${LOGGING_STEPS}" \
     --report_to none \
+    --swanlab_enable "${SWANLAB_ENABLE}" \
+    --swanlab_project "${SWANLAB_PROJECT}" \
+    --swanlab_experiment_name "${SWANLAB_EXPERIMENT_NAME}" \
+    --swanlab_tags "${SWANLAB_TAGS}" \
+    --swanlab_mode "${SWANLAB_MODE}" \
     --ddp_find_unused_parameters False \
     --ddp_backend hccl \
     --deepspeed "${DEEPSPEED_CONFIG}"

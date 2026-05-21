@@ -42,6 +42,14 @@ def _as_line_payload(items: list[dict[str, Any]]) -> str:
     return json.dumps({"lines": items}, ensure_ascii=False)
 
 
+def _first_line_sample(eval_payload: dict[str, Any]) -> dict[str, Any]:
+    samples = eval_payload.get("samples") if isinstance(eval_payload, dict) else None
+    if not samples:
+        return {}
+    first = samples[0]
+    return first if isinstance(first, dict) else {}
+
+
 def _endpoint_on_boundary(point: list[int], patch_size: int, tolerance: int) -> bool:
     x, y = point
     high = patch_size - 1
@@ -116,6 +124,7 @@ def compute_map_reward(prediction: str, ground_truth: str, config: MapRewardConf
             "parse_ok": False,
             "parse_error": pred_parse.error or gt_parse.error,
             "components": {},
+            "counts": {},
             "config": asdict(config),
         }
 
@@ -143,7 +152,7 @@ def compute_map_reward(prediction: str, ground_truth: str, config: MapRewardConf
     # Main geometry score: reuse the same infer_index matcher used after
     # inference, so future post-training rewards can optimize the metric we
     # actually care about.
-    line_res = evaluate_records(
+    line_eval_payload = evaluate_records(
         [{
             "ground_truth_pixel": _as_line_payload(_centerline_items(gt_items)),
             "prediction_json_pixel": _as_line_payload(_centerline_items(pred_items)),
@@ -152,21 +161,44 @@ def compute_map_reward(prediction: str, ground_truth: str, config: MapRewardConf
         meter_per_pixel=config.meter_per_pixel,
         buffer_size=config.buffer_size,
         match_threshold=config.match_threshold,
+        include_samples=True,
     )
+    line_res = line_eval_payload.get("summary", {}) if isinstance(line_eval_payload, dict) else {}
+    line_sample = _first_line_sample(line_eval_payload)
     instance_f1 = float(line_res.get("instance_f1", 0.0))
     length_f1 = float(line_res.get("length_f1", 0.0))
     cut_type = _cut_type_score(gt_items, pred_items)
     cut_continuity = _cut_boundary_score(pred_items, config.patch_size, config.boundary_tolerance)
     use_intersection = _uses_intersection_reward(config.map_task)
     intersection = _intersection_basic_score(gt_items, pred_items) if use_intersection else 0.0
+    gt_line_num = int(line_sample.get("gt_line_num", len(_centerline_items(gt_items))) or 0)
+    pred_line_num = int(line_sample.get("pred_line_num", len(_centerline_items(pred_items))) or 0)
+    matched_line_num = int(line_sample.get("matched_line_num", 0) or 0)
 
     components = {
         "format": 1.0,
+        "centerline_instance_pre": float(line_res.get("instance_pre", 0.0)),
+        "centerline_instance_recall": float(line_res.get("instance_recall", 0.0)),
         "centerline_instance_f1": instance_f1,
+        "centerline_length_pre": float(line_res.get("length_pre", 0.0)),
+        "centerline_length_recall": float(line_res.get("length_recall", 0.0)),
         "centerline_length_f1": length_f1,
         "cut_type": cut_type,
         "cut_continuity": cut_continuity,
         "intersection": intersection,
+    }
+    counts = {
+        "gt_line_num": gt_line_num,
+        "pred_line_num": pred_line_num,
+        "matched_line_num": matched_line_num,
+        "missing_line_num": max(gt_line_num - pred_line_num, 0),
+        "extra_line_num": max(pred_line_num - gt_line_num, 0),
+        "under_pred": float(pred_line_num < gt_line_num),
+        "gt_line_length_sum": float(line_sample.get("gt_line_length_sum", 0.0) or 0.0),
+        "pred_line_length_sum": float(line_sample.get("pred_line_length_sum", 0.0) or 0.0),
+        "matched_line_length_sum": float(line_sample.get("matched_line_length_sum", 0.0) or 0.0),
+        "gt_intersection_num": len(_intersection_items(gt_items)),
+        "pred_intersection_num": len(_intersection_items(pred_items)),
     }
     reward = (
         config.format_weight * components["format"]
@@ -182,6 +214,7 @@ def compute_map_reward(prediction: str, ground_truth: str, config: MapRewardConf
         "parse_ok": True,
         "parse_error": None,
         "components": components,
+        "counts": counts,
         "config": asdict(config),
     }
 

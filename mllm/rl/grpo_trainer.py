@@ -19,6 +19,7 @@ from transformers import get_scheduler
 
 from mllm.constants import IGNORE_INDEX
 from mllm.coord_utils import COORD_MODE_PIXEL, normalize_coord_mode
+from mllm.train.swanlab_utils import finish_swanlab, init_swanlab_run, log_swanlab
 
 from .config import GRPOArguments, RLDataArguments, RLModelArguments
 from .dataset import RLDataCollator, RLSFTJsonlDataset
@@ -85,6 +86,61 @@ def _find_multimodal_preparer(model):
     if hasattr(base, "prepare_inputs_labels_for_multimodal"):
         return base
     raise AttributeError("Policy model does not expose prepare_inputs_labels_for_multimodal")
+
+
+def _safe_metric_name(name: str) -> str:
+    return str(name).strip().replace("/", "_").replace(" ", "_")
+
+
+def _mean(values: list[float]) -> float:
+    return float(sum(values) / len(values)) if values else 0.0
+
+
+def _numeric_mapping_means(payloads: list[dict[str, Any]], field: str, prefix: str) -> dict[str, float]:
+    buckets: dict[str, list[float]] = {}
+    for payload in payloads:
+        mapping = payload.get(field)
+        if not isinstance(mapping, dict):
+            continue
+        for key, value in mapping.items():
+            if isinstance(value, bool):
+                value = float(value)
+            if isinstance(value, (int, float)):
+                buckets.setdefault(_safe_metric_name(key), []).append(float(value))
+    return {f"{prefix}/{key}": _mean(values) for key, values in sorted(buckets.items())}
+
+
+def _aggregate_reward_metrics(
+    rewards_payload: list[dict[str, Any]],
+    rewards: list[float],
+    samples: list[RolloutSample],
+    group_count: int,
+    num_generations: int,
+) -> dict[str, float]:
+    metrics: dict[str, float] = {}
+    if rewards_payload:
+        metrics["reward/parse_ok_rate"] = _mean([1.0 if item.get("parse_ok") else 0.0 for item in rewards_payload])
+        metrics.update(_numeric_mapping_means(rewards_payload, "components", "reward_component"))
+        metrics.update(_numeric_mapping_means(rewards_payload, "counts", "reward_count"))
+
+    if samples:
+        lengths = [float(sample.completion_ids.numel()) for sample in samples]
+        metrics["rollout/completion_tokens_mean"] = _mean(lengths)
+        metrics["rollout/completion_tokens_max"] = float(max(lengths))
+
+    if rewards and group_count > 0 and num_generations > 0:
+        grouped = [rewards[idx: idx + num_generations] for idx in range(0, len(rewards), num_generations)]
+        stds = []
+        for group in grouped[:group_count]:
+            if len(group) != num_generations:
+                continue
+            mean = _mean(group)
+            variance = _mean([(value - mean) ** 2 for value in group])
+            stds.append(math.sqrt(variance))
+        if stds:
+            metrics["reward/group_std_mean"] = _mean(stds)
+            metrics["reward/group_zero_std_rate"] = _mean([1.0 if value <= 1e-12 else 0.0 for value in stds])
+    return metrics
 
 
 class ActorWorker:
@@ -475,6 +531,13 @@ class ActorWorker:
         self.global_step += 1
 
         mean_reward = sum(rewards) / max(len(rewards), 1)
+        reward_metrics = _aggregate_reward_metrics(
+            rewards_payload=rewards_payload,
+            rewards=rewards,
+            samples=samples,
+            group_count=len(batch.sample_ids),
+            num_generations=self.args.num_generations,
+        )
         metrics = {
             "step": self.global_step,
             "loss": float(step_loss.item() if step_loss is not None else 0.0),
@@ -483,6 +546,7 @@ class ActorWorker:
             "reward_max": float(max(rewards) if rewards else 0.0),
             "lr": self.scheduler.get_last_lr()[0],
             **step_metrics,
+            **reward_metrics,
         }
         if self.global_step % self.args.logging_steps == 0 or self.global_step == 1:
             self._write_jsonl(self.metrics_path, metrics)
@@ -495,6 +559,7 @@ class ActorWorker:
                         "reward": payload.get("reward"),
                         "parse_ok": payload.get("parse_ok"),
                         "components": payload.get("components"),
+                        "counts": payload.get("counts"),
                         "prediction": sample.text[:500],
                     },
                 )
@@ -564,18 +629,20 @@ class GRPOCoordinator:
         self.data_args = data_args
         self.args = train_args
         Path(train_args.output_dir).mkdir(parents=True, exist_ok=True)
+        self.run_config = {
+            "model_args": asdict(model_args),
+            "data_args": asdict(data_args),
+            "training_args": asdict(train_args),
+        }
         self.run_config_path = Path(train_args.output_dir) / "grpo_run_config.json"
         self.run_config_path.write_text(
-            json.dumps(
-                {
-                    "model_args": asdict(model_args),
-                    "data_args": asdict(data_args),
-                    "training_args": asdict(train_args),
-                },
-                ensure_ascii=False,
-                indent=2,
-            ),
+            json.dumps(self.run_config, ensure_ascii=False, indent=2),
             encoding="utf-8",
+        )
+        self.swanlab_run = init_swanlab_run(
+            train_args,
+            self.run_config,
+            default_experiment_name=Path(train_args.output_dir).name,
         )
 
     def _resolve_vllm_model_path(self) -> str:
@@ -631,22 +698,39 @@ class GRPOCoordinator:
 
         progress = tqdm(total=self.args.max_steps, desc="GRPO(vLLM)", disable=False)
         last_metrics = {}
-        while True:
-            prepared = ray.get(actor.prepare_rollout_batch.remote())
-            batch = RolloutBatch(**prepared)
-            completions = ray.get(rollout.generate.remote(batch))
-            rewards = ray.get(reward.score.remote(batch, completions))
-            last_metrics = ray.get(actor.update_with_rollouts.remote(batch.rollout_id, completions, rewards))
-            progress.update(1)
-            progress.set_postfix(
-                reward=f"{last_metrics.get('reward_mean', 0.0):.4g}",
-                loss=f"{last_metrics.get('loss', 0.0):.4g}",
-                kl=f"{last_metrics.get('approx_kl', 0.0):.4g}",
-            )
-            if last_metrics.get("step", 0) % self.args.logging_steps == 0 or last_metrics.get("step") == 1:
-                print(json.dumps(last_metrics, ensure_ascii=False))
-            if last_metrics.get("done"):
-                break
-        progress.close()
-        final_info = ray.get(actor.save_final.remote())
-        return {"last_metrics": last_metrics, "final": final_info, "vllm_model_path": vllm_model_path}
+        try:
+            while True:
+                prepared = ray.get(actor.prepare_rollout_batch.remote())
+                batch = RolloutBatch(**prepared)
+                completions = ray.get(rollout.generate.remote(batch))
+                rewards = ray.get(reward.score.remote(batch, completions))
+                last_metrics = ray.get(actor.update_with_rollouts.remote(batch.rollout_id, completions, rewards))
+                progress.update(1)
+                progress.set_postfix(
+                    reward=f"{last_metrics.get('reward_mean', 0.0):.4g}",
+                    loss=f"{last_metrics.get('loss', 0.0):.4g}",
+                    kl=f"{last_metrics.get('approx_kl', 0.0):.4g}",
+                )
+                if self.swanlab_run is not None:
+                    log_swanlab(last_metrics, step=int(last_metrics.get("step", 0) or 0))
+                if last_metrics.get("step", 0) % self.args.logging_steps == 0 or last_metrics.get("step") == 1:
+                    print(json.dumps(last_metrics, ensure_ascii=False))
+                if last_metrics.get("done"):
+                    break
+            final_info = ray.get(actor.save_final.remote())
+            if self.swanlab_run is not None:
+                log_swanlab(
+                    {
+                        "final_step": last_metrics.get("step", 0),
+                        "final_reward_mean": last_metrics.get("reward_mean", 0.0),
+                        "final_loss": last_metrics.get("loss", 0.0),
+                        "final_checkpoint_saved": 1.0,
+                        "merged_checkpoint_saved": 1.0 if final_info.get("merged") else 0.0,
+                    },
+                    step=int(last_metrics.get("step", 0) or 0),
+                )
+            return {"last_metrics": last_metrics, "final": final_info, "vllm_model_path": vllm_model_path}
+        finally:
+            progress.close()
+            if self.swanlab_run is not None:
+                finish_swanlab()

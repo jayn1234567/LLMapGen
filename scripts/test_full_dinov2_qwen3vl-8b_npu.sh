@@ -106,9 +106,11 @@ fi
 CLUSTER_SAVE=${OUTPUT_URL}
 OSB_SHARE_PATH="$CLUSTER_SAVE"
 OUTPUT_PATH=$OSB_SHARE_PATH
+RUN_ID=${RUN_ID:-$(date -u +%Y%m%d_%H%M%S)}
 
 echo "Platform OUTPUT_URL: $OUTPUT_URL"
 echo "OSB_SHARE_PATH: $OSB_SHARE_PATH"
+echo "Run id: $RUN_ID"
 export MLLM_LOG_RANK0_ONLY=${MLLM_LOG_RANK0_ONLY:-1}
 
 # ====================== OBS paths ======================
@@ -135,18 +137,20 @@ else
     DEEPSTACK_LABEL="from checkpoint config"
 fi
 
-DATASET_PATH="/cache/MLLM20260427_rc_jjh"
+DATASET_EXTRACT_ROOT=${DATASET_EXTRACT_ROOT:-${OBS_CACHE}/dataset_extract_${RUN_ID}}
+DATASET_ZIP_PATH=${DATASET_ZIP_PATH:-${OBS_CACHE}/dataset_${RUN_ID}.zip}
+DATASET_PATH="${DATASET_EXTRACT_ROOT}/MLLM20260427_rc_jjh"
 IMAGE_FOLDER="${DATASET_PATH}"
 
 # ====================== download dataset ======================
 echo ">>>>>>>>>>>>>>>>>>>>>>>>>>>>> Downloading dataset >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>"
-python -c "import moxing as mox; mox.file.copy('${DATASET_OBS_PATH}', '${OBS_CACHE}/dataset.zip')"
-cd /cache
-unzip -o dataset.zip
-cd $SCRIPT_DIR
+python -c "import moxing as mox; mox.file.copy('${DATASET_OBS_PATH}', '${DATASET_ZIP_PATH}')"
+mkdir -p "${DATASET_EXTRACT_ROOT}"
+unzip -q "${DATASET_ZIP_PATH}" -d "${DATASET_EXTRACT_ROOT}"
 
 if [ ! -d "$DATASET_PATH" ]; then
     echo "ERROR: Dataset dir not found."
+    ls -l "${DATASET_EXTRACT_ROOT}"
     exit 1
 fi
 
@@ -174,7 +178,7 @@ python -c "import moxing as mox; mox.file.copy_parallel('${MODEL_OBS_PATH}/faceb
 
 # ====================== download trained checkpoint ======================
 # 【修改】直接使用根目录下的最终权重，不找 checkpoint-xx 子目录
-CHECKPOINT_LOCAL="/cache/train_output"
+CHECKPOINT_LOCAL="/cache/train_output_${RUN_ID}"
 
 echo ">>>>>>>>>>>>>>>>>>>>>>>>>>>>> Downloading checkpoint from ${TRAINED_CHECKPOINT_OBS} >>>>>>>>>>>>>>>>>>>>>>>>>>>>>"
 python -c "import moxing as mox; mox.file.copy_parallel('${TRAINED_CHECKPOINT_OBS}', '${CHECKPOINT_LOCAL}')"
@@ -205,7 +209,7 @@ echo "DeepStack: ${DEEPSTACK_LABEL}"
 echo "DeepStack is auto-detected from checkpoint config unless DISABLE_DEEPSTACK or DEEPSTACK_VISUAL_INDEXES is set."
 
 # ====================== inference ======================
-TEST_OUTPUT_LOCAL="/cache/test_output"
+TEST_OUTPUT_LOCAL="/cache/test_output_${RUN_ID}"
 SAMPLE_JSON_DIR="${TEST_OUTPUT_LOCAL}/json"
 VIZ_DIR="${TEST_OUTPUT_LOCAL}/viz"
 METRICS_JSON="${TEST_OUTPUT_LOCAL}/eval.json"
@@ -339,7 +343,7 @@ echo "=== Testing finished ==="
 
 # ====================== upload results ======================
 # 【保持】结果上传到平台注入的 OUTPUT_URL 下
-TEST_RESULT_OBS="${OUTPUT_URL}/test_results"
+TEST_RESULT_OBS="${OUTPUT_URL%/}/test_results_${RUN_ID}"
 echo ">>>>>>>>>>>>>>>>>>>>>>>>>>>>> Uploading results to ${TEST_RESULT_OBS} >>>>>>>>>>>>>>>>>>>>>>>>>>>>>"
 python -c "import moxing as mox; mox.file.copy_parallel('${TEST_OUTPUT_LOCAL}', '${TEST_RESULT_OBS}')"
 echo "Results saved to ${TEST_RESULT_OBS}"

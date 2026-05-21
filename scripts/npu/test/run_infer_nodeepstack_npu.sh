@@ -59,8 +59,18 @@ esac
 
 DATASET_PATH=${DATASET_PATH:-/cache/unimapgen_v2/dataset}
 IMAGE_FOLDER=${IMAGE_FOLDER:-${DATASET_PATH}}
-CHECKPOINT_DIR=${CHECKPOINT_DIR:-/cache/unimapgen_v2/train_output/sft_${DATASET_PHASE}_${MAP_TASK}_${VISION_BACKBONE}_qwen3vl8b_nodeepstack/best}
-OUTPUT_DIR=${OUTPUT_DIR:-/cache/unimapgen_v2/infer_output/${DATASET_PHASE}_${MAP_TASK}_${VISION_BACKBONE}_qwen3vl8b_nodeepstack}
+TRAIN_OUTPUT_DIR=${TRAIN_OUTPUT_DIR:-/cache/unimapgen_v2/train_output/sft_${DATASET_PHASE}_${MAP_TASK}_${VISION_BACKBONE}_qwen3vl8b_nodeepstack}
+BEST_CHECKPOINT_NAME=${BEST_CHECKPOINT_NAME:-eval_best} # eval_best first; set to best for train-loss best.
+CHECKPOINT_DIR=${CHECKPOINT_DIR:-}
+if [ -z "${CHECKPOINT_DIR}" ]; then
+  CHECKPOINT_DIR=$(python scripts/tools/resolve_best_checkpoint.py \
+    --output-dir "${TRAIN_OUTPUT_DIR}" \
+    --best-name "${BEST_CHECKPOINT_NAME}" \
+    --best-name best \
+    --allow-direct)
+fi
+RUN_ID=${RUN_ID:-$(date -u +%Y%m%d_%H%M%S)}
+OUTPUT_DIR=${OUTPUT_DIR:-/cache/unimapgen_v2/infer_output/${DATASET_PHASE}_${MAP_TASK}_${VISION_BACKBONE}_qwen3vl8b_nodeepstack/${RUN_ID}}
 NUM_TEST_SAMPLES=${NUM_TEST_SAMPLES:-0} # 0 means all rows.
 COORD_MODE=${COORD_MODE:-auto}
 COORD_RANGE=${COORD_RANGE:-1000}

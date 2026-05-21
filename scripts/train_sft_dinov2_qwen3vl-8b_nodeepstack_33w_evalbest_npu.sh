@@ -157,14 +157,21 @@ CLUSTER_SAVE=${OUTPUT_URL}
 OSB_SHARE_PATH="$CLUSTER_SAVE"
 echo "System defined obs share path: $OSB_SHARE_PATH"
 
-LOCAL_MODEL_SAVE_PATH='/cache/local_model_save_path'
-mkdir -p $LOCAL_MODEL_SAVE_PATH
+# The cloud training filesystem is create-only in some jobs: avoid reusing an
+# existing output root because checkpoint rotation/best replacement may need
+# delete/overwrite permissions. Override RUN_ID if all nodes must share a fixed id.
+RUN_ID=${RUN_ID:-$(date -u +%Y%m%d_%H%M%S)}
+LOCAL_MODEL_SAVE_ROOT=${LOCAL_MODEL_SAVE_ROOT:-/cache/local_model_save_path}
+LOCAL_MODEL_SAVE_PATH="${LOCAL_MODEL_SAVE_ROOT}/${RUN_ID}"
+mkdir -p "${LOCAL_MODEL_SAVE_PATH}"
 
 if [[ $NODE_RANK == 0 ]]; then
-    OUTPUT_PATH=$OSB_SHARE_PATH
+    OUTPUT_PATH="${OSB_SHARE_PATH%/}/${RUN_ID}"
 else
     OUTPUT_PATH=$LOCAL_MODEL_SAVE_PATH
 fi
+echo "Run id: $RUN_ID"
+echo "Output path: $OUTPUT_PATH"
 
 # ====================== OBS paths ======================
 OBS_CACHE=${OBS_CACHE:-/cache}
@@ -174,7 +181,9 @@ DATASET_OBS_PATH="obs://yw-ads-training-gy1/data/external/personal/h58801830/whu
 DINOV2_PATH=${DINOV2_PATH:-${OBS_CACHE}/checkpoints/facebook_dinov2-large}
 Qwen3VL_PATH=${Qwen3VL_PATH:-${OBS_CACHE}/checkpoints/Qwen3-VL-8B-Instruct}
 
-DATASET_PATH="/cache/MLLM20260427_rc_jjh"
+DATASET_EXTRACT_ROOT=${DATASET_EXTRACT_ROOT:-${OBS_CACHE}/dataset_extract_${RUN_ID}}
+DATASET_ZIP_PATH=${DATASET_ZIP_PATH:-${OBS_CACHE}/dataset_${RUN_ID}.zip}
+DATASET_PATH="${DATASET_EXTRACT_ROOT}/MLLM20260427_rc_jjh"
 IMAGE_FOLDER="${DATASET_PATH}"
 
 # ====================== download ======================
@@ -183,15 +192,14 @@ python -c "import moxing as mox; mox.file.copy_parallel('${MODEL_OBS_PATH}/faceb
 python -c "import moxing as mox; mox.file.copy_parallel('${MODEL_OBS_PATH}/Qwen3-VL-8B-Instruct', '${Qwen3VL_PATH}')"
 
 echo ">>>>>>>>>>>>>>>>>>>>>>>>>>>>> Downloading dataset >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>"
-python -c "import moxing as mox; mox.file.copy('${DATASET_OBS_PATH}', '${OBS_CACHE}/dataset.zip')"
+python -c "import moxing as mox; mox.file.copy('${DATASET_OBS_PATH}', '${DATASET_ZIP_PATH}')"
 
-cd /cache
-unzip -o dataset.zip
-cd $SCRIPT_DIR
+mkdir -p "${DATASET_EXTRACT_ROOT}"
+unzip -q "${DATASET_ZIP_PATH}" -d "${DATASET_EXTRACT_ROOT}"
 
 if [ ! -d "$DATASET_PATH" ]; then
     echo "ERROR: Expected dataset directory $DATASET_PATH not found after unzip."
-    ls -l /cache/
+    ls -l "${DATASET_EXTRACT_ROOT}"
     exit 1
 fi
 
@@ -276,7 +284,7 @@ WARMUP_RATIO=0.03                      # --warmup_ratio; about 232 warmup steps 
 LR_SCHEDULER_TYPE=cosine               # --lr_scheduler_type.
 MODEL_MAX_LENGTH=4096                  # --model_max_length.
 SAVE_STEPS=500                         # --save_steps; should be aligned with EVAL_STEPS when keeping eval_best.
-SAVE_TOTAL_LIMIT=10                    # --save_total_limit.
+SAVE_TOTAL_LIMIT=${SAVE_TOTAL_LIMIT:-10} # --save_total_limit; deletes old regular checkpoint-* dirs.
 LOGGING_STEPS=10                       # --logging_steps.
 EVAL_STEPS=500                         # --eval_steps; eval loss is computed during training when ENABLE_EVAL=True.
 SAMPLE_SEED=42                         # --sample_seed.
@@ -286,6 +294,8 @@ BEST_TRAIN_LOSS_DIR=${BEST_TRAIN_LOSS_DIR:-best} # --best_train_loss_dir.
 ENABLE_EVAL=${ENABLE_EVAL:-True}        # If True, run eval_loss on EVAL_PATH by steps.
 SAVE_BEST_EVAL_LOSS=${SAVE_BEST_EVAL_LOSS:-True} # Maintain OUTPUT_PATH/eval_best.
 BEST_EVAL_LOSS_DIR=${BEST_EVAL_LOSS_DIR:-eval_best}
+BEST_CHECKPOINT_SAVE_MODE=${BEST_CHECKPOINT_SAVE_MODE:-rotating_create_only} # New best creates a unique dir, then old successful best dirs are deleted.
+BEST_CHECKPOINT_KEEP_LIMIT=${BEST_CHECKPOINT_KEEP_LIMIT:-1} # Keep only the latest successful best candidate by default.
 USE_HF_PROGRESS_BAR=True               # --use_hf_progress_bar; True prints HF tqdm progress on console.
 SWANLAB_ENABLE=${SWANLAB_ENABLE:-False} # --swanlab_enable; enable SwanLab monitoring when True.
 SWANLAB_API_KEY=${SWANLAB_API_KEY:-"5gIH7zqSwmo8dl1Ia5vRN"}  # Runtime API key; can be overridden by exporting SWANLAB_API_KEY.
@@ -325,6 +335,8 @@ echo "DeepSpeed:  ${DEEPSPEED_CONFIG}"
 echo "LR:         llm=${LR}, projector=${MM_PROJECTOR_LR}, vision=${MM_VISION_TOWER_LR}"
 echo "Best train: ${SAVE_BEST_TRAIN_LOSS}, start_step=${BEST_TRAIN_LOSS_START_STEP}, dir=${BEST_TRAIN_LOSS_DIR}"
 echo "Eval:       ${ENABLE_EVAL}, eval_steps=${EVAL_STEPS}, best_eval=${SAVE_BEST_EVAL_LOSS}, dir=${BEST_EVAL_LOSS_DIR}"
+echo "Best mode:  ${BEST_CHECKPOINT_SAVE_MODE}"
+echo "Best keep:  ${BEST_CHECKPOINT_KEEP_LIMIT}"
 echo "HF tqdm:    ${USE_HF_PROGRESS_BAR}"
 echo "SwanLab:    ${SWANLAB_ENABLE}, project=${SWANLAB_PROJECT}, exp=${SWANLAB_EXPERIMENT_NAME}"
 echo "============================================================"
@@ -369,6 +381,8 @@ torchrun \
     --save_best_train_loss "${SAVE_BEST_TRAIN_LOSS}" \
     --best_train_loss_start_step "${BEST_TRAIN_LOSS_START_STEP}" \
     --best_train_loss_dir "${BEST_TRAIN_LOSS_DIR}" \
+    --best_checkpoint_save_mode "${BEST_CHECKPOINT_SAVE_MODE}" \
+    --best_checkpoint_keep_limit "${BEST_CHECKPOINT_KEEP_LIMIT}" \
     --use_hf_progress_bar "${USE_HF_PROGRESS_BAR}" \
     --logging_steps "${LOGGING_STEPS}" \
     --report_to none \

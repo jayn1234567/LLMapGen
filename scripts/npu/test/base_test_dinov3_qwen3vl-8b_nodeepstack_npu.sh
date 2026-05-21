@@ -152,8 +152,11 @@ CLUSTER_SAVE=${OUTPUT_URL}
 OSB_SHARE_PATH="$CLUSTER_SAVE"
 echo "System defined obs share path: $OSB_SHARE_PATH"
 
-LOCAL_MODEL_SAVE_PATH='/cache/local_model_save_path'
-mkdir -p $LOCAL_MODEL_SAVE_PATH
+RUN_ID=${RUN_ID:-$(date -u +%Y%m%d_%H%M%S)}
+LOCAL_MODEL_SAVE_ROOT=${LOCAL_MODEL_SAVE_ROOT:-/cache/local_model_save_path}
+LOCAL_MODEL_SAVE_PATH="${LOCAL_MODEL_SAVE_ROOT}/${RUN_ID}"
+mkdir -p "${LOCAL_MODEL_SAVE_PATH}"
+echo "Run id: $RUN_ID"
 
 # ====================== OBS paths ======================
 OBS_CACHE=${OBS_CACHE:-/cache}
@@ -178,21 +181,22 @@ else
     DEEPSTACK_LABEL="from checkpoint config"
 fi
 
-DATASET_PATH="/cache/MLLM20260427_rc_jjh"
+DATASET_EXTRACT_ROOT=${DATASET_EXTRACT_ROOT:-${OBS_CACHE}/dataset_extract_${RUN_ID}}
+DATASET_ZIP_PATH=${DATASET_ZIP_PATH:-${OBS_CACHE}/dataset_${RUN_ID}.zip}
+DATASET_PATH="${DATASET_EXTRACT_ROOT}/MLLM20260427_rc_jjh"
 IMAGE_FOLDER="${DATASET_PATH}"
 
 # ====================== download dataset ======================
 echo ">>>>>>>>>>>>>>>>>>>>>>>>>>>>> Downloading dataset >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>"
 python -c "import moxing as mox; mox.file.copy_parallel('${MODEL_OBS_PATH}/facebook_dinov3-vitl16-pretrain-lvd1689m', '${DINOV3_PATH}')"
-python -c "import moxing as mox; mox.file.copy('${DATASET_OBS_PATH}', '${OBS_CACHE}/dataset.zip')"
+python -c "import moxing as mox; mox.file.copy('${DATASET_OBS_PATH}', '${DATASET_ZIP_PATH}')"
 
-cd /cache
-unzip -o dataset.zip
-cd $SCRIPT_DIR
+mkdir -p "${DATASET_EXTRACT_ROOT}"
+unzip -q "${DATASET_ZIP_PATH}" -d "${DATASET_EXTRACT_ROOT}"
 
 if [ ! -d "$DATASET_PATH" ]; then
     echo "ERROR: Expected dataset directory $DATASET_PATH not found after unzip."
-    ls -l /cache/
+    ls -l "${DATASET_EXTRACT_ROOT}"
     exit 1
 fi
 
@@ -220,7 +224,7 @@ echo "EVAL_JSON: $EVAL_JSON"
 echo ">>>>>>>>>>>>>>>>>>>>>>>>>>>>>>> finish moxing >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>"
 
 # ====================== download trained checkpoint ======================
-CHECKPOINT_LOCAL="/cache/train_output"
+CHECKPOINT_LOCAL="/cache/train_output_${RUN_ID}"
 
 echo ">>>>>>>>>>>>>>>>>>>>>>>>>>>>> Downloading checkpoint from ${TRAINED_CHECKPOINT_OBS} >>>>>>>>>>>>>>>>>>>>>>>>>>>>>"
 python -c "import moxing as mox; mox.file.copy_parallel('${TRAINED_CHECKPOINT_OBS}', '${CHECKPOINT_LOCAL}')"
@@ -249,7 +253,7 @@ echo "DeepStack:      ${DEEPSTACK_LABEL}"
 echo "DeepStack is auto-detected from checkpoint config unless DISABLE_DEEPSTACK or DEEPSTACK_VISUAL_INDEXES is set."
 
 # ====================== inference ======================
-TEST_OUTPUT_LOCAL="/cache/test_output"
+TEST_OUTPUT_LOCAL="/cache/test_output_${RUN_ID}"
 SAMPLE_JSON_DIR="${TEST_OUTPUT_LOCAL}/json"
 VIZ_DIR="${TEST_OUTPUT_LOCAL}/viz"
 METRICS_JSON="${TEST_OUTPUT_LOCAL}/eval.json"
@@ -384,7 +388,7 @@ if [ -f "scripts/visualize_centerline.py" ]; then
 fi
 
 # ====================== upload results ======================
-TEST_RESULT_OBS="${OUTPUT_URL}/test_results"
+TEST_RESULT_OBS="${OUTPUT_URL%/}/test_results_${RUN_ID}"
 echo ">>>>>>>>>>>>>>>>>>>>>>>>>>>>> Uploading results to ${TEST_RESULT_OBS} >>>>>>>>>>>>>>>>>>>>>>>>>>>>>"
 python -c "import moxing as mox; mox.file.copy_parallel('${TEST_OUTPUT_LOCAL}', '${TEST_RESULT_OBS}')"
 echo "Results saved to ${TEST_RESULT_OBS}"

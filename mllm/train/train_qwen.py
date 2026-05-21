@@ -309,6 +309,172 @@ def _copy_checkpoint_tree(src_dir: str, dst_dir: str):
     shutil.copytree(src_dir, dst_dir, symlinks=True, copy_function=copy_or_link)
 
 
+def _best_checkpoint_save_mode(args) -> str:
+    mode = getattr(args, "best_checkpoint_save_mode", "rotating_create_only") or "rotating_create_only"
+    return str(mode).strip().lower().replace("-", "_")
+
+
+def _is_rotating_create_only_best_mode(args) -> bool:
+    return _best_checkpoint_save_mode(args) in {"rotating_create_only", "rotate_create_only", "rotating"}
+
+
+def _metric_for_path(value: float) -> str:
+    return f"{float(value):.6g}".replace("-", "m").replace(".", "p")
+
+
+def _next_available_path(path: str) -> str:
+    if not os.path.exists(path):
+        return path
+    parent = os.path.dirname(path)
+    stem, suffix = os.path.splitext(os.path.basename(path))
+    for idx in range(1, 10000):
+        candidate = os.path.join(parent, f"{stem}_{idx}{suffix}")
+        if not os.path.exists(candidate):
+            return candidate
+    raise RuntimeError(f"Could not find an available create-only path for {path}")
+
+
+def _best_candidate_root(args, configured_best_dir: str) -> str:
+    best_dir = configured_best_dir.rstrip(os.sep)
+    if os.path.isabs(best_dir):
+        parent = os.path.dirname(best_dir)
+        stem = os.path.basename(best_dir)
+    else:
+        parent = args.output_dir
+        stem = best_dir
+    return os.path.join(parent, f"{stem}_candidates")
+
+
+def _rotating_best_dir(args, configured_best_dir: str, metric_label: str, metric_value: float, step: int) -> str:
+    root = _best_candidate_root(args, configured_best_dir)
+    stem = os.path.basename(configured_best_dir.rstrip(os.sep))
+    target = os.path.join(root, f"{stem}_step-{step:08d}_{metric_label}-{_metric_for_path(metric_value)}")
+    return _next_available_path(target)
+
+
+def _write_new_json(path: str, payload: dict) -> str:
+    path = _next_available_path(path)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "x", encoding="utf-8") as f:
+        json.dump(payload, f, ensure_ascii=False, indent=2)
+    return path
+
+
+def _step_from_best_name(name: str) -> int:
+    marker = "_step-"
+    if marker not in name:
+        return -1
+    tail = name.split(marker, 1)[1]
+    digits = []
+    for char in tail:
+        if not char.isdigit():
+            break
+        digits.append(char)
+    return int("".join(digits)) if digits else -1
+
+
+def _successful_best_candidates(candidate_root: str, metadata_filename: str, metric_key: str, step_key: str):
+    if not os.path.isdir(candidate_root):
+        return []
+    candidates = []
+    for name in os.listdir(candidate_root):
+        path = os.path.join(candidate_root, name)
+        if not os.path.isdir(path) or not os.path.isfile(os.path.join(path, "_SUCCESS")):
+            continue
+        metadata = {}
+        metadata_path = os.path.join(path, metadata_filename)
+        if os.path.isfile(metadata_path):
+            try:
+                with open(metadata_path, "r", encoding="utf-8") as f:
+                    metadata = json.load(f)
+            except Exception:
+                metadata = {}
+        step = int(metadata.get(step_key, _step_from_best_name(name)) or -1)
+        metric = metadata.get(metric_key)
+        candidates.append({"path": path, "step": step, "metric": metric, "metadata": metadata})
+    return sorted(candidates, key=lambda item: (item["step"], item["path"]))
+
+
+def _load_rotating_best_loss(args, configured_best_dir: str, metadata_filename: str, metric_key: str, step_key: str):
+    candidate_root = _best_candidate_root(args, configured_best_dir)
+    candidates = _successful_best_candidates(candidate_root, metadata_filename, metric_key, step_key)
+    valid = []
+    for item in candidates:
+        try:
+            valid.append((float(item["metric"]), item))
+        except (TypeError, ValueError):
+            continue
+    if not valid:
+        return None, None
+    return min(valid, key=lambda pair: pair[0])
+
+
+def _best_checkpoint_keep_limit(args) -> int:
+    try:
+        return int(getattr(args, "best_checkpoint_keep_limit", 1) or 0)
+    except (TypeError, ValueError):
+        return 1
+
+
+def _rotate_best_candidates(
+    args,
+    candidate_root: str,
+    metadata_filename: str,
+    metric_key: str,
+    step_key: str,
+    protected_dir: str,
+):
+    keep_limit = _best_checkpoint_keep_limit(args)
+    if keep_limit <= 0:
+        return
+    protected_dir = os.path.abspath(protected_dir)
+    candidates = _successful_best_candidates(candidate_root, metadata_filename, metric_key, step_key)
+    stale = candidates[:-keep_limit]
+    for item in stale:
+        path = os.path.abspath(item["path"])
+        if path == protected_dir:
+            continue
+        try:
+            shutil.rmtree(path)
+        except Exception as exc:
+            rank0_print(f"[WARN] Failed to delete old best checkpoint candidate {path}: {exc}")
+
+
+def _write_success_marker(target_dir: str, metadata: dict):
+    success_path = os.path.join(target_dir, "_SUCCESS")
+    with open(success_path, "x", encoding="utf-8") as f:
+        f.write(json.dumps(metadata, ensure_ascii=False, sort_keys=True))
+        f.write("\n")
+
+
+def _save_rotating_best_checkpoint(
+    args,
+    checkpoint_dir: str,
+    target_dir: str,
+    metadata: dict,
+    metadata_filename: str,
+    metric_key: str,
+    step_key: str,
+):
+    metadata = dict(metadata)
+    metadata["best_checkpoint"] = target_dir
+    metadata["source_checkpoint"] = checkpoint_dir
+    metadata["best_checkpoint_save_mode"] = "rotating_create_only"
+    metadata["best_checkpoint_keep_limit"] = _best_checkpoint_keep_limit(args)
+    _copy_checkpoint_tree(checkpoint_dir, target_dir)
+    _write_new_json(os.path.join(target_dir, metadata_filename), metadata)
+    _write_success_marker(target_dir, metadata)
+    _rotate_best_candidates(
+        args,
+        os.path.dirname(target_dir),
+        metadata_filename,
+        metric_key,
+        step_key,
+        target_dir,
+    )
+    return metadata
+
+
 class BestTrainLossCallback(TrainerCallback):
     def __init__(self):
         self.best_loss = None
@@ -333,6 +499,22 @@ class BestTrainLossCallback(TrainerCallback):
 
     def on_train_begin(self, args, state, control, **kwargs):
         if not self._enabled(args):
+            return
+        if _is_rotating_create_only_best_mode(args):
+            loaded = _load_rotating_best_loss(
+                args,
+                self._best_dir(args),
+                "best_train_loss.json",
+                "best_train_loss",
+                "best_train_loss_step",
+            )
+            if loaded[0] is not None:
+                self.best_loss = float(loaded[0])
+                if self._is_rank0(args, state):
+                    rank0_print(
+                        f"Loaded existing rotating best train loss: {self.best_loss:.6g} "
+                        f"from {loaded[1]['path']}"
+                    )
             return
         metadata_path = os.path.join(self._best_dir(args), "best_train_loss.json")
         if not os.path.isfile(metadata_path):
@@ -391,7 +573,35 @@ class BestTrainLossCallback(TrainerCallback):
             rank0_print(f"[WARN] Best train loss checkpoint not found after save: {checkpoint_dir}")
             return control
 
-        best_dir = self._best_dir(args)
+        configured_best_dir = self._best_dir(args)
+        if _is_rotating_create_only_best_mode(args):
+            metadata = dict(self.pending_best)
+            metadata["best_checkpoint"] = checkpoint_dir
+            best_dir = _rotating_best_dir(
+                args,
+                configured_best_dir,
+                "loss",
+                metadata["best_train_loss"],
+                state.global_step,
+            )
+            metadata = _save_rotating_best_checkpoint(
+                args,
+                checkpoint_dir,
+                best_dir,
+                metadata,
+                "best_train_loss.json",
+                "best_train_loss",
+                "best_train_loss_step",
+            )
+            rank0_print(
+                f"Created best train loss checkpoint: {best_dir} "
+                f"(loss={metadata['best_train_loss']:.6g}, step={state.global_step}, "
+                f"keep={metadata['best_checkpoint_keep_limit']})"
+            )
+            self.pending_best = None
+            return control
+
+        best_dir = configured_best_dir
         tmp_dir = f"{best_dir}.tmp"
         if os.path.exists(tmp_dir):
             shutil.rmtree(tmp_dir)
@@ -437,6 +647,22 @@ class BestEvalLossCallback(TrainerCallback):
 
     def on_train_begin(self, args, state, control, **kwargs):
         if not self._enabled(args):
+            return
+        if _is_rotating_create_only_best_mode(args):
+            loaded = _load_rotating_best_loss(
+                args,
+                self._best_dir(args),
+                "best_eval_loss.json",
+                "best_eval_loss",
+                "best_eval_loss_step",
+            )
+            if loaded[0] is not None:
+                self.best_loss = float(loaded[0])
+                if self._is_rank0(args, state):
+                    rank0_print(
+                        f"Loaded existing rotating best eval loss: {self.best_loss:.6g} "
+                        f"from {loaded[1]['path']}"
+                    )
             return
         metadata_path = os.path.join(self._best_dir(args), "best_eval_loss.json")
         if not os.path.isfile(metadata_path):
@@ -490,7 +716,35 @@ class BestEvalLossCallback(TrainerCallback):
             rank0_print(f"[WARN] Best eval loss checkpoint not found after save: {checkpoint_dir}")
             return control
 
-        best_dir = self._best_dir(args)
+        configured_best_dir = self._best_dir(args)
+        if _is_rotating_create_only_best_mode(args):
+            metadata = dict(self.pending_best)
+            metadata["best_checkpoint"] = checkpoint_dir
+            best_dir = _rotating_best_dir(
+                args,
+                configured_best_dir,
+                "loss",
+                metadata["best_eval_loss"],
+                state.global_step,
+            )
+            metadata = _save_rotating_best_checkpoint(
+                args,
+                checkpoint_dir,
+                best_dir,
+                metadata,
+                "best_eval_loss.json",
+                "best_eval_loss",
+                "best_eval_loss_step",
+            )
+            rank0_print(
+                f"Created best eval loss checkpoint: {best_dir} "
+                f"(loss={metadata['best_eval_loss']:.6g}, step={state.global_step}, "
+                f"keep={metadata['best_checkpoint_keep_limit']})"
+            )
+            self.pending_best = None
+            return control
+
+        best_dir = configured_best_dir
         tmp_dir = f"{best_dir}.tmp"
         if os.path.exists(tmp_dir):
             shutil.rmtree(tmp_dir)
@@ -602,6 +856,14 @@ class TrainingArguments(transformers.TrainingArguments):
     best_train_loss_dir: str = field(default="best")
     save_best_eval_loss: bool = field(default=False)
     best_eval_loss_dir: str = field(default="eval_best")
+    best_checkpoint_save_mode: str = field(
+        default="rotating_create_only",
+        metadata={"help": "How best checkpoints are materialized: rotating_create_only or replace."},
+    )
+    best_checkpoint_keep_limit: int = field(
+        default=1,
+        metadata={"help": "How many successful rotating best checkpoint candidates to keep."},
+    )
     use_hf_progress_bar: bool = field(default=False)
     swanlab_enable: bool = field(default=False)
     swanlab_project: Optional[str] = field(default=None)

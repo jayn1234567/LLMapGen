@@ -1031,7 +1031,7 @@ def main():
                 buffer_size=args.eval_buffer_size,
                 match_threshold=args.eval_match_threshold,
             )
-            eval_path = Path(args.eval_output_json) if args.eval_output_json else output_json_path.with_name(f"{output_json_path.stem}_centerline_eval.json")
+            eval_path = Path(args.eval_output_json) if args.eval_output_json else output_json_path.with_name("eval.json")
             eval_path.write_text(json.dumps(eval_summary, ensure_ascii=False, indent=2), encoding="utf-8")
             print_eval_table(eval_summary)
             print(json.dumps({"centerline_eval_json": str(eval_path), "centerline_eval": eval_summary}, ensure_ascii=False))

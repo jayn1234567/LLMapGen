@@ -312,7 +312,9 @@ python scripts/visualize_centerline.py \
   --image-folder data/images
 ```
 
-When records contain `ground_truth`, visualization automatically writes and prints `centerline_eval.json`. Use `--no-eval-centerline` to disable this.
+When records contain `ground_truth`, visualization automatically writes and prints `eval.json`. Use `--no-eval-centerline` to disable this. The saved metrics include scalar JSON fields and a `table` string matching the console table.
+
+B-stage state-update inference writes stitched whole-map visualizations to `whole_map_viz/` by default, separate from per-patch visualization/output folders. Use `--whole-map-viz-dir` to choose another directory, or `--skip-whole-map-viz` to disable it.
 
 The metric backend is `infer_index/line_eval.py`:
 

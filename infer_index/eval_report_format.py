@@ -28,6 +28,23 @@ class LineEvalRes:
     valid_string_format: int = 0 # 有多少样本格式是可被解析的，越高越好
     samples_num: int = 0
 
+    def table_lines(self):
+        prec = self.valid_string_format / self.samples_num if self.samples_num > 1e-6 else 0
+        return [
+            "=" * 58,
+            f"{' Line Evaluation Results ':^58}",
+            "=" * 58,
+            f"{'Metric':<18} {'Precision':<12} {'Recall':<12} {'F1':<12}",
+            "-" * 58,
+            f"{'Instance Level':<18} {self.instance_pre:<12.4f} {self.instance_recall:<12.4f} {self.instance_f1:<12.4f}",
+            f"{'Length Level':<18} {self.length_pre:<12.4f} {self.length_recall:<12.4f} {self.length_f1:<12.4f}",
+            "=" * 58,
+            f'格式合法的推理结果占比: {prec:.4f}({self.valid_string_format}/{self.samples_num})',
+        ]
+
+    def table_text(self):
+        return "\n".join(self.table_lines())
+
     def show_res(self, logger=None):
         def out(msg):
             if logger is not None:
@@ -35,15 +52,5 @@ class LineEvalRes:
             else:
                 print(msg)
 
-        out("=" * 58)
-        out(f"{' Line Evaluation Results ':^58}")
-        out("=" * 58)
-        out(f"{'Metric':<18} {'Precision':<12} {'Recall':<12} {'F1':<12}")
-        out("-" * 58)
-        out(f"{'Instance Level':<18} {self.instance_pre:<12.4f} {self.instance_recall:<12.4f} {self.instance_f1:<12.4f}")
-        out(f"{'Length Level':<18} {self.length_pre:<12.4f} {self.length_recall:<12.4f} {self.length_f1:<12.4f}")
-        out("=" * 58)
-
-        prec = self.valid_string_format / self.samples_num if self.samples_num > 1e-6 else 0
-
-        out(f'格式合法的推理结果占比: {prec:.4f}({self.valid_string_format}/{self.samples_num})')
+        for line in self.table_lines():
+            out(line)

@@ -187,12 +187,14 @@ def evaluate_records(
                 payload["idx"] = idx
                 payload["record_id"] = record.get("record_id", record.get("id", f"sample_{idx}"))
                 sample_payloads.append(payload)
-        summary = asdict(generate_eval_summary(sample_results))
+        eval_res = generate_eval_summary(sample_results)
+        summary = asdict(eval_res)
         summary.update({
             "backend": "infer_index.line_eval",
             "meter_per_pixel": meter_per_pixel,
             "buffer_size": buffer_size,
             "match_threshold": match_threshold,
+            "table": eval_res.table_text(),
         })
         if include_samples:
             return {"summary": summary, "samples": sample_payloads}
@@ -215,6 +217,10 @@ def line_eval_res_from_summary(summary) -> LineEvalRes:
 
 def print_eval_table(summary, logger=None) -> None:
     line_eval_res_from_summary(summary).show_res(logger)
+
+
+def format_eval_table(summary) -> str:
+    return line_eval_res_from_summary(summary).table_text()
 
 
 def evaluate_one_sample(

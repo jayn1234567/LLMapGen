@@ -208,7 +208,7 @@ echo "DeepStack is auto-detected from checkpoint config unless DISABLE_DEEPSTACK
 TEST_OUTPUT_LOCAL="/cache/test_output"
 SAMPLE_JSON_DIR="${TEST_OUTPUT_LOCAL}/json"
 VIZ_DIR="${TEST_OUTPUT_LOCAL}/viz"
-METRICS_JSON="${TEST_OUTPUT_LOCAL}/centerline_eval.json"
+METRICS_JSON="${TEST_OUTPUT_LOCAL}/eval.json"
 mkdir -p "$TEST_OUTPUT_LOCAL" "$SAMPLE_JSON_DIR" "$VIZ_DIR"
 
 cd "$SCRIPT_DIR/.."

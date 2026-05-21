@@ -5,7 +5,7 @@ import sys
 from pathlib import Path
 
 import torch
-from PIL import Image
+from PIL import Image, ImageDraw, ImageFont
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
@@ -264,6 +264,128 @@ def local_to_global_lines(lines, x0, y0):
     return global_lines
 
 
+def load_json_maybe(text: str):
+    try:
+        return json.loads(text)
+    except Exception:
+        return {}
+
+
+def normalize_lines(payload):
+    if isinstance(payload, dict) and isinstance(payload.get("lines"), list):
+        return payload["lines"]
+    if isinstance(payload, list):
+        return payload
+    return []
+
+
+def offset_lines(lines, dx, dy):
+    shifted = []
+    for line in lines:
+        out = dict(line)
+        out["points"] = [[int(round(x + dx)), int(round(y + dy))] for x, y in line.get("points", [])]
+        shifted.append(out)
+    return shifted
+
+
+def draw_map_lines(image: Image.Image, payload, centerline_color: tuple, intersection_color: tuple, width: int = 3) -> Image.Image:
+    draw = ImageDraw.Draw(image)
+    for item in normalize_lines(payload):
+        points = item.get("points") or []
+        xy_points = [(int(pt[0]), int(pt[1])) for pt in points if isinstance(pt, list) and len(pt) >= 2]
+        if not xy_points:
+            continue
+        category = str(item.get("category", "centerline")).lower()
+        color = intersection_color if category == "intersection" else centerline_color
+        for idx in range(len(xy_points) - 1):
+            draw.line([xy_points[idx], xy_points[idx + 1]], fill=color, width=width)
+        for x, y in xy_points:
+            draw.ellipse([x - 3, y - 3, x + 3, y + 3], fill=color)
+    return image
+
+
+def add_title(image: Image.Image, text: str) -> Image.Image:
+    canvas = Image.new("RGB", (image.width, image.height + 40), "black")
+    canvas.paste(image, (0, 40))
+    draw = ImageDraw.Draw(canvas)
+    try:
+        font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 22)
+    except Exception:
+        font = ImageFont.load_default()
+    draw.text((10, 8), text, fill="white", font=font)
+    return canvas
+
+
+def render_whole_map_visualizations(patch_results, image_folder: Path, output_dir: Path):
+    """Render one stitched BEV canvas per tile for B-stage state-update outputs."""
+    output_dir.mkdir(parents=True, exist_ok=True)
+    grouped = {}
+    for record in patch_results:
+        tile_id = record.get("tile_id") or (record.get("meta") or {}).get("tile_id") or "tile"
+        grouped.setdefault(str(tile_id), []).append(record)
+
+    rendered = []
+    for tile_id, records in sorted(grouped.items()):
+        if not records:
+            continue
+        origin_x = min(int(record.get("x0", 0)) for record in records)
+        origin_y = min(int(record.get("y0", 0)) for record in records)
+        max_x = max(int(record.get("x0", 0)) + int(record.get("patch_width", record.get("patch_size", 256))) for record in records)
+        max_y = max(int(record.get("y0", 0)) + int(record.get("patch_height", record.get("patch_size", 256))) for record in records)
+        width = max(1, max_x - origin_x)
+        height = max(1, max_y - origin_y)
+
+        background = Image.new("RGB", (width, height), "black")
+        for record in records:
+            image_path = resolve_image_path(record.get("image", ""), image_folder)
+            if not image_path.exists():
+                continue
+            patch_width = int(record.get("patch_width", record.get("patch_size", 256)))
+            patch_height = int(record.get("patch_height", record.get("patch_size", 256)))
+            patch = Image.open(image_path).convert("RGB")
+            if patch.size != (patch_width, patch_height):
+                patch = patch.resize((patch_width, patch_height))
+            x = int(record.get("x0", 0)) - origin_x
+            y = int(record.get("y0", 0)) - origin_y
+            background.paste(patch, (x, y))
+
+        gt_lines = []
+        pred_lines = []
+        for record in records:
+            x0 = int(record.get("x0", 0))
+            y0 = int(record.get("y0", 0))
+            gt_text = record.get("ground_truth_pixel") or record.get("labels_pixel") or ""
+            if not gt_text:
+                gt_text = record.get("ground_truth") or record.get("labels") or "{}"
+            gt_lines.extend(offset_lines(normalize_lines(load_json_maybe(gt_text)), x0 - origin_x, y0 - origin_y))
+            pred_lines.extend(offset_lines(record.get("lines_global") or [], -origin_x, -origin_y))
+
+        gt_canvas = draw_map_lines(background.copy(), {"lines": gt_lines}, (0, 255, 0), (255, 255, 0))
+        pred_canvas = draw_map_lines(background.copy(), {"lines": pred_lines}, (255, 0, 0), (0, 128, 255))
+        gt_panel = add_title(gt_canvas, f"{tile_id} Ground Truth")
+        pred_panel = add_title(pred_canvas, f"{tile_id} Prediction")
+        compare = Image.new("RGB", (gt_panel.width + pred_panel.width + 10, gt_panel.height), "black")
+        compare.paste(gt_panel, (0, 0))
+        compare.paste(pred_panel, (gt_panel.width + 10, 0))
+
+        safe_tile = "".join(ch if ch.isalnum() or ch in ("-", "_") else "_" for ch in tile_id)
+        gt_path = output_dir / f"{safe_tile}_ground_truth.png"
+        pred_path = output_dir / f"{safe_tile}_prediction.png"
+        compare_path = output_dir / f"{safe_tile}_compare.png"
+        gt_canvas.save(gt_path)
+        pred_canvas.save(pred_path)
+        compare.save(compare_path)
+        rendered.append({
+            "tile_id": tile_id,
+            "origin": [origin_x, origin_y],
+            "size": [width, height],
+            "ground_truth": str(gt_path),
+            "prediction": str(pred_path),
+            "compare": str(compare_path),
+        })
+    return rendered
+
+
 def run_patch_inference(record, prompt_text, image_folder, tokenizer, model, image_processor,
                         conv_template, max_new_tokens, temperature):
     image_path = resolve_image_path(record["image"], image_folder).resolve()
@@ -317,6 +439,8 @@ def main():
     parser.add_argument("--output-dir", default="")
     parser.add_argument("--sample-json-dir", default="", help="Directory for per-patch JSON files. Defaults to output-dir.")
     parser.add_argument("--merged-output-json", default="", help="Optional path for merged global map JSON.")
+    parser.add_argument("--whole-map-viz-dir", default="", help="Directory for stitched whole-map visualizations. Defaults to output-json sibling whole_map_viz/.")
+    parser.add_argument("--skip-whole-map-viz", action="store_true", help="Disable stitched whole-map visualization output.")
     parser.add_argument("--conv-template", default="conv_qwen_3_state_update_centerline")
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--patch-size", type=int, default=256)
@@ -550,6 +674,10 @@ def main():
         "merged_global": {"lines": merged_global_lines},
         "patch_results": patch_results,
     }
+    if not args.skip_whole_map_viz:
+        whole_map_viz_dir = Path(args.whole_map_viz_dir) if args.whole_map_viz_dir else Path(args.output_json).parent / "whole_map_viz"
+        summary["whole_map_viz_dir"] = str(whole_map_viz_dir)
+        summary["whole_map_visualizations"] = render_whole_map_visualizations(patch_results, image_folder, whole_map_viz_dir)
     if args.eval_centerline:
         summary["centerline_eval"] = evaluate_records(
             patch_results,
@@ -557,9 +685,7 @@ def main():
             buffer_size=args.eval_buffer_size,
             match_threshold=args.eval_match_threshold,
         )
-        eval_path = Path(args.eval_output_json) if args.eval_output_json else Path(args.output_json).with_name(
-            f"{Path(args.output_json).stem}_centerline_eval.json"
-        )
+        eval_path = Path(args.eval_output_json) if args.eval_output_json else Path(args.output_json).with_name("eval.json")
         dump_json(eval_path, summary["centerline_eval"])
         print_eval_table(summary["centerline_eval"])
         print(json.dumps({"centerline_eval_json": str(eval_path), "centerline_eval": summary["centerline_eval"]}, ensure_ascii=False))

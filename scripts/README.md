@@ -64,8 +64,9 @@ Best checkpoint behavior:
 Centerline geometry evaluation:
 
 - The project uses `infer_index/line_eval.py` for centerline metrics: LineString buffer IoU plus Hungarian matching, reporting instance-level and length-level precision/recall/F1.
-- `scripts/infer_centerline_checkpoint.py --eval-centerline` and `scripts/infer_centerline_state_update.py --eval-centerline` write these metrics with the inference summary.
-- `scripts/visualize_centerline.py` automatically prints and saves `centerline_eval.json` after visualization when ground truth is present. Use `--no-eval-centerline` to disable it.
+- `scripts/infer_centerline_checkpoint.py --eval-centerline` and `scripts/infer_centerline_state_update.py --eval-centerline` write these metrics to `eval.json` by default; pass `--eval-output-json` to override.
+- `scripts/visualize_centerline.py` automatically prints and saves `eval.json` after visualization when ground truth is present. Use `--no-eval-centerline` to disable it.
+- The saved metrics include scalar JSON fields and a `table` string matching the console table.
 - The default metric scale is `--eval-meter-per-pixel 0.2`, matching `infer_index/param.py`.
 - New data uses `coord_mode=norm1000` by default. Inference/test scripts keep `COORD_MODE=auto` and `COORD_RANGE=1000`, so JSONL metadata controls whether labels are normalized or legacy pixels.
 - Inference summaries keep raw model-coordinate JSON in `prediction_json` and write pixel-converted JSON to `prediction_json_pixel`. Visualization, state-update stitching, and line metrics use the pixel-converted fields.
@@ -76,6 +77,7 @@ Phase A / Phase B debug flow:
 - Phase A JSONL clears incoming hints and is used for single-patch recognition smoke tests.
 - Phase B JSONL keeps generated left/top continuity hints and is used for state-update smoke tests.
 - `scripts/infer_centerline_state_update.py` uses predictions as the next state in normal inference. The `--dry-run-prompts` mode is only for GT replay checks of stitching logic.
+- B-stage state-update inference writes per-patch JSONs to `--output-dir`/`--sample-json-dir` and stitched whole-map images to `whole_map_viz/` by default. Use `--whole-map-viz-dir` to choose a separate directory, or `--skip-whole-map-viz` to disable it.
 - Current GPU ZeRO3 SFT smoke scripts cover Phase A lane patch inference and Phase B lane+intersection patch inference plus state-update inference.
 
 RL notes:

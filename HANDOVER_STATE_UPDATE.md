@@ -274,7 +274,7 @@ python scripts/data/build_sft_dataset.py \
 
 ### 6.2 推理 parser
 
-已扩展 [scripts/infer_centerline_checkpoint.py](/media/q/data2/jjh/project/unimapgen_mllm/scripts/infer_centerline_checkpoint.py)：
+已扩展 [scripts/tools/infer_centerline_checkpoint.py](/media/q/data2/jjh/project/unimapgen_mllm/scripts/tools/infer_centerline_checkpoint.py)：
 
 - 新增 `parse_map_json`
 - 兼容旧格式 `[{points, category: CenterLine}]`
@@ -286,7 +286,7 @@ python scripts/data/build_sft_dataset.py \
 
 已新增：
 
-- [scripts/infer_centerline_state_update.py](/media/q/data2/jjh/project/unimapgen_mllm/scripts/infer_centerline_state_update.py)
+- [scripts/tools/infer_centerline_state_update.py](/media/q/data2/jjh/project/unimapgen_mllm/scripts/tools/infer_centerline_state_update.py)
 
 当前第一版能力：
 
@@ -302,16 +302,16 @@ python scripts/data/build_sft_dataset.py \
 
 已新增：
 
-- [scripts/visualize_state_update_global.py](/media/q/data2/jjh/project/unimapgen_mllm/scripts/visualize_state_update_global.py)
+- [scripts/tools/visualize_state_update_global.py](/media/q/data2/jjh/project/unimapgen_mllm/scripts/tools/visualize_state_update_global.py)
 
 作用：
 
-- 读取 `scripts/infer_centerline_state_update.py` 输出的 summary json
+- 读取 `scripts/tools/infer_centerline_state_update.py` 输出的 summary json
 - 直接绘制 `merged_global.lines`
 - 支持绘制 patch 网格
 - `centerline` 用红色，`intersection` 用蓝色
 
-已扩展 [scripts/visualize_centerline.py](/media/q/data2/jjh/project/unimapgen_mllm/scripts/visualize_centerline.py)：
+已扩展 [scripts/tools/visualize_centerline.py](/media/q/data2/jjh/project/unimapgen_mllm/scripts/tools/visualize_centerline.py)：
 
 - 支持旧 list 格式
 - 支持新 `{"lines": [...]}` 格式
@@ -340,7 +340,7 @@ python scripts/data/build_sft_dataset.py \
 
 ### 推理 parser
 
-- [scripts/infer_centerline_checkpoint.py](/media/q/data2/jjh/project/unimapgen_mllm/scripts/infer_centerline_checkpoint.py)
+- [scripts/tools/infer_centerline_checkpoint.py](/media/q/data2/jjh/project/unimapgen_mllm/scripts/tools/infer_centerline_checkpoint.py)
 
 新增：
 
@@ -355,7 +355,7 @@ python scripts/data/build_sft_dataset.py \
 
 ### 评估指标
 
-- [scripts/centerline_eval_metrics.py](/media/q/data2/jjh/project/unimapgen_mllm/scripts/centerline_eval_metrics.py)
+- [scripts/tools/centerline_eval_metrics.py](/media/q/data2/jjh/project/unimapgen_mllm/scripts/tools/centerline_eval_metrics.py)
 
 作用：
 
@@ -373,7 +373,7 @@ python scripts/data/build_sft_dataset.py \
 示例：
 
 ```bash
-python scripts/centerline_eval_metrics.py \
+python scripts/tools/centerline_eval_metrics.py \
   --summary-json outputs/summary.json \
   --meter-per-pixel 1 \
   --buffer-size 1 \
@@ -382,7 +382,7 @@ python scripts/centerline_eval_metrics.py \
 
 ### state update 推理
 
-- [scripts/infer_centerline_state_update.py](/media/q/data2/jjh/project/unimapgen_mllm/scripts/infer_centerline_state_update.py)
+- [scripts/tools/infer_centerline_state_update.py](/media/q/data2/jjh/project/unimapgen_mllm/scripts/tools/infer_centerline_state_update.py)
 
 作用：
 
@@ -397,7 +397,7 @@ python scripts/centerline_eval_metrics.py \
 示例：
 
 ```bash
-python scripts/infer_centerline_state_update.py \
+python scripts/tools/infer_centerline_state_update.py \
   --checkpoint-dir outputs/my_checkpoint \
   --patch-json data/my_patch_dataset/test.jsonl \
   --image-folder data/my_patch_dataset \
@@ -409,7 +409,7 @@ python scripts/infer_centerline_state_update.py \
 
 ### 可视化
 
-- [scripts/visualize_state_update_global.py](/media/q/data2/jjh/project/unimapgen_mllm/scripts/visualize_state_update_global.py)
+- [scripts/tools/visualize_state_update_global.py](/media/q/data2/jjh/project/unimapgen_mllm/scripts/tools/visualize_state_update_global.py)
 
 作用：
 
@@ -419,13 +419,13 @@ python scripts/infer_centerline_state_update.py \
 示例：
 
 ```bash
-python scripts/visualize_state_update_global.py \
+python scripts/tools/visualize_state_update_global.py \
   --summary-json outputs/state_update_summary.json \
   --output outputs/state_update_global.png \
   --draw-grid
 ```
 
-- [scripts/visualize_centerline.py](/media/q/data2/jjh/project/unimapgen_mllm/scripts/visualize_centerline.py)
+- [scripts/tools/visualize_centerline.py](/media/q/data2/jjh/project/unimapgen_mllm/scripts/tools/visualize_centerline.py)
 
 作用：
 
@@ -474,7 +474,7 @@ python scripts/visualize_state_update_global.py \
 - 用云端完整数据集生成 Phase A / Phase B 训练数据
 - 启动新 schema 的正式训练
 - 评估 `intersection` 标注的学习效果
-- 用真实正式训练 checkpoint 跑 `scripts/infer_centerline_state_update.py`
+- 用真实正式训练 checkpoint 跑 `scripts/tools/infer_centerline_state_update.py`
 
 ## 10. 明确不该先动的地方
 
@@ -498,8 +498,8 @@ python scripts/visualize_state_update_global.py \
 1. 用云端完整数据集生成 Phase A / Phase B 训练数据
 2. 用 Phase A 数据先训练，确认新 schema 输出稳定
 3. 再用带 traces 的 Phase B 数据训练
-4. 用真实 checkpoint 跑 `scripts/infer_centerline_state_update.py`
-5. 用 `scripts/visualize_state_update_global.py` 拼接并查看整图 PNG
+4. 用真实 checkpoint 跑 `scripts/tools/infer_centerline_state_update.py`
+5. 用 `scripts/tools/visualize_state_update_global.py` 拼接并查看整图 PNG
 6. 专门评估 `intersection` 闭合线质量
 
 ## 12. 当前重要结论
@@ -525,4 +525,4 @@ python scripts/visualize_state_update_global.py \
 2. [scripts/data/build_sft_dataset.py](/media/q/data2/jjh/project/unimapgen_mllm/scripts/data/build_sft_dataset.py)
 3. [configs/数据样本.json](/media/q/data2/jjh/project/unimapgen_mllm/configs/数据样本.json)
 4. [llava/conversation.py](/media/q/data2/jjh/project/unimapgen_mllm/llava/conversation.py)
-5. [scripts/infer_centerline_checkpoint.py](/media/q/data2/jjh/project/unimapgen_mllm/scripts/infer_centerline_checkpoint.py)
+5. [scripts/tools/infer_centerline_checkpoint.py](/media/q/data2/jjh/project/unimapgen_mllm/scripts/tools/infer_centerline_checkpoint.py)

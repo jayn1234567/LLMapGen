@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import json
+import re
 from pathlib import Path
 
 from PIL import Image, ImageDraw, ImageFont
@@ -57,22 +58,158 @@ def add_title(image: Image.Image, text: str) -> Image.Image:
     return canvas
 
 
-def resolve_image_path(raw_path: str, image_folder: Path) -> Path:
+IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp", ".tif", ".tiff"}
+ROW_COL_RE = re.compile(r"(?:^|[_-])r(?P<row>\d+)[_-]?c(?P<col>\d+)(?:[_-]|$)", re.IGNORECASE)
+
+
+def _path_suffix_after_marker(path: Path, marker: str) -> Path | None:
+    parts = path.parts
+    lowered = [part.lower() for part in parts]
+    if marker not in lowered:
+        return None
+    idx = lowered.index(marker)
+    if idx >= len(parts) - 1:
+        return None
+    return Path(*parts[idx:])
+
+
+def _parse_row_col_from_text(text: str) -> tuple[int | None, int | None]:
+    match = ROW_COL_RE.search(text)
+    if not match:
+        return None, None
+    return int(match.group("row")), int(match.group("col"))
+
+
+def _record_row_col(record: dict) -> tuple[int, int]:
+    meta = record.get("meta") or {}
+    for row_key, col_key in (
+        ("row", "col"),
+        ("patch_row", "patch_col"),
+    ):
+        if row_key in record and col_key in record:
+            return int(record[row_key]), int(record[col_key])
+        if row_key in meta and col_key in meta:
+            return int(meta[row_key]), int(meta[col_key])
+    for key in ("image", "image_path", "record_id", "id"):
+        value = record.get(key)
+        if value:
+            row, col = _parse_row_col_from_text(str(value))
+            if row is not None and col is not None:
+                return row, col
+    return 0, 0
+
+
+def _tile_id_from_text(text: str) -> str | None:
+    value = Path(text).stem
+    match = ROW_COL_RE.search(value)
+    if match:
+        value = value[: match.start()].rstrip("_-")
+    if value:
+        return value
+    return None
+
+
+def _candidate_image_paths(raw_path: str, image_folder: Path, record: dict | None = None) -> list[Path]:
     image_path = Path(raw_path)
+    candidates = []
     if image_path.is_absolute() and image_path.exists():
-        return image_path
-    candidate = image_folder / image_path
-    if candidate.exists():
-        return candidate
-    fallback = image_folder / image_path.name
-    if fallback.exists():
-        return fallback
-    return image_path
+        return [image_path]
+    if raw_path:
+        candidates.append(image_folder / image_path)
+        for marker in ("images", "img"):
+            suffix = _path_suffix_after_marker(image_path, marker)
+            if suffix is not None:
+                candidates.append(image_folder / suffix)
+        candidates.append(image_folder / image_path.name)
+
+    if record:
+        meta = record.get("meta") or {}
+        tile_id = record_tile_id(record)
+        row, col = _record_row_col(record)
+        city = str(record.get("city") or meta.get("city") or "")
+        names = [
+            f"{tile_id}_r{row:02d}_c{col:02d}.png",
+            f"{tile_id}_r{row}_c{col}.png",
+            f"r{row}_c{col}.png",
+            f"r{row}_c{col}_p00.png",
+            f"r{row}_c{col}_p01.png",
+            f"r{row:02d}_c{col:02d}.png",
+        ]
+        for name in names:
+            if city:
+                candidates.append(image_folder / "images" / city / name)
+                candidates.append(image_folder / city / name)
+            candidates.append(image_folder / "images" / name)
+            candidates.append(image_folder / "img" / tile_id / name)
+            candidates.append(image_folder / tile_id / name)
+
+    deduped = []
+    seen = set()
+    for candidate in candidates:
+        key = str(candidate)
+        if key not in seen:
+            seen.add(key)
+            deduped.append(candidate)
+    return deduped or [image_path]
+
+
+def build_image_basename_index(image_folder: Path) -> dict[str, list[Path]]:
+    index: dict[str, list[Path]] = {}
+    for path in image_folder.rglob("*"):
+        if path.is_file() and path.suffix.lower() in IMAGE_SUFFIXES:
+            index.setdefault(path.name, []).append(path)
+    return index
+
+
+def resolve_image_path(raw_path: str, image_folder: Path, record: dict | None = None, image_index: dict[str, list[Path]] | None = None) -> Path:
+    candidates = _candidate_image_paths(raw_path, image_folder, record)
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    if image_index is not None:
+        raw_name = Path(raw_path).name if raw_path else ""
+        lookup_names = [raw_name] if raw_name else []
+        if record:
+            tile_id = record_tile_id(record)
+            row, col = _record_row_col(record)
+            lookup_names.extend([
+                f"{tile_id}_r{row:02d}_c{col:02d}.png",
+                f"{tile_id}_r{row}_c{col}.png",
+                f"r{row}_c{col}.png",
+                f"r{row}_c{col}_p00.png",
+            ])
+        for name in lookup_names:
+            matches = image_index.get(name) or []
+            if len(matches) == 1:
+                return matches[0]
+    return candidates[0]
 
 
 def record_tile_id(record: dict) -> str:
     meta = record.get("meta") or {}
-    return str(record.get("tile_id") or meta.get("tile_id") or "tile")
+    value = record.get("tile_id") or meta.get("tile_id") or meta.get("log_id")
+    if value:
+        return str(value)
+    for key in ("image", "image_path"):
+        raw = record.get(key)
+        if raw:
+            path = Path(str(raw))
+            parsed = _tile_id_from_text(str(raw))
+            if parsed:
+                return parsed
+            parent = path.parent.name
+            grandparent = path.parent.parent.name.lower()
+            if parent and grandparent == "img":
+                return path.parent.name
+            if parent and parent not in (".", "") and grandparent != "images":
+                return parent
+    for key in ("record_id", "id"):
+        raw = record.get(key)
+        if raw:
+            parsed = _tile_id_from_text(str(raw))
+            if parsed:
+                return parsed
+    return "tile"
 
 
 def record_patch_shape(record: dict) -> tuple[int, int]:
@@ -86,8 +223,7 @@ def record_patch_shape(record: dict) -> tuple[int, int]:
 def record_origin(record: dict) -> tuple[int, int]:
     meta = record.get("meta") or {}
     patch_width, patch_height = record_patch_shape(record)
-    row = int(record.get("row", meta.get("row", meta.get("patch_row", 0))))
-    col = int(record.get("col", meta.get("col", meta.get("patch_col", 0))))
+    row, col = _record_row_col(record)
     x0 = int(record.get("x0", meta.get("x0", col * patch_width)))
     y0 = int(record.get("y0", meta.get("y0", row * patch_height)))
     return x0, y0
@@ -119,7 +255,7 @@ def gt_lines_for_record(record: dict, origin_x: int, origin_y: int) -> list:
     return offset_lines(local_lines, x0 - origin_x, y0 - origin_y)
 
 
-def render_whole_map_visualizations(patch_results, image_folder: Path, output_dir: Path):
+def render_whole_map_visualizations(patch_results, image_folder: Path, output_dir: Path, *, scan_image_folder: bool = False):
     """Render one stitched BEV canvas per tile from patch-level inference results."""
     output_dir.mkdir(parents=True, exist_ok=True)
     grouped = {}
@@ -127,6 +263,7 @@ def render_whole_map_visualizations(patch_results, image_folder: Path, output_di
         grouped.setdefault(record_tile_id(record), []).append(record)
 
     rendered = []
+    image_index = None
     for tile_id, records in sorted(grouped.items()):
         if not records:
             continue
@@ -138,9 +275,20 @@ def render_whole_map_visualizations(patch_results, image_folder: Path, output_di
         height = max(1, max_y - origin_y)
 
         background = Image.new("RGB", (width, height), "black")
+        num_images = 0
+        missing_images = []
         for record in records:
-            image_path = resolve_image_path(record.get("image", ""), image_folder)
+            image_path = resolve_image_path(record.get("image", "") or record.get("image_path", ""), image_folder, record, image_index)
+            if scan_image_folder and not image_path.exists():
+                if image_index is None:
+                    image_index = build_image_basename_index(image_folder)
+                image_path = resolve_image_path(record.get("image", "") or record.get("image_path", ""), image_folder, record, image_index)
             if not image_path.exists():
+                missing_images.append({
+                    "record_id": str(record.get("record_id") or record.get("id") or ""),
+                    "image": str(record.get("image") or record.get("image_path") or ""),
+                    "resolved": str(image_path),
+                })
                 continue
             patch_width, patch_height = record_patch_shape(record)
             patch = Image.open(image_path).convert("RGB")
@@ -148,6 +296,7 @@ def render_whole_map_visualizations(patch_results, image_folder: Path, output_di
                 patch = patch.resize((patch_width, patch_height))
             x0, y0 = record_origin(record)
             background.paste(patch, (x0 - origin_x, y0 - origin_y))
+            num_images += 1
 
         gt_lines = []
         pred_lines = []
@@ -172,6 +321,10 @@ def render_whole_map_visualizations(patch_results, image_folder: Path, output_di
         compare.save(compare_path)
         rendered.append({
             "tile_id": tile_id,
+            "num_records": len(records),
+            "num_images": num_images,
+            "num_missing_images": len(missing_images),
+            "missing_images": missing_images[:20],
             "origin": [origin_x, origin_y],
             "size": [width, height],
             "ground_truth": str(gt_path),

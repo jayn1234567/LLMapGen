@@ -299,7 +299,10 @@ BEST_CHECKPOINT_KEEP_LIMIT=${BEST_CHECKPOINT_KEEP_LIMIT:-1} # Keep only the late
 USE_HF_PROGRESS_BAR=True               # --use_hf_progress_bar; True prints HF tqdm progress on console.
 SWANLAB_ENABLE=${SWANLAB_ENABLE:-False} # --swanlab_enable; enable SwanLab monitoring when True.
 SWANLAB_API_KEY=${SWANLAB_API_KEY:-"5gIH7zqSwmo8dl1Ia5vRN"}  # Runtime API key; can be overridden by exporting SWANLAB_API_KEY.
-SWANLAB_PROJECT=${SWANLAB_PROJECT:-mllm-sft-33w-${DATASET_PHASE}-${MAP_TASK}-dinov2-nodeepstack}
+SWANLAB_PROJECT=${SWANLAB_PROJECT:-unimapgen_v3} # One SwanLab project for all SFT/GRPO runs.
+SWANLAB_WORKSPACE=${SWANLAB_WORKSPACE:-} # Optional SwanLab workspace/org.
+SWANLAB_GROUP=${SWANLAB_GROUP:-sft_${DATASET_PHASE}_${MAP_TASK}_dinov2_nodeepstack} # Groups related runs in the same project.
+SWANLAB_JOB_TYPE=${SWANLAB_JOB_TYPE:-sft} # SwanLab job type for filtering.
 SWANLAB_EXPERIMENT_NAME=${SWANLAB_EXPERIMENT_NAME:-sft_33w_${DATASET_PHASE}_${MAP_TASK}_dinov2_qwen3vl8b_nodeepstack}
 SWANLAB_TAGS=${SWANLAB_TAGS:-sft,33w,${DATASET_PHASE},${MAP_TASK},dinov2,qwen3vl8b,nodeepstack}
 SWANLAB_MODE=${SWANLAB_MODE:-}
@@ -338,7 +341,7 @@ echo "Eval:       ${ENABLE_EVAL}, eval_steps=${EVAL_STEPS}, best_eval=${SAVE_BES
 echo "Best mode:  ${BEST_CHECKPOINT_SAVE_MODE}"
 echo "Best keep:  ${BEST_CHECKPOINT_KEEP_LIMIT}"
 echo "HF tqdm:    ${USE_HF_PROGRESS_BAR}"
-echo "SwanLab:    ${SWANLAB_ENABLE}, project=${SWANLAB_PROJECT}, exp=${SWANLAB_EXPERIMENT_NAME}"
+echo "SwanLab:    ${SWANLAB_ENABLE}, project=${SWANLAB_PROJECT}, group=${SWANLAB_GROUP}, job=${SWANLAB_JOB_TYPE}, exp=${SWANLAB_EXPERIMENT_NAME}"
 echo "============================================================"
 
 torchrun \
@@ -388,7 +391,10 @@ torchrun \
     --report_to none \
     --swanlab_enable "${SWANLAB_ENABLE}" \
     --swanlab_project "${SWANLAB_PROJECT}" \
+    --swanlab_workspace "${SWANLAB_WORKSPACE}" \
     --swanlab_experiment_name "${SWANLAB_EXPERIMENT_NAME}" \
+    --swanlab_group "${SWANLAB_GROUP}" \
+    --swanlab_job_type "${SWANLAB_JOB_TYPE}" \
     --swanlab_tags "${SWANLAB_TAGS}" \
     --swanlab_mode "${SWANLAB_MODE}" \
     --ddp_find_unused_parameters False \

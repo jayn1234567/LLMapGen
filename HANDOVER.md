@@ -81,7 +81,7 @@ bash scripts/gpu/train_dinov3_qwen2-1.5b.sh
 ### 3. 推理
 
 ```bash
-python scripts/infer_centerline_checkpoint.py \
+python scripts/tools/infer_centerline_checkpoint.py \
     --checkpoint-dir outputs/xxx \
     --test-json data/test.jsonl \
     --image-folder data/images \
@@ -142,7 +142,7 @@ NPU 脚本默认使用 `deepspeed_zero3_no_merge.json`，训练时不合并权�
 | `llava/model/builder.py` | 模型加载入口 |
 | `llava/train/train_qwen.py` | 训练主脚本 |
 | `llava/train/llava_trainer.py` | Trainer 子类（分组 LR） |
-| `scripts/infer_centerline_checkpoint.py` | 推理引擎 |
+| `scripts/tools/infer_centerline_checkpoint.py` | 推理引擎 |
 | `configs/` | DeepSpeed 配置 |
 | `AGENTS.md` | 详细工作文档 |
 

@@ -243,7 +243,7 @@ torchrun \
     --nproc_per_node="${NPROC_PER_NODE}" \
     --master_addr=127.0.0.1 \
     --master_port="$((MASTER_PORT + 1))" \
-    scripts/infer_centerline_checkpoint.py \
+    scripts/tools/infer_centerline_checkpoint.py \
     --checkpoint-dir "${INFER_CHECKPOINT_DIR}" \
     --vision_tower "${DINOV3_PATH}" \
     --input_image_size "${INPUT_IMAGE_SIZE}" \

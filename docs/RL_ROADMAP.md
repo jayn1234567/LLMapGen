@@ -196,8 +196,11 @@ Important parameters:
 | `--num_generations` | GRPO group size; must be at least 2. |
 | `--kl_beta` | KL penalty against the adapter-disabled SFT reference. |
 | `--swanlab_enable True` | Enable SwanLab tracking for GRPO config and scalar metrics. |
-| `--swanlab_project` | Project name, usually including GRPO, phase/task, and backbone. |
+| `--swanlab_project` | Shared project name. Current scripts default to `unimapgen_v3`. |
+| `--swanlab_workspace` | Optional SwanLab workspace/org. |
 | `--swanlab_experiment_name` | Run name. |
+| `--swanlab_group` | Group for related runs, for example `grpo_phase_a_lane_dinov3_nodeepstack`. |
+| `--swanlab_job_type` | Job category, usually `grpo` or `grpo_debug`. |
 
 Coordinate parameters:
 
@@ -216,6 +219,9 @@ SwanLab monitoring:
 
 - `mllm.train.train_grpo` initializes one SwanLab run in the coordinator.
 - `grpo_run_config.json` content is also sent as the SwanLab config.
+- Keep GRPO runs under `SWANLAB_PROJECT=unimapgen_v3`; separate phase/task,
+  backbone, and debug/formal runs with `SWANLAB_GROUP`, `SWANLAB_JOB_TYPE`, and
+  tags.
 - Each GRPO step logs `reward_mean`, `reward_min`, `reward_max`, `loss`,
   `policy_loss`, `approx_kl`, `clip_fraction`, `action_tokens`, and `lr`.
 - Reward diagnostics are also logged. `reward/parse_ok_rate` tracks format

@@ -27,24 +27,40 @@ if str(REPO_ROOT) not in sys.path:
 from scripts.tools.map_visualization import render_whole_map_visualizations
 
 
+def records_from_payload(payload) -> list[dict]:
+    if isinstance(payload, dict):
+        for key in ("patch_results", "results", "records"):
+            value = payload.get(key)
+            if isinstance(value, list):
+                return [item for item in value if isinstance(item, dict)]
+        return [payload]
+    if isinstance(payload, list):
+        records = []
+        for item in payload:
+            if isinstance(item, dict):
+                records.extend(records_from_payload(item))
+        return records
+    return []
+
+
 def load_json_array_or_jsonl(path: Path) -> list[dict]:
     content = path.read_text(encoding="utf-8").strip()
     if not content:
         return []
 
     if content.startswith("{") and content.endswith("}"):
-        payload = json.loads(content)
-        if isinstance(payload, dict) and isinstance(payload.get("patch_results"), list):
-            return payload["patch_results"]
-        if isinstance(payload, dict) and isinstance(payload.get("results"), list):
-            return payload["results"]
-        return [payload]
+        try:
+            payload = json.loads(content)
+            return records_from_payload(payload)
+        except json.JSONDecodeError:
+            pass
 
     if content.startswith("[") and content.endswith("]"):
-        payload = json.loads(content)
-        if not isinstance(payload, list):
-            raise ValueError(f"Expected JSON array in {path}")
-        return payload
+        try:
+            payload = json.loads(content)
+            return records_from_payload(payload)
+        except json.JSONDecodeError:
+            pass
 
     rows = []
     for line_no, line in enumerate(content.splitlines(), start=1):
@@ -52,7 +68,7 @@ def load_json_array_or_jsonl(path: Path) -> list[dict]:
         if not line:
             continue
         try:
-            rows.append(json.loads(line))
+            rows.extend(records_from_payload(json.loads(line)))
         except json.JSONDecodeError as exc:
             raise ValueError(f"Invalid JSONL at {path}:{line_no}: {exc}") from exc
     return rows
@@ -63,6 +79,7 @@ def main():
     parser.add_argument("--summary", required=True, help="Path to summary.json or summary.jsonl from inference.")
     parser.add_argument("--image-folder", required=True, help="Dataset/image root used to resolve patch image paths.")
     parser.add_argument("--output-dir", default="", help="Output dir. Defaults to summary parent / whole_map_viz.")
+    parser.add_argument("--no-scan-image-folder", action="store_true", help="Disable fallback image-folder scan by basename.")
     args = parser.parse_args()
 
     summary_path = Path(args.summary)
@@ -78,7 +95,12 @@ def main():
     if not records:
         raise RuntimeError(f"No records found in {summary_path}")
 
-    rendered = render_whole_map_visualizations(records, image_folder, output_dir)
+    rendered = render_whole_map_visualizations(
+        records,
+        image_folder,
+        output_dir,
+        scan_image_folder=not args.no_scan_image_folder,
+    )
     print(json.dumps({
         "summary": str(summary_path),
         "image_folder": str(image_folder),

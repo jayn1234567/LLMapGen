@@ -10,9 +10,8 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from infer_index.line_eval import evaluate_records, print_eval_table
 from mllm.coord_utils import COORD_MODE_PIXEL, convert_payload_text, record_coord_config
-from scripts.tools.map_visualization import render_whole_map_visualizations
+from scripts.tools.map_visualization import render_whole_map_visualizations, resolve_image_path as resolve_map_image_path
 
 
 def load_json_maybe(text: str):
@@ -77,16 +76,7 @@ def draw_map_lines(image: Image.Image, payload, centerline_color: tuple, interse
 
 
 def resolve_image_path(raw_path: str, image_folder: Path) -> Path:
-    image_path = Path(raw_path)
-    if image_path.is_absolute() and image_path.exists():
-        return image_path
-    candidate = image_folder / image_path
-    if candidate.exists():
-        return candidate
-    fallback = image_folder / image_path.name
-    if fallback.exists():
-        return fallback
-    return image_path
+    return resolve_map_image_path(raw_path, image_folder)
 
 
 def add_title(image: Image.Image, text: str) -> Image.Image:
@@ -101,6 +91,22 @@ def add_title(image: Image.Image, text: str) -> Image.Image:
     return canvas
 
 
+def records_from_payload(payload) -> list:
+    if isinstance(payload, dict):
+        for key in ("patch_results", "results", "records"):
+            value = payload.get(key)
+            if isinstance(value, list):
+                return [item for item in value if isinstance(item, dict)]
+        return [payload]
+    if isinstance(payload, list):
+        records = []
+        for item in payload:
+            if isinstance(item, dict):
+                records.extend(records_from_payload(item))
+        return records
+    return []
+
+
 def load_json_array_or_lines(file_path: Path) -> list:
     """读取 JSON 数组格式 或 JSON Lines 格式（每行一个 JSON 对象）"""
     content = file_path.read_text(encoding="utf-8").strip()
@@ -109,14 +115,13 @@ def load_json_array_or_lines(file_path: Path) -> list:
     if content.startswith('{') and content.endswith('}'):
         try:
             payload = json.loads(content)
-            if isinstance(payload, dict) and isinstance(payload.get("patch_results"), list):
-                return payload["patch_results"]
+            return records_from_payload(payload)
         except json.JSONDecodeError:
             pass
     # 如果以 '[' 开头且以 ']' 结尾，视为标准 JSON 数组
     if content.startswith('[') and content.endswith(']'):
         try:
-            return json.loads(content)
+            return records_from_payload(json.loads(content))
         except json.JSONDecodeError:
             pass  # 解析失败则尝试按行处理
     # 按行解析 JSON Lines
@@ -126,7 +131,7 @@ def load_json_array_or_lines(file_path: Path) -> list:
         if not line:
             continue
         try:
-            results.append(json.loads(line))
+            results.extend(records_from_payload(json.loads(line)))
         except json.JSONDecodeError:
             # 安静跳过无效行，可改为打印警告
             continue
@@ -176,7 +181,7 @@ def main():
     pred_color = colors.get(args.color_pred, colors["red"])
 
     for result in results:
-        image_path = resolve_image_path(result.get("image", ""), image_folder)
+        image_path = resolve_map_image_path(result.get("image", "") or result.get("image_path", ""), image_folder, result)
         if not image_path.exists():
             print(f"[WARN] Image not found: {image_path}")
             continue
@@ -205,6 +210,8 @@ def main():
         rendered = render_whole_map_visualizations(results, image_folder, whole_map_viz_dir)
         print(json.dumps({"whole_map_viz_dir": str(whole_map_viz_dir), "whole_map_visualizations": rendered}, ensure_ascii=False))
     if not args.no_eval_centerline and any("ground_truth" in result for result in results):
+        from infer_index.line_eval import evaluate_records, print_eval_table
+
         eval_summary = evaluate_records(
             results,
             meter_per_pixel=args.eval_meter_per_pixel,

@@ -268,7 +268,7 @@ torchrun \
     --node_rank="${NODE_RANK}" \
     --master_addr="${MASTER_ADDR}" \
     --master_port="${MASTER_PORT}" \
-    scripts/infer_centerline_checkpoint.py \
+    scripts/tools/infer_centerline_checkpoint.py \
     --checkpoint-dir "${CHECKPOINT_DIR}" \
     --vision_tower "${DINOV3_PATH}" \
     --input_image_size "${INPUT_IMAGE_SIZE}" \
@@ -379,8 +379,8 @@ if [ $? -ne 0 ]; then
 fi
 # ==========================================
 
-if [ -f "scripts/visualize_centerline.py" ]; then
-    python scripts/visualize_centerline.py \
+if [ -f "scripts/tools/visualize_centerline.py" ]; then
+    python scripts/tools/visualize_centerline.py \
       --input-dir "${TEST_OUTPUT_LOCAL}" \
       --image-folder "${IMAGE_FOLDER}" \
       --output-dir "${VIZ_DIR}" \

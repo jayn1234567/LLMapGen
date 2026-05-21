@@ -143,7 +143,10 @@ class GRPOArguments:
     report_to: str = "none"
     swanlab_enable: bool = False
     swanlab_project: Optional[str] = None
+    swanlab_workspace: Optional[str] = None
     swanlab_experiment_name: Optional[str] = None
+    swanlab_group: Optional[str] = None
+    swanlab_job_type: Optional[str] = None
     swanlab_description: Optional[str] = None
     swanlab_tags: Optional[str] = None
     swanlab_mode: Optional[str] = None

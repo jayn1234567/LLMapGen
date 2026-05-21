@@ -105,7 +105,7 @@ torchrun \
     --ddp_find_unused_parameters False \
     --deepspeed "${DEEPSPEED_CONFIG}"
 
-python scripts/infer_centerline_checkpoint.py \
+python scripts/tools/infer_centerline_checkpoint.py \
     --checkpoint-dir "${OUTPUT_DIR}/checkpoint-1" \
     --vision_tower "${VISION_TOWER}" \
     --input_image_size "${INPUT_IMAGE_SIZE}" \

@@ -171,7 +171,7 @@ run_case() {
         --nproc_per_node="${NPROC_PER_NODE}" \
         --master_addr=127.0.0.1 \
         --master_port="${infer_port}" \
-        scripts/infer_centerline_checkpoint.py \
+        scripts/tools/infer_centerline_checkpoint.py \
         --checkpoint-dir "${train_dir}" \
         --vision_tower "${vision_path}" \
         --input_image_size "${INPUT_IMAGE_SIZE}" \

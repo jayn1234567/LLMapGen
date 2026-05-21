@@ -65,7 +65,10 @@ VLLM_ENFORCE_EAGER=${VLLM_ENFORCE_EAGER:-True}
 #   export SWANLAB_API_KEY=...
 SWANLAB_ENABLE=${SWANLAB_ENABLE:-False}
 SWANLAB_API_KEY=${SWANLAB_API_KEY:-"5gIH7zqSwmo8dl1Ia5vRN"}
-SWANLAB_PROJECT=${SWANLAB_PROJECT:-mllm-grpo-debug-${MAP_TASK}-${VISION_BACKBONE}}
+SWANLAB_PROJECT=${SWANLAB_PROJECT:-unimapgen_v3}
+SWANLAB_WORKSPACE=${SWANLAB_WORKSPACE:-}
+SWANLAB_GROUP=${SWANLAB_GROUP:-grpo_debug_${MAP_TASK}_${VISION_BACKBONE}}
+SWANLAB_JOB_TYPE=${SWANLAB_JOB_TYPE:-grpo_debug}
 SWANLAB_EXPERIMENT_NAME=${SWANLAB_EXPERIMENT_NAME:-grpo_${VISION_BACKBONE}_${MAP_TASK}_debug}
 SWANLAB_TAGS=${SWANLAB_TAGS:-grpo,debug,${VISION_BACKBONE},${MAP_TASK}}
 SWANLAB_MODE=${SWANLAB_MODE:-}
@@ -123,6 +126,9 @@ python -m mllm.train.train_grpo \
   --dataloader_num_workers 0 \
   --swanlab_enable "${SWANLAB_ENABLE}" \
   --swanlab_project "${SWANLAB_PROJECT}" \
+  --swanlab_workspace "${SWANLAB_WORKSPACE}" \
   --swanlab_experiment_name "${SWANLAB_EXPERIMENT_NAME}" \
+  --swanlab_group "${SWANLAB_GROUP}" \
+  --swanlab_job_type "${SWANLAB_JOB_TYPE}" \
   --swanlab_tags "${SWANLAB_TAGS}" \
   --swanlab_mode "${SWANLAB_MODE}"

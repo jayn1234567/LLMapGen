@@ -73,7 +73,10 @@ OUTPUT_DIR=${OUTPUT_DIR:-/cache/unimapgen_v2/train_output/grpo_${DATASET_PHASE}_
 export PYTHONPATH="${REPO_ROOT}:${PYTHONPATH:-}"
 export SWANLAB_API_KEY=${SWANLAB_API_KEY:-"5gIH7zqSwmo8dl1Ia5vRN"}
 SWANLAB_ENABLE=${SWANLAB_ENABLE:-True}
-SWANLAB_PROJECT=${SWANLAB_PROJECT:-mllm-grpo-${DATASET_PHASE}-${MAP_TASK}-${VISION_BACKBONE}-nodeepstack}
+SWANLAB_PROJECT=${SWANLAB_PROJECT:-unimapgen_v3}
+SWANLAB_WORKSPACE=${SWANLAB_WORKSPACE:-}
+SWANLAB_GROUP=${SWANLAB_GROUP:-grpo_${DATASET_PHASE}_${MAP_TASK}_${VISION_BACKBONE}_nodeepstack}
+SWANLAB_JOB_TYPE=${SWANLAB_JOB_TYPE:-grpo}
 SWANLAB_EXPERIMENT_NAME=${SWANLAB_EXPERIMENT_NAME:-grpo_${DATASET_PHASE}_${MAP_TASK}_${VISION_BACKBONE}_qwen3vl8b_nodeepstack}
 SWANLAB_TAGS=${SWANLAB_TAGS:-grpo,${DATASET_PHASE},${MAP_TASK},${VISION_BACKBONE},qwen3vl8b,nodeepstack}
 
@@ -129,7 +132,9 @@ python -m mllm.train.train_grpo \
   --dataloader_num_workers "${DATALOADER_NUM_WORKERS:-0}" \
   --swanlab_enable "${SWANLAB_ENABLE}" \
   --swanlab_project "${SWANLAB_PROJECT}" \
+  --swanlab_workspace "${SWANLAB_WORKSPACE}" \
   --swanlab_experiment_name "${SWANLAB_EXPERIMENT_NAME}" \
+  --swanlab_group "${SWANLAB_GROUP}" \
+  --swanlab_job_type "${SWANLAB_JOB_TYPE}" \
   --swanlab_tags "${SWANLAB_TAGS}" \
   --swanlab_mode "${SWANLAB_MODE:-}"
-

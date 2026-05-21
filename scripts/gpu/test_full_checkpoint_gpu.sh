@@ -143,7 +143,7 @@ export PYTHONPATH="$(pwd):${PYTHONPATH:-}"
 torchrun --nproc_per_node=8 \
   --master_addr=127.0.0.1 \
   --master_port=29500 \
-  scripts/infer_centerline_checkpoint.py \
+  scripts/tools/infer_centerline_checkpoint.py \
   --checkpoint-dir "${CHECKPOINT_DIR}" \
   --test-json "${TEST_JSON}" \
   --num-samples -1 \
@@ -232,8 +232,8 @@ if [ $? -ne 0 ]; then
 fi
 # ==========================================
 
-if [ -f "scripts/visualize_centerline.py" ]; then
-    python scripts/visualize_centerline.py \
+if [ -f "scripts/tools/visualize_centerline.py" ]; then
+    python scripts/tools/visualize_centerline.py \
       --input-dir "${TEST_OUTPUT_LOCAL}" \
       --image-folder "${IMAGE_FOLDER}" \
       --output-dir "${TEST_OUTPUT_LOCAL}/viz"

@@ -181,7 +181,7 @@ Useful dry-run command:
 source /home/q/anaconda3/etc/profile.d/conda.sh
 conda activate fastvlm
 
-python scripts/infer_centerline_state_update.py \
+python scripts/tools/infer_centerline_state_update.py \
   --checkpoint-dir /tmp/nonexistent \
   --patch-json data/av2_patch_256_fullimage_cutflag_test_v2/sft.jsonl \
   --image-folder data/av2_patch_256_fullimage_cutflag_test_v2 \

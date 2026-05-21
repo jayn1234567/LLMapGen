@@ -96,11 +96,11 @@ infer_index/
 
 Main inference/visualization files:
 
-- `scripts/infer_centerline_checkpoint.py`: checkpoint inference over one image or JSONL.
-- `scripts/infer_centerline_state_update.py`: row-major patch inference using previous predicted left/top state.
-- `scripts/visualize_centerline.py`: GT vs prediction patch visualization and metric output.
-- `scripts/visualize_state_update_global.py`: merged global map visualization.
-- `scripts/summarize_centerline_eval.py`: standalone metric summary over inference JSON.
+- `scripts/tools/infer_centerline_checkpoint.py`: checkpoint inference over one image or JSONL.
+- `scripts/tools/infer_centerline_state_update.py`: row-major patch inference using previous predicted left/top state.
+- `scripts/tools/visualize_centerline.py`: GT vs prediction patch visualization and metric output.
+- `scripts/tools/visualize_state_update_global.py`: merged global map visualization.
+- `scripts/tools/summarize_centerline_eval.py`: standalone metric summary over inference JSON.
 
 Inference summaries keep both coordinate spaces when needed:
 
@@ -178,10 +178,10 @@ For SFT training, read:
 
 For inference/evaluation, read:
 
-1. `scripts/infer_centerline_checkpoint.py`
-2. `scripts/infer_centerline_state_update.py`
+1. `scripts/tools/infer_centerline_checkpoint.py`
+2. `scripts/tools/infer_centerline_state_update.py`
 3. `infer_index/line_eval.py`
-4. `scripts/visualize_centerline.py`
+4. `scripts/tools/visualize_centerline.py`
 
 For RL work, start from `docs/RL_ROADMAP.md`, `scripts/rl/build_hard_pool.py`,
 and `mllm/train/train_grpo.py`. The formal rollout path is vLLM prompt

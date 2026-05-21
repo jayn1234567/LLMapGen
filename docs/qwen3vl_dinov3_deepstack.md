@@ -102,8 +102,8 @@ Training and inference derive the DINO type from checkpoint metadata, `mm_vision
 Full-parameter NPU scripts:
 
 ```bash
-bash scripts/train_full_dinov2_qwen3vl-8b_deepstack_npu.sh
-bash scripts/train_full_dinov2_qwen3vl-8b_no-deepstack_npu.sh
+bash scripts/npu/tmp/root_legacy/train_full_dinov2_qwen3vl-8b_deepstack_npu.sh
+bash scripts/npu/tmp/root_legacy/train_full_dinov2_qwen3vl-8b_no-deepstack_npu.sh
 bash scripts/npu/train/train_sft_stage_a_lane_dinov3_qwen3vl_nodeepstack_npu.sh
 bash scripts/npu/train/train_sft_stage_b_lane_intersection_dinov3_qwen3vl_nodeepstack_npu.sh
 ```
@@ -282,7 +282,7 @@ and `input_image_size`.
 Checkpoint inference:
 
 ```bash
-python scripts/infer_centerline_checkpoint.py \
+python scripts/tools/infer_centerline_checkpoint.py \
   --checkpoint-dir outputs/my_run/checkpoint-1000 \
   --test-json data/test.jsonl \
   --image-folder data/images \
@@ -296,7 +296,7 @@ python scripts/infer_centerline_checkpoint.py \
 State-update inference:
 
 ```bash
-python scripts/infer_centerline_state_update.py \
+python scripts/tools/infer_centerline_state_update.py \
   --checkpoint-dir outputs/my_run/best \
   --patch-json data/test.jsonl \
   --image-folder data/images \
@@ -307,7 +307,7 @@ python scripts/infer_centerline_state_update.py \
 Visualization:
 
 ```bash
-python scripts/visualize_centerline.py \
+python scripts/tools/visualize_centerline.py \
   --input-dir outputs/my_run/infer \
   --image-folder data/images
 ```
@@ -345,7 +345,7 @@ continuity pressure.
 
 Phase B keeps the same JSON schema but includes incoming lane traces and, for
 `lane_intersection`, incoming intersection hints generated from previous
-patches. During normal inference, `scripts/infer_centerline_state_update.py`
+patches. During normal inference, `scripts/tools/infer_centerline_state_update.py`
 feeds model predictions forward as the next patch state. Its
 `--dry-run-prompts` mode is a debug-only GT replay mode used to validate the
 stitching and hint-generation code.
@@ -365,7 +365,7 @@ after the 1-step training smoke test.
 NPU full-checkpoint test scripts:
 
 ```bash
-bash scripts/test_full_dinov2_qwen3vl-8b_npu.sh
+bash scripts/npu/test/base_test_full_dinov2_qwen3vl-8b_npu.sh
 bash scripts/npu/test/test_stage_a_lane_dinov3_qwen3vl_nodeepstack_npu.sh
 bash scripts/npu/test/test_stage_b_lane_intersection_dinov3_qwen3vl_nodeepstack_npu.sh
 ```
@@ -458,7 +458,7 @@ MAX_STEPS=1 \
 TRAIN_SAMPLE_LIMIT=2 \
 NUM_INFER_SAMPLES=2 \
 MODEL_MAX_LENGTH=1536 \
-bash scripts/debug_lora_matrix_multigpu.sh
+bash scripts/gpu/debug_lora_matrix_multigpu.sh
 ```
 
 Key Qwen3-VL + DINOv3 + DeepStack validation:
@@ -470,7 +470,7 @@ MAX_STEPS=1 \
 TRAIN_SAMPLE_LIMIT=2 \
 NUM_INFER_SAMPLES=2 \
 MODEL_MAX_LENGTH=1536 \
-bash scripts/debug_deepstack_qwen3vl_multigpu.sh
+bash scripts/gpu/debug_deepstack_qwen3vl_multigpu.sh
 ```
 
 Observed checks:

@@ -48,7 +48,7 @@ echo "Coords:     ${COORD_MODE} (range=${COORD_RANGE})"
 echo "Device:     ${DEVICE}"
 echo "============================================================"
 
-python scripts/infer_centerline_checkpoint.py \
+python scripts/tools/infer_centerline_checkpoint.py \
     --checkpoint-dir "${CHECKPOINT_DIR}" \
     --image "${IMAGE}" \
     --image-folder "${IMAGE_FOLDER}" \

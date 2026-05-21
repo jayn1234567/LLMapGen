@@ -121,7 +121,7 @@ if [ "${DATASET_PHASE}" = "phase_b" ]; then
   if [ "${MAP_TASK}" = "lane_intersection" ]; then
     INCLUDE_INTERSECTION_ARGS=(--include-intersections)
   fi
-  python scripts/infer_centerline_state_update.py \
+  python scripts/tools/infer_centerline_state_update.py \
     --checkpoint-dir "${CHECKPOINT_DIR}" \
     --vision_tower "${VISION_TOWER}" \
     "${INPUT_IMAGE_SIZE_ARGS[@]}" \
@@ -148,7 +148,7 @@ else
     --nproc_per_node="${NPROC_PER_NODE}" \
     --master_addr="${MASTER_ADDR}" \
     --master_port="${MASTER_PORT}" \
-    scripts/infer_centerline_checkpoint.py \
+    scripts/tools/infer_centerline_checkpoint.py \
     --checkpoint-dir "${CHECKPOINT_DIR}" \
     --vision_tower "${VISION_TOWER}" \
     "${INPUT_IMAGE_SIZE_ARGS[@]}" \
@@ -194,7 +194,7 @@ print(f"Merged {len(rank_files)} rank summaries into {summary_json}")
 PY
 fi
 
-python scripts/visualize_centerline.py \
+python scripts/tools/visualize_centerline.py \
   --input-dir "${OUTPUT_DIR}" \
   --image-folder "${IMAGE_FOLDER}" \
   --output-dir "${PATCH_VIZ_DIR}" \

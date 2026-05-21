@@ -32,6 +32,7 @@ from scripts.tools.infer_centerline_checkpoint import (
     parse_map_json,
     read_manifest,
 )
+from scripts.tools.map_visualization import render_whole_map_visualizations as render_common_whole_map_visualizations
 
 
 TASK_TEXT = "Please construct the complete road map in the current BEV (Bird's Eye View) image patch."
@@ -683,7 +684,7 @@ def main():
     if not args.skip_whole_map_viz:
         whole_map_viz_dir = Path(args.whole_map_viz_dir) if args.whole_map_viz_dir else Path(args.output_json).parent / "whole_map_viz"
         summary["whole_map_viz_dir"] = str(whole_map_viz_dir)
-        summary["whole_map_visualizations"] = render_whole_map_visualizations(patch_results, image_folder, whole_map_viz_dir)
+        summary["whole_map_visualizations"] = render_common_whole_map_visualizations(patch_results, image_folder, whole_map_viz_dir)
     if args.eval_centerline:
         summary["centerline_eval"] = evaluate_records(
             patch_results,

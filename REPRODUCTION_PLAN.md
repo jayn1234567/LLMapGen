@@ -200,7 +200,7 @@ State update should live outside the model, in the inference orchestration layer
 
 ### Recommended New Script
 
-- [scripts/infer_centerline_state_update.py](/media/q/data2/jjh/project/unimapgen_mllm/scripts/infer_centerline_state_update.py)
+- [scripts/tools/infer_centerline_state_update.py](/media/q/data2/jjh/project/unimapgen_mllm/scripts/tools/infer_centerline_state_update.py)
 
 This script should:
 
@@ -248,7 +248,7 @@ These templates:
 
 #### 2. Inference JSON parser
 
-[scripts/infer_centerline_checkpoint.py](/media/q/data2/jjh/project/unimapgen_mllm/scripts/infer_centerline_checkpoint.py:220)
+[scripts/tools/infer_centerline_checkpoint.py](/media/q/data2/jjh/project/unimapgen_mllm/scripts/tools/infer_centerline_checkpoint.py:220)
 
 The parser has been extended with `parse_map_json` to accept:
 
@@ -261,7 +261,7 @@ The parser has been extended with `parse_map_json` to accept:
 
 Added:
 
-- [scripts/infer_centerline_state_update.py](/media/q/data2/jjh/project/unimapgen_mllm/scripts/infer_centerline_state_update.py)
+- [scripts/tools/infer_centerline_state_update.py](/media/q/data2/jjh/project/unimapgen_mllm/scripts/tools/infer_centerline_state_update.py)
 
 Responsibilities:
 
@@ -276,7 +276,7 @@ The first version only uses left and top neighbors, matching left-to-right, top-
 
 #### 4. Visualization
 
-[scripts/visualize_centerline.py](/media/q/data2/jjh/project/unimapgen_mllm/scripts/visualize_centerline.py)
+[scripts/tools/visualize_centerline.py](/media/q/data2/jjh/project/unimapgen_mllm/scripts/tools/visualize_centerline.py)
 
 Drawing code now supports:
 
@@ -369,13 +369,13 @@ Added templates:
 
 ### Parser and single-patch inference compatibility
 
-- [scripts/infer_centerline_checkpoint.py](/media/q/data2/jjh/project/unimapgen_mllm/scripts/infer_centerline_checkpoint.py)
+- [scripts/tools/infer_centerline_checkpoint.py](/media/q/data2/jjh/project/unimapgen_mllm/scripts/tools/infer_centerline_checkpoint.py)
 
 Added `parse_map_json` so existing inference can parse both legacy and new schemas.
 
 ### State-update inference
 
-- [scripts/infer_centerline_state_update.py](/media/q/data2/jjh/project/unimapgen_mllm/scripts/infer_centerline_state_update.py)
+- [scripts/tools/infer_centerline_state_update.py](/media/q/data2/jjh/project/unimapgen_mllm/scripts/tools/infer_centerline_state_update.py)
 
 Responsibilities:
 
@@ -386,7 +386,7 @@ Responsibilities:
 
 ### Visualization
 
-- [scripts/visualize_centerline.py](/media/q/data2/jjh/project/unimapgen_mllm/scripts/visualize_centerline.py)
+- [scripts/tools/visualize_centerline.py](/media/q/data2/jjh/project/unimapgen_mllm/scripts/tools/visualize_centerline.py)
 
 Updated to read legacy list outputs and new `{"lines": ...}` outputs, including `intersection`.
 
@@ -395,7 +395,7 @@ Updated to read legacy list outputs and new `{"lines": ...}` outputs, including 
 1. Generate a small dataset slice with `cut|inside` and `incoming traces`.
 2. Train Phase A on the new schema.
 3. Train Phase B with teacher-forced traces.
-4. Run `scripts/infer_centerline_state_update.py` with a real checkpoint.
+4. Run `scripts/tools/infer_centerline_state_update.py` with a real checkpoint.
 5. Validate on a small patch grid with visible patch boundaries.
 6. Extend whole-image visualization and evaluation as needed.
 

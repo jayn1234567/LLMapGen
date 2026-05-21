@@ -99,7 +99,10 @@ STATE_DIR=${STATE_DIR:-${OUTPUT_DIR}/state_update}
 #   export SWANLAB_API_KEY=...
 SWANLAB_ENABLE=${SWANLAB_ENABLE:-False}
 SWANLAB_API_KEY=${SWANLAB_API_KEY:-"5gIH7zqSwmo8dl1Ia5vRN"}
-SWANLAB_PROJECT=${SWANLAB_PROJECT:-mllm-sft-debug-${FLOW_PHASE}-${MAP_TASK}-${VISION_BACKBONE}}
+SWANLAB_PROJECT=${SWANLAB_PROJECT:-unimapgen_v3}
+SWANLAB_WORKSPACE=${SWANLAB_WORKSPACE:-}
+SWANLAB_GROUP=${SWANLAB_GROUP:-sft_debug_${FLOW_PHASE}_${MAP_TASK}_${VISION_BACKBONE}}
+SWANLAB_JOB_TYPE=${SWANLAB_JOB_TYPE:-sft_debug}
 SWANLAB_EXPERIMENT_NAME=${SWANLAB_EXPERIMENT_NAME:-sft_debug_${FLOW_PHASE}_${MAP_TASK}_${VISION_BACKBONE}_${TRAIN_MODE}}
 SWANLAB_TAGS=${SWANLAB_TAGS:-sft,debug,${FLOW_PHASE},${MAP_TASK},${VISION_BACKBONE},${TRAIN_MODE}}
 SWANLAB_MODE=${SWANLAB_MODE:-}
@@ -125,7 +128,7 @@ echo "Train:     ${TRAIN_JSONL}"
 echo "Output:    ${OUTPUT_DIR}"
 echo "LoRA:      ${LORA_ENABLE}"
 echo "Unfreeze ViT: ${UNFREEZE_MM_VISION_TOWER}"
-echo "SwanLab:   ${SWANLAB_ENABLE}, project=${SWANLAB_PROJECT}, exp=${SWANLAB_EXPERIMENT_NAME}"
+echo "SwanLab:   ${SWANLAB_ENABLE}, project=${SWANLAB_PROJECT}, group=${SWANLAB_GROUP}, job=${SWANLAB_JOB_TYPE}, exp=${SWANLAB_EXPERIMENT_NAME}"
 echo "============================================================"
 
 torchrun \
@@ -173,7 +176,10 @@ torchrun \
   --report_to none \
   --swanlab_enable "${SWANLAB_ENABLE}" \
   --swanlab_project "${SWANLAB_PROJECT}" \
+  --swanlab_workspace "${SWANLAB_WORKSPACE}" \
   --swanlab_experiment_name "${SWANLAB_EXPERIMENT_NAME}" \
+  --swanlab_group "${SWANLAB_GROUP}" \
+  --swanlab_job_type "${SWANLAB_JOB_TYPE}" \
   --swanlab_tags "${SWANLAB_TAGS}" \
   --swanlab_mode "${SWANLAB_MODE}" \
   --tf32 False \
@@ -186,7 +192,7 @@ if [ ! -d "${CHECKPOINT_DIR}" ]; then
 fi
 [ -n "${CHECKPOINT_DIR}" ] && [ -d "${CHECKPOINT_DIR}" ] || { echo "No checkpoint found under ${OUTPUT_DIR}"; exit 1; }
 
-python scripts/infer_centerline_checkpoint.py \
+python scripts/tools/infer_centerline_checkpoint.py \
   --checkpoint-dir "${CHECKPOINT_DIR}" \
   --vision_tower "${VISION_TOWER}" \
   --input_image_size "${INPUT_IMAGE_SIZE}" \
@@ -208,7 +214,7 @@ python scripts/infer_centerline_checkpoint.py \
   --eval-centerline
 
 if [[ "${RUN_STATE_UPDATE}" =~ ^(1|true|True|TRUE|yes|YES)$ ]]; then
-  python scripts/infer_centerline_state_update.py \
+  python scripts/tools/infer_centerline_state_update.py \
     --checkpoint-dir "${CHECKPOINT_DIR}" \
     --patch-json "${TEST_JSONL}" \
     --image-folder "${IMAGE_FOLDER}" \

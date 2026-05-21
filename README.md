@@ -133,8 +133,6 @@ Fixes from this audit:
 Full-parameter training:
 
 ```bash
-bash scripts/train_full_dinov2_qwen3vl-8b_deepstack_npu.sh
-bash scripts/train_full_dinov2_qwen3vl-8b_no-deepstack_npu.sh
 bash scripts/npu/train/train_sft_stage_a_lane_dinov2_qwen3vl_nodeepstack_npu.sh
 bash scripts/npu/train/train_sft_stage_b_lane_intersection_dinov3_qwen3vl_nodeepstack_npu.sh
 bash scripts/npu/train/train_sft_stage_a_lane_dinov3_qwen3vl_nodeepstack_npu.sh
@@ -253,14 +251,19 @@ SwanLab monitoring:
 | Parameter | Purpose |
 |---|---|
 | `--swanlab_enable True` | Enable SwanLab logging. Default scripts keep it off unless changed in the script parameter block. |
-| `--swanlab_project` | Project name. Main scripts default to task-specific names such as `mllm-sft-33w-phase_a-lane-dinov2-nodeepstack`. |
+| `--swanlab_project` | Project name. Main scripts default to the shared project `unimapgen_v3`. |
+| `--swanlab_workspace` | Optional SwanLab workspace/org. Leave empty for the account default. |
 | `--swanlab_experiment_name` | Run name, usually including SFT/GRPO, data scale, phase, task, backbone, and DeepStack mode. |
+| `--swanlab_group` | Group related runs inside `unimapgen_v3`, for example `sft_phase_a_lane_dinov2_nodeepstack` or `grpo_phase_b_lane_intersection_dinov3_nodeepstack`. |
+| `--swanlab_job_type` | Job category for filtering, for example `sft`, `grpo`, `sft_debug`, or `grpo_debug`. |
 | `--swanlab_tags` | Comma-separated run tags. |
 | `--swanlab_mode` | Optional SwanLab mode, for example `cloud`, `offline`, or `disabled`. Leave empty for SwanLab default. |
 
-The provided SFT/GRPO scripts define `SWANLAB_API_KEY`, `SWANLAB_PROJECT`, and
-`SWANLAB_EXPERIMENT_NAME` in their parameter blocks. Edit those blocks for
-reproducible runs instead of passing one-off shell prefixes.
+The provided SFT/GRPO scripts define `SWANLAB_API_KEY`, `SWANLAB_PROJECT`,
+`SWANLAB_GROUP`, `SWANLAB_JOB_TYPE`, and `SWANLAB_EXPERIMENT_NAME` in their
+parameter blocks. Keep `SWANLAB_PROJECT=unimapgen_v3` to compare all runs in one
+project; use group/job type/tags to separate SFT, GRPO, stage/task, backbone, and
+debug/formal runs.
 
 ## RL Post-Training
 
@@ -411,7 +414,7 @@ data/debug_phase_a_lane_intersection20/{train,test}.jsonl
 data/debug_phase_b_lane_intersection20/{train,test}.jsonl
 ```
 
-`scripts/infer_centerline_state_update.py` must use model predictions as the
+`scripts/tools/infer_centerline_state_update.py` must use model predictions as the
 next patch state during normal inference. For engineering verification only,
 `--dry-run-prompts` can replay ground truth JSON to confirm stitching and hint
 generation without depending on model quality.
@@ -454,7 +457,7 @@ clamped to the valid in-patch range; Phase B incoming hints are not clamped.
 Single/checkpoint inference:
 
 ```bash
-python scripts/infer_centerline_checkpoint.py \
+python scripts/tools/infer_centerline_checkpoint.py \
   --checkpoint-dir outputs/my_run/checkpoint-1000 \
   --test-json data/test.jsonl \
   --image-folder data/images \
@@ -469,7 +472,7 @@ python scripts/infer_centerline_checkpoint.py \
 State-update patch inference:
 
 ```bash
-python scripts/infer_centerline_state_update.py \
+python scripts/tools/infer_centerline_state_update.py \
   --checkpoint-dir outputs/my_run/best \
   --patch-json data/test.jsonl \
   --image-folder data/images \
@@ -481,7 +484,7 @@ python scripts/infer_centerline_state_update.py \
 Visualization with metrics:
 
 ```bash
-python scripts/visualize_centerline.py \
+python scripts/tools/visualize_centerline.py \
   --input-dir outputs/my_run/infer \
   --image-folder data/images
 ```
@@ -507,7 +510,6 @@ plus Hungarian matching. The default scale is `--eval-meter-per-pixel 0.2`.
 Full-checkpoint testing:
 
 ```bash
-bash scripts/test_full_dinov2_qwen3vl-8b_npu.sh
 bash scripts/npu/test/test_stage_a_lane_dinov2_qwen3vl_nodeepstack_npu.sh
 bash scripts/npu/test/test_stage_b_lane_intersection_dinov3_qwen3vl_nodeepstack_npu.sh
 ```

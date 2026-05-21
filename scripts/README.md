@@ -1,17 +1,15 @@
 # Script Naming
 
-Top-level `scripts/` keeps legacy compatibility entrypoints and Python wrappers:
+Top-level `scripts/` now keeps only shared configs and this README. Runnable
+scripts live under platform/purpose folders:
 
-- `train_full_*_deepstack_npu.sh`: train LLM, ViT, projector, and DeepStack mergers.
-- `train_full_*_no-deepstack_npu.sh`: standalone train script for LLM, ViT, and projector with DeepStack disabled; it does not delegate to the DeepStack script.
-- `train_sft_dinov2_qwen3vl-8b_nodeepstack_33w_evalbest_npu.sh`: 330k-sample no-DeepStack full-parameter SFT recipe for DINOv2 + Qwen3VL-8B.
-- `train_sft_dinov3_qwen3vl-8b_nodeepstack_33w_evalbest_npu.sh`: 330k-sample no-DeepStack full-parameter SFT recipe for DINOv3 + Qwen3VL-8B; it sets `INPUT_IMAGE_SIZE=512`.
-- `train_full_*_train_best_npu.sh`: train with DeepStack and maintain a best checkpoint by lowest training loss.
-- `train_full_*_eval_best_npu.sh`: train with DeepStack, run a validation set by steps, and maintain a best checkpoint by lowest eval loss.
-- `scripts/gpu/train_sft_debug_phase_a_*_zero3_gpu.sh`: local GPU SFT Phase A smoke tests with empty incoming hints.
-- `scripts/gpu/train_sft_debug_phase_b_*_zero3_gpu.sh`: local GPU SFT Phase B smoke tests with incoming hints and state-update inference.
-- `test_full_*`: cloud inference/eval for the corresponding full-parameter checkpoint.
-- `debug.sh`: local NPU DINOv3 smoke training with no OBS transfer and no dependency installation.
+- `scripts/npu/train/`: current NPU SFT/GRPO training entrypoints and base recipes.
+- `scripts/npu/test/`: current NPU inference/eval entrypoints and base recipes.
+- `scripts/gpu/`: local GPU debug, smoke-test, and inference scripts.
+- `scripts/tools/`: Python tool implementations.
+- `scripts/data/`: dataset helper scripts.
+- `scripts/rl/`: RL data/export helper scripts.
+- `scripts/tmp/` and `scripts/npu/tmp/`: old root-level wrappers or legacy NPU scripts kept for reference.
 
 NPU scripts are grouped by purpose:
 
@@ -20,7 +18,9 @@ NPU scripts are grouped by purpose:
 - `scripts/npu/tmp/`: older or non-current NPU scripts kept for reference instead of being deleted.
 - `scripts/gpu/`: GPU training/inference/visualization utilities.
 - `scripts/rl/`: post-training RL utilities that do not change SFT scripts.
-- `scripts/tools/`: Python tool implementations. Root-level `scripts/*.py` files are compatibility wrappers, so existing commands like `python scripts/infer_centerline_checkpoint.py` still work.
+- Use Python tools directly from `scripts/tools/`, for example
+  `python scripts/tools/infer_centerline_checkpoint.py` and
+  `python scripts/tools/visualize_centerline.py`.
 
 NPU train entrypoints:
 
@@ -109,8 +109,8 @@ Best checkpoint behavior:
 Centerline geometry evaluation:
 
 - The project uses `infer_index/line_eval.py` for centerline metrics: LineString buffer IoU plus Hungarian matching, reporting instance-level and length-level precision/recall/F1.
-- `scripts/infer_centerline_checkpoint.py --eval-centerline` and `scripts/infer_centerline_state_update.py --eval-centerline` write these metrics to `eval.json` by default; pass `--eval-output-json` to override.
-- `scripts/visualize_centerline.py` automatically prints and saves `eval.json` after visualization when ground truth is present. Use `--no-eval-centerline` to disable it.
+- `scripts/tools/infer_centerline_checkpoint.py --eval-centerline` and `scripts/tools/infer_centerline_state_update.py --eval-centerline` write these metrics to `eval.json` by default; pass `--eval-output-json` to override.
+- `scripts/tools/visualize_centerline.py` automatically prints and saves `eval.json` after visualization when ground truth is present. Use `--no-eval-centerline` to disable it.
 - The saved metrics include scalar JSON fields and a `table` string matching the console table.
 - The default metric scale is `--eval-meter-per-pixel 0.2`, matching `infer_index/param.py`.
 - New data uses `coord_mode=norm1000` by default. Inference/test scripts keep `COORD_MODE=auto` and `COORD_RANGE=1000`, so JSONL metadata controls whether labels are normalized or legacy pixels.
@@ -121,7 +121,7 @@ Phase A / Phase B debug flow:
 - Build small A/B data with `python scripts/gpu/build_ab_debug_data.py --limit 20 --test-count 4`.
 - Phase A JSONL clears incoming hints and is used for single-patch recognition smoke tests.
 - Phase B JSONL keeps generated left/top continuity hints and is used for state-update smoke tests.
-- `scripts/infer_centerline_state_update.py` uses predictions as the next state in normal inference. The `--dry-run-prompts` mode is only for GT replay checks of stitching logic.
+- `scripts/tools/infer_centerline_state_update.py` uses predictions as the next state in normal inference. The `--dry-run-prompts` mode is only for GT replay checks of stitching logic.
 - B-stage state-update inference writes per-patch JSONs to `--output-dir`/`--sample-json-dir` and stitched whole-map images to `whole_map_viz/` by default. Use `--whole-map-viz-dir` to choose a separate directory, or `--skip-whole-map-viz` to disable it.
 - Current GPU ZeRO3 SFT smoke scripts cover Phase A lane patch inference and Phase B lane+intersection patch inference plus state-update inference.
 

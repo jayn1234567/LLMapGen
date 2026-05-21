@@ -62,6 +62,9 @@ def _filter_kwargs(callable_obj: Any, kwargs: dict[str, Any]) -> dict[str, Any]:
 def _set_swanlab_env(args: Any) -> None:
     mapping = {
         "swanlab_project": "SWANLAB_PROJECT",
+        "swanlab_workspace": "SWANLAB_WORKSPACE",
+        "swanlab_group": "SWANLAB_GROUP",
+        "swanlab_job_type": "SWANLAB_JOB_TYPE",
         "swanlab_mode": "SWANLAB_MODE",
         "swanlab_log_dir": "SWANLAB_LOG_DIR",
         "swanlab_api_host": "SWANLAB_API_HOST",
@@ -128,7 +131,10 @@ def build_swanlab_callback(model_args: Any, data_args: Any, training_args: Any):
 
     kwargs = {
         "project": _field(training_args, "swanlab_project"),
+        "workspace": _field(training_args, "swanlab_workspace"),
         "experiment_name": _field(training_args, "swanlab_experiment_name") or _field(training_args, "run_name"),
+        "group": _field(training_args, "swanlab_group"),
+        "job_type": _field(training_args, "swanlab_job_type"),
         "description": _field(training_args, "swanlab_description"),
         "config": build_swanlab_config(model_args, data_args, training_args),
         "tags": _split_csv(_field(training_args, "swanlab_tags")),
@@ -160,7 +166,10 @@ def init_swanlab_run(
 
     kwargs = {
         "project": _field(args, "swanlab_project"),
+        "workspace": _field(args, "swanlab_workspace"),
         "experiment_name": _field(args, "swanlab_experiment_name") or default_experiment_name,
+        "group": _field(args, "swanlab_group"),
+        "job_type": _field(args, "swanlab_job_type"),
         "description": _field(args, "swanlab_description"),
         "config": _jsonable(config),
         "mode": _field(args, "swanlab_mode"),

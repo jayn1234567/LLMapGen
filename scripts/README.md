@@ -19,8 +19,31 @@ Top-level `scripts/` keeps the current NPU full-parameter train/test entrypoints
 Subdirectories keep non-full or local platform-specific scripts:
 
 - `scripts/npu/`: NPU training scripts that freeze one side of the model.
+- `scripts/npu/flows/`: explicit NPU flow entrypoints for SFT/GRPO, stage A/B, lane-only/lane+intersection, and DINOv2/DINOv3.
 - `scripts/gpu/`: GPU training/inference/visualization utilities.
 - `scripts/rl/`: post-training RL utilities that do not change SFT scripts.
+- `scripts/tools/`: Python tool implementations. Root-level `scripts/*.py` files are compatibility wrappers, so existing commands like `python scripts/infer_centerline_checkpoint.py` still work.
+
+NPU flow entrypoints:
+
+- SFT lane-only:
+  - `scripts/npu/flows/train_sft_stage_a_lane_dinov2_qwen3vl_nodeepstack_npu.sh`
+  - `scripts/npu/flows/train_sft_stage_b_lane_dinov2_qwen3vl_nodeepstack_npu.sh`
+  - `scripts/npu/flows/train_sft_stage_a_lane_dinov3_qwen3vl_nodeepstack_npu.sh`
+  - `scripts/npu/flows/train_sft_stage_b_lane_dinov3_qwen3vl_nodeepstack_npu.sh`
+- SFT lane+intersection:
+  - `scripts/npu/flows/train_sft_stage_a_lane_intersection_dinov2_qwen3vl_nodeepstack_npu.sh`
+  - `scripts/npu/flows/train_sft_stage_b_lane_intersection_dinov2_qwen3vl_nodeepstack_npu.sh`
+  - `scripts/npu/flows/train_sft_stage_a_lane_intersection_dinov3_qwen3vl_nodeepstack_npu.sh`
+  - `scripts/npu/flows/train_sft_stage_b_lane_intersection_dinov3_qwen3vl_nodeepstack_npu.sh`
+- GRPO wrappers use the same stage/task/vision naming:
+  - `scripts/npu/flows/train_grpo_stage_a_lane_dinov2_qwen3vl_nodeepstack_npu.sh`
+  - `scripts/npu/flows/train_grpo_stage_b_lane_dinov2_qwen3vl_nodeepstack_npu.sh`
+  - `scripts/npu/flows/train_grpo_stage_a_lane_dinov3_qwen3vl_nodeepstack_npu.sh`
+  - `scripts/npu/flows/train_grpo_stage_b_lane_dinov3_qwen3vl_nodeepstack_npu.sh`
+  - the four `*_lane_intersection_*` GRPO wrappers mirror the SFT names.
+
+The SFT flow wrappers call the existing 33w no-DeepStack NPU recipes after setting `DATASET_PHASE` and `MAP_TASK`. The GRPO flow wrappers are named and parameterized consistently, but fail fast on pure Ascend NPU because the current supported GRPO backend is CUDA/vLLM prompt-embedding rollout. Only set `GRPO_ENABLE_CUDA_VLLM_FROM_NPU_SCRIPT=True` when deliberately launching the same wrapper on a CUDA host for naming compatibility.
 
 Training mode in filenames:
 

@@ -46,22 +46,22 @@ python -c "import moxing as mox; mox.file.copy_parallel('obs://yw-ads-training-g
 pip install --force-reinstall /home/ma-user/torch_npu-2.7.1.dev20250724-cp311-cp311-manylinux_2_28_aarch64.whl
 
 # -------------------- tokenizer prerequisites (before transformers) --------------------
-pip install sentencepiece
-pip install tiktoken
+pip install "sentencepiece>=0.1.99"
+pip install "tiktoken>=0.7.0"
 
 # -------------------- core ML (step.sh) --------------------
-pip install "transformers>=4.51.0"
-pip install "tokenizers>=0.21"
+pip install "transformers==4.56.2"
+pip install "tokenizers>=0.22.0,<0.23.0"
 pip install accelerate==1.6.0
 pip install deepspeed==0.14.4
-pip install safetensors
+pip install "safetensors>=0.4.3"
 pip install packaging
-pip install Pillow
+pip install "Pillow>=10.0.0"
 pip install torchvision==0.22.1
 
 # -------------------- llava project dependencies (from pyproject.toml) --------------------
 pip install shortuuid
-pip install peft
+pip install "peft>=0.10.0"
 pip install pydantic
 pip install 'markdown2[all]'
 pip install 'numpy>=1.26'
@@ -73,8 +73,17 @@ pip install fastapi
 pip install 'einops>=0.6'
 pip install 'einops-exts>=0.0.4'
 pip install 'timm>=0.9.0'
+pip install 'opencv-python-headless>=4.8.0'
+pip install 'loguru>=0.7.0'
+pip install 'shapely>=2.0.0'
+pip install 'geopandas>=0.14.0'
+pip install 'rasterio>=1.3.0'
+pip install 'pyproj>=3.6.0'
+pip install 'fiona>=1.9.0'
+pip install wandb
+pip install swanlab
 
-pip install "huggingface-hub>=0.25.1" --force-reinstall
+pip install "huggingface-hub==0.36.2" --force-reinstall
 pip install urllib3==1.26.15
 
 # -------------------- verification --------------------

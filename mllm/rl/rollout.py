@@ -69,6 +69,20 @@ except Exception:
         os.environ["PYTHONPATH"] = os.pathsep.join([patch_dir_text, *parts])
 
 
+def _prepare_vllm_device_backend(device_backend: str) -> None:
+    backend = str(device_backend or "auto").lower()
+    if backend in {"ascend", "npu"}:
+        os.environ.setdefault("VLLM_TARGET_DEVICE", "npu")
+        try:
+            import torch_npu  # noqa: F401
+        except ImportError as exc:  # pragma: no cover - NPU env specific
+            raise ImportError("Ascend GRPO requires torch_npu to be installed.") from exc
+        try:
+            import vllm_ascend  # noqa: F401
+        except ImportError as exc:  # pragma: no cover - NPU env specific
+            raise ImportError("Ascend GRPO requires vllm-ascend to be installed.") from exc
+
+
 @dataclass
 class RolloutPrompt:
     group_index: int
@@ -148,6 +162,7 @@ class VLLMPromptEmbedRolloutWorker:
         max_lora_rank: int = 8,
         enforce_eager: bool = False,
         trust_remote_code: bool = True,
+        device_backend: str = "auto",
     ):
         if num_generations < 2:
             raise ValueError("GRPO requires num_generations >= 2.")
@@ -156,6 +171,7 @@ class VLLMPromptEmbedRolloutWorker:
 
         _patch_vllm_transformers_aimv2_registration()
         _install_vllm_subprocess_sitecustomize_patch()
+        _prepare_vllm_device_backend(device_backend)
         try:
             from vllm import LLM, SamplingParams
         except ImportError as exc:  # pragma: no cover - depends on optional env

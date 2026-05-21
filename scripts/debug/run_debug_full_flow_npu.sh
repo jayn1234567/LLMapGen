@@ -1,9 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# One-command debug flow for one phase/task/backbone.
-# Default: SFT -> inference. GRPO is opt-in because current GRPO requires
-# CUDA/vLLM, not pure Ascend NPU.
+# One-command Ascend NPU debug flow for one phase/task/backbone.
+# Default: SFT -> inference. GRPO is opt-in and uses vLLM-Ascend.
 
 SCRIPT_PATH=$(readlink -f "$0")
 SCRIPT_DIR=$(dirname "$SCRIPT_PATH")

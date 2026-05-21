@@ -32,6 +32,15 @@ rl = [
     "wandb",
     "swanlab",
 ]
+rl_npu = [
+    "transformers==4.56.2",
+    "huggingface-hub==0.36.2",
+    "ray[default]==2.55.1",
+    "vllm==0.9.2",
+    "vllm-ascend==0.9.2rc1",
+    "wandb",
+    "swanlab",
+]
 build = ["build", "twine"]
 
 [tool.setuptools.packages.find]

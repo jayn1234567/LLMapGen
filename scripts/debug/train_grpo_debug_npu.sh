@@ -1,9 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# GRPO debug launcher with the same A/B and DINOv2/DINOv3 naming as the NPU
-# flow. Current project GRPO uses CUDA/vLLM prompt-embedding rollout, so this
-# script fails fast on pure Ascend unless explicitly allowed on a CUDA host.
+# Ascend NPU GRPO debug launcher with the same A/B and DINOv2/DINOv3 naming as
+# the formal NPU flow. It uses vLLM-Ascend prompt-embedding rollout.
 
 SCRIPT_PATH=$(readlink -f "$0")
 SCRIPT_DIR=$(dirname "$SCRIPT_PATH")
@@ -45,22 +44,23 @@ case "${MAP_TASK}" in
   *) echo "ERROR: MAP_TASK must be lane or lane_intersection"; exit 1 ;;
 esac
 
-if [[ "${GRPO_ENABLE_CUDA_VLLM_FROM_NPU_SCRIPT:-False}" != "True" ]]; then
-  cat <<EOF
-ERROR: current GRPO backend requires CUDA/vLLM and is not supported as pure Ascend NPU training.
-
-Requested debug flow:
-  DATASET_PHASE=${DATASET_PHASE}
-  MAP_TASK=${MAP_TASK}
-  VISION_BACKBONE=${VISION_BACKBONE}
-
-Run this script only on a CUDA/vLLM host and set:
-  GRPO_ENABLE_CUDA_VLLM_FROM_NPU_SCRIPT=True
-EOF
-  exit 2
+if [ -f /usr/local/Ascend/ascend-toolkit/set_env.sh ]; then
+  source /usr/local/Ascend/ascend-toolkit/set_env.sh
+fi
+if [ -f /usr/local/Ascend/nnal/atb/set_env.sh ]; then
+  source /usr/local/Ascend/nnal/atb/set_env.sh
 fi
 
 export PYTHONPATH="${REPO_ROOT}:${PYTHONPATH:-}"
+export VLLM_TARGET_DEVICE=${VLLM_TARGET_DEVICE:-npu}
+export TOKENIZERS_PARALLELISM=${TOKENIZERS_PARALLELISM:-false}
+export HCCL_WHITELIST_DISABLE=1
+export HCCL_CONNECT_TIMEOUT=7200
+export HCCL_EXEC_TIMEOUT=7200
+export HCCL_IF_BASE_PORT=64000
+export INF_NAN_MODE_ENABLE=1
+export WITHOUT_JIT_COMPILE=1
+export COMBINED_ENABLE=1
 
 TRAIN_LIMIT=${TRAIN_LIMIT:-16}
 EVAL_LIMIT=${EVAL_LIMIT:-4}
@@ -115,7 +115,7 @@ for path in "${DATA_PATH}" "${IMAGE_FOLDER}" "${VISION_TOWER}" "${SFT_CHECKPOINT
     exit 1
   fi
 done
-python -c "import vllm; print('vllm', getattr(vllm, '__version__', 'unknown'))"
+python -c "import vllm; print('vllm', getattr(vllm, '__version__', 'unknown')); import vllm_ascend; print('vllm_ascend imported')"
 
 if [ "${MAP_TASK}" = "lane_intersection" ]; then
   REWARD_INTERSECTION_WEIGHT=${REWARD_INTERSECTION_WEIGHT:-0.10}
@@ -139,6 +139,7 @@ echo "  phase=${DATASET_PHASE} map_task=${MAP_TASK} vision=${VISION_BACKBONE}"
 echo "  sft_checkpoint=${SFT_CHECKPOINT}"
 echo "  data=${DATA_PATH}"
 echo "  output=${OUTPUT_DIR}"
+echo "  actor_npu=${ACTOR_NPU_DEVICES:-0} rollout_npu=${ROLLOUT_NPU_DEVICES:-1}"
 
 python -m mllm.train.train_grpo \
   --model_name_or_path "${SFT_CHECKPOINT}" \
@@ -156,8 +157,11 @@ python -m mllm.train.train_grpo \
   --coord_range 1000 \
   --output_dir "${OUTPUT_DIR}" \
   --rollout_backend vllm_prompt_embeds \
-  --actor_num_gpus "${ACTOR_NUM_GPUS:-1}" \
-  --rollout_num_gpus "${ROLLOUT_NUM_GPUS:-1}" \
+  --device_backend npu \
+  --actor_npu_devices "${ACTOR_NPU_DEVICES:-0}" \
+  --rollout_npu_devices "${ROLLOUT_NPU_DEVICES:-1}" \
+  --actor_num_cpus "${ACTOR_NUM_CPUS:-4}" \
+  --rollout_num_cpus "${ROLLOUT_NUM_CPUS:-4}" \
   --vllm_tensor_parallel_size "${VLLM_TENSOR_PARALLEL_SIZE:-1}" \
   --vllm_gpu_memory_utilization "${VLLM_GPU_MEMORY_UTILIZATION:-0.70}" \
   --vllm_max_model_len "${VLLM_MAX_MODEL_LEN:-2048}" \

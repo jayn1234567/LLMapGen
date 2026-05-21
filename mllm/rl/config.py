@@ -47,10 +47,10 @@ class RLDataArguments:
 class GRPOArguments:
     output_dir: str = field(metadata={"help": "Directory for RL checkpoints, logs, rollout cache, and exports."})
 
-    # Formal rollout path. HF local generation is intentionally not a training backend.
+    # Formal rollout path. CUDA uses upstream vLLM; Ascend NPU uses vLLM-Ascend.
     rollout_backend: str = field(
         default="vllm_prompt_embeds",
-        metadata={"help": "Formal rollout backend. Only vllm_prompt_embeds is accepted for training."},
+        metadata={"help": "Formal rollout backend. Use vllm_prompt_embeds for CUDA/vLLM and Ascend vLLM-Ascend."},
     )
     vllm_model_path: Optional[str] = field(
         default=None,
@@ -76,6 +76,20 @@ class GRPOArguments:
     )
     vllm_enforce_eager: bool = False
     vllm_trust_remote_code: bool = True
+    device_backend: str = field(
+        default="auto",
+        metadata={"help": "Rollout device backend: auto, cuda, or npu. NPU requires vllm-ascend."},
+    )
+    actor_num_cpus: float = 1.0
+    rollout_num_cpus: float = 1.0
+    actor_npu_devices: Optional[str] = field(
+        default=None,
+        metadata={"help": "ASCEND_RT_VISIBLE_DEVICES for the actor worker, for example 0."},
+    )
+    rollout_npu_devices: Optional[str] = field(
+        default=None,
+        metadata={"help": "ASCEND_RT_VISIBLE_DEVICES for the vLLM rollout worker, for example 1 or 1,2."},
+    )
 
     # Ray/verl-style role placement.
     ray_address: Optional[str] = None

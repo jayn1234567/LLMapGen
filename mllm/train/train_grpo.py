@@ -46,9 +46,11 @@ def train():
         raise ValueError("--image_folder is required for GRPO training")
     if data_args.map_task not in {"lane", "lane_intersection"}:
         raise ValueError("--map_task must be lane or lane_intersection")
+    if train_args.rollout_backend in {"vllm_ascend", "vllm_ascend_prompt_embeds"}:
+        train_args.rollout_backend = "vllm_prompt_embeds"
     if train_args.rollout_backend != "vllm_prompt_embeds":
         raise ValueError(
-            "This entrypoint is reserved for the formal vLLM rollout architecture. "
+            "This entrypoint uses the formal vLLM rollout architecture. "
             "Use --rollout_backend vllm_prompt_embeds."
         )
     if not model_args.disable_deepstack:
@@ -67,6 +69,7 @@ def train():
         "vision_tower": model_args.vision_tower,
         "map_task": data_args.map_task,
         "rollout_backend": train_args.rollout_backend,
+        "device_backend": train_args.device_backend,
         "vllm_model_path": train_args.vllm_model_path,
         "lora_enable": train_args.lora_enable,
         "kl_beta": train_args.kl_beta,

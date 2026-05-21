@@ -10,6 +10,11 @@ from pathlib import Path
 
 import numpy as np
 from PIL import Image
+try:
+    from tqdm import tqdm
+except ModuleNotFoundError:
+    def tqdm(iterable=None, *args, **kwargs):
+        return iterable if iterable is not None else []
 
 try:
     import geopandas as gpd
@@ -1165,7 +1170,7 @@ def build_dataset(include_intersections: bool, args):
 
     eligible_samples = []
     dropped_empty_sample_ids = []
-    for sample in samples:
+    for sample in tqdm(samples, desc="precheck raw samples", unit="sample"):
         preview_rows = process_sample(
             sample,
             output_root,
@@ -1226,14 +1231,14 @@ def build_dataset(include_intersections: bool, args):
     split_rows = {}
     for split_name, split_samples_list in [("train", train_samples), ("eval", eval_samples), ("test", test_samples)]:
         rows = []
-        for sample in split_samples_list:
+        for sample in tqdm(split_samples_list, desc=f"build {split_name} patches", unit="sample"):
             rows.extend(process_sample(sample, output_root, split_name, include_intersections, args))
         validate_rows(rows, include_intersections, args.patch_size)
         split_rows[split_name] = rows
 
     for phase in ["a", "b"]:
         phase_dir = output_root / f"phase_{phase}"
-        for split_name, rows in split_rows.items():
+        for split_name, rows in tqdm(list(split_rows.items()), desc=f"write phase_{phase} jsonl", unit="split"):
             sft_rows = [
                 build_sft_record(
                     row,

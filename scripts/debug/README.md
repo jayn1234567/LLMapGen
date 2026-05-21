@@ -9,7 +9,7 @@ This directory is for small-sample local debug runs based on:
 - DINOv2: `/cache/jjh/checkpoints/facebook_dinov2-large`
 - DINOv3: `/cache/jjh/checkpoints/facebook_dinov3-vitl16-pretrain-lvd1689m`
 
-The scripts sample a tiny subset from `phase_a` or `phase_b` and keep image paths pointing to the original dataset root. SFT and inference are local Ascend NPU flows. Current GRPO in this project is the CUDA/vLLM prompt-embedding rollout architecture, so GRPO commands require a CUDA/vLLM host and `GRPO_ENABLE_CUDA_VLLM_FROM_NPU_SCRIPT=True`.
+The scripts sample a tiny subset from `phase_a` or `phase_b` and keep image paths pointing to the original dataset root. SFT, inference, and GRPO are local Ascend NPU flows. GRPO uses vLLM-Ascend prompt-embedding rollout, so the active environment must have `vllm`, `vllm-ascend`, `torch==2.7.1`, and the OBS `torch_npu-2.7.1.dev20250724` wheel installed.
 
 ## Common Variables
 
@@ -172,11 +172,12 @@ DATASET_PHASE=phase_a MAP_TASK=lane VISION_BACKBONE=dinov2 \
 ## GRPO Debug
 
 GRPO imports the SFT checkpoint from the matching SFT output directory unless `SFT_CHECKPOINT` is set.
+By default the actor uses `ACTOR_NPU_DEVICES=0` and vLLM-Ascend rollout uses `ROLLOUT_NPU_DEVICES=1`.
+For a one-card debug machine, set `ACTOR_NPU_DEVICES=0 ROLLOUT_NPU_DEVICES=0`; this is slower and can OOM on large settings, so keep `MAX_STEPS`, `NUM_GENERATIONS`, and `MAX_NEW_TOKENS` small.
 
 Phase A, lane, DINOv2:
 
 ```bash
-GRPO_ENABLE_CUDA_VLLM_FROM_NPU_SCRIPT=True \
 DATASET_PHASE=phase_a MAP_TASK=lane VISION_BACKBONE=dinov2 \
   bash scripts/debug/train_grpo_debug_npu.sh
 ```
@@ -184,7 +185,6 @@ DATASET_PHASE=phase_a MAP_TASK=lane VISION_BACKBONE=dinov2 \
 Phase A, lane, DINOv3:
 
 ```bash
-GRPO_ENABLE_CUDA_VLLM_FROM_NPU_SCRIPT=True \
 DATASET_PHASE=phase_a MAP_TASK=lane VISION_BACKBONE=dinov3 \
   bash scripts/debug/train_grpo_debug_npu.sh
 ```
@@ -192,7 +192,6 @@ DATASET_PHASE=phase_a MAP_TASK=lane VISION_BACKBONE=dinov3 \
 Phase B, lane, DINOv2:
 
 ```bash
-GRPO_ENABLE_CUDA_VLLM_FROM_NPU_SCRIPT=True \
 DATASET_PHASE=phase_b MAP_TASK=lane VISION_BACKBONE=dinov2 \
   bash scripts/debug/train_grpo_debug_npu.sh
 ```
@@ -200,7 +199,6 @@ DATASET_PHASE=phase_b MAP_TASK=lane VISION_BACKBONE=dinov2 \
 Phase B, lane, DINOv3:
 
 ```bash
-GRPO_ENABLE_CUDA_VLLM_FROM_NPU_SCRIPT=True \
 DATASET_PHASE=phase_b MAP_TASK=lane VISION_BACKBONE=dinov3 \
   bash scripts/debug/train_grpo_debug_npu.sh
 ```
@@ -208,25 +206,21 @@ DATASET_PHASE=phase_b MAP_TASK=lane VISION_BACKBONE=dinov3 \
 Lane + intersection GRPO:
 
 ```bash
-GRPO_ENABLE_CUDA_VLLM_FROM_NPU_SCRIPT=True \
 DATASET_PHASE=phase_a MAP_TASK=lane_intersection VISION_BACKBONE=dinov2 \
   bash scripts/debug/train_grpo_debug_npu.sh
 ```
 
 ```bash
-GRPO_ENABLE_CUDA_VLLM_FROM_NPU_SCRIPT=True \
 DATASET_PHASE=phase_a MAP_TASK=lane_intersection VISION_BACKBONE=dinov3 \
   bash scripts/debug/train_grpo_debug_npu.sh
 ```
 
 ```bash
-GRPO_ENABLE_CUDA_VLLM_FROM_NPU_SCRIPT=True \
 DATASET_PHASE=phase_b MAP_TASK=lane_intersection VISION_BACKBONE=dinov2 \
   bash scripts/debug/train_grpo_debug_npu.sh
 ```
 
 ```bash
-GRPO_ENABLE_CUDA_VLLM_FROM_NPU_SCRIPT=True \
 DATASET_PHASE=phase_b MAP_TASK=lane_intersection VISION_BACKBONE=dinov3 \
   bash scripts/debug/train_grpo_debug_npu.sh
 ```
@@ -261,10 +255,10 @@ DATASET_PHASE=phase_b MAP_TASK=lane VISION_BACKBONE=dinov3 \
   bash scripts/debug/run_debug_full_flow_npu.sh
 ```
 
-Run GRPO as part of the flow on a CUDA/vLLM host:
+Run GRPO as part of the flow:
 
 ```bash
-GRPO_ENABLE_CUDA_VLLM_FROM_NPU_SCRIPT=True RUN_GRPO=True RUN_GRPO_INFER=True \
+RUN_GRPO=True RUN_GRPO_INFER=True \
 DATASET_PHASE=phase_a MAP_TASK=lane VISION_BACKBONE=dinov3 \
   bash scripts/debug/run_debug_full_flow_npu.sh
 ```

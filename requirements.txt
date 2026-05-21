@@ -44,6 +44,9 @@ urllib3==1.26.15
 # RL rollout stack.
 ray[default]==2.55.1
 vllm==0.9.2
+# Ascend NPU GRPO uses vLLM-Ascend with the torch_npu OBS wheel.
+# Install this only in the NPU environment.
+# vllm-ascend==0.9.2rc1
 
 # Service / debug UI helpers kept by the upstream framework.
 gradio>=5.0

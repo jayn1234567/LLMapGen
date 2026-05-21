@@ -173,7 +173,9 @@ has been validated with:
 
 `vllm==0.9.2` is used because this branch requires prompt-embedding rollout and
 online LoRA support. Older vLLM versions without prompt embeddings are not
-suitable for the formal GRPO path.
+suitable for the formal GRPO path. Ascend NPU runs use the same backend through
+vLLM-Ascend; the NPU scripts install `vllm-ascend==0.9.2rc1` and force reinstall
+the OBS `torch_npu-2.7.1.dev20250724` wheel used by the SFT NPU scripts.
 
 ## Training
 
@@ -188,11 +190,14 @@ Important parameters:
 | Parameter | Purpose |
 |---|---|
 | `--rollout_backend vllm_prompt_embeds` | Required formal rollout path. |
+| `--device_backend auto/cuda/npu` | Ray worker device placement. Use `npu` for vLLM-Ascend. |
 | `--map_task lane` | Current lane-only reward/parser mode. |
 | `--map_task lane_intersection` | Future lane+intersection mode. |
 | `--vllm_model_path` | Optional pre-exported text-decoder checkpoint. |
 | `--actor_num_gpus` | Ray GPU allocation for HF actor training. |
 | `--rollout_num_gpus` | Ray GPU allocation for vLLM rollout. |
+| `--actor_npu_devices` | Ascend visible devices for the HF actor worker, for example `0`. |
+| `--rollout_npu_devices` | Ascend visible devices for vLLM-Ascend rollout, for example `1` or `1,2`. |
 | `--num_generations` | GRPO group size; must be at least 2. |
 | `--kl_beta` | KL penalty against the adapter-disabled SFT reference. |
 | `--swanlab_enable True` | Enable SwanLab tracking for GRPO config and scalar metrics. |

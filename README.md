@@ -290,7 +290,8 @@ Current GRPO implementation:
   multimodal prompt preparation, and trains the policy.
 - Rollout role: uses vLLM with `enable_prompt_embeds=True` to decode from the
   actor-computed multimodal prompt embeddings. vLLM only needs the Qwen text
-  decoder export.
+  decoder export. CUDA runs use upstream vLLM; Ascend runs use vLLM-Ascend with
+  the same `vllm_prompt_embeds` backend.
 - Reward role: parses generated JSON and ground truth, converts normalized
   coordinates back to pixels, then reuses `infer_index.line_eval` for the main
   centerline geometry score.
@@ -319,6 +320,9 @@ RL task selection:
 | `--map_task lane` | Current lane-only reward/parser mode. Intersection reward is forced off. |
 | `--map_task lane_intersection` | Future lane+intersection reward/parser mode. |
 | `--rollout_backend vllm_prompt_embeds` | Required formal rollout path. HF-local generation is not a training backend. |
+| `--device_backend auto/cuda/npu` | Device placement for Ray actor/rollout workers. NPU uses vLLM-Ascend. |
+| `--actor_npu_devices` | `ASCEND_RT_VISIBLE_DEVICES` for the actor worker, such as `0`. |
+| `--rollout_npu_devices` | `ASCEND_RT_VISIBLE_DEVICES` for the vLLM-Ascend rollout worker, such as `1` or `1,2`. |
 | `--vllm_model_path` | Optional pre-exported text-decoder checkpoint. If unset, GRPO exports one from the SFT checkpoint. |
 
 GRPO SwanLab logging records the full run config plus step metrics such as
@@ -361,6 +365,11 @@ RL environment:
 Use the dedicated `unimapgen` conda environment. The GPU debug path has been
 validated with `torch==2.7.0+cu126`, `vllm==0.9.2`, `ray==2.55.1`,
 `transformers==4.56.2`, and `huggingface-hub==0.36.2`.
+
+Ascend NPU GRPO uses the same formal vLLM prompt-embedding rollout path through
+vLLM-Ascend. The NPU scripts install `torch==2.7.1`, force reinstall the OBS
+`torch_npu-2.7.1.dev20250724` wheel, and install `vllm==0.9.2` plus
+`vllm-ascend==0.9.2rc1`.
 
 Best checkpoint parameters:
 

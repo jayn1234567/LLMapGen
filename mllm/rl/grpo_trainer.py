@@ -57,10 +57,19 @@ def _set_seed(seed: int):
         torch.cuda.manual_seed_all(seed)
 
 
+def _npu_available() -> bool:
+    try:
+        import torch_npu  # noqa: F401
+    except Exception:
+        pass
+    return hasattr(torch, "npu") and torch.npu.is_available()
+
+
 def _device_from_visible() -> torch.device:
     if torch.cuda.is_available():
         return torch.device("cuda", 0)
-    if hasattr(torch, "npu") and torch.npu.is_available():
+    if _npu_available():
+        torch.npu.set_device(0)
         return torch.device("npu", 0)
     return torch.device("cpu")
 
@@ -661,6 +670,65 @@ class GRPOCoordinator:
         export_dir = Path(self.args.output_dir) / "vllm_text_model"
         return str(export_text_decoder_checkpoint(source_checkpoint, export_dir))
 
+    def _device_backend(self) -> str:
+        requested = str(self.args.device_backend or "auto").lower()
+        if requested in {"ascend", "npu"}:
+            return "npu"
+        if requested in {"cuda", "gpu"}:
+            return "cuda"
+        if requested != "auto":
+            raise ValueError("--device_backend must be one of: auto, cuda, npu")
+        if torch.cuda.is_available():
+            return "cuda"
+        if _npu_available():
+            return "npu"
+        raise RuntimeError("No CUDA GPU or Ascend NPU device is available for vLLM GRPO.")
+
+    def _npu_worker_env(self, devices: str | None) -> dict[str, str]:
+        env = {
+            "VLLM_TARGET_DEVICE": "npu",
+            "TOKENIZERS_PARALLELISM": os.environ.get("TOKENIZERS_PARALLELISM", "false"),
+        }
+        for key in (
+            "ASCEND_CUSTOM_PATH",
+            "ASCEND_CUSTOM_OPP_PATH",
+            "ASCEND_OPP_PATH",
+            "HCCL_WHITELIST_DISABLE",
+            "HCCL_CONNECT_TIMEOUT",
+            "HCCL_EXEC_TIMEOUT",
+            "HCCL_IF_BASE_PORT",
+            "INF_NAN_MODE_ENABLE",
+            "WITHOUT_JIT_COMPILE",
+            "COMBINED_ENABLE",
+            "PYTHONPATH",
+            "LD_LIBRARY_PATH",
+            "PATH",
+        ):
+            value = os.environ.get(key)
+            if value:
+                env[key] = value
+        if devices:
+            env["ASCEND_RT_VISIBLE_DEVICES"] = str(devices)
+            env["ASCEND_VISIBLE_DEVICES"] = str(devices)
+        return env
+
+    def _remote_workers(self, ray, device_backend: str):
+        if device_backend == "cuda":
+            actor_cls = ray.remote(num_gpus=self.args.actor_num_gpus)(ActorWorker)
+            rollout_cls = ray.remote(num_gpus=self.args.rollout_num_gpus)(VLLMPromptEmbedRolloutWorker)
+            return actor_cls, rollout_cls
+        if device_backend == "npu":
+            actor_cls = ray.remote(
+                num_cpus=self.args.actor_num_cpus,
+                runtime_env={"env_vars": self._npu_worker_env(self.args.actor_npu_devices)},
+            )(ActorWorker)
+            rollout_cls = ray.remote(
+                num_cpus=self.args.rollout_num_cpus,
+                runtime_env={"env_vars": self._npu_worker_env(self.args.rollout_npu_devices)},
+            )(VLLMPromptEmbedRolloutWorker)
+            return actor_cls, rollout_cls
+        raise ValueError(f"Unsupported GRPO device backend: {device_backend}")
+
     def train(self) -> dict[str, Any]:
         try:
             import ray
@@ -673,9 +741,9 @@ class GRPOCoordinator:
         if not ray.is_initialized():
             ray.init(address=self.args.ray_address, ignore_reinit_error=True)
 
+        device_backend = self._device_backend()
         vllm_model_path = self._resolve_vllm_model_path()
-        Actor = ray.remote(num_gpus=self.args.actor_num_gpus)(ActorWorker)
-        Rollout = ray.remote(num_gpus=self.args.rollout_num_gpus)(VLLMPromptEmbedRolloutWorker)
+        Actor, Rollout = self._remote_workers(ray, device_backend)
         Reward = ray.remote(num_cpus=self.args.reward_num_cpus)(RewardWorker)
 
         actor = Actor.remote(self.model_args, self.data_args, self.args)
@@ -693,10 +761,11 @@ class GRPOCoordinator:
             max_lora_rank=self.args.lora_r,
             enforce_eager=self.args.vllm_enforce_eager,
             trust_remote_code=self.args.vllm_trust_remote_code,
+            device_backend=device_backend,
         )
         reward = Reward.remote(self.data_args, self.args)
 
-        progress = tqdm(total=self.args.max_steps, desc="GRPO(vLLM)", disable=False)
+        progress = tqdm(total=self.args.max_steps, desc=f"GRPO(vLLM-{device_backend})", disable=False)
         last_metrics = {}
         try:
             while True:
@@ -729,7 +798,12 @@ class GRPOCoordinator:
                     },
                     step=int(last_metrics.get("step", 0) or 0),
                 )
-            return {"last_metrics": last_metrics, "final": final_info, "vllm_model_path": vllm_model_path}
+            return {
+                "last_metrics": last_metrics,
+                "final": final_info,
+                "vllm_model_path": vllm_model_path,
+                "device_backend": device_backend,
+            }
         finally:
             progress.close()
             if self.swanlab_run is not None:

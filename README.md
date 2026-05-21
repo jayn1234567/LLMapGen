@@ -135,10 +135,10 @@ Full-parameter training:
 ```bash
 bash scripts/train_full_dinov2_qwen3vl-8b_deepstack_npu.sh
 bash scripts/train_full_dinov2_qwen3vl-8b_no-deepstack_npu.sh
-bash scripts/npu/train_sft_dinov2_qwen3vl-8b_nodeepstack_npu.sh
-bash scripts/npu/train_sft_dinov2_qwen3vl-8b_nodeepstack_33w_evalbest_npu.sh
-bash scripts/npu/train_full_dinov3_qwen3vl-8b_deepstack_npu.sh
-bash scripts/npu/train_full_dinov3_qwen3vl-8b_no-deepstack_npu.sh
+bash scripts/npu/train/train_sft_stage_a_lane_dinov2_qwen3vl_nodeepstack_npu.sh
+bash scripts/npu/train/train_sft_stage_b_lane_intersection_dinov3_qwen3vl_nodeepstack_npu.sh
+bash scripts/npu/train/train_sft_stage_a_lane_dinov3_qwen3vl_nodeepstack_npu.sh
+bash scripts/npu/train/train_sft_stage_b_lane_intersection_dinov3_qwen3vl_nodeepstack_npu.sh
 ```
 
 The normal training scripts do not run validation and do not maintain best-loss checkpoints unless explicitly enabled.
@@ -165,7 +165,7 @@ and 465 warmup steps. The scripts compute gradient accumulation from the target
 global batch and print the actual global batch at startup.
 
 For the first 330k-sample run, prefer
-`scripts/npu/train_sft_dinov2_qwen3vl-8b_nodeepstack_33w_evalbest_npu.sh`.
+`scripts/npu/train/train_sft_stage_a_lane_dinov2_qwen3vl_nodeepstack_npu.sh`.
 It uses 3 epochs and separate module LRs: LLM `2e-5`, projector `2e-5`,
 vision tower `2e-6`. It evaluates during training and copies the lowest
 `eval_loss` checkpoint to `eval_best/`.
@@ -174,11 +174,11 @@ Best checkpoint variants:
 
 ```bash
 # Maintain output/best/ by lowest training loss after BEST_TRAIN_LOSS_START_STEP.
-bash scripts/npu/train_full_dinov3_qwen3vl-8b_deepstack_train_best_npu.sh
+bash scripts/npu/tmp/train_full_dinov3_qwen3vl-8b_deepstack_train_best_npu.sh
 
 # Run a separate validation set every EVAL_STEPS and maintain output/eval_best/
 # by lowest eval_loss.
-bash scripts/npu/train_full_dinov3_qwen3vl-8b_deepstack_eval_best_npu.sh
+bash scripts/npu/tmp/train_full_dinov3_qwen3vl-8b_deepstack_eval_best_npu.sh
 ```
 
 Do not pass experiment knobs as one-off shell prefixes. Edit the parameter block inside the target script instead, especially batch size, LR, epoch/step count, DeepStack, and best-checkpoint settings.
@@ -508,12 +508,13 @@ Full-checkpoint testing:
 
 ```bash
 bash scripts/test_full_dinov2_qwen3vl-8b_npu.sh
-bash scripts/npu/test_dinov2_qwen3vl-8b_nodeepstack_npu.sh
-bash scripts/npu/test_full_dinov3_qwen3vl-8b_npu.sh
+bash scripts/npu/test/test_stage_a_lane_dinov2_qwen3vl_nodeepstack_npu.sh
+bash scripts/npu/test/test_stage_b_lane_intersection_dinov3_qwen3vl_nodeepstack_npu.sh
 ```
 
 The test scripts do not need a manual DeepStack flag. They infer whether DeepStack is enabled from the checkpoint configuration.
 They infer directly on the dataset's prebuilt `test.jsonl`; `eval.jsonl` is produced during data processing at raw-sample level. `NUM_TEST_SAMPLES=0` means all final-test rows; use a positive value only for a debug subset.
+The current NPU stage test scripts write `summary.json`, per-sample JSON under `json/`, single-patch PNGs under `viz/`, metrics in `eval.json`, and stitched whole-map PNGs under `whole_map_viz/`.
 
 ## Validation
 

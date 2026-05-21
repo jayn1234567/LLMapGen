@@ -255,7 +255,7 @@ echo ">>> Actual global batch: ${ACTUAL_GLOBAL_BATCH_SIZE}"
 
 # ====================== training ======================
 echo ">>>>>>>>>>>>>>>>>>>>>>>>>>>>>>> start training >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>"
-cd "$SCRIPT_DIR/../.."
+cd "$SCRIPT_DIR/../../.."
 
 export PYTHONPATH="$(pwd):${PYTHONPATH:-}"
 

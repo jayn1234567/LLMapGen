@@ -12,6 +12,7 @@ if str(REPO_ROOT) not in sys.path:
 
 from infer_index.line_eval import evaluate_records, print_eval_table
 from mllm.coord_utils import COORD_MODE_PIXEL, convert_payload_text, record_coord_config
+from scripts.tools.map_visualization import render_whole_map_visualizations
 
 
 def load_json_maybe(text: str):
@@ -144,6 +145,8 @@ def main():
     parser.add_argument("--eval-meter-per-pixel", type=float, default=0.2)
     parser.add_argument("--eval-buffer-size", type=float, default=1.0)
     parser.add_argument("--eval-match-threshold", type=float, default=0.33)
+    parser.add_argument("--whole-map-viz-dir", default="", help="Directory for stitched whole-map visualizations. Defaults to input-dir/whole_map_viz.")
+    parser.add_argument("--skip-whole-map-viz", action="store_true")
     args = parser.parse_args()
 
     input_dir = Path(args.input_dir)
@@ -197,6 +200,10 @@ def main():
         print(f"Saved: {out_path}")
 
     print(f"Done. Visualizations saved to {output_dir}")
+    if not args.skip_whole_map_viz:
+        whole_map_viz_dir = Path(args.whole_map_viz_dir) if args.whole_map_viz_dir else input_dir / "whole_map_viz"
+        rendered = render_whole_map_visualizations(results, image_folder, whole_map_viz_dir)
+        print(json.dumps({"whole_map_viz_dir": str(whole_map_viz_dir), "whole_map_visualizations": rendered}, ensure_ascii=False))
     if not args.no_eval_centerline and any("ground_truth" in result for result in results):
         eval_summary = evaluate_records(
             results,

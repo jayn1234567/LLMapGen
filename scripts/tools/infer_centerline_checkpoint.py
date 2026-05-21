@@ -42,6 +42,7 @@ from mllm.model.language_model.llava_qwen import Qwen2MultimodalConfig as LlavaQ
 from mllm.model.language_model.llava_qwen3 import Qwen3MultimodalForCausalLM
 from mllm.model.qwen_token_utils import qwen_tokenizer_kwargs, sync_qwen_token_config
 from mllm.reward.map_schema import parse_map_json as parse_map_schema_json
+from scripts.tools.map_visualization import offset_lines, record_origin
 
 DEFAULT_PROMPT = DEFAULT_IMAGE_TOKEN
 
@@ -936,11 +937,28 @@ def main():
         except Exception as exc:
             parse_error = str(exc)
         prediction_json_pixel = payload_to_text({"lines": parsed_items_pixel}) if parse_ok else ""
+        origin_record = {
+            "meta": record.get("meta", {}),
+            "patch_size": coord_cfg["patch_size"],
+            "patch_width": coord_cfg["patch_width"],
+            "patch_height": coord_cfg["patch_height"],
+        }
+        x0, y0 = record_origin(origin_record)
+        meta = record.get("meta", {})
+        row = int(meta.get("row", meta.get("patch_row", y0 // max(coord_cfg["patch_height"], 1))))
+        col = int(meta.get("col", meta.get("patch_col", x0 // max(coord_cfg["patch_width"], 1))))
+        tile_id = meta.get("tile_id", record.get("tile_id", "tile"))
+        lines_global = offset_lines(parsed_items_pixel, x0, y0) if parse_ok else []
 
         result = {
             "checkpoint_dir": str(checkpoint_dir),
             "image": str(image_path),
             "record_id": record.get("id", f"sample_{idx}"),
+            "tile_id": tile_id,
+            "row": row,
+            "col": col,
+            "x0": x0,
+            "y0": y0,
             "meta": record.get("meta", {}),
             "coord_mode": coord_cfg["coord_mode"],
             "coord_range": coord_cfg["coord_range"],
@@ -956,6 +974,9 @@ def main():
             "parse_ok": parse_ok,
             "num_items": len(parsed_items) if parse_ok else 0,
             "parse_error": parse_error,
+            "lines_local": parsed_items_pixel,
+            "lines_local_model": parsed_items,
+            "lines_global": lines_global,
             "input_token_len": int(input_ids.shape[1]),
             "output_token_len": int(output_ids.shape[1]),
             "decoded_token_len": int(decoded_ids.numel()),

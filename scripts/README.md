@@ -1,14 +1,11 @@
 # Script Naming
 
-Top-level `scripts/` keeps the current NPU full-parameter train/test entrypoints:
+Top-level `scripts/` keeps legacy compatibility entrypoints and Python wrappers:
 
 - `train_full_*_deepstack_npu.sh`: train LLM, ViT, projector, and DeepStack mergers.
 - `train_full_*_no-deepstack_npu.sh`: standalone train script for LLM, ViT, and projector with DeepStack disabled; it does not delegate to the DeepStack script.
 - `train_sft_dinov2_qwen3vl-8b_nodeepstack_33w_evalbest_npu.sh`: 330k-sample no-DeepStack full-parameter SFT recipe for DINOv2 + Qwen3VL-8B.
 - `train_sft_dinov3_qwen3vl-8b_nodeepstack_33w_evalbest_npu.sh`: 330k-sample no-DeepStack full-parameter SFT recipe for DINOv3 + Qwen3VL-8B; it sets `INPUT_IMAGE_SIZE=512`.
-- `scripts/npu/train_sft_dinov2_qwen3vl-8b_nodeepstack_npu.sh`: current SFT cloud entry for DINOv2 + Qwen3VL + no DeepStack.
-- `scripts/npu/train_sft_dinov2_qwen3vl-8b_nodeepstack_33w_evalbest_npu.sh`: same DINOv2 330k recipe kept under the NPU subdirectory for compatibility.
-- `scripts/npu/test_dinov2_qwen3vl-8b_nodeepstack_npu.sh`: current NPU test/infer entry; reads the prebuilt final `test.jsonl`.
 - `train_full_*_train_best_npu.sh`: train with DeepStack and maintain a best checkpoint by lowest training loss.
 - `train_full_*_eval_best_npu.sh`: train with DeepStack, run a validation set by steps, and maintain a best checkpoint by lowest eval loss.
 - `scripts/gpu/train_sft_debug_phase_a_*_zero3_gpu.sh`: local GPU SFT Phase A smoke tests with empty incoming hints.
@@ -16,34 +13,56 @@ Top-level `scripts/` keeps the current NPU full-parameter train/test entrypoints
 - `test_full_*`: cloud inference/eval for the corresponding full-parameter checkpoint.
 - `debug.sh`: local NPU DINOv3 smoke training with no OBS transfer and no dependency installation.
 
-Subdirectories keep non-full or local platform-specific scripts:
+NPU scripts are grouped by purpose:
 
-- `scripts/npu/`: NPU training scripts that freeze one side of the model.
-- `scripts/npu/flows/`: explicit NPU flow entrypoints for SFT/GRPO, stage A/B, lane-only/lane+intersection, and DINOv2/DINOv3.
+- `scripts/npu/train/`: explicit NPU training entrypoints for SFT/GRPO, stage A/B, lane-only/lane+intersection, and DINOv2/DINOv3.
+- `scripts/npu/test/`: explicit NPU inference entrypoints for the same stage/task/vision matrix.
+- `scripts/npu/tmp/`: older or non-current NPU scripts kept for reference instead of being deleted.
 - `scripts/gpu/`: GPU training/inference/visualization utilities.
 - `scripts/rl/`: post-training RL utilities that do not change SFT scripts.
 - `scripts/tools/`: Python tool implementations. Root-level `scripts/*.py` files are compatibility wrappers, so existing commands like `python scripts/infer_centerline_checkpoint.py` still work.
 
-NPU flow entrypoints:
+NPU train entrypoints:
 
 - SFT lane-only:
-  - `scripts/npu/flows/train_sft_stage_a_lane_dinov2_qwen3vl_nodeepstack_npu.sh`
-  - `scripts/npu/flows/train_sft_stage_b_lane_dinov2_qwen3vl_nodeepstack_npu.sh`
-  - `scripts/npu/flows/train_sft_stage_a_lane_dinov3_qwen3vl_nodeepstack_npu.sh`
-  - `scripts/npu/flows/train_sft_stage_b_lane_dinov3_qwen3vl_nodeepstack_npu.sh`
+  - `scripts/npu/train/train_sft_stage_a_lane_dinov2_qwen3vl_nodeepstack_npu.sh`
+  - `scripts/npu/train/train_sft_stage_b_lane_dinov2_qwen3vl_nodeepstack_npu.sh`
+  - `scripts/npu/train/train_sft_stage_a_lane_dinov3_qwen3vl_nodeepstack_npu.sh`
+  - `scripts/npu/train/train_sft_stage_b_lane_dinov3_qwen3vl_nodeepstack_npu.sh`
 - SFT lane+intersection:
-  - `scripts/npu/flows/train_sft_stage_a_lane_intersection_dinov2_qwen3vl_nodeepstack_npu.sh`
-  - `scripts/npu/flows/train_sft_stage_b_lane_intersection_dinov2_qwen3vl_nodeepstack_npu.sh`
-  - `scripts/npu/flows/train_sft_stage_a_lane_intersection_dinov3_qwen3vl_nodeepstack_npu.sh`
-  - `scripts/npu/flows/train_sft_stage_b_lane_intersection_dinov3_qwen3vl_nodeepstack_npu.sh`
+  - `scripts/npu/train/train_sft_stage_a_lane_intersection_dinov2_qwen3vl_nodeepstack_npu.sh`
+  - `scripts/npu/train/train_sft_stage_b_lane_intersection_dinov2_qwen3vl_nodeepstack_npu.sh`
+  - `scripts/npu/train/train_sft_stage_a_lane_intersection_dinov3_qwen3vl_nodeepstack_npu.sh`
+  - `scripts/npu/train/train_sft_stage_b_lane_intersection_dinov3_qwen3vl_nodeepstack_npu.sh`
 - GRPO wrappers use the same stage/task/vision naming:
-  - `scripts/npu/flows/train_grpo_stage_a_lane_dinov2_qwen3vl_nodeepstack_npu.sh`
-  - `scripts/npu/flows/train_grpo_stage_b_lane_dinov2_qwen3vl_nodeepstack_npu.sh`
-  - `scripts/npu/flows/train_grpo_stage_a_lane_dinov3_qwen3vl_nodeepstack_npu.sh`
-  - `scripts/npu/flows/train_grpo_stage_b_lane_dinov3_qwen3vl_nodeepstack_npu.sh`
+  - `scripts/npu/train/train_grpo_stage_a_lane_dinov2_qwen3vl_nodeepstack_npu.sh`
+  - `scripts/npu/train/train_grpo_stage_b_lane_dinov2_qwen3vl_nodeepstack_npu.sh`
+  - `scripts/npu/train/train_grpo_stage_a_lane_dinov3_qwen3vl_nodeepstack_npu.sh`
+  - `scripts/npu/train/train_grpo_stage_b_lane_dinov3_qwen3vl_nodeepstack_npu.sh`
   - the four `*_lane_intersection_*` GRPO wrappers mirror the SFT names.
 
-The SFT flow wrappers call the existing 33w no-DeepStack NPU recipes after setting `DATASET_PHASE` and `MAP_TASK`. The GRPO flow wrappers are named and parameterized consistently, but fail fast on pure Ascend NPU because the current supported GRPO backend is CUDA/vLLM prompt-embedding rollout. Only set `GRPO_ENABLE_CUDA_VLLM_FROM_NPU_SCRIPT=True` when deliberately launching the same wrapper on a CUDA host for naming compatibility.
+NPU test entrypoints mirror the same matrix under `scripts/npu/test/`, for example:
+
+- `scripts/npu/test/test_stage_a_lane_dinov2_qwen3vl_nodeepstack_npu.sh`
+- `scripts/npu/test/test_stage_b_lane_intersection_dinov3_qwen3vl_nodeepstack_npu.sh`
+
+Each test wrapper calls `scripts/npu/test/run_infer_nodeepstack_npu.sh`. Fill these paths in the script or export them before running:
+
+- `CHECKPOINT_DIR`: checkpoint, `best/`, `eval_best/`, or merged GRPO checkpoint to load.
+- `DATASET_PATH`: dataset root with `phase_a/phase_b/test.jsonl` and images.
+- `IMAGE_FOLDER`: image root, usually the same as `DATASET_PATH`.
+- `VISION_TOWER`: local DINOv2/DINOv3 checkpoint path.
+- `OUTPUT_DIR`: result root.
+
+Inference outputs are intentionally separated:
+
+- `summary.json`: normal inference summary.
+- `json/`: per-sample or per-patch JSON files.
+- `viz/`: single-patch comparison PNGs.
+- `eval.json`: `infer_index.line_eval` metrics plus table text.
+- `whole_map_viz/`: stitched whole-map PNGs for both stage A and stage B.
+
+The SFT train wrappers call the 33w no-DeepStack NPU recipes after setting `DATASET_PHASE` and `MAP_TASK`. The GRPO train wrappers are named and parameterized consistently, but fail fast on pure Ascend NPU because the current supported GRPO backend is CUDA/vLLM prompt-embedding rollout. Only set `GRPO_ENABLE_CUDA_VLLM_FROM_NPU_SCRIPT=True` when deliberately launching the same wrapper on a CUDA host for naming compatibility.
 
 Training mode in filenames:
 

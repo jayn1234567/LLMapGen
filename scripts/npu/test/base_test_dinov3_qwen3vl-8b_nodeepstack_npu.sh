@@ -255,7 +255,7 @@ VIZ_DIR="${TEST_OUTPUT_LOCAL}/viz"
 METRICS_JSON="${TEST_OUTPUT_LOCAL}/eval.json"
 mkdir -p "$TEST_OUTPUT_LOCAL" "$SAMPLE_JSON_DIR" "$VIZ_DIR"
 
-cd "$SCRIPT_DIR/../.."
+cd "$SCRIPT_DIR/../../.."
 export PYTHONPATH="$(pwd):${PYTHONPATH:-}"
 
 torchrun \

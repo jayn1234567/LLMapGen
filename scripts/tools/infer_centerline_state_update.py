@@ -25,6 +25,7 @@ from mllm.mm_utils import process_images, tokenizer_image_token
 from scripts.tools.infer_centerline_checkpoint import (
     build_prompt,
     completion_token_ids,
+    _config_overrides_from_args,
     extract_json_payload,
     load_model_components,
     normalize_prediction_text,
@@ -436,6 +437,10 @@ def main():
     parser.add_argument("--patch-json", required=True)
     parser.add_argument("--image-folder", required=True)
     parser.add_argument("--output-json", required=True)
+    parser.add_argument("--vision_tower", default="", help="Override external DINO vision tower path when checkpoint metadata points elsewhere.")
+    parser.add_argument("--input_image_size", type=int, default=None)
+    parser.add_argument("--disable_deepstack", action="store_true")
+    parser.add_argument("--deepstack_visual_indexes", nargs="*", type=int, default=None)
     parser.add_argument("--output-dir", default="")
     parser.add_argument("--sample-json-dir", default="", help="Directory for per-patch JSON files. Defaults to output-dir.")
     parser.add_argument("--merged-output-json", default="", help="Optional path for merged global map JSON.")
@@ -471,7 +476,8 @@ def main():
 
     tokenizer = model = image_processor = None
     if not args.dry_run_prompts:
-        tokenizer, model, image_processor = load_model_components(checkpoint_dir, manifest, args.device)
+        config_overrides = _config_overrides_from_args(args)
+        tokenizer, model, image_processor = load_model_components(checkpoint_dir, manifest, args.device, config_overrides=config_overrides)
 
     output_dir = Path(args.output_dir) if args.output_dir else None
     if output_dir is not None:

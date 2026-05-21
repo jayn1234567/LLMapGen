@@ -1,11 +1,20 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Common NPU SFT launcher for the explicit flow wrappers in this directory.
-# Required envs are set by wrapper scripts:
+# Common NPU SFT launcher for explicit stage/task/vision wrappers.
+#
+# Wrapper-selected parameters:
 #   VISION_BACKBONE=dinov2|dinov3
+#     dinov2 uses DINOv2-L 518 input; dinov3 uses DINOv3-L 512 input.
 #   DATASET_PHASE=phase_a|phase_b
+#     phase_a: no incoming state hints; phase_b: left/top state-update hints.
 #   MAP_TASK=lane|lane_intersection
+#     lane predicts centerlines only; lane_intersection predicts centerlines and intersections.
+#
+# Main paths to edit when running on cloud:
+#   DATASET_PATH: dataset root containing phase_a/phase_b train/eval/test jsonl and images.
+#   OUTPUT_PATH: local/cloud output directory for checkpoints.
+#   OUTPUT_URL: cloud platform output OBS path, usually injected by the platform.
 
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 REPO_ROOT=$(cd "${SCRIPT_DIR}/../../.." && pwd)
@@ -37,9 +46,9 @@ export SWANLAB_TAGS=${SWANLAB_TAGS:-sft,33w,${DATASET_PHASE},${MAP_TASK},${VISIO
 
 case "${VISION_BACKBONE}" in
   dinov2)
-    exec bash scripts/npu/train_sft_dinov2_qwen3vl-8b_nodeepstack_33w_evalbest_npu.sh
+    exec bash scripts/npu/train/base_train_sft_dinov2_qwen3vl-8b_nodeepstack_33w_evalbest_npu.sh
     ;;
   dinov3)
-    exec bash scripts/npu/train_sft_dinov3_qwen3vl-8b_nodeepstack_33w_evalbest_npu.sh
+    exec bash scripts/npu/train/base_train_sft_dinov3_qwen3vl-8b_nodeepstack_33w_evalbest_npu.sh
     ;;
 esac

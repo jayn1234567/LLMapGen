@@ -104,8 +104,8 @@ Full-parameter NPU scripts:
 ```bash
 bash scripts/train_full_dinov2_qwen3vl-8b_deepstack_npu.sh
 bash scripts/train_full_dinov2_qwen3vl-8b_no-deepstack_npu.sh
-bash scripts/npu/train_full_dinov3_qwen3vl-8b_deepstack_npu.sh
-bash scripts/npu/train_full_dinov3_qwen3vl-8b_no-deepstack_npu.sh
+bash scripts/npu/train/train_sft_stage_a_lane_dinov3_qwen3vl_nodeepstack_npu.sh
+bash scripts/npu/train/train_sft_stage_b_lane_intersection_dinov3_qwen3vl_nodeepstack_npu.sh
 ```
 
 Non-full training scripts are under:
@@ -366,11 +366,12 @@ NPU full-checkpoint test scripts:
 
 ```bash
 bash scripts/test_full_dinov2_qwen3vl-8b_npu.sh
-bash scripts/npu/test_full_dinov3_qwen3vl-8b_npu.sh
+bash scripts/npu/test/test_stage_a_lane_dinov3_qwen3vl_nodeepstack_npu.sh
+bash scripts/npu/test/test_stage_b_lane_intersection_dinov3_qwen3vl_nodeepstack_npu.sh
 ```
 
 They only distinguish DINOv2 vs DINOv3. They do not distinguish DeepStack vs no-DeepStack, because that is recovered from checkpoint metadata.
-Both scripts infer directly on the dataset's prebuilt `test.jsonl`; `eval.jsonl` is produced during data processing at raw-sample level. `NUM_TEST_SAMPLES=0` runs all final-test rows; positive values are only for quick smoke tests.
+The stage test scripts infer directly on the dataset's prebuilt `test.jsonl`; `eval.jsonl` is produced during data processing at raw-sample level. `NUM_TEST_SAMPLES=0` runs all final-test rows; positive values are only for quick smoke tests. Outputs are split into `summary.json`, `json/`, `viz/`, `eval.json`, and `whole_map_viz/`.
 
 ## Logging
 

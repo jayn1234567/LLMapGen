@@ -201,7 +201,10 @@ def discover_samples(
     require_intersection_features: bool = False,
 ):
     extract_archives(input_root, delete_archive=delete_archives)
-    roots = find_sample_roots(input_root, require_intersection=include_intersections)
+    # Lane+intersection training still needs lane-only negative examples:
+    # an empty or missing Intersection.geojson means "no intersection target",
+    # not "invalid raw sample". Only lane/image/mask are required here.
+    roots = find_sample_roots(input_root, require_intersection=False)
     if require_intersection_features:
         roots = [
             root for root in roots
@@ -212,6 +215,28 @@ def discover_samples(
     if limit_samples is not None:
         samples = samples[:limit_samples]
     return samples
+
+
+def intersection_availability(samples: list[RawSample]) -> dict:
+    with_file = 0
+    nonempty = 0
+    empty = 0
+    missing = 0
+    for sample in samples:
+        if not sample.intersection_geojson.exists():
+            missing += 1
+            continue
+        with_file += 1
+        if (geojson_feature_count(sample.intersection_geojson) or 0) > 0:
+            nonempty += 1
+        else:
+            empty += 1
+    return {
+        "with_intersection_file": with_file,
+        "nonempty_intersection_file": nonempty,
+        "empty_intersection_file": empty,
+        "missing_intersection_file": missing,
+    }
 
 
 def split_samples(samples, train_ratio: float, eval_ratio: float, eval_count: int, seed: int):
@@ -1163,10 +1188,11 @@ def build_dataset(include_intersections: bool, args):
         include_intersections=include_intersections,
         delete_archives=not args.keep_archives,
         limit_samples=args.limit_samples,
-        require_intersection_features=include_intersections and not args.allow_empty_intersection_files,
+        require_intersection_features=False,
     )
     if not samples:
         raise FileNotFoundError(f"no valid samples found under {input_root}")
+    discovered_intersection_availability = intersection_availability(samples) if include_intersections else {}
 
     eligible_samples = []
     dropped_empty_sample_ids = []
@@ -1219,6 +1245,8 @@ def build_dataset(include_intersections: bool, args):
         "eval_split_unit": "raw_sample_folder",
         "eval_count": args.eval_count,
         "include_intersections": include_intersections,
+        "intersection_files_required": False,
+        "intersection_availability": discovered_intersection_availability,
         "coord_mode": args.coord_mode,
         "coord_range": args.coord_range,
         "allow_empty_splits": args.allow_empty_splits,
@@ -1274,7 +1302,9 @@ def build_dataset(include_intersections: bool, args):
         "max_empty_ratio": args.max_empty_ratio,
         "eval_ratio": args.eval_ratio,
         "eval_count": args.eval_count,
-        "allow_empty_intersection_files": args.allow_empty_intersection_files,
+        "intersection_files_required": False,
+        "allow_empty_intersection_files": True if include_intersections else args.allow_empty_intersection_files,
+        "intersection_availability": discovered_intersection_availability,
         "allow_empty_splits": args.allow_empty_splits,
         "phase_a_train_jsonl": str(output_root / "phase_a" / "train.jsonl"),
         "phase_a_eval_jsonl": str(output_root / "phase_a" / "eval.jsonl"),
@@ -1310,7 +1340,10 @@ def add_common_args(parser):
     parser.add_argument(
         "--allow-empty-intersection-files",
         action="store_true",
-        help="In lane+intersection mode, keep raw samples whose Intersection.geojson has zero features.",
+        help=(
+            "Deprecated no-op. Lane+intersection mode now always keeps raw samples "
+            "with empty or missing Intersection.geojson and treats them as lane-only targets."
+        ),
     )
     parser.add_argument(
         "--allow-empty-splits",

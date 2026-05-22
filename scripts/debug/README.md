@@ -100,6 +100,38 @@ DATASET_PHASE=phase_b MAP_TASK=lane_intersection VISION_BACKBONE=dinov3 \
   bash scripts/debug/train_sft_debug_npu.sh
 ```
 
+### Debug Checkpoint Behavior
+
+SFT debug saves normal step checkpoints with the same Trainer policy as formal SFT:
+
+- `SAVE_STEPS=1` by default: save a normal `checkpoint-*` every step.
+- `SAVE_TOTAL_LIMIT=3` by default: keep only the newest normal checkpoints.
+- `ENABLE_EVAL=True`, `SAVE_BEST_EVAL_LOSS=True`, and `EVAL_STEPS=1` by default: maintain the best eval-loss checkpoint.
+- `SAVE_BEST_TRAIN_LOSS=False` by default: best train-loss checkpointing is available but opt-in.
+
+Enable best train-loss debug explicitly:
+
+```bash
+SAVE_BEST_TRAIN_LOSS=True BEST_TRAIN_LOSS_START_STEP=1 BEST_TRAIN_LOSS_DIR=best \
+DATASET_PHASE=phase_a MAP_TASK=lane VISION_BACKBONE=dinov2 \
+  bash scripts/debug/train_sft_debug_npu.sh
+```
+
+`BEST_CHECKPOINT_SAVE_MODE=rotating_create_only` and `BEST_CHECKPOINT_KEEP_LIMIT=1`
+are the debug defaults, matching the NPU cloud-safe behavior. Best eval candidates
+are written under `eval_best_candidates/`; best train-loss candidates are written
+under `best_candidates/`. A candidate is valid only after `_SUCCESS` is written.
+
+The checkpoint resolver used by GRPO and inference tries SFT checkpoints in this order:
+
+1. `eval_best` / `eval_best_candidates`
+2. `best` / `best_candidates`
+3. newest normal `checkpoint-*`
+
+GRPO debug has its own RL checkpoint policy: it saves adapter checkpoints,
+tracks `best_reward/` by mean reward, and writes `merged/` for self-contained
+inference or follow-up training.
+
 ## Inference Debug
 
 The inference script auto-resolves the best SFT checkpoint from:
@@ -171,7 +203,7 @@ DATASET_PHASE=phase_a MAP_TASK=lane VISION_BACKBONE=dinov2 \
 
 ## GRPO Debug
 
-GRPO imports the SFT checkpoint from the matching SFT output directory unless `SFT_CHECKPOINT` is set.
+GRPO imports the SFT checkpoint from the matching SFT output directory unless `SFT_CHECKPOINT` is set. It uses the same resolver priority as inference: eval-best first, train-loss best second, newest normal checkpoint last.
 By default the actor uses `ACTOR_NPU_DEVICES=0` and vLLM-Ascend rollout uses `ROLLOUT_NPU_DEVICES=1`.
 For a one-card debug machine, set `ACTOR_NPU_DEVICES=0 ROLLOUT_NPU_DEVICES=0`; this is slower and can OOM on large settings, so keep `MAX_STEPS`, `NUM_GENERATIONS`, and `MAX_NEW_TOKENS` small.
 
@@ -262,6 +294,10 @@ RUN_GRPO=True RUN_GRPO_INFER=True \
 DATASET_PHASE=phase_a MAP_TASK=lane VISION_BACKBONE=dinov3 \
   bash scripts/debug/run_debug_full_flow_npu.sh
 ```
+
+When `RUN_GRPO_INFER=True`, the flow first tries the GRPO `best_reward`
+checkpoint and falls back to `merged/` if no successful best-reward checkpoint
+exists.
 
 ## Useful Overrides
 

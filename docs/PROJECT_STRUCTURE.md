@@ -122,22 +122,24 @@ Metric printing:
 scripts/
 ├── README.md                          # Script naming, modes, and parameter docs.
 ├── deepspeed_zero*.json               # Script-local DeepSpeed configs.
-├── train_full_*.sh                    # Top-level full-parameter NPU entrypoints.
-├── test_full_*.sh                     # Top-level NPU inference/eval entrypoints.
+├── debug/                             # Local Ascend NPU SFT/GRPO/inference debug flow.
 ├── data/                              # Dataset split and eval/test helper utilities.
 ├── rl/                                # RL hard-pool and checkpoint export command-line tools.
 ├── gpu/                               # Local GPU smoke/debug scripts for SFT/GRPO/inference.
-└── npu/                               # NPU cloud training/testing scripts.
+└── npu/                               # NPU cloud training/testing scripts and legacy tmp scripts.
 ```
 
 Script naming rules:
 
-- `full`: train all model components.
+- `train_sft_stage_*`: NPU SFT wrappers for phase A/B, lane/lane+intersection, and DINOv2/DINOv3.
+- `train_grpo_stage_*`: NPU GRPO wrappers for the same stage/task/backbone matrix.
+- `test_stage_*`: NPU inference/eval wrappers for the same matrix.
 - `llm_align_*_freeze-vit`: freeze vision tower, train LLM/projector/related modules.
 - `vit_align_*_freeze-llm`: freeze LLM, train vision/projector/related modules.
 - `deepstack` / `no-deepstack`: whether DeepStack is enabled.
 - `phase_a` / `phase_b`: supervised patch-recognition vs state-update data.
 - `_gpu` / `_npu`: target runtime platform.
+- `scripts/debug/`: samples tiny JSONL splits from `/cache/data/data_line_samples_33w` and writes local debug outputs under `checkpoints/debug/`.
 
 ## Docs
 

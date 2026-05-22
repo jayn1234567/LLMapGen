@@ -62,7 +62,7 @@ Inference outputs are intentionally separated:
 - `eval.json`: `infer_index.line_eval` metrics plus table text.
 - `whole_map_viz/`: stitched whole-map PNGs for both stage A and stage B.
 
-The SFT train wrappers call the 33w no-DeepStack NPU recipes after setting `DATASET_PHASE` and `MAP_TASK`. The GRPO train wrappers are named and parameterized consistently, but fail fast on pure Ascend NPU because the current supported GRPO backend is CUDA/vLLM prompt-embedding rollout. Only set `GRPO_ENABLE_CUDA_VLLM_FROM_NPU_SCRIPT=True` when deliberately launching the same wrapper on a CUDA host for naming compatibility.
+The SFT train wrappers call the 33w no-DeepStack NPU recipes after setting `DATASET_PHASE` and `MAP_TASK`. The GRPO train wrappers use the formal vLLM prompt-embedding rollout path on Ascend through vLLM-Ascend; they are not HF-local generation scripts and no longer require a CUDA compatibility escape hatch. The NPU GRPO base script installs/uses the NPU RL stack and separates actor and rollout devices with `ACTOR_NPU_DEVICES` and `ROLLOUT_NPU_DEVICES`.
 
 Training mode in filenames:
 

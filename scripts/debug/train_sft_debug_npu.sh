@@ -131,6 +131,9 @@ SAVE_TOTAL_LIMIT=${SAVE_TOTAL_LIMIT:-3}
 DATALOADER_NUM_WORKERS=${DATALOADER_NUM_WORKERS:-0}
 DEEPSPEED_CONFIG=${DEEPSPEED_CONFIG:-scripts/deepspeed_zero3.json}
 ENABLE_EVAL=${ENABLE_EVAL:-True}
+SAVE_BEST_TRAIN_LOSS=${SAVE_BEST_TRAIN_LOSS:-False}
+BEST_TRAIN_LOSS_START_STEP=${BEST_TRAIN_LOSS_START_STEP:-1}
+BEST_TRAIN_LOSS_DIR=${BEST_TRAIN_LOSS_DIR:-best}
 SAVE_BEST_EVAL_LOSS=${SAVE_BEST_EVAL_LOSS:-True}
 BEST_EVAL_LOSS_DIR=${BEST_EVAL_LOSS_DIR:-eval_best}
 BEST_CHECKPOINT_SAVE_MODE=${BEST_CHECKPOINT_SAVE_MODE:-rotating_create_only}
@@ -190,7 +193,6 @@ torchrun \
   --image_aspect_ratio pad \
   --bf16 True \
   --output_dir "${OUTPUT_DIR}" \
-  --overwrite_output_dir True \
   --num_train_epochs "${NUM_EPOCHS}" \
   --max_steps "${MAX_STEPS}" \
   --per_device_train_batch_size "${PER_DEVICE_TRAIN_BATCH_SIZE}" \
@@ -208,7 +210,9 @@ torchrun \
   --save_strategy steps \
   --save_steps "${SAVE_STEPS}" \
   --save_total_limit "${SAVE_TOTAL_LIMIT}" \
-  --save_best_train_loss False \
+  --save_best_train_loss "${SAVE_BEST_TRAIN_LOSS}" \
+  --best_train_loss_start_step "${BEST_TRAIN_LOSS_START_STEP}" \
+  --best_train_loss_dir "${BEST_TRAIN_LOSS_DIR}" \
   --best_checkpoint_save_mode "${BEST_CHECKPOINT_SAVE_MODE}" \
   --best_checkpoint_keep_limit "${BEST_CHECKPOINT_KEEP_LIMIT}" \
   --use_hf_progress_bar True \

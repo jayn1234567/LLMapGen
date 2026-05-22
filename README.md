@@ -168,16 +168,12 @@ It uses 3 epochs and separate module LRs: LLM `2e-5`, projector `2e-5`,
 vision tower `2e-6`. It evaluates during training and copies the lowest
 `eval_loss` checkpoint to `eval_best/`.
 
-Best checkpoint variants:
-
-```bash
-# Maintain output/best/ by lowest training loss after BEST_TRAIN_LOSS_START_STEP.
-bash scripts/npu/tmp/train_full_dinov3_qwen3vl-8b_deepstack_train_best_npu.sh
-
-# Run a separate validation set every EVAL_STEPS and maintain output/eval_best/
-# by lowest eval_loss.
-bash scripts/npu/tmp/train_full_dinov3_qwen3vl-8b_deepstack_eval_best_npu.sh
-```
+Best checkpoint variants are controlled in the current NPU script parameter
+blocks, not by legacy tmp wrappers. Normal `checkpoint-*` saving follows
+`SAVE_STEPS` and `SAVE_TOTAL_LIMIT`. Train-loss best uses
+`SAVE_BEST_TRAIN_LOSS`, `BEST_TRAIN_LOSS_START_STEP`, and
+`BEST_TRAIN_LOSS_DIR`. Eval-loss best uses `ENABLE_EVAL`,
+`SAVE_BEST_EVAL_LOSS`, `EVAL_STEPS`, and `BEST_EVAL_LOSS_DIR`.
 
 Do not pass experiment knobs as one-off shell prefixes. Edit the parameter block inside the target script instead, especially batch size, LR, epoch/step count, DeepStack, and best-checkpoint settings.
 
@@ -401,27 +397,25 @@ The patch data flow has two supervised stages:
 | A | Single patch recognition, used to learn centerline/intersection JSON format and local geometry. | Incoming traces/intersections are empty. |
 | B | State-update stitching, used to train with previous patch context. | Incoming lane traces and intersection hints are filled from left/top neighbors when available. |
 
-Debug SFT scripts for DINOv2 + Qwen3VL + no DeepStack + ZeRO3:
+Local debug entrypoints:
 
 ```bash
-bash scripts/gpu/train_sft_debug_phase_a_lane_dinov2_qwen3vl_nodeepstack_zero3_gpu.sh
-bash scripts/gpu/train_sft_debug_phase_b_lane_intersection_dinov2_qwen3vl_nodeepstack_zero3_gpu.sh
+bash scripts/debug/train_sft_debug_npu.sh
+bash scripts/debug/infer_debug_npu.sh
+bash scripts/debug/train_grpo_debug_npu.sh
+bash scripts/debug/run_debug_full_flow_npu.sh
 ```
 
-Debug data builders:
+The local NPU debug scripts sample a tiny split from
+`/cache/data/data_line_samples_33w` into `checkpoints/debug_data/` and write
+outputs under `checkpoints/debug/`. Set `DATASET_PHASE`, `MAP_TASK`, and
+`VISION_BACKBONE` to switch phase/task/backbone. See
+`scripts/debug/README.md` for the full command matrix.
 
-```bash
-python scripts/gpu/build_ab_debug_data.py --limit 20 --test-count 4
-```
-
-Generated debug files include:
-
-```text
-data/debug_phase_a_lane20/{train,test}.jsonl
-data/debug_phase_b_lane20/{train,test}.jsonl
-data/debug_phase_a_lane_intersection20/{train,test}.jsonl
-data/debug_phase_b_lane_intersection20/{train,test}.jsonl
-```
+SFT debug saves normal `checkpoint-*` by `SAVE_STEPS`/`SAVE_TOTAL_LIMIT`, keeps
+`eval_best` by default, and can enable best train loss with
+`SAVE_BEST_TRAIN_LOSS=True`. GRPO debug uses vLLM-Ascend and tracks
+`best_reward/` plus `merged/`.
 
 `scripts/tools/infer_centerline_state_update.py` must use model predictions as the
 next patch state during normal inference. For engineering verification only,

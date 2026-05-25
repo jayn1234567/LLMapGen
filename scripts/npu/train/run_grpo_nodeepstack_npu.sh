@@ -20,6 +20,12 @@ set -euo pipefail
 # Cloud mode:
 #   If OUTPUT_URL is set, this script installs runtime deps, downloads dataset /
 #   DINO / SFT checkpoint from OBS, trains GRPO locally, and uploads OUTPUT_DIR.
+#
+# SwanLab:
+#   SWANLAB_MODE is empty by default. Set offline/local/disabled in this script
+#   block when needed. SWANLAB_LOG_DIR defaults to OUTPUT_DIR/swanlab beside
+#   checkpoint-*, best_reward/, final/, and merged/.
+#   SWANLAB_API_HOST / SWANLAB_WEB_HOST optionally point to a private SwanLab server.
 
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 REPO_ROOT=$(cd "${SCRIPT_DIR}/../../.." && pwd)
@@ -275,6 +281,10 @@ SWANLAB_GROUP=${SWANLAB_GROUP:-grpo_${DATASET_PHASE}_${MAP_TASK}_${VISION_BACKBO
 SWANLAB_JOB_TYPE=${SWANLAB_JOB_TYPE:-grpo}
 SWANLAB_EXPERIMENT_NAME=${SWANLAB_EXPERIMENT_NAME:-grpo_${DATASET_PHASE}_${MAP_TASK}_${VISION_BACKBONE}_qwen3vl8b_nodeepstack}
 SWANLAB_TAGS=${SWANLAB_TAGS:-grpo,${DATASET_PHASE},${MAP_TASK},${VISION_BACKBONE},qwen3vl8b,nodeepstack,vllm-ascend}
+SWANLAB_MODE=${SWANLAB_MODE:-}
+SWANLAB_LOG_DIR=${SWANLAB_LOG_DIR:-${OUTPUT_DIR}/swanlab}
+SWANLAB_API_HOST=${SWANLAB_API_HOST:-}
+SWANLAB_WEB_HOST=${SWANLAB_WEB_HOST:-}
 
 echo "============================================================"
 echo "GRPO NPU:"
@@ -286,6 +296,8 @@ echo "  vision_tower=${VISION_TOWER}"
 echo "  output=${OUTPUT_DIR}"
 echo "  actor_npu=${ACTOR_NPU_DEVICES} rollout_npu=${ROLLOUT_NPU_DEVICES}"
 echo "  vllm=${VLLM_VERSION} vllm_ascend=${VLLM_ASCEND_VERSION}"
+echo "  swanlab=${SWANLAB_ENABLE} project=${SWANLAB_PROJECT} group=${SWANLAB_GROUP} mode=${SWANLAB_MODE} logdir=${SWANLAB_LOG_DIR}"
+echo "  swanlab_url api=${SWANLAB_API_HOST:-default} web=${SWANLAB_WEB_HOST:-default}"
 echo "============================================================"
 
 python -m mllm.train.train_grpo \
@@ -349,7 +361,10 @@ python -m mllm.train.train_grpo \
   --swanlab_group "${SWANLAB_GROUP}" \
   --swanlab_job_type "${SWANLAB_JOB_TYPE}" \
   --swanlab_tags "${SWANLAB_TAGS}" \
-  --swanlab_mode "${SWANLAB_MODE:-}"
+  --swanlab_mode "${SWANLAB_MODE}" \
+  --swanlab_log_dir "${SWANLAB_LOG_DIR}" \
+  --swanlab_api_host "${SWANLAB_API_HOST}" \
+  --swanlab_web_host "${SWANLAB_WEB_HOST}"
 
 if [[ "${CLOUD_MODE}" == "True" ]]; then
   GRPO_RESULT_OBS=${GRPO_RESULT_OBS:-${OUTPUT_URL%/}/grpo_results_${RUN_ID}}

@@ -15,6 +15,9 @@ set -euo pipefail
 #   DATASET_PATH: dataset root containing phase_a/phase_b train/eval/test jsonl and images.
 #   OUTPUT_PATH: local/cloud output directory for checkpoints.
 #   OUTPUT_URL: cloud platform output OBS path, usually injected by the platform.
+#   SWANLAB_MODE: empty for SwanLab default cloud behavior, or offline/local/disabled.
+#   SWANLAB_LOG_DIR: local SwanLab files; defaults to OUTPUT_PATH/swanlab beside checkpoint-*.
+#   SWANLAB_API_HOST / SWANLAB_WEB_HOST: optional private SwanLab server URLs.
 
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 REPO_ROOT=$(cd "${SCRIPT_DIR}/../../.." && pwd)
@@ -46,6 +49,10 @@ export SWANLAB_GROUP=${SWANLAB_GROUP:-sft_${DATASET_PHASE}_${MAP_TASK}_${VISION_
 export SWANLAB_JOB_TYPE=${SWANLAB_JOB_TYPE:-sft}
 export SWANLAB_EXPERIMENT_NAME=${SWANLAB_EXPERIMENT_NAME:-sft_33w_${DATASET_PHASE}_${MAP_TASK}_${VISION_BACKBONE}_qwen3vl8b_nodeepstack}
 export SWANLAB_TAGS=${SWANLAB_TAGS:-sft,33w,${DATASET_PHASE},${MAP_TASK},${VISION_BACKBONE},qwen3vl8b,nodeepstack}
+export SWANLAB_MODE=${SWANLAB_MODE:-}
+export SWANLAB_LOG_DIR=${SWANLAB_LOG_DIR:-${OUTPUT_PATH}/swanlab}
+export SWANLAB_API_HOST=${SWANLAB_API_HOST:-}
+export SWANLAB_WEB_HOST=${SWANLAB_WEB_HOST:-}
 
 case "${VISION_BACKBONE}" in
   dinov2)

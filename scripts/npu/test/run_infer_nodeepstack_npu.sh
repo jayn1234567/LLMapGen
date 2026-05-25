@@ -1,17 +1,26 @@
 #!/usr/bin/env bash
-set -euo pipefail
+# set -euo pipefail
 
 # Common NPU inference launcher for explicit stage/task/vision wrappers.
 #
 # Cloud mode:
 #   When OUTPUT_URL is set by the NPU platform, this script installs the same
 #   runtime deps as the NPU training scripts, downloads dataset / DINO / trained
-#   checkpoint from OBS, runs inference, prints the line-eval table, then uploads
+#   checkpoints from OBS, runs inference, prints the line-eval table, then uploads
 #   outputs to OUTPUT_URL/test_results_${RUN_ID}.
 #
 # Local mode:
 #   When OUTPUT_URL is absent, this script uses existing local paths:
-#   DATASET_PATH, IMAGE_FOLDER, VISION_TOWER and CHECKPOINT_DIR/TRAIN_OUTPUT_DIR.
+#   DATASET_PATH, IMAGE_FOLDER, VISION_TOWER and CHECKPOINT_DIRS/CHECKPOINT_DIR/TRAIN_OUTPUT_DIR.
+#
+# Checkpoint selection:
+#   CHECKPOINT_DIRS: comma/semicolon/newline separated local checkpoint dirs.
+#   CHECKPOINT_OBS_LIST: comma/semicolon/newline separated full OBS checkpoint dirs.
+#   TRAINED_CHECKPOINT_OBS + CHECKPOINT_NAMES: one OBS training output root plus
+#     relative checkpoint dirs, for example:
+#       CHECKPOINT_NAMES=checkpoint-500,eval_best_candidates,best_candidates,merged
+#     eval_best_candidates/best_candidates are resolved locally to the latest
+#     successful candidate with _SUCCESS.
 
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 REPO_ROOT=$(cd "${SCRIPT_DIR}/../../.." && pwd)
@@ -33,6 +42,149 @@ case "${MAP_TASK}" in
   lane|lane_intersection) ;;
   *) echo "ERROR: unsupported MAP_TASK=${MAP_TASK}"; exit 1 ;;
 esac
+
+read_list() {
+  python - "$1" <<'PY'
+import re
+import sys
+
+value = sys.argv[1]
+for item in re.split(r"[,;\n]+", value or ""):
+    item = item.strip()
+    if item:
+        print(item)
+PY
+}
+
+safe_label() {
+  python - "$1" <<'PY'
+import re
+import sys
+
+value = sys.argv[1].strip().rstrip("/")
+if not value:
+    value = "checkpoint"
+label = value.split("/")[-1]
+label = re.sub(r"[^A-Za-z0-9._-]+", "_", label).strip("._-")
+print(label or "checkpoint")
+PY
+}
+
+resolve_checkpoint_dir() {
+  local root="$1"
+  if [ -f "${root}/model.safetensors" ] || [ -f "${root}/pytorch_model.bin" ]; then
+    echo "${root}"
+    return 0
+  fi
+
+  local candidate_root_resolved
+  candidate_root_resolved=$(python - "${root}" <<'PY'
+from pathlib import Path
+import json
+import sys
+
+root = Path(sys.argv[1])
+if not root.is_dir() or not root.name.endswith("_candidates"):
+    raise SystemExit(0)
+
+def step_from_name(name: str) -> int:
+    marker = "_step-"
+    if marker not in name:
+        return -1
+    tail = name.split(marker, 1)[1]
+    digits = []
+    for char in tail:
+        if not char.isdigit():
+            break
+        digits.append(char)
+    return int("".join(digits)) if digits else -1
+
+def load_step(path: Path) -> int:
+    for name in ("best_eval_loss.json", "best_train_loss.json", "best_reward.json"):
+        metadata_path = path / name
+        if not metadata_path.is_file():
+            continue
+        try:
+            metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+        except Exception:
+            metadata = {}
+        for key in ("best_eval_loss_step", "best_train_loss_step", "best_reward_step", "global_step"):
+            if key in metadata:
+                try:
+                    return int(metadata[key])
+                except Exception:
+                    pass
+    return step_from_name(path.name)
+
+candidates = []
+for path in root.iterdir():
+    if path.is_dir() and (path / "_SUCCESS").is_file():
+        candidates.append((load_step(path), path))
+if candidates:
+    print(sorted(candidates, key=lambda item: (item[0], str(item[1])))[-1][1])
+PY
+)
+  if [ -n "${candidate_root_resolved}" ]; then
+    echo "${candidate_root_resolved}"
+    return 0
+  fi
+
+  local resolved
+  if resolved=$(python scripts/tools/resolve_best_checkpoint.py \
+      --output-dir "${root}" \
+      --best-name eval_best \
+      --best-name best \
+      --best-name best_reward \
+      --allow-direct 2>/dev/null); then
+    echo "${resolved}"
+    return 0
+  fi
+
+  resolved=$(python - "${root}" <<'PY'
+from pathlib import Path
+import sys
+
+root = Path(sys.argv[1])
+candidates = []
+for path in root.glob("checkpoint-*"):
+    if path.is_dir():
+        try:
+            step = int(path.name.rsplit("-", 1)[1])
+        except Exception:
+            step = -1
+        candidates.append((step, path))
+if candidates:
+    print(sorted(candidates)[-1][1])
+PY
+)
+  if [ -n "${resolved}" ]; then
+    echo "${resolved}"
+    return 0
+  fi
+
+  echo "${root}"
+}
+
+CHECKPOINT_ITEMS=()
+CHECKPOINT_LABELS=()
+add_checkpoint_item() {
+  local checkpoint_root="$1"
+  local raw_label="$2"
+  local resolved
+  resolved=$(resolve_checkpoint_dir "${checkpoint_root}")
+  CHECKPOINT_ITEMS+=("${resolved}")
+  CHECKPOINT_LABELS+=("$(safe_label "${raw_label:-${resolved}}")")
+}
+
+download_checkpoint_from_obs() {
+  local obs_path="$1"
+  local raw_label="$2"
+  local label
+  label=$(safe_label "${raw_label:-${obs_path}}")
+  DOWNLOADED_CHECKPOINT_DIR="${CHECKPOINT_DOWNLOAD_ROOT}/${label}"
+  echo ">>>>>>>>>>>>>>>>>>>>>>>>>>>>> Downloading checkpoint ${obs_path} -> ${DOWNLOADED_CHECKPOINT_DIR} >>>>>>>>>>>>>>>>>>>>>>>>>>>>>"
+  python -c "import moxing as mox; mox.file.copy_parallel('${obs_path}', '${DOWNLOADED_CHECKPOINT_DIR}')"
+}
 
 CLOUD_MODE=False
 if [ -n "${OUTPUT_URL:-}" ]; then
@@ -168,6 +320,10 @@ MODEL_OBS_PATH=${MODEL_OBS_PATH:-obs://yw-ads-training-gy1/data/external/persona
 DATASET_OBS_PATH=${DATASET_OBS_PATH:-obs://yw-ads-training-gy1/data/external/personal/h58801830/whu/jjh/MLLM20260427_rc_jjh.zip}
 DATASET_DIR_NAME=${DATASET_DIR_NAME:-MLLM20260427_rc_jjh}
 TRAINED_CHECKPOINT_OBS=${TRAINED_CHECKPOINT_OBS:-${CHECKPOINT_OBS:-}}
+CHECKPOINT_NAMES=${CHECKPOINT_NAMES:-}
+CHECKPOINT_OBS_LIST=${CHECKPOINT_OBS_LIST:-}
+CHECKPOINT_DIRS=${CHECKPOINT_DIRS:-}
+CHECKPOINT_DOWNLOAD_ROOT=${CHECKPOINT_DOWNLOAD_ROOT:-${OBS_CACHE}/checkpoints_${RUN_ID}}
 
 case "${VISION_BACKBONE}" in
   dinov2)
@@ -202,15 +358,39 @@ if [[ "${CLOUD_MODE}" == "True" ]]; then
     exit 1
   fi
 
-  if [ -z "${CHECKPOINT_DIR:-}" ]; then
-    if [ -z "${TRAINED_CHECKPOINT_OBS}" ]; then
-      echo "ERROR: set TRAINED_CHECKPOINT_OBS or CHECKPOINT_OBS to the trained checkpoint/output OBS path."
+  if [ -z "${CHECKPOINT_DIRS}" ] && [ -z "${CHECKPOINT_DIR:-}" ]; then
+    mkdir -p "${CHECKPOINT_DOWNLOAD_ROOT}"
+    if [ -n "${CHECKPOINT_OBS_LIST}" ]; then
+      while IFS= read -r obs_item; do
+        [ -n "${obs_item}" ] || continue
+        download_checkpoint_from_obs "${obs_item}" "${obs_item}"
+        add_checkpoint_item "${DOWNLOADED_CHECKPOINT_DIR}" "${obs_item}"
+      done < <(read_list "${CHECKPOINT_OBS_LIST}")
+    elif [ -n "${TRAINED_CHECKPOINT_OBS}" ]; then
+      if [ -n "${CHECKPOINT_NAMES}" ]; then
+        while IFS= read -r checkpoint_name; do
+          [ -n "${checkpoint_name}" ] || continue
+          case "${checkpoint_name}" in
+            .|./)
+              download_checkpoint_from_obs "${TRAINED_CHECKPOINT_OBS}" "train_output"
+              ;;
+            obs://*)
+              download_checkpoint_from_obs "${checkpoint_name}" "${checkpoint_name}"
+              ;;
+            *)
+              download_checkpoint_from_obs "${TRAINED_CHECKPOINT_OBS%/}/${checkpoint_name}" "${checkpoint_name}"
+              ;;
+          esac
+          add_checkpoint_item "${DOWNLOADED_CHECKPOINT_DIR}" "${checkpoint_name}"
+        done < <(read_list "${CHECKPOINT_NAMES}")
+      else
+        download_checkpoint_from_obs "${TRAINED_CHECKPOINT_OBS}" "${TRAINED_CHECKPOINT_OBS}"
+        CHECKPOINT_DIR="${DOWNLOADED_CHECKPOINT_DIR}"
+      fi
+    else
+      echo "ERROR: set CHECKPOINT_OBS_LIST, or TRAINED_CHECKPOINT_OBS/CHECKPOINT_OBS, or CHECKPOINT_DIRS/CHECKPOINT_DIR."
       exit 1
     fi
-    CHECKPOINT_LOCAL=${CHECKPOINT_LOCAL:-${OBS_CACHE}/train_output_${RUN_ID}}
-    echo ">>>>>>>>>>>>>>>>>>>>>>>>>>>>> Downloading checkpoint from ${TRAINED_CHECKPOINT_OBS} >>>>>>>>>>>>>>>>>>>>>>>>>>>>>"
-    python -c "import moxing as mox; mox.file.copy_parallel('${TRAINED_CHECKPOINT_OBS}', '${CHECKPOINT_LOCAL}')"
-    CHECKPOINT_DIR="${CHECKPOINT_LOCAL}"
   fi
 else
   DATASET_PATH=${DATASET_PATH:-/cache/unimapgen_v2/dataset}
@@ -226,7 +406,18 @@ if [ -z "${TEST_JSON}" ]; then
   fi
 fi
 
-if [ -z "${CHECKPOINT_DIR:-}" ]; then
+if [ "${#CHECKPOINT_ITEMS[@]}" -eq 0 ]; then
+  if [ -n "${CHECKPOINT_DIRS}" ]; then
+    while IFS= read -r checkpoint_dir_item; do
+      [ -n "${checkpoint_dir_item}" ] || continue
+      add_checkpoint_item "${checkpoint_dir_item}" "${checkpoint_dir_item}"
+    done < <(read_list "${CHECKPOINT_DIRS}")
+  elif [ -n "${CHECKPOINT_DIR:-}" ]; then
+    add_checkpoint_item "${CHECKPOINT_DIR}" "${CHECKPOINT_DIR}"
+  fi
+fi
+
+if [ "${#CHECKPOINT_ITEMS[@]}" -eq 0 ]; then
   TRAIN_OUTPUT_DIR=${TRAIN_OUTPUT_DIR:-/cache/unimapgen_v2/train_output/sft_${DATASET_PHASE}_${MAP_TASK}_${VISION_BACKBONE}_qwen3vl8b_nodeepstack}
   BEST_CHECKPOINT_NAME=${BEST_CHECKPOINT_NAME:-eval_best}
   CHECKPOINT_DIR=$(python scripts/tools/resolve_best_checkpoint.py \
@@ -234,42 +425,23 @@ if [ -z "${CHECKPOINT_DIR:-}" ]; then
     --best-name "${BEST_CHECKPOINT_NAME}" \
     --best-name best \
     --allow-direct)
+  add_checkpoint_item "${CHECKPOINT_DIR}" "${BEST_CHECKPOINT_NAME}"
 fi
 
-if [ ! -f "${CHECKPOINT_DIR}/model.safetensors" ] && [ ! -f "${CHECKPOINT_DIR}/pytorch_model.bin" ]; then
-  if RESOLVED_CHECKPOINT=$(python scripts/tools/resolve_best_checkpoint.py \
-      --output-dir "${CHECKPOINT_DIR}" \
-      --best-name eval_best \
-      --best-name best \
-      --best-name best_reward \
-      --allow-direct 2>/dev/null); then
-    CHECKPOINT_DIR="${RESOLVED_CHECKPOINT}"
-  else
-    LATEST_CHECKPOINT=$(python - "${CHECKPOINT_DIR}" <<'PY'
-from pathlib import Path
-import sys
-root = Path(sys.argv[1])
-candidates = []
-for path in root.glob("checkpoint-*"):
-    if path.is_dir():
-        try:
-            step = int(path.name.rsplit("-", 1)[1])
-        except Exception:
-            step = -1
-        candidates.append((step, path))
-if candidates:
-    print(sorted(candidates)[-1][1])
-PY
-)
-    if [ -n "${LATEST_CHECKPOINT}" ]; then
-      CHECKPOINT_DIR="${LATEST_CHECKPOINT}"
-    fi
-  fi
+if [ "${#CHECKPOINT_ITEMS[@]}" -eq 0 ]; then
+  echo "ERROR: no checkpoint directories resolved."
+  exit 1
 fi
 
-for path in "${CHECKPOINT_DIR}" "${VISION_TOWER}" "${TEST_JSON}" "${IMAGE_FOLDER}"; do
+for path in "${VISION_TOWER}" "${TEST_JSON}" "${IMAGE_FOLDER}"; do
   if [ ! -e "${path}" ]; then
     echo "ERROR: required path missing: ${path}"
+    exit 1
+  fi
+done
+for checkpoint_path in "${CHECKPOINT_ITEMS[@]}"; do
+  if [ ! -e "${checkpoint_path}" ]; then
+    echo "ERROR: checkpoint path missing: ${checkpoint_path}"
     exit 1
   fi
 done
@@ -284,83 +456,94 @@ else
   OUTPUT_DIR=${OUTPUT_DIR:-/cache/unimapgen_v2/infer_output/${DATASET_PHASE}_${MAP_TASK}_${VISION_BACKBONE}_qwen3vl8b_nodeepstack/${RUN_ID}}
 fi
 
-JSON_DIR="${OUTPUT_DIR}/json"
-PATCH_VIZ_DIR="${OUTPUT_DIR}/viz"
-WHOLE_MAP_VIZ_DIR="${OUTPUT_DIR}/whole_map_viz"
-SUMMARY_JSON="${OUTPUT_DIR}/summary.json"
-MERGED_GLOBAL_JSON="${OUTPUT_DIR}/merged_global.json"
-EVAL_JSON="${OUTPUT_DIR}/eval.json"
-mkdir -p "${OUTPUT_DIR}" "${JSON_DIR}" "${PATCH_VIZ_DIR}" "${WHOLE_MAP_VIZ_DIR}"
+run_one_checkpoint() {
+  local checkpoint_dir="$1"
+  local checkpoint_label="$2"
+  local output_dir="$3"
 
-echo "CHECKPOINT_DIR=${CHECKPOINT_DIR}"
-echo "VISION_TOWER=${VISION_TOWER}"
-echo "DATASET_PHASE=${DATASET_PHASE}"
-echo "MAP_TASK=${MAP_TASK}"
-echo "TEST_JSON=${TEST_JSON}"
-echo "IMAGE_FOLDER=${IMAGE_FOLDER}"
-echo "OUTPUT_DIR=${OUTPUT_DIR}"
-echo "COORD_MODE=${COORD_MODE} COORD_RANGE=${COORD_RANGE}"
-echo "NUM_TEST_SAMPLES=${NUM_TEST_SAMPLES}"
+  local json_dir="${output_dir}/json"
+  local patch_viz_dir="${output_dir}/viz"
+  local whole_map_viz_dir="${output_dir}/whole_map_viz"
+  local summary_json="${output_dir}/summary.json"
+  local merged_global_json="${output_dir}/merged_global.json"
+  local eval_json="${output_dir}/eval.json"
+  mkdir -p "${output_dir}" "${json_dir}" "${patch_viz_dir}" "${whole_map_viz_dir}"
 
-# ====================== inference ======================
-if [ "${DATASET_PHASE}" = "phase_b" ]; then
-  INCLUDE_INTERSECTION_ARGS=()
-  if [ "${MAP_TASK}" = "lane_intersection" ]; then
-    INCLUDE_INTERSECTION_ARGS=(--include-intersections)
-  fi
-  python scripts/tools/infer_centerline_state_update.py \
-    --checkpoint-dir "${CHECKPOINT_DIR}" \
-    --vision_tower "${VISION_TOWER}" \
-    "${INPUT_IMAGE_SIZE_ARGS[@]}" \
-    --disable_deepstack \
-    --patch-json "${TEST_JSON}" \
-    --image-folder "${IMAGE_FOLDER}" \
-    --output-json "${SUMMARY_JSON}" \
-    --output-dir "${JSON_DIR}" \
-    --sample-json-dir "${JSON_DIR}" \
-    --merged-output-json "${MERGED_GLOBAL_JSON}" \
-    --whole-map-viz-dir "${WHOLE_MAP_VIZ_DIR}" \
-    --conv-template conv_qwen_3_Dinov2_huawei \
-    --device "${DEVICE:-npu:0}" \
-    --patch-size 256 \
-    --coord-mode "${COORD_MODE}" \
-    --coord-range "${COORD_RANGE}" \
-    "${INCLUDE_INTERSECTION_ARGS[@]}" \
-    --max-new-tokens "${MAX_NEW_TOKENS}" \
-    --temperature 0.0 \
-    --eval-centerline \
-    --eval-output-json "${EVAL_JSON}"
-else
-  torchrun \
-    --nnodes="${NNODES}" \
-    --nproc_per_node="${NPROC_PER_NODE}" \
-    --node_rank="${NODE_RANK}" \
-    --master_addr="${MASTER_ADDR}" \
-    --master_port="${MASTER_PORT}" \
-    scripts/tools/infer_centerline_checkpoint.py \
-    --checkpoint-dir "${CHECKPOINT_DIR}" \
-    --vision_tower "${VISION_TOWER}" \
-    "${INPUT_IMAGE_SIZE_ARGS[@]}" \
-    --disable_deepstack \
-    --test-json "${TEST_JSON}" \
-    --num-samples "${NUM_TEST_SAMPLES}" \
-    --image-folder "${IMAGE_FOLDER}" \
-    --prompt-mode dataset \
-    --map-task "${MAP_TASK}" \
-    --patch-size 256 \
-    --coord-mode "${COORD_MODE}" \
-    --coord-range "${COORD_RANGE}" \
-    --conv-template conv_qwen_3_Dinov2_huawei \
-    --output-dir "${OUTPUT_DIR}" \
-    --sample-json-dir "${JSON_DIR}" \
-    --output-json "${SUMMARY_JSON}" \
-    --temperature 0.0 \
-    --max-new-tokens "${MAX_NEW_TOKENS}" \
-    --eval-centerline \
-    --eval-output-json "${EVAL_JSON}"
+  echo "============================================================"
+  echo "CHECKPOINT_LABEL=${checkpoint_label}"
+  echo "CHECKPOINT_DIR=${checkpoint_dir}"
+  echo "VISION_TOWER=${VISION_TOWER}"
+  echo "DATASET_PHASE=${DATASET_PHASE}"
+  echo "MAP_TASK=${MAP_TASK}"
+  echo "TEST_JSON=${TEST_JSON}"
+  echo "IMAGE_FOLDER=${IMAGE_FOLDER}"
+  echo "OUTPUT_DIR=${output_dir}"
+  echo "COORD_MODE=${COORD_MODE} COORD_RANGE=${COORD_RANGE}"
+  echo "NUM_TEST_SAMPLES=${NUM_TEST_SAMPLES}"
+  echo "============================================================"
 
-  if [ "${NODE_RANK}" -eq 0 ]; then
-    python - "${OUTPUT_DIR}" "${SUMMARY_JSON}" <<'PY'
+  if [ "${DATASET_PHASE}" = "phase_b" ]; then
+    if [ "${NODE_RANK}" -ne 0 ]; then
+      echo "Skip phase_b single-process inference on non-master node ${NODE_RANK}"
+      return 0
+    fi
+    INCLUDE_INTERSECTION_ARGS=()
+    if [ "${MAP_TASK}" = "lane_intersection" ]; then
+      INCLUDE_INTERSECTION_ARGS=(--include-intersections)
+    fi
+    python scripts/tools/infer_centerline_state_update.py \
+      --checkpoint-dir "${checkpoint_dir}" \
+      --vision_tower "${VISION_TOWER}" \
+      "${INPUT_IMAGE_SIZE_ARGS[@]}" \
+      --disable_deepstack \
+      --patch-json "${TEST_JSON}" \
+      --image-folder "${IMAGE_FOLDER}" \
+      --output-json "${summary_json}" \
+      --output-dir "${json_dir}" \
+      --sample-json-dir "${json_dir}" \
+      --merged-output-json "${merged_global_json}" \
+      --whole-map-viz-dir "${whole_map_viz_dir}" \
+      --conv-template conv_qwen_3_Dinov2_huawei \
+      --device "${DEVICE:-npu:0}" \
+      --patch-size 256 \
+      --coord-mode "${COORD_MODE}" \
+      --coord-range "${COORD_RANGE}" \
+      "${INCLUDE_INTERSECTION_ARGS[@]}" \
+      --max-new-tokens "${MAX_NEW_TOKENS}" \
+      --temperature 0.0 \
+      --eval-centerline \
+      --eval-output-json "${eval_json}"
+  else
+    torchrun \
+      --nnodes="${NNODES}" \
+      --nproc_per_node="${NPROC_PER_NODE}" \
+      --node_rank="${NODE_RANK}" \
+      --master_addr="${MASTER_ADDR}" \
+      --master_port="${MASTER_PORT}" \
+      scripts/tools/infer_centerline_checkpoint.py \
+      --checkpoint-dir "${checkpoint_dir}" \
+      --vision_tower "${VISION_TOWER}" \
+      "${INPUT_IMAGE_SIZE_ARGS[@]}" \
+      --disable_deepstack \
+      --test-json "${TEST_JSON}" \
+      --num-samples "${NUM_TEST_SAMPLES}" \
+      --image-folder "${IMAGE_FOLDER}" \
+      --prompt-mode dataset \
+      --map-task "${MAP_TASK}" \
+      --patch-size 256 \
+      --coord-mode "${COORD_MODE}" \
+      --coord-range "${COORD_RANGE}" \
+      --conv-template conv_qwen_3_Dinov2_huawei \
+      --output-dir "${output_dir}" \
+      --sample-json-dir "${json_dir}" \
+      --output-json "${summary_json}" \
+      --temperature 0.0 \
+      --max-new-tokens "${MAX_NEW_TOKENS}" \
+      --eval-centerline \
+      --eval-output-json "${eval_json}"
+
+    if [ "${NODE_RANK}" -eq 0 ]; then
+      python - "${output_dir}" "${summary_json}" <<'PY'
 import glob
 import json
 import sys
@@ -388,24 +571,24 @@ merged.sort(key=lambda item: item.get("idx", item.get("record_id", "")))
 summary_json.write_text(json.dumps(merged, ensure_ascii=False, indent=2), encoding="utf-8")
 print(f"Merged {len(rank_files)} rank summaries into {summary_json}, records={len(merged)}")
 PY
+    fi
   fi
-fi
 
-if [ "${NODE_RANK}" -ne 0 ]; then
-  echo "Skip visualization/upload on non-master node ${NODE_RANK}"
-  exit 0
-fi
+  if [ "${NODE_RANK}" -ne 0 ]; then
+    echo "Skip visualization/upload for ${checkpoint_label} on non-master node ${NODE_RANK}"
+    return 0
+  fi
 
-python scripts/tools/visualize_centerline.py \
-  --input-dir "${OUTPUT_DIR}" \
-  --image-folder "${IMAGE_FOLDER}" \
-  --output-dir "${PATCH_VIZ_DIR}" \
-  --eval-output-json "${EVAL_JSON}" \
-  --whole-map-viz-dir "${WHOLE_MAP_VIZ_DIR}"
+  python scripts/tools/visualize_centerline.py \
+    --input-dir "${output_dir}" \
+    --image-folder "${IMAGE_FOLDER}" \
+    --output-dir "${patch_viz_dir}" \
+    --eval-output-json "${eval_json}" \
+    --whole-map-viz-dir "${whole_map_viz_dir}"
 
-if [ -f "${EVAL_JSON}" ]; then
-  echo "================ Final Centerline Eval Table ================"
-  python - "${EVAL_JSON}" <<'PY'
+  if [ -f "${eval_json}" ]; then
+    echo "================ Final Centerline Eval Table: ${checkpoint_label} ================"
+    python - "${eval_json}" <<'PY'
 import json
 import sys
 from pathlib import Path
@@ -417,15 +600,38 @@ if isinstance(payload, dict) and isinstance(payload.get("summary"), dict):
 table = payload.get("table") if isinstance(payload, dict) else None
 print(table if table else format_eval_table(payload))
 PY
-  echo "============================================================="
-fi
+    echo "============================================================="
+  fi
 
-echo "Inference outputs:"
-echo "  summary:         ${SUMMARY_JSON}"
-echo "  sample json dir: ${JSON_DIR}"
-echo "  patch viz dir:   ${PATCH_VIZ_DIR}"
-echo "  eval json:       ${EVAL_JSON}"
-echo "  whole map dir:   ${WHOLE_MAP_VIZ_DIR}"
+  echo "Inference outputs for ${checkpoint_label}:"
+  echo "  summary:         ${summary_json}"
+  echo "  sample json dir: ${json_dir}"
+  echo "  patch viz dir:   ${patch_viz_dir}"
+  echo "  eval json:       ${eval_json}"
+  echo "  whole map dir:   ${whole_map_viz_dir}"
+}
+
+echo "Resolved checkpoints:"
+for index in "${!CHECKPOINT_ITEMS[@]}"; do
+  echo "  [$index] ${CHECKPOINT_LABELS[$index]} -> ${CHECKPOINT_ITEMS[$index]}"
+done
+
+CHECKPOINT_COUNT=${#CHECKPOINT_ITEMS[@]}
+for index in "${!CHECKPOINT_ITEMS[@]}"; do
+  current_label="${CHECKPOINT_LABELS[$index]}"
+  current_checkpoint="${CHECKPOINT_ITEMS[$index]}"
+  if [ "${CHECKPOINT_COUNT}" -gt 1 ]; then
+    current_output_dir="${OUTPUT_DIR}/${index}_${current_label}"
+  else
+    current_output_dir="${OUTPUT_DIR}"
+  fi
+  run_one_checkpoint "${current_checkpoint}" "${current_label}" "${current_output_dir}"
+done
+
+if [ "${NODE_RANK}" -ne 0 ]; then
+  echo "Skip final upload on non-master node ${NODE_RANK}"
+  exit 0
+fi
 
 if [[ "${CLOUD_MODE}" == "True" ]]; then
   TEST_RESULT_OBS=${TEST_RESULT_OBS:-${OUTPUT_URL%/}/test_results_${RUN_ID}}

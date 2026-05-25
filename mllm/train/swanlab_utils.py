@@ -76,7 +76,19 @@ def _set_swanlab_env(args: Any) -> None:
             os.environ[env_name] = str(value)
 
 
+def _swanlab_mode(args: Any) -> str:
+    return str(_field(args, "swanlab_mode", "") or "").strip().lower()
+
+
+def _prepare_log_dir(args: Any) -> None:
+    log_dir = _field(args, "swanlab_log_dir")
+    if log_dir:
+        os.makedirs(os.path.expanduser(str(log_dir)), exist_ok=True)
+
+
 def _login_if_needed(swanlab_module: Any, args: Any) -> None:
+    if _swanlab_mode(args) in {"offline", "local", "disabled"}:
+        return
     api_key = os.environ.get("SWANLAB_API_KEY")
     if not api_key:
         return
@@ -127,6 +139,7 @@ def build_swanlab_callback(model_args: Any, data_args: Any, training_args: Any):
         ) from exc
 
     _set_swanlab_env(training_args)
+    _prepare_log_dir(training_args)
     _login_if_needed(swanlab, training_args)
 
     kwargs = {
@@ -138,6 +151,8 @@ def build_swanlab_callback(model_args: Any, data_args: Any, training_args: Any):
         "description": _field(training_args, "swanlab_description"),
         "config": build_swanlab_config(model_args, data_args, training_args),
         "tags": _split_csv(_field(training_args, "swanlab_tags")),
+        "mode": _field(training_args, "swanlab_mode"),
+        "logdir": _field(training_args, "swanlab_log_dir"),
     }
     return SwanLabCallback(**_filter_kwargs(SwanLabCallback, kwargs))
 
@@ -162,6 +177,7 @@ def init_swanlab_run(
         ) from exc
 
     _set_swanlab_env(args)
+    _prepare_log_dir(args)
     _login_if_needed(swanlab, args)
 
     kwargs = {

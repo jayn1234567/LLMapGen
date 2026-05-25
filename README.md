@@ -253,13 +253,20 @@ SwanLab monitoring:
 | `--swanlab_group` | Group related runs inside `unimapgen_v3`, for example `sft_phase_a_lane_dinov2_nodeepstack` or `grpo_phase_b_lane_intersection_dinov3_nodeepstack`. |
 | `--swanlab_job_type` | Job category for filtering, for example `sft`, `grpo`, `sft_debug`, or `grpo_debug`. |
 | `--swanlab_tags` | Comma-separated run tags. |
-| `--swanlab_mode` | Optional SwanLab mode, for example `cloud`, `offline`, or `disabled`. Leave empty for SwanLab default. |
+| `--swanlab_mode` | Optional SwanLab mode, for example `cloud`, `offline`, `local`, or `disabled`. Leave empty for SwanLab default. |
+| `--swanlab_log_dir` | Local SwanLab file directory. Current SFT scripts default to `${OUTPUT_PATH}/swanlab`; GRPO scripts default to `${OUTPUT_DIR}/swanlab`. |
+| `--swanlab_api_host` / `--swanlab_web_host` | Optional private SwanLab server API and web URLs. Current scripts expose them as `SWANLAB_API_HOST` and `SWANLAB_WEB_HOST`. |
 
 The provided SFT/GRPO scripts define `SWANLAB_API_KEY`, `SWANLAB_PROJECT`,
-`SWANLAB_GROUP`, `SWANLAB_JOB_TYPE`, and `SWANLAB_EXPERIMENT_NAME` in their
-parameter blocks. Keep `SWANLAB_PROJECT=unimapgen_v3` to compare all runs in one
-project; use group/job type/tags to separate SFT, GRPO, stage/task, backbone, and
-debug/formal runs.
+`SWANLAB_GROUP`, `SWANLAB_JOB_TYPE`, `SWANLAB_EXPERIMENT_NAME`,
+`SWANLAB_MODE`, and `SWANLAB_LOG_DIR` in their parameter blocks. Keep
+`SWANLAB_PROJECT=unimapgen_v3` to compare all runs in one project; use
+group/job type/tags to separate SFT, GRPO, stage/task, backbone, and
+debug/formal runs. For offline recording, set `SWANLAB_ENABLE=True` and
+`SWANLAB_MODE=offline` or `local` inside the target script. Local SwanLab files
+are written under the run output directory, beside `checkpoint-*`, `eval_best*`,
+`best*`, `best_reward/`, and `merged/` directories. For private deployment, set
+`SWANLAB_API_HOST` and `SWANLAB_WEB_HOST` in the same script parameter block.
 
 ## RL Post-Training
 
@@ -415,7 +422,9 @@ outputs under `checkpoints/debug/`. Set `DATASET_PHASE`, `MAP_TASK`, and
 SFT debug saves normal `checkpoint-*` by `SAVE_STEPS`/`SAVE_TOTAL_LIMIT`, keeps
 `eval_best` by default, and can enable best train loss with
 `SAVE_BEST_TRAIN_LOSS=True`. GRPO debug uses vLLM-Ascend and tracks
-`best_reward/` plus `merged/`.
+`best_reward/` plus `merged/`. When SwanLab offline/local mode is enabled in a
+debug script, local logs go to `checkpoints/debug/<run>/.../swanlab/`, which is
+the same output directory level as those checkpoints.
 
 `scripts/tools/infer_centerline_state_update.py` must use model predictions as the
 next patch state during normal inference. For engineering verification only,

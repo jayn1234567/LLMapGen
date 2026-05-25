@@ -46,13 +46,36 @@ NPU test entrypoints mirror the same matrix under `scripts/npu/test/`, for examp
 - `scripts/npu/test/test_stage_a_lane_dinov2_qwen3vl_nodeepstack_npu.sh`
 - `scripts/npu/test/test_stage_b_lane_intersection_dinov3_qwen3vl_nodeepstack_npu.sh`
 
-Each test wrapper calls `scripts/npu/test/run_infer_nodeepstack_npu.sh`. Fill these paths in the script or export them before running:
+Each concrete test wrapper, such as
+`scripts/npu/test/test_stage_a_lane_dinov2_qwen3vl_nodeepstack_npu.sh`,
+contains its own editable parameter block for dataset OBS paths, dataset folder
+name, checkpoint OBS/local paths, output path, and sample count. Edit the
+concrete stage/task/backbone script you plan to launch; `run_infer_nodeepstack_npu.sh`
+is the shared execution implementation and should not need per-job edits.
 
-- `CHECKPOINT_DIR`: checkpoint, `best/`, `eval_best/`, or merged GRPO checkpoint to load.
+Local path inputs:
+
+- `CHECKPOINT_DIRS`: comma/semicolon/newline separated checkpoint directories to evaluate.
+- `CHECKPOINT_DIR`: single checkpoint directory fallback.
+- `TRAIN_OUTPUT_DIR`: local training output root; if checkpoint dirs are not set, the resolver tries eval-best, train-best, then normal checkpoints.
 - `DATASET_PATH`: dataset root with `phase_a/phase_b/test.jsonl` and images.
 - `IMAGE_FOLDER`: image root, usually the same as `DATASET_PATH`.
 - `VISION_TOWER`: local DINOv2/DINOv3 checkpoint path.
 - `OUTPUT_DIR`: result root.
+
+Cloud/OBS inputs:
+
+- `DATASET_OBS_PATH`: OBS dataset zip path.
+- `DATASET_DIR_NAME`: directory name expected after unzip, for example `MLLM20260427_rc_jjh`.
+- `MODEL_OBS_PATH`: OBS root containing DINO model directories.
+- `CHECKPOINT_OBS_LIST`: comma/semicolon/newline separated full OBS checkpoint dirs.
+- `TRAINED_CHECKPOINT_OBS`: one OBS training output root.
+- `CHECKPOINT_NAMES`: relative weight dirs under `TRAINED_CHECKPOINT_OBS`, for example `checkpoint-500,eval_best_candidates,best_candidates,merged,best_reward`.
+
+When multiple checkpoints are given, each checkpoint writes a separate subfolder
+under `OUTPUT_DIR`, named by checkpoint index and label. `eval_best_candidates`
+and `best_candidates` are resolved after download to the latest successful
+candidate containing `_SUCCESS`.
 
 Inference outputs are intentionally separated:
 
@@ -105,6 +128,14 @@ Best checkpoint behavior:
 - Regular `checkpoint-*` rotation still uses `SAVE_TOTAL_LIMIT` and may delete old normal checkpoints; current NPU SFT scripts default it to 10.
 - Best candidate directories are copied from a normal `checkpoint-*` directory after that checkpoint is fully saved, and include `config.json`, `model.safetensors`, optimizer/scheduler state, `qwen_multimodal_checkpoint.json`, metadata JSON, and `_SUCCESS`.
 - NPU inference wrappers resolve best checkpoints with `scripts/tools/resolve_best_checkpoint.py`. By default they try `eval_best_candidates/` first, then `best_candidates/`, and only accept candidate directories with `_SUCCESS`.
+
+SwanLab logging:
+
+- SFT and GRPO scripts define `SWANLAB_ENABLE`, `SWANLAB_PROJECT`, `SWANLAB_GROUP`, `SWANLAB_JOB_TYPE`, `SWANLAB_EXPERIMENT_NAME`, `SWANLAB_MODE`, and `SWANLAB_LOG_DIR` in their parameter blocks.
+- Leave `SWANLAB_MODE` empty for SwanLab default cloud behavior. Set it to `offline` or `local` when the NPU job cannot upload during training, or `disabled` to suppress SwanLab runtime logging.
+- Local SwanLab files are stored next to the training checkpoints: SFT uses `${OUTPUT_PATH}/swanlab`; GRPO uses `${OUTPUT_DIR}/swanlab`.
+- Offline/local modes skip `swanlab.login(...)`; cloud mode still uses `SWANLAB_API_KEY` when it is set.
+- For private SwanLab deployment, set `SWANLAB_API_HOST` and `SWANLAB_WEB_HOST` in the same script parameter block. They are passed to `swanlab.login(host=..., web_host=...)` and exported as `SWANLAB_API_HOST` / `SWANLAB_WEB_HOST`.
 
 Centerline geometry evaluation:
 

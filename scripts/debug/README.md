@@ -132,6 +132,31 @@ GRPO debug has its own RL checkpoint policy: it saves adapter checkpoints,
 tracks `best_reward/` by mean reward, and writes `merged/` for self-contained
 inference or follow-up training.
 
+### SwanLab Offline Debug
+
+The debug scripts expose SwanLab settings in their parameter blocks. Leave
+`SWANLAB_MODE` empty for default cloud behavior. Set `SWANLAB_MODE=offline` or
+`local` when the NPU job cannot upload while running. Local SwanLab files are
+written to `${OUTPUT_DIR}/swanlab`, beside `checkpoint-*`, `eval_best*`,
+`best*`, `best_reward/`, and `merged/`.
+
+Edit the SwanLab block inside `scripts/debug/train_sft_debug_npu.sh` or
+`scripts/debug/train_grpo_debug_npu.sh`:
+
+```bash
+SWANLAB_ENABLE=True
+SWANLAB_MODE=offline
+```
+
+Then run the same debug command matrix below.
+
+For a private SwanLab server, set these in the same script block:
+
+```bash
+SWANLAB_API_HOST=http://your-swanlab-api
+SWANLAB_WEB_HOST=http://your-swanlab-web
+```
+
 ## Inference Debug
 
 The inference script auto-resolves the best SFT checkpoint from:

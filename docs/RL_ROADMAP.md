@@ -206,6 +206,9 @@ Important parameters:
 | `--swanlab_experiment_name` | Run name. |
 | `--swanlab_group` | Group for related runs, for example `grpo_phase_a_lane_dinov3_nodeepstack`. |
 | `--swanlab_job_type` | Job category, usually `grpo` or `grpo_debug`. |
+| `--swanlab_mode` | Optional SwanLab mode: empty/default cloud behavior, `offline`, `local`, or `disabled`. |
+| `--swanlab_log_dir` | Local SwanLab file directory; NPU GRPO scripts default to `${OUTPUT_DIR}/swanlab`. |
+| `--swanlab_api_host` / `--swanlab_web_host` | Optional private SwanLab API and web URLs. |
 
 Coordinate parameters:
 
@@ -227,6 +230,12 @@ SwanLab monitoring:
 - Keep GRPO runs under `SWANLAB_PROJECT=unimapgen_v3`; separate phase/task,
   backbone, and debug/formal runs with `SWANLAB_GROUP`, `SWANLAB_JOB_TYPE`, and
   tags.
+- For NPU jobs that cannot upload during training, set `SWANLAB_MODE=offline`
+  or `local` in the script. Local SwanLab files are written under
+  `${OUTPUT_DIR}/swanlab`, beside GRPO `checkpoint-*`, `best_reward/`,
+  `final/`, and `merged/`.
+- For a private SwanLab server, set `SWANLAB_API_HOST` and `SWANLAB_WEB_HOST`
+  in the NPU GRPO script parameter block.
 - Each GRPO step logs `reward_mean`, `reward_min`, `reward_max`, `loss`,
   `policy_loss`, `approx_kl`, `clip_fraction`, `action_tokens`, and `lr`.
 - Reward diagnostics are also logged. `reward/parse_ok_rate` tracks format

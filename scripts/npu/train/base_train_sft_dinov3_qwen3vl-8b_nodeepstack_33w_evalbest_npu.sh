@@ -306,7 +306,10 @@ SWANLAB_GROUP=${SWANLAB_GROUP:-sft_${DATASET_PHASE}_${MAP_TASK}_dinov3_nodeepsta
 SWANLAB_JOB_TYPE=${SWANLAB_JOB_TYPE:-sft} # SwanLab job type for filtering.
 SWANLAB_EXPERIMENT_NAME=${SWANLAB_EXPERIMENT_NAME:-sft_33w_${DATASET_PHASE}_${MAP_TASK}_dinov3_qwen3vl8b_nodeepstack}
 SWANLAB_TAGS=${SWANLAB_TAGS:-sft,33w,${DATASET_PHASE},${MAP_TASK},dinov3,qwen3vl8b,nodeepstack}
-SWANLAB_MODE=${SWANLAB_MODE:-}
+SWANLAB_MODE=${SWANLAB_MODE:-}          # Empty = SwanLab default cloud behavior; use offline/local/disabled when needed.
+SWANLAB_LOG_DIR=${SWANLAB_LOG_DIR:-${OUTPUT_PATH}/swanlab} # Local SwanLab files, beside checkpoint-* and best dirs.
+SWANLAB_API_HOST=${SWANLAB_API_HOST:-}  # Optional private SwanLab API host.
+SWANLAB_WEB_HOST=${SWANLAB_WEB_HOST:-}  # Optional private SwanLab web host.
 export SWANLAB_API_KEY
 EVAL_STRATEGY_ARG=$(python -c "import inspect, transformers; print('--eval_strategy' if 'eval_strategy' in inspect.signature(transformers.TrainingArguments.__init__).parameters else '--evaluation_strategy')")
 
@@ -343,7 +346,8 @@ echo "Eval:       ${ENABLE_EVAL}, eval_steps=${EVAL_STEPS}, best_eval=${SAVE_BES
 echo "Best mode:  ${BEST_CHECKPOINT_SAVE_MODE}"
 echo "Best keep:  ${BEST_CHECKPOINT_KEEP_LIMIT}"
 echo "HF tqdm:    ${USE_HF_PROGRESS_BAR}"
-echo "SwanLab:    ${SWANLAB_ENABLE}, project=${SWANLAB_PROJECT}, group=${SWANLAB_GROUP}, job=${SWANLAB_JOB_TYPE}, exp=${SWANLAB_EXPERIMENT_NAME}"
+echo "SwanLab:    ${SWANLAB_ENABLE}, project=${SWANLAB_PROJECT}, group=${SWANLAB_GROUP}, job=${SWANLAB_JOB_TYPE}, exp=${SWANLAB_EXPERIMENT_NAME}, mode=${SWANLAB_MODE}, logdir=${SWANLAB_LOG_DIR}"
+echo "SwanLab URL: api=${SWANLAB_API_HOST:-default}, web=${SWANLAB_WEB_HOST:-default}"
 echo "============================================================"
 
 torchrun \
@@ -400,6 +404,9 @@ torchrun \
     --swanlab_job_type "${SWANLAB_JOB_TYPE}" \
     --swanlab_tags "${SWANLAB_TAGS}" \
     --swanlab_mode "${SWANLAB_MODE}" \
+    --swanlab_log_dir "${SWANLAB_LOG_DIR}" \
+    --swanlab_api_host "${SWANLAB_API_HOST}" \
+    --swanlab_web_host "${SWANLAB_WEB_HOST}" \
     --ddp_find_unused_parameters False \
     --ddp_backend hccl \
     --deepspeed "${DEEPSPEED_CONFIG}"

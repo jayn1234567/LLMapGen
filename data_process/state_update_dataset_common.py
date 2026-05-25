@@ -1046,7 +1046,15 @@ def cap_empty_rows(rows, max_empty_ratio):
     return nonempty + empty[:max_empty]
 
 
-def process_sample(sample: RawSample, output_root: Path, split_name: str, include_intersections: bool, args, write_images: bool = True):
+def process_sample(
+    sample: RawSample,
+    output_root: Path,
+    split_name: str,
+    include_intersections: bool,
+    args,
+    write_images: bool = True,
+    max_empty_ratio=-1.0,
+):
     image_arr, meta, transform, crs = read_masked_image(sample.image_tiff, sample.mask_tiff)
     image_arr, original_image_size = pad_image_to_patch_grid(image_arr, args.patch_size)
     lines = load_line_geometries(sample.lane_geojson, crs, transform, args.simplify_tolerance)
@@ -1086,8 +1094,6 @@ def process_sample(sample: RawSample, output_root: Path, split_name: str, includ
     for (row, col), local_lines in sorted(patch_lines_by_rc.items()):
         if args.max_patches_per_sample is not None and patch_count >= args.max_patches_per_sample:
             break
-        if not local_lines and args.max_empty_ratio == 0:
-            continue
         x0 = col * args.stride
         y0 = row * args.stride
         patch_id = f"{sample.sample_id}_r{row:03d}_c{col:03d}"
@@ -1135,7 +1141,7 @@ def process_sample(sample: RawSample, output_root: Path, split_name: str, includ
             **patch_source_meta[(row, col)],
         })
         patch_count += 1
-    rows = cap_empty_rows(rows, args.max_empty_ratio)
+    rows = cap_empty_rows(rows, max_empty_ratio)
     if write_images:
         for row in rows:
             x0 = row["meta"]["x0"]
@@ -1145,6 +1151,15 @@ def process_sample(sample: RawSample, output_root: Path, split_name: str, includ
             chunk = image_arr[:, y0:y0 + args.patch_size, x0:x0 + args.patch_size]
             image_chunk_to_pil(chunk).save(out_image)
     return rows
+
+
+def empty_ratio_for_phase_split(args, phase: str, split_name: str):
+    if phase == "a":
+        value = getattr(args, f"phase_a_{split_name}_max_empty_ratio")
+        if value is None:
+            return args.max_empty_ratio
+        return value
+    return args.phase_b_max_empty_ratio
 
 
 def validate_rows(rows, include_intersections, patch_size):
@@ -1204,6 +1219,7 @@ def build_dataset(include_intersections: bool, args):
             include_intersections,
             args,
             write_images=False,
+            max_empty_ratio=-1.0,
         )
         if preview_rows:
             eligible_samples.append(sample)
@@ -1249,6 +1265,13 @@ def build_dataset(include_intersections: bool, args):
         "intersection_availability": discovered_intersection_availability,
         "coord_mode": args.coord_mode,
         "coord_range": args.coord_range,
+        "empty_patch_filtering": {
+            "legacy_max_empty_ratio": args.max_empty_ratio,
+            "phase_a_train_max_empty_ratio": empty_ratio_for_phase_split(args, "a", "train"),
+            "phase_a_eval_max_empty_ratio": empty_ratio_for_phase_split(args, "a", "eval"),
+            "phase_a_test_max_empty_ratio": empty_ratio_for_phase_split(args, "a", "test"),
+            "phase_b_max_empty_ratio": empty_ratio_for_phase_split(args, "b", "train"),
+        },
         "allow_empty_splits": args.allow_empty_splits,
         "train_ids": [sample.sample_id for sample in train_samples],
         "eval_ids": [sample.sample_id for sample in eval_samples],
@@ -1256,17 +1279,29 @@ def build_dataset(include_intersections: bool, args):
     }
     write_json(output_root / "split_manifest.json", split_manifest)
 
-    split_rows = {}
+    split_full_rows = {}
     for split_name, split_samples_list in [("train", train_samples), ("eval", eval_samples), ("test", test_samples)]:
         rows = []
         for sample in tqdm(split_samples_list, desc=f"build {split_name} patches", unit="sample"):
-            rows.extend(process_sample(sample, output_root, split_name, include_intersections, args))
+            rows.extend(process_sample(
+                sample,
+                output_root,
+                split_name,
+                include_intersections,
+                args,
+                max_empty_ratio=-1.0,
+            ))
         validate_rows(rows, include_intersections, args.patch_size)
-        split_rows[split_name] = rows
+        split_full_rows[split_name] = rows
 
+    phase_split_rows = {}
     for phase in ["a", "b"]:
         phase_dir = output_root / f"phase_{phase}"
-        for split_name, rows in tqdm(list(split_rows.items()), desc=f"write phase_{phase} jsonl", unit="split"):
+        for split_name, rows in tqdm(list(split_full_rows.items()), desc=f"write phase_{phase} jsonl", unit="split"):
+            max_empty_ratio = empty_ratio_for_phase_split(args, phase, split_name)
+            phase_rows = cap_empty_rows(rows, max_empty_ratio)
+            validate_rows(phase_rows, include_intersections, args.patch_size)
+            phase_split_rows[(phase, split_name)] = phase_rows
             sft_rows = [
                 build_sft_record(
                     row,
@@ -1276,10 +1311,10 @@ def build_dataset(include_intersections: bool, args):
                     coord_mode=args.coord_mode,
                     coord_range=args.coord_range,
                 )
-                for row in rows
+                for row in phase_rows
             ]
             write_jsonl(phase_dir / f"{split_name}.jsonl", sft_rows)
-            write_jsonl(phase_dir / f"meta_{split_name}.jsonl", rows)
+            write_jsonl(phase_dir / f"meta_{split_name}.jsonl", phase_rows)
 
     info = {
         "input_root": str(input_root),
@@ -1291,15 +1326,22 @@ def build_dataset(include_intersections: bool, args):
         "num_train_raw_samples": len(train_samples),
         "num_eval_raw_samples": len(eval_samples),
         "num_test_raw_samples": len(test_samples),
-        "num_train_patches": len(split_rows["train"]),
-        "num_eval_patches": len(split_rows["eval"]),
-        "num_test_patches": len(split_rows["test"]),
+        "num_train_patches": len(split_full_rows["train"]),
+        "num_eval_patches": len(split_full_rows["eval"]),
+        "num_test_patches": len(split_full_rows["test"]),
+        "phase_a_num_train_patches": len(phase_split_rows[("a", "train")]),
+        "phase_a_num_eval_patches": len(phase_split_rows[("a", "eval")]),
+        "phase_a_num_test_patches": len(phase_split_rows[("a", "test")]),
+        "phase_b_num_train_patches": len(phase_split_rows[("b", "train")]),
+        "phase_b_num_eval_patches": len(phase_split_rows[("b", "eval")]),
+        "phase_b_num_test_patches": len(phase_split_rows[("b", "test")]),
         "patch_size": args.patch_size,
         "stride": args.stride,
         "coord_mode": args.coord_mode,
         "coord_range": args.coord_range,
         "coord_system": coord_system_name(args.coord_mode, args.patch_size, args.coord_range),
         "max_empty_ratio": args.max_empty_ratio,
+        "empty_patch_filtering": split_manifest["empty_patch_filtering"],
         "eval_ratio": args.eval_ratio,
         "eval_count": args.eval_count,
         "intersection_files_required": False,
@@ -1328,7 +1370,39 @@ def add_common_args(parser):
     parser.add_argument("--split-seed", type=int, default=42)
     parser.add_argument("--eval-ratio", type=float, default=0.05, help="Raw-sample ratio reserved for eval before patch generation; test gets the remaining samples.")
     parser.add_argument("--eval-count", type=int, default=-1, help="Explicit raw-sample eval count; -1 uses eval-ratio.")
-    parser.add_argument("--max-empty-ratio", type=float, default=0.1)
+    parser.add_argument(
+        "--max-empty-ratio",
+        type=float,
+        default=0.1,
+        help=(
+            "Legacy empty-target patch cap. It now applies only to phase_a/train "
+            "unless --phase-a-train-max-empty-ratio is set. Use -1 to keep all non-black patches."
+        ),
+    )
+    parser.add_argument(
+        "--phase-a-train-max-empty-ratio",
+        type=float,
+        default=None,
+        help="Empty-target patch cap for phase_a/train. Default: use --max-empty-ratio.",
+    )
+    parser.add_argument(
+        "--phase-a-eval-max-empty-ratio",
+        type=float,
+        default=-1.0,
+        help="Empty-target patch cap for phase_a/eval. -1 keeps all non-black patches for complete evaluation maps.",
+    )
+    parser.add_argument(
+        "--phase-a-test-max-empty-ratio",
+        type=float,
+        default=-1.0,
+        help="Empty-target patch cap for phase_a/test. -1 keeps all non-black patches for complete stitched maps.",
+    )
+    parser.add_argument(
+        "--phase-b-max-empty-ratio",
+        type=float,
+        default=-1.0,
+        help="Empty-target patch cap for all phase_b splits. Keep -1 so state-update neighbor chains and stitched maps stay complete.",
+    )
     parser.add_argument("--boundary-tol", type=float, default=1.0)
     parser.add_argument("--simplify-tolerance", type=float, default=0.5)
     parser.add_argument("--trace-points", type=int, default=3)

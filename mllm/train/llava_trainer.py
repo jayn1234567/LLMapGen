@@ -1,5 +1,7 @@
 import json
 import os
+import shutil
+import subprocess
 import torch
 import torch.nn as nn
 
@@ -47,6 +49,57 @@ def _save_config_pretrained(model, output_dir):
         os.makedirs(output_dir, exist_ok=True)
         with open(os.path.join(output_dir, "config.json"), "w", encoding="utf-8") as f:
             json.dump(config, f, ensure_ascii=False, indent=2)
+
+
+def _safe_regular_checkpoint_delete_path(path: str, output_dir: str) -> bool:
+    abs_path = os.path.abspath(path)
+    abs_output_dir = os.path.abspath(output_dir)
+    if not abs_path or abs_path == os.path.sep:
+        return False
+    try:
+        if os.path.commonpath([abs_path, abs_output_dir]) != abs_output_dir:
+            return False
+    except ValueError:
+        return False
+    basename = os.path.basename(abs_path)
+    if not basename.startswith("checkpoint-"):
+        return False
+    return basename[len("checkpoint-"):].isdigit()
+
+
+def _remove_regular_checkpoint_tree(path: str, output_dir: str) -> bool:
+    if not _safe_regular_checkpoint_delete_path(path, output_dir):
+        logger.warning(f"Refusing to delete unexpected checkpoint path: {path}")
+        return False
+    if not os.path.exists(path):
+        return True
+
+    try:
+        shutil.rmtree(path)
+    except Exception as exc:
+        logger.warning(f"shutil.rmtree failed for old checkpoint {path}: {exc}")
+    else:
+        return True
+
+    # HF's default checkpoint rotation uses shutil.rmtree(ignore_errors=True),
+    # which can silently leave old checkpoint-* directories on some NPU/cloud
+    # filesystems. Fall back to guarded rm -rf for validated checkpoint paths.
+    try:
+        subprocess.run(
+            ["rm", "-rf", "--", path],
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+    except Exception as exc:
+        logger.warning(f"rm -rf fallback failed for old checkpoint {path}: {exc}")
+        return False
+
+    if os.path.exists(path):
+        logger.warning(f"rm -rf fallback finished but checkpoint still exists: {path}")
+        return False
+    return True
 
 
 def maybe_zero_3(param, ignore_status=False, name=None):
@@ -198,6 +251,29 @@ class LengthGroupedSampler(Sampler):
 
 
 class LLaVATrainer(Trainer):
+
+    def _rotate_checkpoints(self, use_mtime=False, output_dir=None) -> None:
+        if self.args.save_total_limit is None or self.args.save_total_limit <= 0:
+            return
+
+        output_dir = output_dir or self.args.output_dir
+        checkpoints_sorted = self._sorted_checkpoints(use_mtime=use_mtime, output_dir=output_dir)
+        if len(checkpoints_sorted) <= self.args.save_total_limit:
+            return
+
+        save_total_limit = self.args.save_total_limit
+        if (
+            self.state.best_model_checkpoint is not None
+            and self.args.save_total_limit == 1
+            and checkpoints_sorted[-1] != self.state.best_model_checkpoint
+        ):
+            save_total_limit = 2
+
+        number_of_checkpoints_to_delete = max(0, len(checkpoints_sorted) - save_total_limit)
+        checkpoints_to_be_deleted = checkpoints_sorted[:number_of_checkpoints_to_delete]
+        for checkpoint in checkpoints_to_be_deleted:
+            logger.info(f"Deleting older checkpoint [{checkpoint}] due to args.save_total_limit")
+            _remove_regular_checkpoint_tree(checkpoint, output_dir)
 
     def save_model(self, output_dir: Optional[str] = None, _internal_call: bool = False):
         if not getattr(self.args, "lora_enable", False):

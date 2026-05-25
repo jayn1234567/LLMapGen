@@ -83,6 +83,13 @@ Current generated datasets use:
 - `phase_b/{train,eval,test}.jsonl`: state-update data with left/top incoming hints.
 - `meta_*.jsonl`: raw pixel-coordinate patch metadata for auditing/debugging.
 - `coord_mode=norm1000` by default for SFT JSONL; raw meta rows remain patch-pixel oriented.
+- Raw TIFF patches are created from `0_inter.tif` after applying `0_edit_poly.tif`
+  as a mask, matching legacy `dataset_creator.py`; fully black masked patches
+  are skipped.
+- Empty-target downsampling is phase-aware: `phase_a/train` uses
+  `--max-empty-ratio` by default, while `phase_a/eval`, `phase_a/test`, and all
+  `phase_b` splits keep all non-black masked patches unless explicitly
+  overridden.
 
 ## Inference And Metrics
 
@@ -138,6 +145,8 @@ Script naming rules:
 - `vit_align_*_freeze-llm`: freeze LLM, train vision/projector/related modules.
 - `deepstack` / `no-deepstack`: whether DeepStack is enabled.
 - `phase_a` / `phase_b`: supervised patch-recognition vs state-update data.
+- `phase_b` NPU inference uses `torchrun` and shards complete `tile_id` groups
+  across ranks before rank0 merges `summary_rank*.json`.
 - `_gpu` / `_npu`: target runtime platform.
 - `scripts/debug/`: samples tiny JSONL splits from `/cache/data/data_line_samples_33w` and writes local debug outputs under `checkpoints/debug/`.
 

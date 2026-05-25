@@ -20,6 +20,7 @@ import sys
 import copy
 import random
 import shutil
+import subprocess
 import time 
 from datetime import datetime
 from dataclasses import dataclass, field
@@ -396,6 +397,24 @@ def _successful_best_candidates(candidate_root: str, metadata_filename: str, met
 
 
 def _load_rotating_best_loss(args, configured_best_dir: str, metadata_filename: str, metric_key: str, step_key: str):
+    return _load_rotating_best_metric(
+        args,
+        configured_best_dir,
+        metadata_filename,
+        metric_key,
+        step_key,
+        greater_is_better=False,
+    )
+
+
+def _load_rotating_best_metric(
+    args,
+    configured_best_dir: str,
+    metadata_filename: str,
+    metric_key: str,
+    step_key: str,
+    greater_is_better: bool,
+):
     candidate_root = _best_candidate_root(args, configured_best_dir)
     candidates = _successful_best_candidates(candidate_root, metadata_filename, metric_key, step_key)
     valid = []
@@ -406,7 +425,8 @@ def _load_rotating_best_loss(args, configured_best_dir: str, metadata_filename: 
             continue
     if not valid:
         return None, None
-    return min(valid, key=lambda pair: pair[0])
+    selector = max if greater_is_better else min
+    return selector(valid, key=lambda pair: pair[0])
 
 
 def _best_checkpoint_keep_limit(args) -> int:
@@ -414,6 +434,50 @@ def _best_checkpoint_keep_limit(args) -> int:
         return int(getattr(args, "best_checkpoint_keep_limit", 1) or 0)
     except (TypeError, ValueError):
         return 1
+
+
+def _safe_best_candidate_delete_path(path: str) -> bool:
+    abs_path = os.path.abspath(path)
+    if not abs_path or abs_path == os.path.sep:
+        return False
+    basename = os.path.basename(abs_path)
+    parent = os.path.basename(os.path.dirname(abs_path))
+    # Best candidates are always nested under *_candidates and named with step.
+    return parent.endswith("_candidates") and "_step-" in basename
+
+
+def _remove_best_candidate_tree(path: str) -> bool:
+    if not _safe_best_candidate_delete_path(path):
+        rank0_print(f"[WARN] Refusing to delete unexpected best checkpoint path: {path}")
+        return False
+    if not os.path.exists(path):
+        return True
+
+    try:
+        shutil.rmtree(path)
+    except Exception as exc:
+        rank0_print(f"[WARN] shutil.rmtree failed for old best checkpoint candidate {path}: {exc}")
+    else:
+        return True
+
+    # Some NPU/cloud mounts behave closer to shell rm than Python rmtree. Use a
+    # guarded rm fallback only for validated *_candidates/*_step-* directories.
+    try:
+        subprocess.run(
+            ["rm", "-rf", "--", path],
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+    except Exception as exc:
+        rank0_print(f"[WARN] rm -rf fallback failed for old best checkpoint candidate {path}: {exc}")
+        return False
+
+    if os.path.exists(path):
+        rank0_print(f"[WARN] rm -rf fallback finished but path still exists: {path}")
+        return False
+    return True
 
 
 def _rotate_best_candidates(
@@ -434,10 +498,7 @@ def _rotate_best_candidates(
         path = os.path.abspath(item["path"])
         if path == protected_dir:
             continue
-        try:
-            shutil.rmtree(path)
-        except Exception as exc:
-            rank0_print(f"[WARN] Failed to delete old best checkpoint candidate {path}: {exc}")
+        _remove_best_candidate_tree(path)
 
 
 def _write_success_marker(target_dir: str, metadata: dict):
@@ -515,6 +576,16 @@ class BestTrainLossCallback(TrainerCallback):
                         f"Loaded existing rotating best train loss: {self.best_loss:.6g} "
                         f"from {loaded[1]['path']}"
                     )
+            if self._is_rank0(args, state):
+                protected = loaded[1]["path"] if loaded[1] is not None else ""
+                _rotate_best_candidates(
+                    args,
+                    _best_candidate_root(args, self._best_dir(args)),
+                    "best_train_loss.json",
+                    "best_train_loss",
+                    "best_train_loss_step",
+                    protected,
+                )
             return
         metadata_path = os.path.join(self._best_dir(args), "best_train_loss.json")
         if not os.path.isfile(metadata_path):
@@ -663,6 +734,16 @@ class BestEvalLossCallback(TrainerCallback):
                         f"Loaded existing rotating best eval loss: {self.best_loss:.6g} "
                         f"from {loaded[1]['path']}"
                     )
+            if self._is_rank0(args, state):
+                protected = loaded[1]["path"] if loaded[1] is not None else ""
+                _rotate_best_candidates(
+                    args,
+                    _best_candidate_root(args, self._best_dir(args)),
+                    "best_eval_loss.json",
+                    "best_eval_loss",
+                    "best_eval_loss_step",
+                    protected,
+                )
             return
         metadata_path = os.path.join(self._best_dir(args), "best_eval_loss.json")
         if not os.path.isfile(metadata_path):
@@ -766,6 +847,343 @@ class BestEvalLossCallback(TrainerCallback):
         return control
 
 
+def _trainer_barrier_if_needed():
+    if torch.distributed.is_available() and torch.distributed.is_initialized():
+        torch.distributed.barrier()
+
+
+def _infer_index_repo_root() -> pathlib.Path:
+    return pathlib.Path(__file__).resolve().parents[2]
+
+
+def _infer_index_phase(args, eval_data_path: str) -> str:
+    phase = str(getattr(args, "best_infer_index_phase", "auto") or "auto").strip().lower()
+    if phase in {"phase_a", "a"}:
+        return "phase_a"
+    if phase in {"phase_b", "b"}:
+        return "phase_b"
+    normalized = eval_data_path.replace("\\", "/").lower()
+    return "phase_b" if "/phase_b/" in normalized or normalized.endswith("/phase_b/test.jsonl") else "phase_a"
+
+
+def _infer_index_metric_payload(payload):
+    if isinstance(payload, dict):
+        if isinstance(payload.get("summary"), dict):
+            return payload["summary"]
+        if isinstance(payload.get("centerline_eval"), dict):
+            return _infer_index_metric_payload(payload["centerline_eval"])
+    return payload
+
+
+def _extract_infer_index_metric(payload, metric_name: str) -> float:
+    summary = _infer_index_metric_payload(payload)
+    if not isinstance(summary, dict):
+        raise ValueError("infer_index eval payload is not a dict")
+
+    aliases = {
+        "f1": "length_f1",
+        "centerline_f1": "length_f1",
+        "line_f1": "length_f1",
+        "infer_index": "length_f1",
+        "valid_format": "valid_string_format",
+    }
+    key = aliases.get(str(metric_name).strip().lower(), str(metric_name).strip())
+    if key not in summary:
+        available = ", ".join(sorted(str(k) for k in summary.keys()))
+        raise KeyError(f"infer_index metric '{key}' not found; available keys: {available}")
+    return float(summary[key])
+
+
+def _infer_index_better(value: float, best_value: Optional[float], greater_is_better: bool) -> bool:
+    if best_value is None:
+        return True
+    return value > best_value if greater_is_better else value < best_value
+
+
+def _infer_index_subprocess_env() -> dict:
+    env = dict(os.environ)
+    for key in (
+        "LOCAL_RANK",
+        "RANK",
+        "WORLD_SIZE",
+        "LOCAL_WORLD_SIZE",
+        "GROUP_RANK",
+        "ROLE_RANK",
+        "ROLE_WORLD_SIZE",
+        "TORCHELASTIC_RUN_ID",
+        "TORCHELASTIC_RESTART_COUNT",
+        "TORCHELASTIC_MAX_RESTARTS",
+    ):
+        env.pop(key, None)
+    env.setdefault("MLLM_LOG_RANK0_ONLY", "1")
+    env.setdefault("TOKENIZERS_PARALLELISM", "false")
+    return env
+
+
+class BestInferIndexCallback(TrainerCallback):
+    def __init__(self):
+        self.best_metric = None
+
+    def _is_rank0(self, args, state=None) -> bool:
+        if state is not None and hasattr(state, "is_world_process_zero"):
+            return state.is_world_process_zero
+        rank = os.environ.get("RANK")
+        if rank is not None:
+            return int(rank) == 0
+        return args.local_rank in (-1, 0)
+
+    def _enabled(self, args) -> bool:
+        return bool(getattr(args, "save_best_infer_index", False))
+
+    def _best_dir(self, args):
+        best_dir = getattr(args, "best_infer_index_dir", "infer_best")
+        if os.path.isabs(best_dir):
+            return best_dir
+        return os.path.join(args.output_dir, best_dir)
+
+    def _greater_is_better(self, args) -> bool:
+        return bool(getattr(args, "best_infer_index_greater_is_better", True))
+
+    def on_train_begin(self, args, state, control, **kwargs):
+        if not self._enabled(args):
+            return
+        if not _is_rotating_create_only_best_mode(args):
+            metadata_path = os.path.join(self._best_dir(args), "best_infer_index.json")
+            if os.path.isfile(metadata_path):
+                try:
+                    payload = json.loads(pathlib.Path(metadata_path).read_text(encoding="utf-8"))
+                    self.best_metric = float(payload["best_infer_index"])
+                except Exception as exc:
+                    if self._is_rank0(args, state):
+                        rank0_print(f"[WARN] Failed to read existing best infer_index metadata: {exc}")
+            return
+
+        loaded = _load_rotating_best_metric(
+            args,
+            self._best_dir(args),
+            "best_infer_index.json",
+            "best_infer_index",
+            "best_infer_index_step",
+            greater_is_better=self._greater_is_better(args),
+        )
+        if loaded[0] is not None:
+            self.best_metric = float(loaded[0])
+            if self._is_rank0(args, state):
+                rank0_print(
+                    f"Loaded existing rotating best infer_index: {self.best_metric:.6g} "
+                    f"from {loaded[1]['path']}"
+                )
+        if self._is_rank0(args, state):
+            protected = loaded[1]["path"] if loaded[1] is not None else ""
+            _rotate_best_candidates(
+                args,
+                _best_candidate_root(args, self._best_dir(args)),
+                "best_infer_index.json",
+                "best_infer_index",
+                "best_infer_index_step",
+                protected,
+            )
+
+    def _build_command(self, args, checkpoint_dir: str, work_dir: pathlib.Path) -> tuple[list[str], pathlib.Path]:
+        eval_data_path = str(getattr(args, "best_infer_index_eval_data_path", "") or "")
+        image_folder = str(getattr(args, "best_infer_index_image_folder", "") or "")
+        if not eval_data_path or not image_folder:
+            raise ValueError("best_infer_index_eval_data_path and best_infer_index_image_folder are required")
+
+        repo_root = _infer_index_repo_root()
+        phase = _infer_index_phase(args, eval_data_path)
+        metric_eval_path = work_dir / "eval.json"
+        sample_json_dir = work_dir / "json"
+        sample_json_dir.mkdir(parents=True, exist_ok=True)
+
+        common = [
+            sys.executable,
+            str(repo_root / "scripts" / "tools" / ("infer_centerline_state_update.py" if phase == "phase_b" else "infer_centerline_checkpoint.py")),
+            "--checkpoint-dir",
+            checkpoint_dir,
+            "--vision_tower",
+            str(getattr(args, "best_infer_index_vision_tower", "") or ""),
+        ]
+        input_size = getattr(args, "best_infer_index_input_image_size", None)
+        if input_size:
+            common.extend(["--input_image_size", str(int(input_size))])
+        if bool(getattr(args, "best_infer_index_disable_deepstack", False)):
+            common.append("--disable_deepstack")
+
+        coord_mode = str(getattr(args, "best_infer_index_coord_mode", "auto") or "auto")
+        coord_range = int(getattr(args, "best_infer_index_coord_range", 1000) or 1000)
+        patch_size = int(getattr(args, "best_infer_index_patch_size", 256) or 256)
+        max_new_tokens = int(getattr(args, "best_infer_index_max_new_tokens", 2048) or 2048)
+        map_task = str(getattr(args, "best_infer_index_map_task", "lane") or "lane")
+
+        if phase == "phase_b":
+            cmd = common + [
+                "--patch-json", eval_data_path,
+                "--image-folder", image_folder,
+                "--output-json", str(work_dir / "summary.json"),
+                "--output-dir", str(sample_json_dir),
+                "--sample-json-dir", str(sample_json_dir),
+                "--merged-output-json", str(work_dir / "merged_global.json"),
+                "--whole-map-viz-dir", str(work_dir / "whole_map_viz"),
+                "--conv-template", str(getattr(args, "best_infer_index_conv_template", "conv_qwen_3_Dinov2_huawei") or "conv_qwen_3_Dinov2_huawei"),
+                "--device", str(getattr(args, "best_infer_index_device", "auto") or "auto"),
+                "--patch-size", str(patch_size),
+                "--coord-mode", coord_mode,
+                "--coord-range", str(coord_range),
+                "--max-new-tokens", str(max_new_tokens),
+                "--temperature", "0.0",
+                "--eval-centerline",
+                "--eval-output-json", str(metric_eval_path),
+            ]
+            if map_task == "lane_intersection":
+                cmd.append("--include-intersections")
+            if bool(getattr(args, "best_infer_index_skip_whole_map_viz", True)):
+                cmd.append("--skip-whole-map-viz")
+            return cmd, metric_eval_path
+
+        cmd = common + [
+            "--test-json", eval_data_path,
+            "--num-samples", str(int(getattr(args, "best_infer_index_num_samples", 0) or 0)),
+            "--sample-offset", str(int(getattr(args, "best_infer_index_sample_offset", 0) or 0)),
+            "--image-folder", image_folder,
+            "--prompt-mode", "dataset",
+            "--map-task", map_task,
+            "--patch-size", str(patch_size),
+            "--coord-mode", coord_mode,
+            "--coord-range", str(coord_range),
+            "--conv-template", str(getattr(args, "best_infer_index_conv_template", "conv_qwen_3_Dinov2_huawei") or "conv_qwen_3_Dinov2_huawei"),
+            "--output-dir", str(work_dir),
+            "--sample-json-dir", str(sample_json_dir),
+            "--output-json", str(work_dir / "summary.json"),
+            "--temperature", "0.0",
+            "--max-new-tokens", str(max_new_tokens),
+            "--eval-centerline",
+            "--eval-output-json", str(metric_eval_path),
+        ]
+        return cmd, metric_eval_path
+
+    def _run_eval(self, args, state, checkpoint_dir: str) -> tuple[float, dict, str]:
+        work_root = pathlib.Path(getattr(args, "best_infer_index_work_dir", "") or os.path.join(args.output_dir, "infer_index_eval"))
+        work_dir = work_root / f"checkpoint-{state.global_step}"
+        work_dir.mkdir(parents=True, exist_ok=True)
+        cmd, eval_path = self._build_command(args, checkpoint_dir, work_dir)
+
+        stdout_path = work_dir / "infer_stdout.log"
+        stderr_path = work_dir / "infer_stderr.log"
+        rank0_print(f"Running infer_index eval for checkpoint-{state.global_step}: {' '.join(cmd)}")
+        with stdout_path.open("w", encoding="utf-8") as stdout, stderr_path.open("w", encoding="utf-8") as stderr:
+            proc = subprocess.run(
+                cmd,
+                cwd=str(_infer_index_repo_root()),
+                env=_infer_index_subprocess_env(),
+                stdout=stdout,
+                stderr=stderr,
+                text=True,
+            )
+        if proc.returncode != 0:
+            raise RuntimeError(
+                f"infer_index eval failed with code {proc.returncode}; "
+                f"stdout={stdout_path}, stderr={stderr_path}"
+            )
+        if not eval_path.is_file():
+            raise FileNotFoundError(f"infer_index eval json was not created: {eval_path}")
+        payload = json.loads(eval_path.read_text(encoding="utf-8"))
+        metric_name = str(getattr(args, "best_infer_index_metric", "length_f1") or "length_f1")
+        metric_value = _extract_infer_index_metric(payload, metric_name)
+        return metric_value, payload, str(work_dir)
+
+    def on_save(self, args, state, control, **kwargs):
+        if not self._enabled(args):
+            return control
+
+        is_rank0 = self._is_rank0(args, state)
+        try:
+            if not is_rank0:
+                return control
+
+            eval_every = int(getattr(args, "best_infer_index_eval_steps", 0) or 0)
+            if eval_every > 0 and state.global_step % eval_every != 0:
+                return control
+
+            checkpoint_dir = os.path.join(args.output_dir, f"checkpoint-{state.global_step}")
+            if not os.path.isdir(checkpoint_dir):
+                rank0_print(f"[WARN] infer_index checkpoint not found after save: {checkpoint_dir}")
+                return control
+
+            try:
+                metric_value, metric_payload, work_dir = self._run_eval(args, state, checkpoint_dir)
+            except Exception as exc:
+                rank0_print(f"[WARN] infer_index best eval skipped at step {state.global_step}: {exc}")
+                return control
+
+            greater_is_better = self._greater_is_better(args)
+            if not _infer_index_better(metric_value, self.best_metric, greater_is_better):
+                rank0_print(
+                    f"infer_index metric did not improve: "
+                    f"{metric_value:.6g} vs best {self.best_metric:.6g}"
+                )
+                return control
+
+            self.best_metric = metric_value
+            metric_name = str(getattr(args, "best_infer_index_metric", "length_f1") or "length_f1")
+            metadata = {
+                "best_infer_index": metric_value,
+                "best_infer_index_metric": metric_name,
+                "best_infer_index_step": state.global_step,
+                "best_checkpoint": f"checkpoint-{state.global_step}",
+                "source_checkpoint": checkpoint_dir,
+                "infer_index_eval_dir": work_dir,
+                "infer_index_eval": _infer_index_metric_payload(metric_payload),
+                "greater_is_better": greater_is_better,
+                "epoch": state.epoch,
+                "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            }
+
+            configured_best_dir = self._best_dir(args)
+            if _is_rotating_create_only_best_mode(args):
+                best_dir = _rotating_best_dir(
+                    args,
+                    configured_best_dir,
+                    metric_name,
+                    metric_value,
+                    state.global_step,
+                )
+                metadata = _save_rotating_best_checkpoint(
+                    args,
+                    checkpoint_dir,
+                    best_dir,
+                    metadata,
+                    "best_infer_index.json",
+                    "best_infer_index",
+                    "best_infer_index_step",
+                )
+                rank0_print(
+                    f"Created best infer_index checkpoint: {best_dir} "
+                    f"({metric_name}={metadata['best_infer_index']:.6g}, "
+                    f"step={state.global_step}, keep={metadata['best_checkpoint_keep_limit']})"
+                )
+                return control
+
+            best_dir = configured_best_dir
+            tmp_dir = f"{best_dir}.tmp"
+            if os.path.exists(tmp_dir):
+                shutil.rmtree(tmp_dir)
+            _copy_checkpoint_tree(checkpoint_dir, tmp_dir)
+            metadata["best_checkpoint"] = checkpoint_dir
+            with open(os.path.join(tmp_dir, "best_infer_index.json"), "w", encoding="utf-8") as f:
+                json.dump(metadata, f, ensure_ascii=False, indent=2)
+            if os.path.exists(best_dir):
+                shutil.rmtree(best_dir)
+            os.replace(tmp_dir, best_dir)
+            rank0_print(
+                f"Updated best infer_index checkpoint: {best_dir} "
+                f"({metric_name}={metric_value:.6g}, step={state.global_step})"
+            )
+            return control
+        finally:
+            _trainer_barrier_if_needed()
+
+
 IS_TOKENIZER_GREATER_THAN_0_14 = version.parse(tokenizers.__version__) >= version.parse('0.14')
 
 
@@ -856,6 +1274,46 @@ class TrainingArguments(transformers.TrainingArguments):
     best_train_loss_dir: str = field(default="best")
     save_best_eval_loss: bool = field(default=False)
     best_eval_loss_dir: str = field(default="eval_best")
+    save_best_infer_index: bool = field(
+        default=False,
+        metadata={"help": "Run generation-based infer_index eval after checkpoint saves and keep the best checkpoint."},
+    )
+    best_infer_index_dir: str = field(default="infer_best")
+    best_infer_index_metric: str = field(
+        default="length_f1",
+        metadata={"help": "Metric key from infer_index eval.json used for best checkpoint selection."},
+    )
+    best_infer_index_greater_is_better: bool = field(default=True)
+    best_infer_index_phase: str = field(
+        default="auto",
+        metadata={"help": "phase_a, phase_b, or auto based on eval path."},
+    )
+    best_infer_index_eval_data_path: str = field(default="")
+    best_infer_index_image_folder: str = field(default="")
+    best_infer_index_vision_tower: str = field(default="")
+    best_infer_index_input_image_size: Optional[int] = field(default=None)
+    best_infer_index_disable_deepstack: bool = field(default=False)
+    best_infer_index_conv_template: str = field(default="conv_qwen_3_Dinov2_huawei")
+    best_infer_index_map_task: str = field(default="lane")
+    best_infer_index_num_samples: int = field(
+        default=0,
+        metadata={"help": "Phase A infer_index eval sample count. 0 means all records."},
+    )
+    best_infer_index_sample_offset: int = field(default=0)
+    best_infer_index_eval_steps: int = field(
+        default=0,
+        metadata={"help": "Run infer_index best every N saved steps. 0 means every saved checkpoint."},
+    )
+    best_infer_index_max_new_tokens: int = field(default=2048)
+    best_infer_index_device: str = field(default="auto")
+    best_infer_index_patch_size: int = field(default=256)
+    best_infer_index_coord_mode: str = field(default="auto")
+    best_infer_index_coord_range: int = field(default=1000)
+    best_infer_index_eval_meter_per_pixel: float = field(default=0.2)
+    best_infer_index_eval_buffer_size: float = field(default=1.0)
+    best_infer_index_eval_match_threshold: float = field(default=0.33)
+    best_infer_index_work_dir: str = field(default="")
+    best_infer_index_skip_whole_map_viz: bool = field(default=True)
     best_checkpoint_save_mode: str = field(
         default="rotating_create_only",
         metadata={"help": "How best checkpoints are materialized: rotating_create_only or replace."},
@@ -1922,6 +2380,28 @@ def train(attn_implementation=None):
     ):
         training_args.gradient_checkpointing_kwargs = {"use_reentrant": True}
         rank0_print("Using reentrant gradient checkpointing with DeepSpeed.")
+    if training_args.save_best_infer_index:
+        def _first_path(value):
+            if isinstance(value, (list, tuple)):
+                return str(value[0]) if value else ""
+            return str(value or "")
+
+        if not training_args.best_infer_index_eval_data_path:
+            training_args.best_infer_index_eval_data_path = _first_path(data_args.eval_data_path)
+        if not training_args.best_infer_index_image_folder:
+            training_args.best_infer_index_image_folder = _first_path(data_args.eval_image_folder or data_args.image_folder)
+        if not training_args.best_infer_index_vision_tower:
+            training_args.best_infer_index_vision_tower = str(model_args.vision_tower or "")
+        if training_args.best_infer_index_input_image_size is None:
+            training_args.best_infer_index_input_image_size = model_args.input_image_size
+        training_args.best_infer_index_disable_deepstack = bool(model_args.disable_deepstack)
+        rank0_print(
+            "infer_index best enabled: "
+            f"metric={training_args.best_infer_index_metric}, "
+            f"phase={training_args.best_infer_index_phase}, "
+            f"eval={training_args.best_infer_index_eval_data_path}, "
+            f"image_folder={training_args.best_infer_index_image_folder}"
+        )
     compute_dtype = (torch.float16 if training_args.fp16 else (torch.bfloat16 if training_args.bf16 else torch.float32))
 
     bnb_model_from_pretrained_args = {}
@@ -2203,6 +2683,7 @@ def train(attn_implementation=None):
         JsonlMetricLoggerCallback(training_args.output_dir),
         BestTrainLossCallback(),
         BestEvalLossCallback(),
+        BestInferIndexCallback(),
     ]
     swanlab_callback = build_swanlab_callback(model_args, data_args, training_args)
     if swanlab_callback is not None:

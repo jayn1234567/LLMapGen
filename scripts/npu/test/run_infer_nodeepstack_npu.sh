@@ -100,7 +100,7 @@ def step_from_name(name: str) -> int:
     return int("".join(digits)) if digits else -1
 
 def load_step(path: Path) -> int:
-    for name in ("best_eval_loss.json", "best_train_loss.json", "best_reward.json"):
+    for name in ("best_infer_index.json", "best_eval_loss.json", "best_train_loss.json", "best_reward.json"):
         metadata_path = path / name
         if not metadata_path.is_file():
             continue
@@ -108,7 +108,7 @@ def load_step(path: Path) -> int:
             metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
         except Exception:
             metadata = {}
-        for key in ("best_eval_loss_step", "best_train_loss_step", "best_reward_step", "global_step"):
+        for key in ("best_infer_index_step", "best_eval_loss_step", "best_train_loss_step", "best_reward_step", "global_step"):
             if key in metadata:
                 try:
                     return int(metadata[key])
@@ -132,6 +132,7 @@ PY
   local resolved
   if resolved=$(python scripts/tools/resolve_best_checkpoint.py \
       --output-dir "${root}" \
+      --best-name infer_best \
       --best-name eval_best \
       --best-name best \
       --best-name best_reward \
@@ -419,10 +420,11 @@ fi
 
 if [ "${#CHECKPOINT_ITEMS[@]}" -eq 0 ]; then
   TRAIN_OUTPUT_DIR=${TRAIN_OUTPUT_DIR:-/cache/unimapgen_v2/train_output/sft_${DATASET_PHASE}_${MAP_TASK}_${VISION_BACKBONE}_qwen3vl8b_nodeepstack}
-  BEST_CHECKPOINT_NAME=${BEST_CHECKPOINT_NAME:-eval_best}
+  BEST_CHECKPOINT_NAME=${BEST_CHECKPOINT_NAME:-infer_best}
   CHECKPOINT_DIR=$(python scripts/tools/resolve_best_checkpoint.py \
     --output-dir "${TRAIN_OUTPUT_DIR}" \
     --best-name "${BEST_CHECKPOINT_NAME}" \
+    --best-name eval_best \
     --best-name best \
     --allow-direct)
   add_checkpoint_item "${CHECKPOINT_DIR}" "${BEST_CHECKPOINT_NAME}"
@@ -483,15 +485,17 @@ run_one_checkpoint() {
   echo "============================================================"
 
   if [ "${DATASET_PHASE}" = "phase_b" ]; then
-    if [ "${NODE_RANK}" -ne 0 ]; then
-      echo "Skip phase_b single-process inference on non-master node ${NODE_RANK}"
-      return 0
-    fi
     INCLUDE_INTERSECTION_ARGS=()
     if [ "${MAP_TASK}" = "lane_intersection" ]; then
       INCLUDE_INTERSECTION_ARGS=(--include-intersections)
     fi
-    python scripts/tools/infer_centerline_state_update.py \
+    torchrun \
+      --nnodes="${NNODES}" \
+      --nproc_per_node="${NPROC_PER_NODE}" \
+      --node_rank="${NODE_RANK}" \
+      --master_addr="${MASTER_ADDR}" \
+      --master_port="${MASTER_PORT}" \
+      scripts/tools/infer_centerline_state_update.py \
       --checkpoint-dir "${checkpoint_dir}" \
       --vision_tower "${VISION_TOWER}" \
       "${INPUT_IMAGE_SIZE_ARGS[@]}" \
@@ -504,7 +508,7 @@ run_one_checkpoint() {
       --merged-output-json "${merged_global_json}" \
       --whole-map-viz-dir "${whole_map_viz_dir}" \
       --conv-template conv_qwen_3_Dinov2_huawei \
-      --device "${DEVICE:-npu:0}" \
+      --device "${DEVICE:-auto}" \
       --patch-size 256 \
       --coord-mode "${COORD_MODE}" \
       --coord-range "${COORD_RANGE}" \
@@ -512,7 +516,9 @@ run_one_checkpoint() {
       --max-new-tokens "${MAX_NEW_TOKENS}" \
       --temperature 0.0 \
       --eval-centerline \
-      --eval-output-json "${eval_json}"
+      --eval-output-json "${eval_json}" \
+      --distributed-by-tile \
+      --distributed-merge-timeout "${DISTRIBUTED_MERGE_TIMEOUT:-7200}"
   else
     torchrun \
       --nnodes="${NNODES}" \

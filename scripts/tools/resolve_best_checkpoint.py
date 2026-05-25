@@ -23,7 +23,7 @@ def step_from_name(name: str) -> int:
 
 
 def load_metadata(path: Path) -> dict:
-    for name in ("best_eval_loss.json", "best_train_loss.json", "best_reward.json"):
+    for name in ("best_infer_index.json", "best_eval_loss.json", "best_train_loss.json", "best_reward.json"):
         metadata_path = path / name
         if metadata_path.is_file():
             try:
@@ -43,7 +43,7 @@ def candidate_dirs(output_dir: Path, best_name: str):
             continue
         metadata = load_metadata(path)
         step = -1
-        for key in ("best_eval_loss_step", "best_train_loss_step", "best_reward_step", "global_step"):
+        for key in ("best_infer_index_step", "best_eval_loss_step", "best_train_loss_step", "best_reward_step", "global_step"):
             if key in metadata:
                 try:
                     step = int(metadata[key])

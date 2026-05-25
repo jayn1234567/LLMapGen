@@ -56,6 +56,10 @@ output_root/
 `phase_a` uses empty incoming hints. `phase_b` uses GT left/top hints from already-processed neighboring patches.
 The train/eval/test split unit is the raw sample folder, not a patch, so eval/test patches cannot leak into either Phase A or Phase B training data.
 `--train-ratio` controls the raw-sample train share, `--eval-ratio` or `--eval-count` reserves raw samples for eval, and the remaining raw samples become final test.
+Patch filtering is phase-aware: the extractor first builds the complete non-black patch set for each raw sample, then applies empty-target downsampling only where it is safe.
+`phase_a/train` uses `--max-empty-ratio` by default, or `--phase-a-train-max-empty-ratio` when explicitly set.
+`phase_a/eval`, `phase_a/test`, and all `phase_b` splits keep all non-black patches by default (`-1`), so stitched-map visualization and state-update neighbor chains do not lose empty-but-structurally-needed patches.
+`--phase-b-max-empty-ratio` exists for smoke tests, but normal B-stage training/eval/test should leave it at `-1`.
 Raw sample folders that produce zero usable patches are filtered before splitting. `dataset_info.json` records both `num_discovered_raw_samples` and `num_dropped_empty_raw_samples`, and `split_manifest.json` records the dropped raw sample ids.
 By default the script fails if train/eval/test would be empty after this filtering. Use `--allow-empty-splits` only for one-sample format smoke tests.
 Images are padded with black pixels to a patch-size multiple before patching; metadata keeps both padded `source_image_size` and `original_source_image_size`.

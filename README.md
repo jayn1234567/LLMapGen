@@ -166,14 +166,20 @@ For the first 330k-sample run, prefer
 `scripts/npu/train/train_sft_stage_a_lane_dinov2_qwen3vl_nodeepstack_npu.sh`.
 It uses 3 epochs and separate module LRs: LLM `2e-5`, projector `2e-5`,
 vision tower `2e-6`. It evaluates during training and copies the lowest
-`eval_loss` checkpoint to `eval_best/`.
+`eval_loss` checkpoint to `eval_best/`; set `SAVE_BEST_INFER_INDEX=True` to
+also run generation-based `infer_index` evaluation and keep the best
+`length_f1` checkpoint in `infer_best_candidates/`.
 
 Best checkpoint variants are controlled in the current NPU script parameter
 blocks, not by legacy tmp wrappers. Normal `checkpoint-*` saving follows
 `SAVE_STEPS` and `SAVE_TOTAL_LIMIT`. Train-loss best uses
 `SAVE_BEST_TRAIN_LOSS`, `BEST_TRAIN_LOSS_START_STEP`, and
 `BEST_TRAIN_LOSS_DIR`. Eval-loss best uses `ENABLE_EVAL`,
-`SAVE_BEST_EVAL_LOSS`, `EVAL_STEPS`, and `BEST_EVAL_LOSS_DIR`.
+`SAVE_BEST_EVAL_LOSS`, `EVAL_STEPS`, and `BEST_EVAL_LOSS_DIR`. Infer-index
+best uses `SAVE_BEST_INFER_INDEX`, `BEST_INFER_INDEX_METRIC`,
+`BEST_INFER_INDEX_NUM_SAMPLES`, `BEST_INFER_INDEX_EVAL_STEPS`, and
+`BEST_INFER_INDEX_DIR`. `BEST_INFER_INDEX_NUM_SAMPLES=0` uses the full eval
+set and is the default for best-checkpoint selection.
 
 Do not pass experiment knobs as one-off shell prefixes. Edit the parameter block inside the target script instead, especially batch size, LR, epoch/step count, DeepStack, and best-checkpoint settings.
 
@@ -383,6 +389,9 @@ Best checkpoint parameters:
 | `--best_train_loss_dir` | `best` | Output directory for best train-loss checkpoint. |
 | `--save_best_eval_loss` | `False` | Copy lower eval-loss checkpoint to eval best dir. |
 | `--best_eval_loss_dir` | `eval_best` | Output directory for best eval-loss checkpoint. |
+| `--save_best_infer_index` | `False` | Run generation eval on saved checkpoints and copy the best infer_index checkpoint. |
+| `--best_infer_index_metric` | `length_f1` | Metric from `infer_index/line_eval.py`; higher is better by default. |
+| `--best_infer_index_dir` | `infer_best` | Logical best name; rotating mode writes `infer_best_candidates/`. |
 | `--eval_strategy steps` | off by default | Required for eval-loss checkpointing. |
 | `--eval_steps` | unset | Eval interval. Keep `save_steps` compatible with `eval_steps` if using HF best-model logic. |
 
@@ -430,6 +439,15 @@ the same output directory level as those checkpoints.
 next patch state during normal inference. For engineering verification only,
 `--dry-run-prompts` can replay ground truth JSON to confirm stitching and hint
 generation without depending on model quality.
+
+Dataset patch retention is phase-aware. The raw image is still masked with
+`patch_tif/0_edit_poly.tif` before patch generation, matching the legacy
+`DatasetCreator` behavior, so fully black masked patches are skipped. After that,
+empty-target downsampling is applied only where it is safe: `phase_a/train` uses
+`--max-empty-ratio` by default, while `phase_a/eval`, `phase_a/test`, and all
+`phase_b` splits keep every non-black masked patch by default. Keep
+`--phase-b-max-empty-ratio -1` for normal B-stage training/eval/test so left/top
+state-update chains and stitched maps remain complete.
 
 ## Coordinate Convention
 
@@ -492,6 +510,13 @@ python scripts/tools/infer_centerline_state_update.py \
   --coord-mode auto \
   --eval-centerline
 ```
+
+For multi-card B-stage inference, use `--distributed-by-tile` under `torchrun`.
+The script shards complete `tile_id` groups, so all patches from the same raw
+sample stay on one rank and left/top state dependencies are preserved. Each rank
+writes `summary_rank*.json`; rank0 merges them into the final `summary.json`,
+`merged_global.json`, `eval.json`, and `whole_map_viz/` outputs. The NPU
+`scripts/npu/test/test_stage_b_*_npu.sh` wrappers enable this path by default.
 
 Visualization with metrics:
 

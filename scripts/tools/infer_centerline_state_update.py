@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 import argparse
 import json
+import os
 import sys
+import time
 from pathlib import Path
 
 import torch
@@ -32,7 +34,10 @@ from scripts.tools.infer_centerline_checkpoint import (
     parse_map_json,
     read_manifest,
 )
-from scripts.tools.map_visualization import render_whole_map_visualizations as render_common_whole_map_visualizations
+from scripts.tools.map_visualization import (
+    record_tile_id,
+    render_whole_map_visualizations as render_common_whole_map_visualizations,
+)
 
 
 TASK_TEXT = "Please construct the complete road map in the current BEV (Bird's Eye View) image patch."
@@ -78,12 +83,93 @@ def get_meta_int(record, key, fallback=None):
 def sort_patch_records(records):
     def key_fn(record):
         meta = record.get("meta") or {}
-        tile_id = meta.get("tile_id", record.get("tile_id", ""))
+        tile_id = record_tile_id(record)
         row = get_meta_int(record, "row", get_meta_int(record, "patch_row", 0))
         col = get_meta_int(record, "col", get_meta_int(record, "patch_col", 0))
         return str(tile_id), row, col, str(record.get("id", ""))
 
     return sorted(records, key=key_fn)
+
+
+def distributed_info(args):
+    rank = args.rank if args.rank is not None else int(os.environ.get("RANK", "0"))
+    local_rank = args.local_rank if args.local_rank is not None else int(os.environ.get("LOCAL_RANK", "0"))
+    world_size = args.world_size if args.world_size is not None else int(os.environ.get("WORLD_SIZE", "1"))
+    return rank, local_rank, world_size
+
+
+def resolve_runtime_device(device: str, local_rank: int) -> str:
+    if device and device not in {"auto", "cuda", "npu"}:
+        return device
+    if device in {"", "auto", "cuda"} and torch.cuda.is_available():
+        return f"cuda:{local_rank}" if device in {"", "auto", "cuda"} else device
+    if device in {"", "auto", "npu"}:
+        try:
+            import torch_npu  # noqa: F401
+
+            if hasattr(torch, "npu") and torch.npu.is_available():
+                return f"npu:{local_rank}"
+        except Exception:
+            pass
+    if device == "cuda":
+        return f"cuda:{local_rank}"
+    if device == "npu":
+        return f"npu:{local_rank}"
+    return "cpu"
+
+
+def shard_records_by_tile(records, rank: int, world_size: int):
+    grouped = {}
+    for record in records:
+        grouped.setdefault(record_tile_id(record), []).append(record)
+    tile_ids = sorted(grouped)
+    assigned_tile_ids = tile_ids[rank::world_size]
+    assigned = []
+    for tile_id in assigned_tile_ids:
+        assigned.extend(grouped[tile_id])
+    return assigned, assigned_tile_ids, tile_ids
+
+
+def rank_json_path(path: Path, rank: int) -> Path:
+    return path.with_name(f"{path.stem}_rank{rank:05d}{path.suffix}")
+
+
+def wait_for_rank_summaries(output_json: Path, world_size: int, timeout_seconds: int):
+    deadline = time.time() + timeout_seconds
+    paths = [rank_json_path(output_json, rank) for rank in range(world_size)]
+    missing = [path for path in paths if not path.is_file()]
+    while missing and time.time() < deadline:
+        time.sleep(5)
+        missing = [path for path in paths if not path.is_file()]
+    if missing:
+        missing_text = ", ".join(str(path) for path in missing)
+        raise TimeoutError(f"timed out waiting for rank summaries: {missing_text}")
+    return paths
+
+
+def merge_rank_summaries(rank_paths):
+    patch_results = []
+    merged_global_lines = []
+    base_summary = None
+    for path in rank_paths:
+        summary = json.loads(Path(path).read_text(encoding="utf-8"))
+        if base_summary is None:
+            base_summary = {key: value for key, value in summary.items() if key not in {"patch_results", "merged_global"}}
+        patch_results.extend(summary.get("patch_results", []))
+        merged_global_lines.extend((summary.get("merged_global") or {}).get("lines", []))
+    patch_results.sort(key=lambda item: (item.get("idx", 0), item.get("record_id", "")))
+    merged_global_lines.sort(key=lambda item: (
+        str(item.get("category", "")),
+        item.get("points", [[0, 0]])[0][1] if item.get("points") else 0,
+        item.get("points", [[0, 0]])[0][0] if item.get("points") else 0,
+    ))
+    summary = base_summary or {}
+    summary.update({
+        "num_patches": len(patch_results),
+        "merged_global": {"lines": merged_global_lines},
+        "patch_results": patch_results,
+    })
+    return summary
 
 
 def coord_description(coord_mode: str, coord_range: int, patch_size: int) -> str:
@@ -464,19 +550,51 @@ def main():
     parser.add_argument("--eval-buffer-size", type=float, default=1.0)
     parser.add_argument("--eval-match-threshold", type=float, default=0.33)
     parser.add_argument("--dry-run-prompts", action="store_true")
+    parser.add_argument("--distributed-by-tile", action="store_true", help="Shard complete tile_id groups across torchrun ranks.")
+    parser.add_argument("--rank", type=int, default=None, help="Override global rank. Defaults to RANK env.")
+    parser.add_argument("--local-rank", type=int, default=None, help="Override local rank. Defaults to LOCAL_RANK env.")
+    parser.add_argument("--world-size", type=int, default=None, help="Override world size. Defaults to WORLD_SIZE env.")
+    parser.add_argument("--distributed-merge-timeout", type=int, default=7200, help="Seconds rank0 waits for rank summaries.")
     args = parser.parse_args()
 
     evaluate_records = print_eval_table = None
     if args.eval_centerline:
         from infer_index.line_eval import evaluate_records, print_eval_table
 
-    records = sort_patch_records(load_json_or_jsonl(Path(args.patch_json)))
+    rank, local_rank, world_size = distributed_info(args)
+    distributed = args.distributed_by_tile and world_size > 1
+    args.device = resolve_runtime_device(args.device, local_rank)
+
+    all_records = sort_patch_records(load_json_or_jsonl(Path(args.patch_json)))
+    for global_idx, record in enumerate(all_records):
+        record["_mllm_global_idx"] = global_idx
+    if distributed:
+        records, assigned_tile_ids, all_tile_ids = shard_records_by_tile(all_records, rank, world_size)
+    else:
+        records = all_records
+        assigned_tile_ids = sorted({record_tile_id(record) for record in records})
+        all_tile_ids = assigned_tile_ids
+
     image_folder = Path(args.image_folder)
     checkpoint_dir = Path(args.checkpoint_dir)
     manifest = read_manifest(checkpoint_dir)
+    output_json_path = Path(args.output_json)
+
+    print(json.dumps({
+        "distributed_by_tile": distributed,
+        "rank": rank,
+        "local_rank": local_rank,
+        "world_size": world_size,
+        "device": args.device,
+        "num_total_records": len(all_records),
+        "num_total_tiles": len(all_tile_ids),
+        "num_rank_records": len(records),
+        "num_rank_tiles": len(assigned_tile_ids),
+        "rank_tile_preview": assigned_tile_ids[:10],
+    }, ensure_ascii=False))
 
     tokenizer = model = image_processor = None
-    if not args.dry_run_prompts:
+    if not args.dry_run_prompts and records:
         config_overrides = _config_overrides_from_args(args)
         tokenizer, model, image_processor = load_model_components(checkpoint_dir, manifest, args.device, config_overrides=config_overrides)
 
@@ -491,13 +609,14 @@ def main():
     patch_results = []
     merged_global_lines = []
 
-    for idx, record in enumerate(records):
+    for local_idx, record in enumerate(records):
+        idx = int(record.get("_mllm_global_idx", local_idx))
         row = get_meta_int(record, "row", get_meta_int(record, "patch_row", 0))
         col = get_meta_int(record, "col", get_meta_int(record, "patch_col", 0))
         meta = record.get("meta") or {}
         coord_cfg = resolve_coord_config(record, args)
         patch_size_px = coord_cfg["patch_size"]
-        tile_id = meta.get("tile_id", record.get("tile_id", ""))
+        tile_id = record_tile_id(record)
         x0 = int(meta.get("x0", col * patch_size_px))
         y0 = int(meta.get("y0", row * patch_size_px))
 
@@ -655,7 +774,10 @@ def main():
         patch_results.append(result)
 
         if sample_json_dir is not None:
-            out_path = sample_json_dir / f"{idx:04d}_{row:03d}_{col:03d}.json"
+            if distributed:
+                out_path = sample_json_dir / f"rank{rank:05d}_{idx:06d}_{row:03d}_{col:03d}.json"
+            else:
+                out_path = sample_json_dir / f"{idx:04d}_{row:03d}_{col:03d}.json"
             dump_json(out_path, result)
 
         print(json.dumps({
@@ -677,10 +799,53 @@ def main():
         "conv_template": args.conv_template,
         "dry_run_prompts": args.dry_run_prompts,
         "include_intersections": args.include_intersections,
+        "distributed_by_tile": distributed,
+        "rank": rank,
+        "local_rank": local_rank,
+        "world_size": world_size,
+        "device": args.device,
+        "assigned_tile_ids": assigned_tile_ids,
+        "num_total_tiles": len(all_tile_ids),
+        "num_total_records": len(all_records),
         "num_patches": len(patch_results),
         "merged_global": {"lines": merged_global_lines},
         "patch_results": patch_results,
     }
+
+    if distributed:
+        rank_summary_path = rank_json_path(output_json_path, rank)
+        dump_json(rank_summary_path, summary)
+        print(json.dumps({
+            "rank": rank,
+            "rank_summary_json": str(rank_summary_path),
+            "num_rank_patches": len(patch_results),
+        }, ensure_ascii=False))
+        if rank != 0:
+            return
+
+        rank_summary_paths = wait_for_rank_summaries(
+            output_json_path,
+            world_size,
+            args.distributed_merge_timeout,
+        )
+        summary = merge_rank_summaries(rank_summary_paths)
+        for key in ("rank", "local_rank", "device", "assigned_tile_ids"):
+            summary.pop(key, None)
+        summary.update({
+            "checkpoint_dir": str(checkpoint_dir),
+            "patch_json": args.patch_json,
+            "conv_template": args.conv_template,
+            "dry_run_prompts": args.dry_run_prompts,
+            "include_intersections": args.include_intersections,
+            "distributed_by_tile": True,
+            "world_size": world_size,
+            "rank_summaries": [str(path) for path in rank_summary_paths],
+            "num_total_tiles": len(all_tile_ids),
+            "num_total_records": len(all_records),
+        })
+        patch_results = summary["patch_results"]
+        merged_global_lines = summary["merged_global"]["lines"]
+
     if not args.skip_whole_map_viz:
         whole_map_viz_dir = Path(args.whole_map_viz_dir) if args.whole_map_viz_dir else Path(args.output_json).parent / "whole_map_viz"
         summary["whole_map_viz_dir"] = str(whole_map_viz_dir)
@@ -698,7 +863,7 @@ def main():
         print(json.dumps({"centerline_eval_json": str(eval_path), "centerline_eval": summary["centerline_eval"]}, ensure_ascii=False))
     if args.merged_output_json:
         dump_json(Path(args.merged_output_json), summary["merged_global"])
-    dump_json(Path(args.output_json), summary)
+    dump_json(output_json_path, summary)
 
 
 if __name__ == "__main__":

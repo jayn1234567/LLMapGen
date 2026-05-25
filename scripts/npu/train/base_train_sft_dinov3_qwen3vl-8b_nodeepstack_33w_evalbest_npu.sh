@@ -295,6 +295,14 @@ BEST_TRAIN_LOSS_DIR=${BEST_TRAIN_LOSS_DIR:-best} # --best_train_loss_dir.
 ENABLE_EVAL=${ENABLE_EVAL:-True}        # If True, run eval_loss on EVAL_PATH by steps.
 SAVE_BEST_EVAL_LOSS=${SAVE_BEST_EVAL_LOSS:-True} # Maintain OUTPUT_PATH/eval_best.
 BEST_EVAL_LOSS_DIR=${BEST_EVAL_LOSS_DIR:-eval_best}
+SAVE_BEST_INFER_INDEX=${SAVE_BEST_INFER_INDEX:-False} # If True, run generation infer_index eval after saved checkpoints and maintain OUTPUT_PATH/infer_best_candidates.
+BEST_INFER_INDEX_DIR=${BEST_INFER_INDEX_DIR:-infer_best}
+BEST_INFER_INDEX_METRIC=${BEST_INFER_INDEX_METRIC:-length_f1} # Main metric for missing/unaligned centerlines; higher is better.
+BEST_INFER_INDEX_NUM_SAMPLES=${BEST_INFER_INDEX_NUM_SAMPLES:-0} # phase_a eval size; 0 means all eval rows, recommended for best selection.
+BEST_INFER_INDEX_EVAL_STEPS=${BEST_INFER_INDEX_EVAL_STEPS:-${SAVE_STEPS}} # 0 means every saved checkpoint; default matches SAVE_STEPS.
+BEST_INFER_INDEX_MAX_NEW_TOKENS=${BEST_INFER_INDEX_MAX_NEW_TOKENS:-2048}
+BEST_INFER_INDEX_DEVICE=${BEST_INFER_INDEX_DEVICE:-auto}
+BEST_INFER_INDEX_WORK_DIR=${BEST_INFER_INDEX_WORK_DIR:-${OUTPUT_PATH}/infer_index_eval}
 BEST_CHECKPOINT_SAVE_MODE=${BEST_CHECKPOINT_SAVE_MODE:-rotating_create_only} # New best creates a unique dir, then old successful best dirs are deleted.
 BEST_CHECKPOINT_KEEP_LIMIT=${BEST_CHECKPOINT_KEEP_LIMIT:-1} # Keep only the latest successful best candidate by default.
 USE_HF_PROGRESS_BAR=True               # --use_hf_progress_bar; True prints HF tqdm progress on console.
@@ -328,6 +336,10 @@ if [[ "${ENABLE_EVAL}" =~ ^(1|true|True|TRUE|yes|YES)$ ]]; then
         --best_eval_loss_dir "${BEST_EVAL_LOSS_DIR}"
     )
 fi
+if [[ "${SAVE_BEST_INFER_INDEX}" =~ ^(1|true|True|TRUE|yes|YES)$ ]] && [ ! -s "${EVAL_PATH}" ]; then
+    echo "ERROR: SAVE_BEST_INFER_INDEX=True but eval json is missing or empty: ${EVAL_PATH}"
+    exit 1
+fi
 
 # ---------- no DeepStack ----------
 DEEPSTACK_ARGS=(--disable_deepstack True)
@@ -343,6 +355,7 @@ echo "DeepSpeed:  ${DEEPSPEED_CONFIG}"
 echo "LR:         llm=${LR}, projector=${MM_PROJECTOR_LR}, vision=${MM_VISION_TOWER_LR}"
 echo "Best train: ${SAVE_BEST_TRAIN_LOSS}, start_step=${BEST_TRAIN_LOSS_START_STEP}, dir=${BEST_TRAIN_LOSS_DIR}"
 echo "Eval:       ${ENABLE_EVAL}, eval_steps=${EVAL_STEPS}, best_eval=${SAVE_BEST_EVAL_LOSS}, dir=${BEST_EVAL_LOSS_DIR}"
+echo "Infer best: ${SAVE_BEST_INFER_INDEX}, metric=${BEST_INFER_INDEX_METRIC}, samples=${BEST_INFER_INDEX_NUM_SAMPLES}, eval_steps=${BEST_INFER_INDEX_EVAL_STEPS}, dir=${BEST_INFER_INDEX_DIR}"
 echo "Best mode:  ${BEST_CHECKPOINT_SAVE_MODE}"
 echo "Best keep:  ${BEST_CHECKPOINT_KEEP_LIMIT}"
 echo "HF tqdm:    ${USE_HF_PROGRESS_BAR}"
@@ -391,6 +404,21 @@ torchrun \
     --save_best_train_loss "${SAVE_BEST_TRAIN_LOSS}" \
     --best_train_loss_start_step "${BEST_TRAIN_LOSS_START_STEP}" \
     --best_train_loss_dir "${BEST_TRAIN_LOSS_DIR}" \
+    --save_best_infer_index "${SAVE_BEST_INFER_INDEX}" \
+    --best_infer_index_dir "${BEST_INFER_INDEX_DIR}" \
+    --best_infer_index_metric "${BEST_INFER_INDEX_METRIC}" \
+    --best_infer_index_phase "${DATASET_PHASE}" \
+    --best_infer_index_eval_data_path "${EVAL_PATH}" \
+    --best_infer_index_image_folder "${EVAL_IMAGE_FOLDER}" \
+    --best_infer_index_vision_tower "${DINOV3_PATH}" \
+    --best_infer_index_input_image_size "${INPUT_IMAGE_SIZE}" \
+    --best_infer_index_conv_template conv_qwen_3_Dinov2_huawei \
+    --best_infer_index_map_task "${MAP_TASK}" \
+    --best_infer_index_num_samples "${BEST_INFER_INDEX_NUM_SAMPLES}" \
+    --best_infer_index_eval_steps "${BEST_INFER_INDEX_EVAL_STEPS}" \
+    --best_infer_index_max_new_tokens "${BEST_INFER_INDEX_MAX_NEW_TOKENS}" \
+    --best_infer_index_device "${BEST_INFER_INDEX_DEVICE}" \
+    --best_infer_index_work_dir "${BEST_INFER_INDEX_WORK_DIR}" \
     --best_checkpoint_save_mode "${BEST_CHECKPOINT_SAVE_MODE}" \
     --best_checkpoint_keep_limit "${BEST_CHECKPOINT_KEEP_LIMIT}" \
     --use_hf_progress_bar "${USE_HF_PROGRESS_BAR}" \

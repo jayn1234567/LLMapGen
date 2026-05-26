@@ -24,59 +24,38 @@ echo "Repo root: ${REPO_ROOT}"
 echo "Recipe: ${DATASET_PHASE} | ${MAP_TASK} | ${VISION_BACKBONE}"
 # ====================== cloud paths ======================
 # OUTPUT_URL is injected by the cloud training platform.
-# Keep the reference-script convention: mirror it into OSB_SHARE_PATH,
-# then place cloud outputs under OSB_SHARE_PATH/RUN_ID.
-CLUSTER_SAVE=${OUTPUT_URL}
+# Keep the reference-script convention: mirror OUTPUT_URL into OSB_SHARE_PATH.
+CLUSTER_SAVE=${OUTPUT_URL}  # Cloud output root injected by the platform.
 OSB_SHARE_PATH="${CLUSTER_SAVE}"
 echo "System defined obs share path: ${OSB_SHARE_PATH}"
 
 # Inference writes local files first, then rank0 uploads the complete result dir.
-# Unique run id. Override it when all nodes must share a fixed output folder.
-RUN_ID=${RUN_ID:-$(date -u +%Y%m%d_%H%M%S)}
-# Local cache root on the NPU worker. Models, dataset zip, and temp outputs are stored here.
-OBS_CACHE=${OBS_CACHE:-/cache}
-# OBS directory that contains Qwen3-VL and DINO checkpoints.
-MODEL_OBS_PATH=${MODEL_OBS_PATH:-obs://yw-ads-training-gy1/data/external/personal/h58801830/whu/jjh/checkpoints}
-# OBS zip path of the prepared dataset. The zip should contain phase_a/phase_b jsonl and images.
-DATASET_OBS_PATH=${DATASET_OBS_PATH:-obs://yw-ads-training-gy1/data/external/personal/h58801830/whu/jjh/data/data_line_samples_33w.zip}
-# Directory name expected after unzipping DATASET_OBS_PATH.
-DATASET_DIR_NAME=${DATASET_DIR_NAME:-data_line_samples_33w}
+RUN_ID=${RUN_ID:-$(date -u +%Y%m%d_%H%M%S)}  # Unique run id. Override it when all nodes must share a fixed output folder.
+OBS_CACHE=${OBS_CACHE:-/cache}  # Local cache root on the NPU worker. Models, dataset zip, and temp outputs are stored here.
+MODEL_OBS_PATH=${MODEL_OBS_PATH:-obs://yw-ads-training-gy1/data/external/personal/h58801830/whu/jjh/checkpoints}  # OBS directory that contains Qwen3-VL and DINO checkpoints.
+DATASET_OBS_PATH=${DATASET_OBS_PATH:-obs://yw-ads-training-gy1/data/external/personal/h58801830/whu/jjh/data/data_line_samples_33w.zip}  # OBS zip path of the prepared dataset. The zip should contain phase_a/phase_b jsonl and images.
+DATASET_DIR_NAME=${DATASET_DIR_NAME:-data_line_samples_33w}  # Directory name expected after unzipping DATASET_OBS_PATH.
 
-# Inference: comma, semicolon, or newline separated OBS checkpoint paths. Supports one or many.
-CHECKPOINT_OBS_LIST=${CHECKPOINT_OBS_LIST:-}
-# Inference: comma, semicolon, or newline separated local checkpoint paths. Used when CHECKPOINT_OBS_LIST is empty.
-CHECKPOINT_DIRS=${CHECKPOINT_DIRS:-}
-# Local DINO vision tower path after downloading from MODEL_OBS_PATH.
-VISION_TOWER=${VISION_TOWER:-${OBS_CACHE}/checkpoints/${VISION_TOWER_NAME}}
-# Local path for the downloaded dataset zip.
-DATASET_ZIP_PATH=${DATASET_ZIP_PATH:-${OBS_CACHE}/dataset_${RUN_ID}.zip}
-# Local root used to unzip the dataset.
-DATASET_EXTRACT_ROOT=${DATASET_EXTRACT_ROOT:-${OBS_CACHE}/dataset_extract_${RUN_ID}}
-# Final local dataset directory. Override only if the dataset is already extracted.
-DATASET_PATH=${DATASET_PATH:-${DATASET_EXTRACT_ROOT}/data_line_samples_33w}
-# Image root passed to training/inference. Usually the same as DATASET_PATH.
-IMAGE_FOLDER=${IMAGE_FOLDER:-${DATASET_PATH}}
-# Test jsonl path. Defaults to DATASET_PATH/DATASET_PHASE/test.jsonl.
-TEST_JSON=${TEST_JSON:-${DATASET_PATH}/${DATASET_PHASE}/test.jsonl}
-# Local root for downloaded inference checkpoints.
-CHECKPOINT_DOWNLOAD_ROOT=${CHECKPOINT_DOWNLOAD_ROOT:-${OBS_CACHE}/checkpoints_${RUN_ID}}
-# Local inference output root containing json, viz, metrics, and stitched maps.
-LOCAL_OUTPUT_ROOT=${LOCAL_OUTPUT_ROOT:-${OBS_CACHE}/test_phase_b_lane_dinov3_output_${RUN_ID}}
-# Inference cloud output directory. Override TEST_RESULT_OBS to choose a custom OBS path.
-CLOUD_OUTPUT_DIR=${TEST_RESULT_OBS:-${OSB_SHARE_PATH%/}/test_results_${RUN_ID}}
+CHECKPOINT_OBS_LIST=${CHECKPOINT_OBS_LIST:-}  # Inference: comma, semicolon, or newline separated OBS checkpoint paths. Supports one or many.
+CHECKPOINT_DIRS=${CHECKPOINT_DIRS:-}  # Inference: comma, semicolon, or newline separated local checkpoint paths. Used when CHECKPOINT_OBS_LIST is empty.
+VISION_TOWER=${VISION_TOWER:-${OBS_CACHE}/checkpoints/${VISION_TOWER_NAME}}  # Local DINO vision tower path after downloading from MODEL_OBS_PATH.
+DATASET_ZIP_PATH=${DATASET_ZIP_PATH:-${OBS_CACHE}/dataset_${RUN_ID}.zip}  # Local path for the downloaded dataset zip.
+DATASET_EXTRACT_ROOT=${DATASET_EXTRACT_ROOT:-${OBS_CACHE}/dataset_extract_${RUN_ID}}  # Local root used to unzip the dataset.
+DATASET_PATH=${DATASET_PATH:-${DATASET_EXTRACT_ROOT}/data_line_samples_33w}  # Final local dataset directory. Override only if the dataset is already extracted.
+IMAGE_FOLDER=${IMAGE_FOLDER:-${DATASET_PATH}}  # Image root passed to training/inference. Usually the same as DATASET_PATH.
+TEST_JSON=${TEST_JSON:-${DATASET_PATH}/${DATASET_PHASE}/test.jsonl}  # Test jsonl path. Defaults to DATASET_PATH/DATASET_PHASE/test.jsonl.
+CHECKPOINT_DOWNLOAD_ROOT=${CHECKPOINT_DOWNLOAD_ROOT:-${OBS_CACHE}/checkpoints_${RUN_ID}}  # Local root for downloaded inference checkpoints.
+LOCAL_OUTPUT_ROOT=${LOCAL_OUTPUT_ROOT:-${OBS_CACHE}/test_phase_b_lane_dinov3_output_${RUN_ID}}  # Local inference output root containing json, viz, metrics, and stitched maps.
+CLOUD_OUTPUT_DIR=${TEST_RESULT_OBS:-${OSB_SHARE_PATH%/}/test_results_${RUN_ID}}  # Inference cloud output directory. Override TEST_RESULT_OBS to choose a custom OBS path.
 
 # ====================== inference params ======================
 # CHECKPOINT_OBS_LIST or CHECKPOINT_DIRS can contain one or multiple checkpoints.
 # NUM_TEST_SAMPLES=0 means run the full test jsonl.
 # Patch json, visualization, metrics, and stitched maps are written locally first, then uploaded.
-# Number of test samples to run. 0 means full test set.
-NUM_TEST_SAMPLES=${NUM_TEST_SAMPLES:-0}
-# Max generated coordinate tokens per sample.
-MAX_NEW_TOKENS=${MAX_NEW_TOKENS:-2048}
-# Coordinate mode for decoding. auto reads meta.coord_mode; norm1000 uses normalized 0..1000 coords.
-COORD_MODE=${COORD_MODE:-auto}
-# Normalized coordinate range used when COORD_MODE is norm1000/auto.
-COORD_RANGE=${COORD_RANGE:-1000}
+NUM_TEST_SAMPLES=${NUM_TEST_SAMPLES:-0}  # Number of test samples to run. 0 means full test set.
+MAX_NEW_TOKENS=${MAX_NEW_TOKENS:-2048}  # Max generated coordinate tokens per sample.
+COORD_MODE=${COORD_MODE:-auto}  # Coordinate mode for decoding. auto reads meta.coord_mode; norm1000 uses normalized 0..1000 coords.
+COORD_RANGE=${COORD_RANGE:-1000}  # Normalized coordinate range used when COORD_MODE is norm1000/auto.
 # ====================== Ascend environment ======================
 export ASCEND_CUSTOM_PATH=${ASCEND_CUSTOM_PATH:-/usr/local/Ascend/ascend-toolkit/latest}
 export ASCEND_CUSTOM_OPP_PATH=${ASCEND_CUSTOM_OPP_PATH:-/usr/local/Ascend/ascend-toolkit/latest}
@@ -105,14 +84,10 @@ export MLLM_LOG_RANK0_ONLY=${MLLM_LOG_RANK0_ONLY:-1}
 export TOKENIZERS_PARALLELISM=${TOKENIZERS_PARALLELISM:-false}
 export PYTHONPATH="${REPO_ROOT}:${PYTHONPATH:-}"
 
-# Whether this script installs Python dependencies before running.
-INSTALL_DEPS=${INSTALL_DEPS:-True}
-# Whether to replace the platform moxing package with the required wheel.
-ENABLE_MOXING_UPGRADE=${ENABLE_MOXING_UPGRADE:-True}
-# vLLM version used by GRPO rollout scripts.
-VLLM_VERSION=${VLLM_VERSION:-0.9.2}
-# vLLM-Ascend version used by GRPO rollout scripts.
-VLLM_ASCEND_VERSION=${VLLM_ASCEND_VERSION:-0.9.2rc1}
+INSTALL_DEPS=${INSTALL_DEPS:-True}  # Whether this script installs Python dependencies before running.
+ENABLE_MOXING_UPGRADE=${ENABLE_MOXING_UPGRADE:-True}  # Whether to replace the platform moxing package with the required wheel.
+VLLM_VERSION=${VLLM_VERSION:-0.9.2}  # vLLM version used by GRPO rollout scripts.
+VLLM_ASCEND_VERSION=${VLLM_ASCEND_VERSION:-0.9.2rc1}  # vLLM-Ascend version used by GRPO rollout scripts.
 
 if [[ "${ENABLE_MOXING_UPGRADE}" =~ ^(1|true|True|TRUE|yes|YES)$ ]]; then
   USE_MEMARTS=0 python -c "import moxing; moxing.file.copy('obs://yw-ads-training-gy1/data/external/personal/00592907/dataset_index/pkgs/moxing_framework-2.3.8-py2.py3-none-any.250714.whl', '/home/ma-user/moxing_framework-2.3.8-py2.py3-none-any.whl')"

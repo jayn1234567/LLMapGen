@@ -24,114 +24,67 @@ echo "Repo root: ${REPO_ROOT}"
 echo "Recipe: ${DATASET_PHASE} | ${MAP_TASK} | ${VISION_BACKBONE}"
 # ====================== cloud paths ======================
 # OUTPUT_URL is injected by the cloud training platform.
-# Keep the reference-script convention: mirror it into OSB_SHARE_PATH,
-# then place cloud outputs under OSB_SHARE_PATH/RUN_ID.
-CLUSTER_SAVE=${OUTPUT_URL}
+# Keep the reference-script convention: mirror OUTPUT_URL into OSB_SHARE_PATH.
+CLUSTER_SAVE=${OUTPUT_URL}  # Cloud output root injected by the platform.
 OSB_SHARE_PATH="${CLUSTER_SAVE}"
 echo "System defined obs share path: ${OSB_SHARE_PATH}"
 
 # Cloud training mounts can be create-only. Rank0 writes to a fresh cloud run dir;
 # nonzero ranks write to local cache to avoid cross-rank overwrite/rename issues.
-# Unique run id. Override it when all nodes must share a fixed output folder.
-RUN_ID=${RUN_ID:-$(date -u +%Y%m%d_%H%M%S)}
-# Local cache root on the NPU worker. Models, dataset zip, and temp outputs are stored here.
-OBS_CACHE=${OBS_CACHE:-/cache}
-# OBS directory that contains Qwen3-VL and DINO checkpoints.
-MODEL_OBS_PATH=${MODEL_OBS_PATH:-obs://yw-ads-training-gy1/data/external/personal/h58801830/whu/jjh/checkpoints}
-# OBS zip path of the prepared dataset. The zip should contain phase_a/phase_b jsonl and images.
-DATASET_OBS_PATH=${DATASET_OBS_PATH:-obs://yw-ads-training-gy1/data/external/personal/h58801830/whu/jjh/data/data_line_samples_33w.zip}
-# Directory name expected after unzipping DATASET_OBS_PATH.
-DATASET_DIR_NAME=${DATASET_DIR_NAME:-data_line_samples_33w}
+RUN_ID=${RUN_ID:-$(date -u +%Y%m%d_%H%M%S)}  # Unique run id. Override it when all nodes must share a fixed output folder.
+OBS_CACHE=${OBS_CACHE:-/cache}  # Local cache root on the NPU worker. Models, dataset zip, and temp outputs are stored here.
+MODEL_OBS_PATH=${MODEL_OBS_PATH:-obs://yw-ads-training-gy1/data/external/personal/h58801830/whu/jjh/checkpoints}  # OBS directory that contains Qwen3-VL and DINO checkpoints.
+DATASET_OBS_PATH=${DATASET_OBS_PATH:-obs://yw-ads-training-gy1/data/external/personal/h58801830/whu/jjh/data/data_line_samples_33w.zip}  # OBS zip path of the prepared dataset. The zip should contain phase_a/phase_b jsonl and images.
+DATASET_DIR_NAME=${DATASET_DIR_NAME:-data_line_samples_33w}  # Directory name expected after unzipping DATASET_OBS_PATH.
 
-# Local DINO vision tower path after downloading from MODEL_OBS_PATH.
-VISION_TOWER=${VISION_TOWER:-${OBS_CACHE}/checkpoints/${VISION_TOWER_NAME}}
-# Local path for the downloaded dataset zip.
-DATASET_ZIP_PATH=${DATASET_ZIP_PATH:-${OBS_CACHE}/dataset_${RUN_ID}.zip}
-# Local root used to unzip the dataset.
-DATASET_EXTRACT_ROOT=${DATASET_EXTRACT_ROOT:-${OBS_CACHE}/dataset_extract_${RUN_ID}}
-# Final local dataset directory. Override only if the dataset is already extracted.
-DATASET_PATH=${DATASET_PATH:-${DATASET_EXTRACT_ROOT}/data_line_samples_33w}
-# Image root passed to training/inference. Usually the same as DATASET_PATH.
-IMAGE_FOLDER=${IMAGE_FOLDER:-${DATASET_PATH}}
-# Cloud output directory for rank0 SFT checkpoints.
-CLOUD_OUTPUT_PATH=${OSB_SHARE_PATH%/}/${RUN_ID}
-# Local checkpoint root for nonzero ranks and temporary model saves.
-LOCAL_MODEL_SAVE_ROOT=${LOCAL_MODEL_SAVE_ROOT:-/cache/local_model_save_path}
-# Local run-specific checkpoint directory. This is created with mkdir -p.
-LOCAL_MODEL_SAVE_PATH=${LOCAL_MODEL_SAVE_PATH:-${LOCAL_MODEL_SAVE_ROOT}/${RUN_ID}}
-# Local Qwen3-VL base model path used by Stage-A SFT.
-QWEN_PATH=${QWEN_PATH:-${OBS_CACHE}/checkpoints/Qwen3-VL-8B-Instruct}
+VISION_TOWER=${VISION_TOWER:-${OBS_CACHE}/checkpoints/${VISION_TOWER_NAME}}  # Local DINO vision tower path after downloading from MODEL_OBS_PATH.
+DATASET_ZIP_PATH=${DATASET_ZIP_PATH:-${OBS_CACHE}/dataset_${RUN_ID}.zip}  # Local path for the downloaded dataset zip.
+DATASET_EXTRACT_ROOT=${DATASET_EXTRACT_ROOT:-${OBS_CACHE}/dataset_extract_${RUN_ID}}  # Local root used to unzip the dataset.
+DATASET_PATH=${DATASET_PATH:-${DATASET_EXTRACT_ROOT}/data_line_samples_33w}  # Final local dataset directory. Override only if the dataset is already extracted.
+IMAGE_FOLDER=${IMAGE_FOLDER:-${DATASET_PATH}}  # Image root passed to training/inference. Usually the same as DATASET_PATH.
+CLOUD_OUTPUT_PATH=${OSB_SHARE_PATH%/}/${RUN_ID}  # Cloud output directory for rank0 SFT checkpoints.
+LOCAL_MODEL_SAVE_ROOT=${LOCAL_MODEL_SAVE_ROOT:-/cache/local_model_save_path}  # Local checkpoint root for nonzero ranks and temporary model saves.
+LOCAL_MODEL_SAVE_PATH=${LOCAL_MODEL_SAVE_PATH:-${LOCAL_MODEL_SAVE_ROOT}/${RUN_ID}}  # Local run-specific checkpoint directory. This is created with mkdir -p.
+QWEN_PATH=${QWEN_PATH:-${OBS_CACHE}/checkpoints/Qwen3-VL-8B-Instruct}  # Local Qwen3-VL base model path used by Stage-A SFT.
 
 # ====================== training params ======================
 # Main knobs for this SFT recipe. Edit values here instead of passing one-off shell prefixes.
 # TARGET_GLOBAL_BATCH_SIZE is the effective batch across all nodes and NPUs.
 # SAVE_STEPS/SAVE_TOTAL_LIMIT control regular checkpoint-* retention.
 # BEST_* options control train-loss, eval-loss, or infer-index best checkpoint folders.
-# Target effective global batch size across all nodes, NPUs, and grad accumulation.
-TARGET_GLOBAL_BATCH_SIZE=${TARGET_GLOBAL_BATCH_SIZE:-128}
-# Micro batch size on each NPU process.
-PER_DEVICE_TRAIN_BATCH_SIZE=${PER_DEVICE_TRAIN_BATCH_SIZE:-4}
-# Number of SFT epochs. Stage-A usually uses more epochs than Stage-B.
-NUM_EPOCHS=${NUM_EPOCHS:-3}
-# Base learning rate for the LLM and default trainable parameters.
-LR=${LR:-2e-5}
-# Learning rate for the multimodal projector.
-MM_PROJECTOR_LR=${MM_PROJECTOR_LR:-2e-5}
-# Learning rate for the DINO vision tower; keep lower than LLM LR for full-param training.
-MM_VISION_TOWER_LR=${MM_VISION_TOWER_LR:-2e-6}
-# Weight decay passed to Trainer. Current recipe keeps it disabled.
-WEIGHT_DECAY=${WEIGHT_DECAY:-0.0}
-# Warmup ratio for the LR scheduler.
-WARMUP_RATIO=${WARMUP_RATIO:-0.03}
-# Max text sequence length including prompt, image token, and generated coordinate text.
-MODEL_MAX_LENGTH=${MODEL_MAX_LENGTH:-4096}
-# Save a regular checkpoint-* every this many optimizer steps.
-SAVE_STEPS=${SAVE_STEPS:-500}
-# Keep this many latest regular checkpoint-* directories.
-SAVE_TOTAL_LIMIT=${SAVE_TOTAL_LIMIT:-10}
-# Console/SwanLab logging interval in optimizer steps.
-LOGGING_STEPS=${LOGGING_STEPS:-10}
-# Eval-loss interval in optimizer steps when ENABLE_EVAL=True.
-EVAL_STEPS=${EVAL_STEPS:-500}
-# DeepSpeed config file. Current NPU SFT recipe uses ZeRO3.
-DEEPSPEED_CONFIG=${DEEPSPEED_CONFIG:-scripts/deepspeed_zero3.json}
-# Whether to run eval loss during SFT training.
-ENABLE_EVAL=${ENABLE_EVAL:-True}
-# Whether to save the best eval-loss checkpoint under eval_best.
-SAVE_BEST_EVAL_LOSS=${SAVE_BEST_EVAL_LOSS:-True}
-# Whether to save the best train-loss checkpoint under best.
-SAVE_BEST_TRAIN_LOSS=${SAVE_BEST_TRAIN_LOSS:-False}
-# Ignore train-loss best saving before this step.
-BEST_TRAIN_LOSS_START_STEP=${BEST_TRAIN_LOSS_START_STEP:-3000}
-# Whether to run inference-index evaluation during training and save infer_best.
-SAVE_BEST_INFER_INDEX=${SAVE_BEST_INFER_INDEX:-False}
-# Metric name used to select infer_best, for example length_f1.
-BEST_INFER_INDEX_METRIC=${BEST_INFER_INDEX_METRIC:-length_f1}
-# Number of eval samples for infer-index best. 0 means full eval set.
-BEST_INFER_INDEX_NUM_SAMPLES=${BEST_INFER_INDEX_NUM_SAMPLES:-0}
-# Best checkpoint save mode. rotating_create_only avoids overwrite/rename on create-only filesystems.
-BEST_CHECKPOINT_SAVE_MODE=${BEST_CHECKPOINT_SAVE_MODE:-rotating_create_only}
-# How many best checkpoint candidates to keep in each best folder.
-BEST_CHECKPOINT_KEEP_LIMIT=${BEST_CHECKPOINT_KEEP_LIMIT:-1}
+TARGET_GLOBAL_BATCH_SIZE=${TARGET_GLOBAL_BATCH_SIZE:-128}  # Target effective global batch size across all nodes, NPUs, and grad accumulation.
+PER_DEVICE_TRAIN_BATCH_SIZE=${PER_DEVICE_TRAIN_BATCH_SIZE:-4}  # Micro batch size on each NPU process.
+NUM_EPOCHS=${NUM_EPOCHS:-3}  # Number of SFT epochs. Stage-A usually uses more epochs than Stage-B.
+LR=${LR:-2e-5}  # Base learning rate for the LLM and default trainable parameters.
+MM_PROJECTOR_LR=${MM_PROJECTOR_LR:-2e-5}  # Learning rate for the multimodal projector.
+MM_VISION_TOWER_LR=${MM_VISION_TOWER_LR:-2e-6}  # Learning rate for the DINO vision tower; keep lower than LLM LR for full-param training.
+WEIGHT_DECAY=${WEIGHT_DECAY:-0.0}  # Weight decay passed to Trainer. Current recipe keeps it disabled.
+WARMUP_RATIO=${WARMUP_RATIO:-0.03}  # Warmup ratio for the LR scheduler.
+MODEL_MAX_LENGTH=${MODEL_MAX_LENGTH:-4096}  # Max text sequence length including prompt, image token, and generated coordinate text.
+SAVE_STEPS=${SAVE_STEPS:-500}  # Save a regular checkpoint-* every this many optimizer steps.
+SAVE_TOTAL_LIMIT=${SAVE_TOTAL_LIMIT:-10}  # Keep this many latest regular checkpoint-* directories.
+LOGGING_STEPS=${LOGGING_STEPS:-10}  # Console/SwanLab logging interval in optimizer steps.
+EVAL_STEPS=${EVAL_STEPS:-500}  # Eval-loss interval in optimizer steps when ENABLE_EVAL=True.
+DEEPSPEED_CONFIG=${DEEPSPEED_CONFIG:-scripts/deepspeed_zero3.json}  # DeepSpeed config file. Current NPU SFT recipe uses ZeRO3.
+ENABLE_EVAL=${ENABLE_EVAL:-True}  # Whether to run eval loss during SFT training.
+SAVE_BEST_EVAL_LOSS=${SAVE_BEST_EVAL_LOSS:-True}  # Whether to save the best eval-loss checkpoint under eval_best.
+SAVE_BEST_TRAIN_LOSS=${SAVE_BEST_TRAIN_LOSS:-False}  # Whether to save the best train-loss checkpoint under best.
+BEST_TRAIN_LOSS_START_STEP=${BEST_TRAIN_LOSS_START_STEP:-3000}  # Ignore train-loss best saving before this step.
+SAVE_BEST_INFER_INDEX=${SAVE_BEST_INFER_INDEX:-False}  # Whether to run inference-index evaluation during training and save infer_best.
+BEST_INFER_INDEX_METRIC=${BEST_INFER_INDEX_METRIC:-length_f1}  # Metric name used to select infer_best, for example length_f1.
+BEST_INFER_INDEX_NUM_SAMPLES=${BEST_INFER_INDEX_NUM_SAMPLES:-0}  # Number of eval samples for infer-index best. 0 means full eval set.
+BEST_CHECKPOINT_SAVE_MODE=${BEST_CHECKPOINT_SAVE_MODE:-rotating_create_only}  # Best checkpoint save mode. rotating_create_only avoids overwrite/rename on create-only filesystems.
+BEST_CHECKPOINT_KEEP_LIMIT=${BEST_CHECKPOINT_KEEP_LIMIT:-1}  # How many best checkpoint candidates to keep in each best folder.
 
-# Enable SwanLab logging for this run.
-SWANLAB_ENABLE=${SWANLAB_ENABLE:-False}
-# SwanLab API key. Override from the platform env if needed.
-export SWANLAB_API_KEY=${SWANLAB_API_KEY:-"5gIH7zqSwmo8dl1Ia5vRN"}
-# SwanLab project name.
-SWANLAB_PROJECT=${SWANLAB_PROJECT:-unimapgen_v3}
-# SwanLab group name for related experiments.
-SWANLAB_GROUP=${SWANLAB_GROUP:-sft_phase_a_lane_dinov2_nodeepstack}
-# SwanLab experiment display name.
-SWANLAB_EXPERIMENT_NAME=${SWANLAB_EXPERIMENT_NAME:-sft_phase_a_lane_dinov2_qwen3vl8b_nodeepstack}
-# SwanLab comma-separated tags.
-SWANLAB_TAGS=${SWANLAB_TAGS:-sft,phase_a,lane,dinov2,qwen3vl8b,nodeepstack}
-# SwanLab mode. Use offline if the cloud cannot reach SwanLab.
-SWANLAB_MODE=${SWANLAB_MODE:-}
-# SwanLab private deployment API host, if used.
-SWANLAB_API_HOST=${SWANLAB_API_HOST:-}
-# SwanLab private deployment web host, if used.
-SWANLAB_WEB_HOST=${SWANLAB_WEB_HOST:-}
+SWANLAB_ENABLE=${SWANLAB_ENABLE:-False}  # Enable SwanLab logging for this run.
+export SWANLAB_API_KEY=${SWANLAB_API_KEY:-"5gIH7zqSwmo8dl1Ia5vRN"}  # SwanLab API key. Override from the platform env if needed.
+SWANLAB_PROJECT=${SWANLAB_PROJECT:-unimapgen_v3}  # SwanLab project name.
+SWANLAB_GROUP=${SWANLAB_GROUP:-sft_phase_a_lane_dinov2_nodeepstack}  # SwanLab group name for related experiments.
+SWANLAB_EXPERIMENT_NAME=${SWANLAB_EXPERIMENT_NAME:-sft_phase_a_lane_dinov2_qwen3vl8b_nodeepstack}  # SwanLab experiment display name.
+SWANLAB_TAGS=${SWANLAB_TAGS:-sft,phase_a,lane,dinov2,qwen3vl8b,nodeepstack}  # SwanLab comma-separated tags.
+SWANLAB_MODE=${SWANLAB_MODE:-}  # SwanLab mode. Use offline if the cloud cannot reach SwanLab.
+SWANLAB_API_HOST=${SWANLAB_API_HOST:-}  # SwanLab private deployment API host, if used.
+SWANLAB_WEB_HOST=${SWANLAB_WEB_HOST:-}  # SwanLab private deployment web host, if used.
 # ====================== Ascend environment ======================
 export ASCEND_CUSTOM_PATH=${ASCEND_CUSTOM_PATH:-/usr/local/Ascend/ascend-toolkit/latest}
 export ASCEND_CUSTOM_OPP_PATH=${ASCEND_CUSTOM_OPP_PATH:-/usr/local/Ascend/ascend-toolkit/latest}
@@ -160,14 +113,10 @@ export MLLM_LOG_RANK0_ONLY=${MLLM_LOG_RANK0_ONLY:-1}
 export TOKENIZERS_PARALLELISM=${TOKENIZERS_PARALLELISM:-false}
 export PYTHONPATH="${REPO_ROOT}:${PYTHONPATH:-}"
 
-# Whether this script installs Python dependencies before running.
-INSTALL_DEPS=${INSTALL_DEPS:-True}
-# Whether to replace the platform moxing package with the required wheel.
-ENABLE_MOXING_UPGRADE=${ENABLE_MOXING_UPGRADE:-True}
-# vLLM version used by GRPO rollout scripts.
-VLLM_VERSION=${VLLM_VERSION:-0.9.2}
-# vLLM-Ascend version used by GRPO rollout scripts.
-VLLM_ASCEND_VERSION=${VLLM_ASCEND_VERSION:-0.9.2rc1}
+INSTALL_DEPS=${INSTALL_DEPS:-True}  # Whether this script installs Python dependencies before running.
+ENABLE_MOXING_UPGRADE=${ENABLE_MOXING_UPGRADE:-True}  # Whether to replace the platform moxing package with the required wheel.
+VLLM_VERSION=${VLLM_VERSION:-0.9.2}  # vLLM version used by GRPO rollout scripts.
+VLLM_ASCEND_VERSION=${VLLM_ASCEND_VERSION:-0.9.2rc1}  # vLLM-Ascend version used by GRPO rollout scripts.
 
 if [[ "${ENABLE_MOXING_UPGRADE}" =~ ^(1|true|True|TRUE|yes|YES)$ ]]; then
   USE_MEMARTS=0 python -c "import moxing; moxing.file.copy('obs://yw-ads-training-gy1/data/external/personal/00592907/dataset_index/pkgs/moxing_framework-2.3.8-py2.py3-none-any.250714.whl', '/home/ma-user/moxing_framework-2.3.8-py2.py3-none-any.whl')"
@@ -213,8 +162,7 @@ else
 fi
 echo "Run id: ${RUN_ID}"
 echo "Output path: ${OUTPUT_PATH}"
-# Local SwanLab log directory.
-SWANLAB_LOG_DIR=${SWANLAB_LOG_DIR:-${OUTPUT_PATH}/swanlab}
+SWANLAB_LOG_DIR=${SWANLAB_LOG_DIR:-${OUTPUT_PATH}/swanlab}  # Local SwanLab log directory.
 
 # ====================== downloads ======================
 python -c "import moxing as mox; mox.file.copy_parallel('${MODEL_OBS_PATH}/${VISION_TOWER_NAME}', '${VISION_TOWER}')"

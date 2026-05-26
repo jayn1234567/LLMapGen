@@ -24,88 +24,53 @@ echo "Repo root: ${REPO_ROOT}"
 echo "Recipe: ${DATASET_PHASE} | ${MAP_TASK} | ${VISION_BACKBONE}"
 # ====================== cloud paths ======================
 # OUTPUT_URL is injected by the cloud training platform.
-# Keep the reference-script convention: mirror it into OSB_SHARE_PATH,
-# then place cloud outputs under OSB_SHARE_PATH/RUN_ID.
-CLUSTER_SAVE=${OUTPUT_URL}
+# Keep the reference-script convention: mirror OUTPUT_URL into OSB_SHARE_PATH.
+CLUSTER_SAVE=${OUTPUT_URL}  # Cloud output root injected by the platform.
 OSB_SHARE_PATH="${CLUSTER_SAVE}"
 echo "System defined obs share path: ${OSB_SHARE_PATH}"
 
 # GRPO writes to local cache first, then uploads the complete run dir to OBS.
-# Unique run id. Override it when all nodes must share a fixed output folder.
-RUN_ID=${RUN_ID:-$(date -u +%Y%m%d_%H%M%S)}
-# Local cache root on the NPU worker. Models, dataset zip, and temp outputs are stored here.
-OBS_CACHE=${OBS_CACHE:-/cache}
-# OBS directory that contains Qwen3-VL and DINO checkpoints.
-MODEL_OBS_PATH=${MODEL_OBS_PATH:-obs://yw-ads-training-gy1/data/external/personal/h58801830/whu/jjh/checkpoints}
-# OBS zip path of the prepared dataset. The zip should contain phase_a/phase_b jsonl and images.
-DATASET_OBS_PATH=${DATASET_OBS_PATH:-obs://yw-ads-training-gy1/data/external/personal/h58801830/whu/jjh/data/data_line_samples_33w.zip}
-# Directory name expected after unzipping DATASET_OBS_PATH.
-DATASET_DIR_NAME=${DATASET_DIR_NAME:-data_line_samples_33w}
+RUN_ID=${RUN_ID:-$(date -u +%Y%m%d_%H%M%S)}  # Unique run id. Override it when all nodes must share a fixed output folder.
+OBS_CACHE=${OBS_CACHE:-/cache}  # Local cache root on the NPU worker. Models, dataset zip, and temp outputs are stored here.
+MODEL_OBS_PATH=${MODEL_OBS_PATH:-obs://yw-ads-training-gy1/data/external/personal/h58801830/whu/jjh/checkpoints}  # OBS directory that contains Qwen3-VL and DINO checkpoints.
+DATASET_OBS_PATH=${DATASET_OBS_PATH:-obs://yw-ads-training-gy1/data/external/personal/h58801830/whu/jjh/data/data_line_samples_33w.zip}  # OBS zip path of the prepared dataset. The zip should contain phase_a/phase_b jsonl and images.
+DATASET_DIR_NAME=${DATASET_DIR_NAME:-data_line_samples_33w}  # Directory name expected after unzipping DATASET_OBS_PATH.
 
-# GRPO: OBS path of the SFT checkpoint or output dir used as the initial policy.
-SFT_CHECKPOINT_OBS_PATH=${SFT_CHECKPOINT_OBS_PATH:-}
-# GRPO: local SFT checkpoint path; used when OBS path is empty.
-SFT_CHECKPOINT_PATH=${SFT_CHECKPOINT_PATH:-}
-# Local download directory for the SFT checkpoint.
-SFT_DOWNLOAD_DIR=${SFT_DOWNLOAD_DIR:-${OBS_CACHE}/sft_checkpoint_${RUN_ID}}
-# Local DINO vision tower path after downloading from MODEL_OBS_PATH.
-VISION_TOWER=${VISION_TOWER:-${OBS_CACHE}/checkpoints/${VISION_TOWER_NAME}}
-# Local path for the downloaded dataset zip.
-DATASET_ZIP_PATH=${DATASET_ZIP_PATH:-${OBS_CACHE}/dataset_${RUN_ID}.zip}
-# Local root used to unzip the dataset.
-DATASET_EXTRACT_ROOT=${DATASET_EXTRACT_ROOT:-${OBS_CACHE}/dataset_extract_${RUN_ID}}
-# Final local dataset directory. Override only if the dataset is already extracted.
-DATASET_PATH=${DATASET_PATH:-${DATASET_EXTRACT_ROOT}/data_line_samples_33w}
-# Image root passed to training/inference. Usually the same as DATASET_PATH.
-IMAGE_FOLDER=${IMAGE_FOLDER:-${DATASET_PATH}}
-# GRPO local output directory. The complete run is uploaded to CLOUD_OUTPUT_DIR at the end.
-LOCAL_OUTPUT_DIR=${LOCAL_OUTPUT_DIR:-${OBS_CACHE}/grpo_phase_b_lane_dinov2_output_${RUN_ID}}
-# GRPO cloud output directory. Override GRPO_RESULT_OBS to choose a custom OBS path.
-CLOUD_OUTPUT_DIR=${GRPO_RESULT_OBS:-${OSB_SHARE_PATH%/}/${RUN_ID}}
+SFT_CHECKPOINT_OBS_PATH=${SFT_CHECKPOINT_OBS_PATH:-}  # GRPO: OBS path of the SFT checkpoint or output dir used as the initial policy.
+SFT_CHECKPOINT_PATH=${SFT_CHECKPOINT_PATH:-}  # GRPO: local SFT checkpoint path; used when OBS path is empty.
+SFT_DOWNLOAD_DIR=${SFT_DOWNLOAD_DIR:-${OBS_CACHE}/sft_checkpoint_${RUN_ID}}  # Local download directory for the SFT checkpoint.
+VISION_TOWER=${VISION_TOWER:-${OBS_CACHE}/checkpoints/${VISION_TOWER_NAME}}  # Local DINO vision tower path after downloading from MODEL_OBS_PATH.
+DATASET_ZIP_PATH=${DATASET_ZIP_PATH:-${OBS_CACHE}/dataset_${RUN_ID}.zip}  # Local path for the downloaded dataset zip.
+DATASET_EXTRACT_ROOT=${DATASET_EXTRACT_ROOT:-${OBS_CACHE}/dataset_extract_${RUN_ID}}  # Local root used to unzip the dataset.
+DATASET_PATH=${DATASET_PATH:-${DATASET_EXTRACT_ROOT}/data_line_samples_33w}  # Final local dataset directory. Override only if the dataset is already extracted.
+IMAGE_FOLDER=${IMAGE_FOLDER:-${DATASET_PATH}}  # Image root passed to training/inference. Usually the same as DATASET_PATH.
+LOCAL_OUTPUT_DIR=${LOCAL_OUTPUT_DIR:-${OBS_CACHE}/grpo_phase_b_lane_dinov2_output_${RUN_ID}}  # GRPO local output directory. The complete run is uploaded to CLOUD_OUTPUT_DIR at the end.
+CLOUD_OUTPUT_DIR=${GRPO_RESULT_OBS:-${OSB_SHARE_PATH%/}/${RUN_ID}}  # GRPO cloud output directory. Override GRPO_RESULT_OBS to choose a custom OBS path.
 
 # ====================== GRPO params ======================
 # Main knobs for this GRPO recipe. Edit values here instead of passing one-off shell prefixes.
 # ACTOR_NPU_DEVICES and ROLLOUT_NPU_DEVICES select the training actor and rollout engine devices.
 # KL_BETA controls reference-policy regularization; reward weights are task-specific.
-# GRPO actor training NPU device list, for example 0 or 0,1.
-ACTOR_NPU_DEVICES=${ACTOR_NPU_DEVICES:-0}
-# GRPO rollout engine NPU device list, for example 1 or 2,3.
-ROLLOUT_NPU_DEVICES=${ROLLOUT_NPU_DEVICES:-1}
-# Number of sampled completions per prompt for GRPO group reward normalization.
-NUM_GENERATIONS=${NUM_GENERATIONS:-2}
-# Max generated coordinate tokens per sample.
-MAX_NEW_TOKENS=${MAX_NEW_TOKENS:-256}
-# KL penalty weight against the reference policy. Larger values keep policy closer to SFT.
-KL_BETA=${KL_BETA:-0.02}
-# Maximum GRPO optimizer steps.
-MAX_STEPS=${MAX_STEPS:-100}
-# Micro batch size on each NPU process.
-PER_DEVICE_TRAIN_BATCH_SIZE=${PER_DEVICE_TRAIN_BATCH_SIZE:-1}
-# Base learning rate for the LLM and default trainable parameters.
-LR=${LR:-1e-6}
-# Extra reward weight for intersection fields. Keep 0.0 for lane-only training.
-REWARD_INTERSECTION_WEIGHT=${REWARD_INTERSECTION_WEIGHT:-0.0}
+ACTOR_NPU_DEVICES=${ACTOR_NPU_DEVICES:-0}  # GRPO actor training NPU device list, for example 0 or 0,1.
+ROLLOUT_NPU_DEVICES=${ROLLOUT_NPU_DEVICES:-1}  # GRPO rollout engine NPU device list, for example 1 or 2,3.
+NUM_GENERATIONS=${NUM_GENERATIONS:-2}  # Number of sampled completions per prompt for GRPO group reward normalization.
+MAX_NEW_TOKENS=${MAX_NEW_TOKENS:-256}  # Max generated coordinate tokens per sample.
+KL_BETA=${KL_BETA:-0.02}  # KL penalty weight against the reference policy. Larger values keep policy closer to SFT.
+MAX_STEPS=${MAX_STEPS:-100}  # Maximum GRPO optimizer steps.
+PER_DEVICE_TRAIN_BATCH_SIZE=${PER_DEVICE_TRAIN_BATCH_SIZE:-1}  # Micro batch size on each NPU process.
+LR=${LR:-1e-6}  # Base learning rate for the LLM and default trainable parameters.
+REWARD_INTERSECTION_WEIGHT=${REWARD_INTERSECTION_WEIGHT:-0.0}  # Extra reward weight for intersection fields. Keep 0.0 for lane-only training.
 
-# Enable SwanLab logging for this run.
-SWANLAB_ENABLE=${SWANLAB_ENABLE:-True}
-# SwanLab API key. Override from the platform env if needed.
-export SWANLAB_API_KEY=${SWANLAB_API_KEY:-"5gIH7zqSwmo8dl1Ia5vRN"}
-# SwanLab project name.
-SWANLAB_PROJECT=${SWANLAB_PROJECT:-unimapgen_v3}
-# SwanLab group name for related experiments.
-SWANLAB_GROUP=${SWANLAB_GROUP:-grpo_phase_b_lane_dinov2_nodeepstack}
-# SwanLab experiment display name.
-SWANLAB_EXPERIMENT_NAME=${SWANLAB_EXPERIMENT_NAME:-grpo_phase_b_lane_dinov2_qwen3vl8b_nodeepstack}
-# SwanLab comma-separated tags.
-SWANLAB_TAGS=${SWANLAB_TAGS:-grpo,phase_b,lane,dinov2,qwen3vl8b,nodeepstack,vllm-ascend}
-# SwanLab mode. Use offline if the cloud cannot reach SwanLab.
-SWANLAB_MODE=${SWANLAB_MODE:-}
-# Local SwanLab log directory.
-SWANLAB_LOG_DIR=${SWANLAB_LOG_DIR:-${LOCAL_OUTPUT_DIR}/swanlab}
-# SwanLab private deployment API host, if used.
-SWANLAB_API_HOST=${SWANLAB_API_HOST:-}
-# SwanLab private deployment web host, if used.
-SWANLAB_WEB_HOST=${SWANLAB_WEB_HOST:-}
+SWANLAB_ENABLE=${SWANLAB_ENABLE:-True}  # Enable SwanLab logging for this run.
+export SWANLAB_API_KEY=${SWANLAB_API_KEY:-"5gIH7zqSwmo8dl1Ia5vRN"}  # SwanLab API key. Override from the platform env if needed.
+SWANLAB_PROJECT=${SWANLAB_PROJECT:-unimapgen_v3}  # SwanLab project name.
+SWANLAB_GROUP=${SWANLAB_GROUP:-grpo_phase_b_lane_dinov2_nodeepstack}  # SwanLab group name for related experiments.
+SWANLAB_EXPERIMENT_NAME=${SWANLAB_EXPERIMENT_NAME:-grpo_phase_b_lane_dinov2_qwen3vl8b_nodeepstack}  # SwanLab experiment display name.
+SWANLAB_TAGS=${SWANLAB_TAGS:-grpo,phase_b,lane,dinov2,qwen3vl8b,nodeepstack,vllm-ascend}  # SwanLab comma-separated tags.
+SWANLAB_MODE=${SWANLAB_MODE:-}  # SwanLab mode. Use offline if the cloud cannot reach SwanLab.
+SWANLAB_LOG_DIR=${SWANLAB_LOG_DIR:-${LOCAL_OUTPUT_DIR}/swanlab}  # Local SwanLab log directory.
+SWANLAB_API_HOST=${SWANLAB_API_HOST:-}  # SwanLab private deployment API host, if used.
+SWANLAB_WEB_HOST=${SWANLAB_WEB_HOST:-}  # SwanLab private deployment web host, if used.
 # ====================== Ascend environment ======================
 export ASCEND_CUSTOM_PATH=${ASCEND_CUSTOM_PATH:-/usr/local/Ascend/ascend-toolkit/latest}
 export ASCEND_CUSTOM_OPP_PATH=${ASCEND_CUSTOM_OPP_PATH:-/usr/local/Ascend/ascend-toolkit/latest}
@@ -134,14 +99,10 @@ export MLLM_LOG_RANK0_ONLY=${MLLM_LOG_RANK0_ONLY:-1}
 export TOKENIZERS_PARALLELISM=${TOKENIZERS_PARALLELISM:-false}
 export PYTHONPATH="${REPO_ROOT}:${PYTHONPATH:-}"
 
-# Whether this script installs Python dependencies before running.
-INSTALL_DEPS=${INSTALL_DEPS:-True}
-# Whether to replace the platform moxing package with the required wheel.
-ENABLE_MOXING_UPGRADE=${ENABLE_MOXING_UPGRADE:-True}
-# vLLM version used by GRPO rollout scripts.
-VLLM_VERSION=${VLLM_VERSION:-0.9.2}
-# vLLM-Ascend version used by GRPO rollout scripts.
-VLLM_ASCEND_VERSION=${VLLM_ASCEND_VERSION:-0.9.2rc1}
+INSTALL_DEPS=${INSTALL_DEPS:-True}  # Whether this script installs Python dependencies before running.
+ENABLE_MOXING_UPGRADE=${ENABLE_MOXING_UPGRADE:-True}  # Whether to replace the platform moxing package with the required wheel.
+VLLM_VERSION=${VLLM_VERSION:-0.9.2}  # vLLM version used by GRPO rollout scripts.
+VLLM_ASCEND_VERSION=${VLLM_ASCEND_VERSION:-0.9.2rc1}  # vLLM-Ascend version used by GRPO rollout scripts.
 
 if [[ "${ENABLE_MOXING_UPGRADE}" =~ ^(1|true|True|TRUE|yes|YES)$ ]]; then
   USE_MEMARTS=0 python -c "import moxing; moxing.file.copy('obs://yw-ads-training-gy1/data/external/personal/00592907/dataset_index/pkgs/moxing_framework-2.3.8-py2.py3-none-any.250714.whl', '/home/ma-user/moxing_framework-2.3.8-py2.py3-none-any.whl')"

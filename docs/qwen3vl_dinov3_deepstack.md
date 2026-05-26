@@ -205,7 +205,12 @@ Best checkpoint controls:
 --eval_steps 300
 ```
 
-Best checkpoints are copied from fully written `checkpoint-*` directories. Under DeepSpeed, the best directory is the checkpoint directory copy, not a separate manual weight merge. LoRA best checkpoints include `adapter_model.safetensors`, `non_lora_trainables.bin`, `config.json`, and `qwen_multimodal_checkpoint.json`.
+Best checkpoints are saved directly to create-only candidate directories such
+as `best_candidates/`, `eval_best_candidates/`, and `infer_best_candidates/`.
+They are not copied from normal `checkpoint-*` directories and do not create an
+extra normal checkpoint when a best metric improves. A candidate is valid only
+after `_SUCCESS` is written; older successful candidates are deleted with
+validated `rm -rf`, with no rename or replace operation.
 
 Logging:
 

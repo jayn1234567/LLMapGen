@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 import json
-import os
 from pathlib import Path
 import shutil
+import subprocess
 from typing import Any
 
 import torch
@@ -32,6 +32,26 @@ def _copy_if_exists(src_dir: Path, dst_dir: Path, names: tuple[str, ...]) -> Non
         src = src_dir / name
         if src.exists():
             shutil.copy2(src, dst_dir / name)
+
+
+def _remove_output_dir_with_rm_rf(path: Path) -> None:
+    if not path.exists():
+        return
+    if not path.is_dir() or path.is_symlink():
+        raise NotADirectoryError(f"Refusing to remove non-directory export path: {path}")
+    abs_path = Path(path.absolute())
+    if abs_path == Path(abs_path.anchor):
+        raise ValueError(f"Refusing to remove filesystem root: {path}")
+
+    subprocess.run(
+        ["rm", "-rf", "--", str(path)],
+        check=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    if path.exists():
+        raise RuntimeError(f"rm -rf finished but export path still exists: {path}")
 
 
 def _sanitize_tokenizer_config(tokenizer_config_path: Path) -> None:
@@ -161,13 +181,11 @@ def export_text_decoder_checkpoint(
     if done_path.exists() and not overwrite:
         return output_dir
 
-    tmp_dir = Path(f"{output_dir}.tmp")
-    if tmp_dir.exists():
-        shutil.rmtree(tmp_dir)
-    tmp_dir.mkdir(parents=True, exist_ok=True)
+    _remove_output_dir_with_rm_rf(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=False)
 
     text_config = _text_decoder_config(config)
-    (tmp_dir / "config.json").write_text(json.dumps(text_config, ensure_ascii=False, indent=2), encoding="utf-8")
+    (output_dir / "config.json").write_text(json.dumps(text_config, ensure_ascii=False, indent=2), encoding="utf-8")
 
     state: dict[str, torch.Tensor] = {}
     for weight_file in _checkpoint_weight_files(checkpoint_dir):
@@ -176,11 +194,11 @@ def export_text_decoder_checkpoint(
                 state[key] = value
     if not state:
         raise ValueError(f"No text decoder tensors found in {checkpoint_dir}")
-    _save_weight_file(state, tmp_dir / "model.safetensors")
+    _save_weight_file(state, output_dir / "model.safetensors")
 
     _copy_if_exists(
         checkpoint_dir,
-        tmp_dir,
+        output_dir,
         (
             "tokenizer.json",
             "tokenizer.model",
@@ -193,19 +211,15 @@ def export_text_decoder_checkpoint(
             "special_tokens_map.json",
         ),
     )
-    _sanitize_tokenizer_config(tmp_dir / "tokenizer_config.json")
-    if not (tmp_dir / "generation_config.json").exists():
+    _sanitize_tokenizer_config(output_dir / "tokenizer_config.json")
+    if not (output_dir / "generation_config.json").exists():
         _, generation_config = normalize_qwen_config_dict(text_config, {})
-        (tmp_dir / "generation_config.json").write_text(
+        (output_dir / "generation_config.json").write_text(
             json.dumps(generation_config, ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
 
-    done_path_tmp = tmp_dir / ".vllm_text_export_complete"
-    done_path_tmp.write_text(f"source={checkpoint_dir.resolve()}\n", encoding="utf-8")
-    if output_dir.exists():
-        shutil.rmtree(output_dir)
-    os.replace(tmp_dir, output_dir)
+    done_path.write_text(f"source={checkpoint_dir.resolve()}\n", encoding="utf-8")
     return output_dir
 
 
@@ -213,10 +227,8 @@ def export_merged_lora_checkpoint(model, tokenizer, output_dir: str | Path) -> P
     """Write a full merged checkpoint from a PEFT actor policy."""
 
     output_dir = Path(output_dir)
-    tmp_dir = Path(f"{output_dir}.tmp")
-    if tmp_dir.exists():
-        shutil.rmtree(tmp_dir)
-    tmp_dir.mkdir(parents=True, exist_ok=True)
+    _remove_output_dir_with_rm_rf(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=False)
 
     model_to_merge = model
     if hasattr(model_to_merge, "module"):
@@ -227,10 +239,7 @@ def export_merged_lora_checkpoint(model, tokenizer, output_dir: str | Path) -> P
         sync_qwen_multimodal_config(model_to_merge)
     except Exception:
         pass
-    model_to_merge.save_pretrained(tmp_dir)
-    tokenizer.save_pretrained(tmp_dir)
-    write_qwen_multimodal_checkpoint_metadata(model_to_merge, tmp_dir)
-    if output_dir.exists():
-        shutil.rmtree(output_dir)
-    os.replace(tmp_dir, output_dir)
+    model_to_merge.save_pretrained(output_dir)
+    tokenizer.save_pretrained(output_dir)
+    write_qwen_multimodal_checkpoint_metadata(model_to_merge, output_dir)
     return output_dir

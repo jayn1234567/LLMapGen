@@ -1,6 +1,5 @@
 import json
 import os
-import shutil
 import subprocess
 import torch
 import torch.nn as nn
@@ -74,16 +73,8 @@ def _remove_regular_checkpoint_tree(path: str, output_dir: str) -> bool:
     if not os.path.exists(path):
         return True
 
-    try:
-        shutil.rmtree(path)
-    except Exception as exc:
-        logger.warning(f"shutil.rmtree failed for old checkpoint {path}: {exc}")
-    else:
-        return True
-
-    # HF's default checkpoint rotation uses shutil.rmtree(ignore_errors=True),
-    # which can silently leave old checkpoint-* directories on some NPU/cloud
-    # filesystems. Fall back to guarded rm -rf for validated checkpoint paths.
+    # Some NPU/cloud filesystems do not allow rename/replace-style directory
+    # updates, but do allow deleting a validated directory with rm -rf.
     try:
         subprocess.run(
             ["rm", "-rf", "--", path],
@@ -100,6 +91,31 @@ def _remove_regular_checkpoint_tree(path: str, output_dir: str) -> bool:
         logger.warning(f"rm -rf fallback finished but checkpoint still exists: {path}")
         return False
     return True
+
+
+def _sorted_regular_checkpoints(output_dir: str, use_mtime: bool = False) -> List[str]:
+    if not os.path.isdir(output_dir):
+        return []
+
+    checkpoints = []
+    for name in os.listdir(output_dir):
+        if not name.startswith("checkpoint-"):
+            continue
+        step = name[len("checkpoint-"):]
+        if not step.isdigit():
+            continue
+        path = os.path.join(output_dir, name)
+        if not os.path.isdir(path):
+            continue
+        order = os.path.getmtime(path) if use_mtime else int(step)
+        checkpoints.append((order, path))
+
+    if use_mtime and len(checkpoints) > 1:
+        mtimes = [item[0] for item in checkpoints]
+        if max(mtimes) - min(mtimes) < 1.0:
+            return _sorted_regular_checkpoints(output_dir, use_mtime=False)
+
+    return [path for _, path in sorted(checkpoints)]
 
 
 def maybe_zero_3(param, ignore_status=False, name=None):
@@ -255,25 +271,30 @@ class LLaVATrainer(Trainer):
     def _rotate_checkpoints(self, use_mtime=False, output_dir=None) -> None:
         if self.args.save_total_limit is None or self.args.save_total_limit <= 0:
             return
+        if not getattr(self.args, "should_save", True):
+            return
 
         output_dir = output_dir or self.args.output_dir
-        checkpoints_sorted = self._sorted_checkpoints(use_mtime=use_mtime, output_dir=output_dir)
+        checkpoints_sorted = _sorted_regular_checkpoints(output_dir, use_mtime=use_mtime)
         if len(checkpoints_sorted) <= self.args.save_total_limit:
             return
 
         save_total_limit = self.args.save_total_limit
-        if (
-            self.state.best_model_checkpoint is not None
-            and self.args.save_total_limit == 1
-            and checkpoints_sorted[-1] != self.state.best_model_checkpoint
-        ):
-            save_total_limit = 2
+        protected = {os.path.abspath(checkpoints_sorted[-1])}
+        best_checkpoint = getattr(self.state, "best_model_checkpoint", None)
+        if best_checkpoint is not None:
+            protected.add(os.path.abspath(best_checkpoint))
+            save_total_limit = max(save_total_limit, len(protected))
 
-        number_of_checkpoints_to_delete = max(0, len(checkpoints_sorted) - save_total_limit)
-        checkpoints_to_be_deleted = checkpoints_sorted[:number_of_checkpoints_to_delete]
-        for checkpoint in checkpoints_to_be_deleted:
+        remaining = len(checkpoints_sorted)
+        for checkpoint in checkpoints_sorted:
+            if remaining <= save_total_limit:
+                break
+            if os.path.abspath(checkpoint) in protected:
+                continue
             logger.info(f"Deleting older checkpoint [{checkpoint}] due to args.save_total_limit")
-            _remove_regular_checkpoint_tree(checkpoint, output_dir)
+            if _remove_regular_checkpoint_tree(checkpoint, output_dir):
+                remaining -= 1
 
     def save_model(self, output_dir: Optional[str] = None, _internal_call: bool = False):
         if not getattr(self.args, "lora_enable", False):
@@ -434,6 +455,7 @@ class LLaVATrainer(Trainer):
                 _save_config_pretrained(self.model, output_dir)
                 torch.save(weight_to_save, os.path.join(output_dir, f'mm_projector.bin'))
                 write_qwen_multimodal_checkpoint_metadata(self.model, output_dir, self)
+            self._rotate_checkpoints(output_dir=run_dir)
         else:
             # Workaround for the issue: https://github.com/haotian-liu/LLaVA/issues/1144
             _ensure_generation_config(model)
@@ -442,6 +464,7 @@ class LLaVATrainer(Trainer):
             sync_qwen_token_config(model=model)
             super(LLaVATrainer, self)._save_checkpoint(model, trial)
             write_qwen_multimodal_checkpoint_metadata(self.model, output_dir, self)
+            self._rotate_checkpoints(output_dir=run_dir)
 
     def _save(self, output_dir: Optional[str] = None, state_dict=None):
         if getattr(self.args, 'tune_mm_mlp_adapter', False):

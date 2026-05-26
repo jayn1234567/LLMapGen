@@ -19,7 +19,6 @@ import os
 import sys
 import copy
 import random
-import shutil
 import subprocess
 import time 
 from datetime import datetime
@@ -300,19 +299,16 @@ class JsonlMetricLoggerCallback(TrainerCallback):
         self._append_log_line(self.checkpoint_log_path, payload)
 
 
-def _copy_checkpoint_tree(src_dir: str, dst_dir: str):
-    def copy_or_link(src, dst):
-        try:
-            os.link(src, dst)
-        except OSError:
-            shutil.copy2(src, dst)
-
-    shutil.copytree(src_dir, dst_dir, symlinks=True, copy_function=copy_or_link)
-
-
 def _best_checkpoint_save_mode(args) -> str:
     mode = getattr(args, "best_checkpoint_save_mode", "rotating_create_only") or "rotating_create_only"
-    return str(mode).strip().lower().replace("-", "_")
+    mode = str(mode).strip().lower().replace("-", "_")
+    if mode in {"rotating_create_only", "rotate_create_only", "rotating"}:
+        return mode
+    rank0_print(
+        f"[WARN] best_checkpoint_save_mode={mode!r} is not supported on create-only filesystems; "
+        "using rotating_create_only."
+    )
+    return "rotating_create_only"
 
 
 def _is_rotating_create_only_best_mode(args) -> bool:
@@ -339,10 +335,15 @@ def _best_candidate_root(args, configured_best_dir: str) -> str:
     best_dir = configured_best_dir.rstrip(os.sep)
     if os.path.isabs(best_dir):
         parent = os.path.dirname(best_dir)
-        stem = os.path.basename(best_dir)
     else:
-        parent = args.output_dir
-        stem = best_dir
+        output_dir = str(args.output_dir).rstrip(os.sep)
+        norm_best = os.path.normpath(best_dir)
+        norm_output = os.path.normpath(output_dir)
+        if norm_best == norm_output or norm_best.startswith(norm_output + os.sep):
+            parent = os.path.dirname(best_dir)
+        else:
+            parent = output_dir
+    stem = os.path.basename(best_dir)
     return os.path.join(parent, f"{stem}_candidates")
 
 
@@ -350,6 +351,13 @@ def _rotating_best_dir(args, configured_best_dir: str, metric_label: str, metric
     root = _best_candidate_root(args, configured_best_dir)
     stem = os.path.basename(configured_best_dir.rstrip(os.sep))
     target = os.path.join(root, f"{stem}_step-{step:08d}_{metric_label}-{_metric_for_path(metric_value)}")
+    return _next_available_path(target)
+
+
+def _pending_best_dir(args, configured_best_dir: str, step: int) -> str:
+    root = _best_candidate_root(args, configured_best_dir)
+    stem = os.path.basename(configured_best_dir.rstrip(os.sep))
+    target = os.path.join(root, f"{stem}_step-{step:08d}_pending")
     return _next_available_path(target)
 
 
@@ -453,15 +461,8 @@ def _remove_best_candidate_tree(path: str) -> bool:
     if not os.path.exists(path):
         return True
 
-    try:
-        shutil.rmtree(path)
-    except Exception as exc:
-        rank0_print(f"[WARN] shutil.rmtree failed for old best checkpoint candidate {path}: {exc}")
-    else:
-        return True
-
-    # Some NPU/cloud mounts behave closer to shell rm than Python rmtree. Use a
-    # guarded rm fallback only for validated *_candidates/*_step-* directories.
+    # Some NPU/cloud filesystems do not allow rename/replace-style directory
+    # updates, but do allow deleting a validated directory with rm -rf.
     try:
         subprocess.run(
             ["rm", "-rf", "--", path],
@@ -508,38 +509,54 @@ def _write_success_marker(target_dir: str, metadata: dict):
         f.write("\n")
 
 
-def _save_rotating_best_checkpoint(
+def _save_direct_best_checkpoint(
     args,
-    checkpoint_dir: str,
+    trainer,
     target_dir: str,
     metadata: dict,
     metadata_filename: str,
     metric_key: str,
     step_key: str,
 ):
+    if trainer is None:
+        raise RuntimeError("Direct best checkpoint save requires a trainer reference.")
+
     metadata = dict(metadata)
     metadata["best_checkpoint"] = target_dir
-    metadata["source_checkpoint"] = checkpoint_dir
+    metadata["source_checkpoint"] = "direct_model_save"
     metadata["best_checkpoint_save_mode"] = "rotating_create_only"
     metadata["best_checkpoint_keep_limit"] = _best_checkpoint_keep_limit(args)
-    _copy_checkpoint_tree(checkpoint_dir, target_dir)
-    _write_new_json(os.path.join(target_dir, metadata_filename), metadata)
-    _write_success_marker(target_dir, metadata)
-    _rotate_best_candidates(
-        args,
-        os.path.dirname(target_dir),
-        metadata_filename,
-        metric_key,
-        step_key,
-        target_dir,
-    )
+
+    trainer.save_model(target_dir)
+    _trainer_barrier_if_needed()
+
+    if trainer.is_world_process_zero():
+        _write_new_json(os.path.join(target_dir, metadata_filename), metadata)
+        _write_success_marker(target_dir, metadata)
+        _rotate_best_candidates(
+            args,
+            os.path.dirname(target_dir),
+            metadata_filename,
+            metric_key,
+            step_key,
+            target_dir,
+        )
+    _trainer_barrier_if_needed()
     return metadata
 
 
-class BestTrainLossCallback(TrainerCallback):
+class DirectBestCheckpointMixin:
     def __init__(self):
+        self.trainer = None
+
+    def set_trainer(self, trainer):
+        self.trainer = trainer
+
+
+class BestTrainLossCallback(DirectBestCheckpointMixin, TrainerCallback):
+    def __init__(self):
+        super().__init__()
         self.best_loss = None
-        self.pending_best = None
 
     def _is_rank0(self, args, state=None) -> bool:
         if state is not None and hasattr(state, "is_world_process_zero"):
@@ -617,87 +634,41 @@ class BestTrainLossCallback(TrainerCallback):
             return control
 
         self.best_loss = loss
-        self.pending_best = {
+        metadata = {
             "best_train_loss": loss,
             "best_train_loss_step": state.global_step,
-            "best_checkpoint": f"checkpoint-{state.global_step}",
             "start_step": start_step,
             "epoch": state.epoch,
             "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         }
-        control.should_save = True
+
+        configured_best_dir = self._best_dir(args)
+        best_dir = _rotating_best_dir(args, configured_best_dir, "loss", loss, state.global_step)
+        metadata = _save_direct_best_checkpoint(
+            args,
+            self.trainer,
+            best_dir,
+            metadata,
+            "best_train_loss.json",
+            "best_train_loss",
+            "best_train_loss_step",
+        )
         if self._is_rank0(args, state):
             rank0_print(
-                f"New best train loss after step {start_step}: "
-                f"{loss:.6g} at step {state.global_step}; saving checkpoint."
+                f"Created direct best train loss checkpoint: {best_dir} "
+                f"(loss={metadata['best_train_loss']:.6g}, step={state.global_step}, "
+                f"keep={metadata['best_checkpoint_keep_limit']})"
             )
         return control
 
     def on_save(self, args, state, control, **kwargs):
-        if not self._enabled(args) or not self._is_rank0(args, state):
-            return control
-        if not self.pending_best or self.pending_best.get("best_train_loss_step") != state.global_step:
-            return control
-
-        checkpoint_dir = os.path.join(args.output_dir, f"checkpoint-{state.global_step}")
-        if not os.path.isdir(checkpoint_dir):
-            rank0_print(f"[WARN] Best train loss checkpoint not found after save: {checkpoint_dir}")
-            return control
-
-        configured_best_dir = self._best_dir(args)
-        if _is_rotating_create_only_best_mode(args):
-            metadata = dict(self.pending_best)
-            metadata["best_checkpoint"] = checkpoint_dir
-            best_dir = _rotating_best_dir(
-                args,
-                configured_best_dir,
-                "loss",
-                metadata["best_train_loss"],
-                state.global_step,
-            )
-            metadata = _save_rotating_best_checkpoint(
-                args,
-                checkpoint_dir,
-                best_dir,
-                metadata,
-                "best_train_loss.json",
-                "best_train_loss",
-                "best_train_loss_step",
-            )
-            rank0_print(
-                f"Created best train loss checkpoint: {best_dir} "
-                f"(loss={metadata['best_train_loss']:.6g}, step={state.global_step}, "
-                f"keep={metadata['best_checkpoint_keep_limit']})"
-            )
-            self.pending_best = None
-            return control
-
-        best_dir = configured_best_dir
-        tmp_dir = f"{best_dir}.tmp"
-        if os.path.exists(tmp_dir):
-            shutil.rmtree(tmp_dir)
-        _copy_checkpoint_tree(checkpoint_dir, tmp_dir)
-
-        metadata = dict(self.pending_best)
-        metadata["best_checkpoint"] = checkpoint_dir
-        with open(os.path.join(tmp_dir, "best_train_loss.json"), "w", encoding="utf-8") as f:
-            json.dump(metadata, f, ensure_ascii=False, indent=2)
-
-        if os.path.exists(best_dir):
-            shutil.rmtree(best_dir)
-        os.replace(tmp_dir, best_dir)
-        rank0_print(
-            f"Updated best train loss checkpoint: {best_dir} "
-            f"(loss={metadata['best_train_loss']:.6g}, step={state.global_step})"
-        )
-        self.pending_best = None
         return control
 
 
-class BestEvalLossCallback(TrainerCallback):
+class BestEvalLossCallback(DirectBestCheckpointMixin, TrainerCallback):
     def __init__(self):
+        super().__init__()
         self.best_loss = None
-        self.pending_best = None
 
     def _is_rank0(self, args, state=None) -> bool:
         if state is not None and hasattr(state, "is_world_process_zero"):
@@ -772,78 +743,33 @@ class BestEvalLossCallback(TrainerCallback):
             return control
 
         self.best_loss = loss
-        self.pending_best = {
+        metadata = {
             "best_eval_loss": loss,
             "best_eval_loss_step": state.global_step,
-            "best_checkpoint": f"checkpoint-{state.global_step}",
             "epoch": state.epoch,
             "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         }
-        control.should_save = True
+
+        configured_best_dir = self._best_dir(args)
+        best_dir = _rotating_best_dir(args, configured_best_dir, "loss", loss, state.global_step)
+        metadata = _save_direct_best_checkpoint(
+            args,
+            self.trainer,
+            best_dir,
+            metadata,
+            "best_eval_loss.json",
+            "best_eval_loss",
+            "best_eval_loss_step",
+        )
         if self._is_rank0(args, state):
             rank0_print(
-                f"New best eval loss: {loss:.6g} at step {state.global_step}; saving checkpoint."
+                f"Created direct best eval loss checkpoint: {best_dir} "
+                f"(loss={metadata['best_eval_loss']:.6g}, step={state.global_step}, "
+                f"keep={metadata['best_checkpoint_keep_limit']})"
             )
         return control
 
     def on_save(self, args, state, control, **kwargs):
-        if not self._enabled(args) or not self._is_rank0(args, state):
-            return control
-        if not self.pending_best or self.pending_best.get("best_eval_loss_step") != state.global_step:
-            return control
-
-        checkpoint_dir = os.path.join(args.output_dir, f"checkpoint-{state.global_step}")
-        if not os.path.isdir(checkpoint_dir):
-            rank0_print(f"[WARN] Best eval loss checkpoint not found after save: {checkpoint_dir}")
-            return control
-
-        configured_best_dir = self._best_dir(args)
-        if _is_rotating_create_only_best_mode(args):
-            metadata = dict(self.pending_best)
-            metadata["best_checkpoint"] = checkpoint_dir
-            best_dir = _rotating_best_dir(
-                args,
-                configured_best_dir,
-                "loss",
-                metadata["best_eval_loss"],
-                state.global_step,
-            )
-            metadata = _save_rotating_best_checkpoint(
-                args,
-                checkpoint_dir,
-                best_dir,
-                metadata,
-                "best_eval_loss.json",
-                "best_eval_loss",
-                "best_eval_loss_step",
-            )
-            rank0_print(
-                f"Created best eval loss checkpoint: {best_dir} "
-                f"(loss={metadata['best_eval_loss']:.6g}, step={state.global_step}, "
-                f"keep={metadata['best_checkpoint_keep_limit']})"
-            )
-            self.pending_best = None
-            return control
-
-        best_dir = configured_best_dir
-        tmp_dir = f"{best_dir}.tmp"
-        if os.path.exists(tmp_dir):
-            shutil.rmtree(tmp_dir)
-        _copy_checkpoint_tree(checkpoint_dir, tmp_dir)
-
-        metadata = dict(self.pending_best)
-        metadata["best_checkpoint"] = checkpoint_dir
-        with open(os.path.join(tmp_dir, "best_eval_loss.json"), "w", encoding="utf-8") as f:
-            json.dump(metadata, f, ensure_ascii=False, indent=2)
-
-        if os.path.exists(best_dir):
-            shutil.rmtree(best_dir)
-        os.replace(tmp_dir, best_dir)
-        rank0_print(
-            f"Updated best eval loss checkpoint: {best_dir} "
-            f"(loss={metadata['best_eval_loss']:.6g}, step={state.global_step})"
-        )
-        self.pending_best = None
         return control
 
 
@@ -920,8 +846,9 @@ def _infer_index_subprocess_env() -> dict:
     return env
 
 
-class BestInferIndexCallback(TrainerCallback):
+class BestInferIndexCallback(DirectBestCheckpointMixin, TrainerCallback):
     def __init__(self):
+        super().__init__()
         self.best_metric = None
 
     def _is_rank0(self, args, state=None) -> bool:
@@ -1052,6 +979,7 @@ class BestInferIndexCallback(TrainerCallback):
             "--coord-mode", coord_mode,
             "--coord-range", str(coord_range),
             "--conv-template", str(getattr(args, "best_infer_index_conv_template", "conv_qwen_3_Dinov2_huawei") or "conv_qwen_3_Dinov2_huawei"),
+            "--device", str(getattr(args, "best_infer_index_device", "auto") or "auto"),
             "--output-dir", str(work_dir),
             "--sample-json-dir", str(sample_json_dir),
             "--output-json", str(work_dir / "summary.json"),
@@ -1092,28 +1020,32 @@ class BestInferIndexCallback(TrainerCallback):
         metric_value = _extract_infer_index_metric(payload, metric_name)
         return metric_value, payload, str(work_dir)
 
-    def on_save(self, args, state, control, **kwargs):
+    def on_evaluate(self, args, state, control, metrics=None, **kwargs):
         if not self._enabled(args):
             return control
 
         is_rank0 = self._is_rank0(args, state)
+        candidate_dir = None
         try:
-            if not is_rank0:
-                return control
-
             eval_every = int(getattr(args, "best_infer_index_eval_steps", 0) or 0)
             if eval_every > 0 and state.global_step % eval_every != 0:
                 return control
 
-            checkpoint_dir = os.path.join(args.output_dir, f"checkpoint-{state.global_step}")
-            if not os.path.isdir(checkpoint_dir):
-                rank0_print(f"[WARN] infer_index checkpoint not found after save: {checkpoint_dir}")
+            candidate_dir = _pending_best_dir(args, self._best_dir(args), state.global_step)
+            if self.trainer is None:
+                raise RuntimeError("Direct infer_index checkpoint save requires a trainer reference.")
+
+            self.trainer.save_model(candidate_dir)
+            _trainer_barrier_if_needed()
+
+            if not is_rank0:
                 return control
 
             try:
-                metric_value, metric_payload, work_dir = self._run_eval(args, state, checkpoint_dir)
+                metric_value, metric_payload, work_dir = self._run_eval(args, state, candidate_dir)
             except Exception as exc:
                 rank0_print(f"[WARN] infer_index best eval skipped at step {state.global_step}: {exc}")
+                _remove_best_candidate_tree(candidate_dir)
                 return control
 
             greater_is_better = self._greater_is_better(args)
@@ -1122,6 +1054,7 @@ class BestInferIndexCallback(TrainerCallback):
                     f"infer_index metric did not improve: "
                     f"{metric_value:.6g} vs best {self.best_metric:.6g}"
                 )
+                _remove_best_candidate_tree(candidate_dir)
                 return control
 
             self.best_metric = metric_value
@@ -1130,58 +1063,38 @@ class BestInferIndexCallback(TrainerCallback):
                 "best_infer_index": metric_value,
                 "best_infer_index_metric": metric_name,
                 "best_infer_index_step": state.global_step,
-                "best_checkpoint": f"checkpoint-{state.global_step}",
-                "source_checkpoint": checkpoint_dir,
+                "best_checkpoint": candidate_dir,
+                "source_checkpoint": "direct_model_save",
                 "infer_index_eval_dir": work_dir,
                 "infer_index_eval": _infer_index_metric_payload(metric_payload),
                 "greater_is_better": greater_is_better,
                 "epoch": state.epoch,
                 "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "best_checkpoint_save_mode": "rotating_create_only",
+                "best_checkpoint_keep_limit": _best_checkpoint_keep_limit(args),
             }
 
-            configured_best_dir = self._best_dir(args)
-            if _is_rotating_create_only_best_mode(args):
-                best_dir = _rotating_best_dir(
-                    args,
-                    configured_best_dir,
-                    metric_name,
-                    metric_value,
-                    state.global_step,
-                )
-                metadata = _save_rotating_best_checkpoint(
-                    args,
-                    checkpoint_dir,
-                    best_dir,
-                    metadata,
-                    "best_infer_index.json",
-                    "best_infer_index",
-                    "best_infer_index_step",
-                )
-                rank0_print(
-                    f"Created best infer_index checkpoint: {best_dir} "
-                    f"({metric_name}={metadata['best_infer_index']:.6g}, "
-                    f"step={state.global_step}, keep={metadata['best_checkpoint_keep_limit']})"
-                )
-                return control
-
-            best_dir = configured_best_dir
-            tmp_dir = f"{best_dir}.tmp"
-            if os.path.exists(tmp_dir):
-                shutil.rmtree(tmp_dir)
-            _copy_checkpoint_tree(checkpoint_dir, tmp_dir)
-            metadata["best_checkpoint"] = checkpoint_dir
-            with open(os.path.join(tmp_dir, "best_infer_index.json"), "w", encoding="utf-8") as f:
-                json.dump(metadata, f, ensure_ascii=False, indent=2)
-            if os.path.exists(best_dir):
-                shutil.rmtree(best_dir)
-            os.replace(tmp_dir, best_dir)
+            _write_new_json(os.path.join(candidate_dir, "best_infer_index.json"), metadata)
+            _write_success_marker(candidate_dir, metadata)
+            _rotate_best_candidates(
+                args,
+                os.path.dirname(candidate_dir),
+                "best_infer_index.json",
+                "best_infer_index",
+                "best_infer_index_step",
+                candidate_dir,
+            )
             rank0_print(
-                f"Updated best infer_index checkpoint: {best_dir} "
-                f"({metric_name}={metric_value:.6g}, step={state.global_step})"
+                f"Created direct best infer_index checkpoint: {candidate_dir} "
+                f"({metric_name}={metric_value:.6g}, step={state.global_step}, "
+                f"keep={metadata['best_checkpoint_keep_limit']})"
             )
             return control
         finally:
             _trainer_barrier_if_needed()
+
+    def on_save(self, args, state, control, **kwargs):
+        return control
 
 
 IS_TOKENIZER_GREATER_THAN_0_14 = version.parse(tokenizers.__version__) >= version.parse('0.14')
@@ -2693,6 +2606,9 @@ def train(attn_implementation=None):
                            args=training_args,
                            callbacks=callbacks,
                            **data_module)
+    for callback in trainer.callback_handler.callbacks:
+        if hasattr(callback, "set_trainer"):
+            callback.set_trainer(trainer)
     trainer.remove_callback(PrinterCallback)
     if not training_args.use_hf_progress_bar:
         trainer.remove_callback(ProgressCallback)
@@ -2702,13 +2618,6 @@ def train(attn_implementation=None):
     else:
         trainer.train()
     trainer.save_state()
-
-    # if trainer.state.best_model_checkpoint:
-    #     best_output_dir = os.path.join(training_args.output_dir, "best")
-    #     if os.path.exists(best_output_dir):
-    #         shutil.rmtree(best_output_dir)
-    #     shutil.copytree(trainer.state.best_model_checkpoint, best_output_dir)
-    #     rank0_print(f"Copied best checkpoint to {best_output_dir}")
 
     model.config.use_cache = True
     sync_qwen_token_config(

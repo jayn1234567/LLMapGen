@@ -74,12 +74,12 @@ Cloud/OBS inputs:
 - `MODEL_OBS_PATH`: OBS root containing DINO model directories.
 - `CHECKPOINT_OBS_LIST`: comma/semicolon/newline separated full OBS checkpoint dirs.
 - `TRAINED_CHECKPOINT_OBS`: one OBS training output root.
-- `CHECKPOINT_NAMES`: relative weight dirs under `TRAINED_CHECKPOINT_OBS`, for example `checkpoint-500,eval_best_candidates,best_candidates,merged,best_reward`.
+- `CHECKPOINT_NAMES`: relative weight dirs under `TRAINED_CHECKPOINT_OBS`, for example `checkpoint-500,eval_best_candidates,best_candidates,infer_best_candidates,best_reward_candidates,merged`.
 
 When multiple checkpoints are given, each checkpoint writes a separate subfolder
-under `OUTPUT_DIR`, named by checkpoint index and label. `eval_best_candidates`
-and `best_candidates` are resolved after download to the latest successful
-candidate containing `_SUCCESS`.
+under `OUTPUT_DIR`, named by checkpoint index and label. `infer_best_candidates`,
+`eval_best_candidates`, `best_candidates`, and `best_reward_candidates` are
+resolved after download to the latest successful candidate containing `_SUCCESS`.
 
 Inference outputs are intentionally separated:
 
@@ -133,12 +133,12 @@ Best checkpoint behavior:
 - Current SFT cloud scripts use the dataset's prebuilt raw-sample-level split: `train.jsonl`, `eval.jsonl`, and `test.jsonl`; they no longer split eval from test at runtime.
 - NPU test scripts infer directly on the prebuilt `test.jsonl`. `NUM_TEST_SAMPLES=0` means run all final-test rows; set a positive value only for a quick smoke subset.
 - Normal full training scripts keep `ENABLE_EVAL=False` and do not maintain best-loss directories unless the script enables the relevant `SAVE_BEST_*` flag.
-- `SAVE_BEST_INFER_INDEX=True` runs generation-based `infer_index` evaluation after saved checkpoints and keeps the best metric checkpoint under `infer_best_candidates/`. The default metric is `length_f1`, which is usually more aligned with missing/unaligned centerlines than `eval_loss`.
-- `BEST_CHECKPOINT_SAVE_MODE=rotating_create_only` is the current NPU cloud default. A new best creates a unique directory under `infer_best_candidates/`, `best_candidates/`, or `eval_best_candidates/`, writes metadata, then writes `_SUCCESS` last.
+- `SAVE_BEST_INFER_INDEX=True` runs generation-based `infer_index` evaluation at eval steps and keeps the best metric checkpoint under `infer_best_candidates/`. The default metric is `length_f1`, which is usually more aligned with missing/unaligned centerlines than `eval_loss`.
+- `BEST_CHECKPOINT_SAVE_MODE=rotating_create_only` is the current NPU cloud default. A new best creates a unique directory under `infer_best_candidates/`, `best_candidates/`, or `eval_best_candidates/`, writes the model directly into that directory, writes metadata, then writes `_SUCCESS` last.
 - `BEST_CHECKPOINT_KEEP_LIMIT=1` keeps only the latest successful best candidate by default. Because the code saves only when the metric improves, the largest step among `_SUCCESS` candidates is the current best.
 - This mode never renames or replaces files in the output mount. It only creates the new best candidate and then deletes older successful candidates, which matches cloud mounts that allow create/delete but not rename/replace.
-- Regular `checkpoint-*` rotation still uses `SAVE_TOTAL_LIMIT` and may delete old normal checkpoints; current NPU SFT scripts default it to 10.
-- Best candidate directories are copied from a normal `checkpoint-*` directory after that checkpoint is fully saved, and include `config.json`, `model.safetensors`, optimizer/scheduler state, `qwen_multimodal_checkpoint.json`, metadata JSON, and `_SUCCESS`.
+- Regular `checkpoint-*` rotation still uses `SAVE_TOTAL_LIMIT` and deletes old normal checkpoints with a validated `rm -rf`; current NPU SFT scripts default it to 10.
+- Best candidate directories are not copied from normal `checkpoint-*` directories. Train-loss, eval-loss, and infer-index best checkpoints are saved directly to their own candidate directories, so they do not create an extra normal checkpoint when the best metric improves.
 - NPU inference scripts resolve best checkpoints with `scripts/tools/resolve_best_checkpoint.py`. By default they try `infer_best_candidates/` first, then `eval_best_candidates/`, then `best_candidates/`, and only accept candidate directories with `_SUCCESS`.
 
 NPU cloud output behavior:
@@ -224,7 +224,7 @@ the 0.03 warmup ratio corresponds to about 155 and 465 warmup steps.
 The 330k first-run recipe script uses 3 epochs instead of 6 and sets
 `MM_VISION_TOWER_LR=2e-6`, so DINO is updated more conservatively than the LLM
 and projector. It enables eval-by-steps and writes the best eval-loss checkpoint
-to `eval_best/`.
+to `eval_best_candidates/`.
 - `DEEPSTACK_VISUAL_INDEXES`, `DISABLE_DEEPSTACK`: DeepStack on/off and selected ViT layers.
 - `SAVE_BEST_TRAIN_LOSS`, `BEST_TRAIN_LOSS_START_STEP`, `BEST_TRAIN_LOSS_DIR`: train-loss best checkpoint.
 - `SAVE_BEST_EVAL_LOSS`, `EVAL_STEPS`, `BEST_EVAL_LOSS_DIR`: eval-loss best checkpoint in eval-best scripts.

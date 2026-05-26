@@ -95,7 +95,7 @@ GPU0,2:
   inference using model predictions as state.
 - GRPO with Ray + vLLM prompt embeddings was run from SFT checkpoints for
   lane-only and lane+intersection debug data. Outputs include `final/`,
-  `best_reward/`, and `merged/`.
+  `best_reward_candidates/`, and `merged/`.
 - A GRPO `merged/` full checkpoint was then used as `MODEL_NAME_OR_PATH` for a
   second SFT LoRA smoke run on GPU0,2. The path name did not contain `lora`, and
   `--lora_enable True` still correctly added LoRA adapters.
@@ -165,8 +165,8 @@ global batch and print the actual global batch at startup.
 For the first 330k-sample run, prefer
 `scripts/npu/train/train_sft_stage_a_lane_dinov2_qwen3vl_nodeepstack_npu.sh`.
 It uses 3 epochs and separate module LRs: LLM `2e-5`, projector `2e-5`,
-vision tower `2e-6`. It evaluates during training and copies the lowest
-`eval_loss` checkpoint to `eval_best/`; set `SAVE_BEST_INFER_INDEX=True` to
+vision tower `2e-6`. It evaluates during training and saves the lowest
+`eval_loss` checkpoint directly to `eval_best_candidates/`; set `SAVE_BEST_INFER_INDEX=True` to
 also run generation-based `infer_index` evaluation and keep the best
 `length_f1` checkpoint in `infer_best_candidates/`.
 
@@ -180,6 +180,12 @@ best uses `SAVE_BEST_INFER_INDEX`, `BEST_INFER_INDEX_METRIC`,
 `BEST_INFER_INDEX_NUM_SAMPLES`, `BEST_INFER_INDEX_EVAL_STEPS`, and
 `BEST_INFER_INDEX_DIR`. `BEST_INFER_INDEX_NUM_SAMPLES=0` uses the full eval
 set and is the default for best-checkpoint selection.
+
+Best checkpoints are create-only candidates: a metric improvement saves the
+current model directly under `best_candidates/`, `eval_best_candidates/`, or
+`infer_best_candidates/` and writes `_SUCCESS` last. They do not create a normal
+`checkpoint-*` first, and the rotation path only deletes older validated
+candidate directories with `rm -rf`; no rename or replace operation is used.
 
 Do not pass experiment knobs as one-off shell prefixes. Edit the parameter block inside the target script instead, especially batch size, LR, epoch/step count, DeepStack, and best-checkpoint settings.
 
@@ -271,7 +277,7 @@ group/job type/tags to separate SFT, GRPO, stage/task, backbone, and
 debug/formal runs. For offline recording, set `SWANLAB_ENABLE=True` and
 `SWANLAB_MODE=offline` or `local` inside the target script. Local SwanLab files
 are written under the run output directory, beside `checkpoint-*`, `eval_best*`,
-`best*`, `best_reward/`, and `merged/` directories. For private deployment, set
+`best*`, `best_reward_candidates/`, and `merged/` directories. For private deployment, set
 `SWANLAB_API_HOST` and `SWANLAB_WEB_HOST` in the same script parameter block.
 
 ## RL Post-Training
@@ -307,7 +313,7 @@ Current GRPO implementation:
 - Update rule: grouped completions are scored, advantages are normalized within
   each prompt group, and the actor is updated with a clipped GRPO/PPO-style
   objective plus optional KL to the adapter-disabled SFT reference.
-- Checkpoints: `checkpoint-*` and `final/` are adapter checkpoints, `best_reward/`
+- Checkpoints: `checkpoint-*` and `final/` are adapter checkpoints, `best_reward_candidates/`
   tracks highest mean reward, and `merged/` is the exported full checkpoint for
   inference or later SFT/RL continuation.
 
@@ -356,7 +362,7 @@ GRPO checkpoint outputs:
 | Output | Purpose |
 |---|---|
 | `checkpoint-*` / `final` | Adapter checkpoint for resume. |
-| `best_reward/` | Adapter checkpoint with the best mean reward. |
+| `best_reward_candidates/` | Successful best-reward adapter candidates. The latest `_SUCCESS` candidate is the current best mean reward. |
 | `merged/` | Final SFT+LoRA merged full checkpoint for inference or second-stage training. |
 
 LoRA path behavior:
@@ -384,12 +390,12 @@ Best checkpoint parameters:
 
 | Parameter | Default | Purpose |
 |---|---:|---|
-| `--save_best_train_loss` | `False` | Copy lower train-loss checkpoint to best dir. |
+| `--save_best_train_loss` | `False` | Save lower train-loss checkpoint directly to `best_candidates/`. |
 | `--best_train_loss_start_step` | `0` | Ignore train loss before this step. |
-| `--best_train_loss_dir` | `best` | Output directory for best train-loss checkpoint. |
-| `--save_best_eval_loss` | `False` | Copy lower eval-loss checkpoint to eval best dir. |
-| `--best_eval_loss_dir` | `eval_best` | Output directory for best eval-loss checkpoint. |
-| `--save_best_infer_index` | `False` | Run generation eval on saved checkpoints and copy the best infer_index checkpoint. |
+| `--best_train_loss_dir` | `best` | Logical best name; rotating mode writes `best_candidates/`. |
+| `--save_best_eval_loss` | `False` | Save lower eval-loss checkpoint directly to `eval_best_candidates/`. |
+| `--best_eval_loss_dir` | `eval_best` | Logical best name; rotating mode writes `eval_best_candidates/`. |
+| `--save_best_infer_index` | `False` | Run generation eval at eval steps and save the best infer_index checkpoint directly. |
 | `--best_infer_index_metric` | `length_f1` | Metric from `infer_index/line_eval.py`; higher is better by default. |
 | `--best_infer_index_dir` | `infer_best` | Logical best name; rotating mode writes `infer_best_candidates/`. |
 | `--eval_strategy steps` | off by default | Required for eval-loss checkpointing. |
@@ -429,9 +435,9 @@ outputs under `checkpoints/debug/`. Set `DATASET_PHASE`, `MAP_TASK`, and
 `scripts/debug/README.md` for the full command matrix.
 
 SFT debug saves normal `checkpoint-*` by `SAVE_STEPS`/`SAVE_TOTAL_LIMIT`, keeps
-`eval_best` by default, and can enable best train loss with
+`eval_best_candidates/` by default, and can enable best train loss with
 `SAVE_BEST_TRAIN_LOSS=True`. GRPO debug uses vLLM-Ascend and tracks
-`best_reward/` plus `merged/`. When SwanLab offline/local mode is enabled in a
+`best_reward_candidates/` plus `merged/`. When SwanLab offline/local mode is enabled in a
 debug script, local logs go to `checkpoints/debug/<run>/.../swanlab/`, which is
 the same output directory level as those checkpoints.
 

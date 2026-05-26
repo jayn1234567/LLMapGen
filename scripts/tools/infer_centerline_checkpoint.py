@@ -51,6 +51,10 @@ def _env_flag(name, default="0"):
     return str(os.environ.get(name, default)).lower() in ("1", "true", "yes", "on")
 
 
+if _env_flag("MLLM_DISABLE_CUDNN", "0"):
+    torch.backends.cudnn.enabled = False
+
+
 def silence_non_primary_rank_output():
     """Keep normal inference logs on global rank 0 only."""
     if not _env_flag("MLLM_LOG_RANK0_ONLY", "1"):

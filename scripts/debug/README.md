@@ -120,7 +120,8 @@ DATASET_PHASE=phase_a MAP_TASK=lane VISION_BACKBONE=dinov2 \
 `BEST_CHECKPOINT_SAVE_MODE=rotating_create_only` and `BEST_CHECKPOINT_KEEP_LIMIT=1`
 are the debug defaults, matching the NPU cloud-safe behavior. Best eval candidates
 are written under `eval_best_candidates/`; best train-loss candidates are written
-under `best_candidates/`. A candidate is valid only after `_SUCCESS` is written.
+under `best_candidates/`. A best candidate is saved directly into its own
+directory and is valid only after `_SUCCESS` is written.
 
 The checkpoint resolver used by GRPO and inference tries SFT checkpoints in this order:
 
@@ -129,8 +130,8 @@ The checkpoint resolver used by GRPO and inference tries SFT checkpoints in this
 3. newest normal `checkpoint-*`
 
 GRPO debug has its own RL checkpoint policy: it saves adapter checkpoints,
-tracks `best_reward/` by mean reward, and writes `merged/` for self-contained
-inference or follow-up training.
+tracks `best_reward_candidates/` by mean reward, and writes `merged/` for
+self-contained inference or follow-up training.
 
 ### SwanLab Offline Debug
 
@@ -138,7 +139,7 @@ The debug scripts expose SwanLab settings in their parameter blocks. Leave
 `SWANLAB_MODE` empty for default cloud behavior. Set `SWANLAB_MODE=offline` or
 `local` when the NPU job cannot upload while running. Local SwanLab files are
 written to `${OUTPUT_DIR}/swanlab`, beside `checkpoint-*`, `eval_best*`,
-`best*`, `best_reward/`, and `merged/`.
+`best*`, `best_reward_candidates/`, and `merged/`.
 
 Edit the SwanLab block inside `scripts/debug/train_sft_debug_npu.sh` or
 `scripts/debug/train_grpo_debug_npu.sh`:
@@ -320,9 +321,9 @@ DATASET_PHASE=phase_a MAP_TASK=lane VISION_BACKBONE=dinov3 \
   bash scripts/debug/run_debug_full_flow_npu.sh
 ```
 
-When `RUN_GRPO_INFER=True`, the flow first tries the GRPO `best_reward`
-checkpoint and falls back to `merged/` if no successful best-reward checkpoint
-exists.
+When `RUN_GRPO_INFER=True`, the flow first tries the latest successful GRPO
+`best_reward_candidates/` checkpoint and falls back to `merged/` if no
+successful best-reward checkpoint exists.
 
 ## Useful Overrides
 

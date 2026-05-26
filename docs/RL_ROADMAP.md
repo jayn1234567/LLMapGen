@@ -51,8 +51,9 @@ One training step is:
    clipped GRPO/PPO-style loss.
 6. If `kl_beta > 0`, LoRA actors compute reference logprobs by temporarily
    disabling the adapter, so the reference is the SFT base policy.
-7. The actor saves adapter checkpoints, `best_reward/`, and finally exports a
-   `merged/` full checkpoint when `export_merged_checkpoints=True`.
+7. The actor saves adapter checkpoints, create-only `best_reward_candidates/`,
+   and finally exports a `merged/` full checkpoint when
+   `export_merged_checkpoints=True`.
 
 This keeps the project-specific vision side in the HF actor and uses vLLM only
 for high-throughput text-decoder rollout. It avoids writing a full custom vLLM
@@ -232,7 +233,7 @@ SwanLab monitoring:
   tags.
 - For NPU jobs that cannot upload during training, set `SWANLAB_MODE=offline`
   or `local` in the script. Local SwanLab files are written under
-  `${OUTPUT_DIR}/swanlab`, beside GRPO `checkpoint-*`, `best_reward/`,
+  `${OUTPUT_DIR}/swanlab`, beside GRPO `checkpoint-*`, `best_reward_candidates/`,
   `final/`, and `merged/`.
 - For a private SwanLab server, set `SWANLAB_API_HOST` and `SWANLAB_WEB_HOST`
   in the NPU GRPO script parameter block.
@@ -252,14 +253,15 @@ GRPO saves LoRA checkpoints for resume and final inference export:
 
 - `checkpoint-*` and `final`: adapter checkpoint plus non-LoRA trainables and
   multimodal metadata.
-- `best_reward/`: best adapter checkpoint by mean reward.
+- `best_reward_candidates/`: successful best-reward adapter candidates. The
+  latest `_SUCCESS` candidate is the current best by mean reward.
 - `merged/`: final SFT+LoRA merged full checkpoint, written after training.
 
 Recommended continuation policy:
 
 - Use `merged/` when you want a single self-contained checkpoint for inference,
   SFT continuation, or another RL run.
-- Use adapter checkpoints (`checkpoint-*`, `final`, `best_reward/`) when you
+- Use adapter checkpoints (`checkpoint-*`, `final`, `best_reward_candidates/*`) when you
   want to resume exactly from an RL adapter. The adapter path must contain
   `adapter_config.json`; if the base checkpoint cannot be recovered from that
   file, pass `--model_base`.
@@ -279,7 +281,7 @@ Use manual merge when exporting a specific adapter checkpoint:
 
 ```bash
 python scripts/rl/export_merged_lora_checkpoint.py \
-  --adapter-checkpoint outputs/my_grpo/best_reward \
+  --adapter-checkpoint outputs/my_grpo/best_reward_candidates/best_reward_step-00000100_reward-0p42 \
   --model-base outputs/my_sft/checkpoint-1000 \
   --vision-tower /path/to/dinov3-vitl16 \
   --input-image-size 512 \

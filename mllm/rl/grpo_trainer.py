@@ -7,7 +7,7 @@ import math
 import os
 from pathlib import Path
 import random
-import shutil
+import subprocess
 import time
 from typing import Any
 
@@ -99,6 +99,137 @@ def _find_multimodal_preparer(model):
 
 def _safe_metric_name(name: str) -> str:
     return str(name).strip().replace("/", "_").replace(" ", "_")
+
+
+def _metric_for_path(value: float) -> str:
+    return f"{float(value):.6g}".replace("-", "m").replace(".", "p")
+
+
+def _next_available_path(path: Path) -> Path:
+    if not path.exists():
+        return path
+    for idx in range(1, 10000):
+        candidate = path.with_name(f"{path.name}_{idx}")
+        if not candidate.exists():
+            return candidate
+    raise RuntimeError(f"Could not find an available create-only path for {path}")
+
+
+def _is_child_path(path: Path, root: Path) -> bool:
+    abs_path = os.path.abspath(os.fspath(path))
+    abs_root = os.path.abspath(os.fspath(root))
+    try:
+        return os.path.commonpath([abs_path, abs_root]) == abs_root
+    except ValueError:
+        return False
+
+
+def _is_prefixed_step_dir(path: Path, prefix: str) -> bool:
+    name = path.name
+    return name.startswith(prefix) and name[len(prefix):].isdigit()
+
+
+def _safe_delete_tree(path: Path, output_dir: Path) -> bool:
+    if not _is_child_path(path, output_dir):
+        return False
+
+    abs_path = Path(os.path.abspath(os.fspath(path)))
+    abs_output = Path(os.path.abspath(os.fspath(output_dir)))
+    parent = abs_path.parent.name
+    if abs_path.parent == abs_output and _is_prefixed_step_dir(abs_path, "checkpoint-"):
+        return True
+    if parent == "runtime_lora" and _is_prefixed_step_dir(abs_path, "step-"):
+        return True
+    if parent.endswith("_candidates") and "_step-" in abs_path.name:
+        return True
+    return False
+
+
+def _remove_tree_with_rm_rf(path: Path, output_dir: Path) -> bool:
+    if not _safe_delete_tree(path, output_dir):
+        rank0_print(f"[WARN] Refusing to delete unexpected GRPO path: {path}")
+        return False
+    if not path.exists():
+        return True
+
+    try:
+        subprocess.run(
+            ["rm", "-rf", "--", os.fspath(path)],
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+    except Exception as exc:
+        rank0_print(f"[WARN] rm -rf fallback failed for GRPO path {path}: {exc}")
+        return False
+
+    if path.exists():
+        rank0_print(f"[WARN] rm -rf fallback finished but path still exists: {path}")
+        return False
+    return True
+
+
+def _best_reward_candidate_root(output_dir: Path, best_reward_dir: str) -> Path:
+    stem = Path(best_reward_dir.rstrip(os.sep)).name or "best_reward"
+    return output_dir / f"{stem}_candidates"
+
+
+def _best_reward_candidate_dir(output_dir: Path, best_reward_dir: str, step: int, reward: float) -> Path:
+    root = _best_reward_candidate_root(output_dir, best_reward_dir)
+    stem = Path(best_reward_dir.rstrip(os.sep)).name or "best_reward"
+    target = root / f"{stem}_step-{step:08d}_reward-{_metric_for_path(reward)}"
+    return _next_available_path(target)
+
+
+def _step_from_candidate_name(name: str) -> int:
+    marker = "_step-"
+    if marker not in name:
+        return -1
+    tail = name.split(marker, 1)[1]
+    digits = []
+    for char in tail:
+        if not char.isdigit():
+            break
+        digits.append(char)
+    return int("".join(digits)) if digits else -1
+
+
+def _successful_best_reward_candidates(candidate_root: Path) -> list[Path]:
+    if not candidate_root.is_dir():
+        return []
+    candidates = []
+    for path in candidate_root.iterdir():
+        if not path.is_dir() or not (path / "_SUCCESS").is_file():
+            continue
+        step = _step_from_candidate_name(path.name)
+        metadata_path = path / "best_reward.json"
+        if metadata_path.is_file():
+            try:
+                metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+                step = int(metadata.get("best_reward_step", metadata.get("global_step", step)))
+            except Exception:
+                pass
+        candidates.append((step, path))
+    return [path for _, path in sorted(candidates, key=lambda item: (item[0], str(item[1])))]
+
+
+def _best_reward_keep_limit(args) -> int:
+    try:
+        return int(getattr(args, "best_checkpoint_keep_limit", 1) or 0)
+    except (TypeError, ValueError):
+        return 1
+
+
+def _rotate_best_reward_candidates(args, candidate_root: Path, protected_dir: Path) -> None:
+    keep_limit = _best_reward_keep_limit(args)
+    if keep_limit <= 0:
+        return
+    candidates = _successful_best_reward_candidates(candidate_root)
+    for path in candidates[:-keep_limit]:
+        if os.path.abspath(os.fspath(path)) == os.path.abspath(os.fspath(protected_dir)):
+            continue
+        _remove_tree_with_rm_rf(path, Path(args.output_dir))
 
 
 def _mean(values: list[float]) -> float:
@@ -309,7 +440,7 @@ class ActorWorker:
         adapter_id = self.global_step + 1
         adapter_dir = Path(self.args.output_dir) / "runtime_lora" / f"step-{self.global_step:08d}"
         if adapter_dir.exists():
-            shutil.rmtree(adapter_dir)
+            _remove_tree_with_rm_rf(adapter_dir, Path(self.args.output_dir))
         save_policy_checkpoint(self.model, self.tokenizer, adapter_dir, self.args)
         return str(adapter_dir), adapter_id
 
@@ -484,7 +615,7 @@ class ActorWorker:
             key=lambda path: int(path.name.split("-")[-1]) if path.name.split("-")[-1].isdigit() else -1,
         )
         while len(checkpoints) > limit:
-            shutil.rmtree(checkpoints.pop(0))
+            _remove_tree_with_rm_rf(checkpoints.pop(0), out)
 
     def _maybe_save_best(self, mean_reward: float, metrics: dict[str, Any]) -> None:
         if not self.args.save_best_reward:
@@ -492,21 +623,23 @@ class ActorWorker:
         if self.best_reward is not None and mean_reward <= self.best_reward:
             return
         self.best_reward = mean_reward
-        best_dir = Path(self.args.output_dir) / self.args.best_reward_dir
-        tmp_dir = Path(f"{best_dir}.tmp")
-        if tmp_dir.exists():
-            shutil.rmtree(tmp_dir)
+        output_dir = Path(self.args.output_dir)
+        best_dir = _best_reward_candidate_dir(output_dir, self.args.best_reward_dir, self.global_step, self.best_reward)
         state = {
             "global_step": self.global_step,
+            "best_reward_step": self.global_step,
             "best_reward": self.best_reward,
             "metrics": metrics,
             "time": time.strftime("%Y-%m-%d %H:%M:%S"),
+            "best_checkpoint": str(best_dir),
+            "source_checkpoint": "direct_model_save",
+            "best_checkpoint_save_mode": "rotating_create_only",
+            "best_checkpoint_keep_limit": _best_reward_keep_limit(self.args),
         }
-        save_policy_checkpoint(self.model, self.tokenizer, tmp_dir, self.args, self.optimizer, self.scheduler, state)
-        (tmp_dir / "best_reward.json").write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
-        if best_dir.exists():
-            shutil.rmtree(best_dir)
-        os.replace(tmp_dir, best_dir)
+        save_policy_checkpoint(self.model, self.tokenizer, best_dir, self.args, self.optimizer, self.scheduler, state)
+        (best_dir / "best_reward.json").write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+        (best_dir / "_SUCCESS").write_text(json.dumps(state, ensure_ascii=False, sort_keys=True) + "\n", encoding="utf-8")
+        _rotate_best_reward_candidates(self.args, best_dir.parent, best_dir)
 
     def update_with_rollouts(self, rollout_id: str, completions: list[RolloutCompletion], rewards_payload: list[dict[str, Any]]) -> dict[str, Any]:
         batch = self.pending.pop(rollout_id)

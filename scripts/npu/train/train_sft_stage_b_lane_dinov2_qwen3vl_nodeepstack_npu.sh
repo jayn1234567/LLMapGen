@@ -24,6 +24,12 @@ echo "Repo root: ${REPO_ROOT}"
 echo "Recipe: ${DATASET_PHASE} | ${MAP_TASK} | ${VISION_BACKBONE}"
 # ====================== cloud paths ======================
 OUTPUT_URL=${OUTPUT_URL:?set OUTPUT_URL to the cloud output directory}
+CLUSTER_SAVE=${OUTPUT_URL}
+OSB_SHARE_PATH="${CLUSTER_SAVE}"
+echo "System defined obs share path: ${OSB_SHARE_PATH}"
+
+# Cloud training mounts can be create-only. Rank0 writes to a fresh cloud run dir;
+# nonzero ranks write to local cache to avoid cross-rank overwrite/rename issues.
 RUN_ID=${RUN_ID:-$(date -u +%Y%m%d_%H%M%S)}
 OBS_CACHE=${OBS_CACHE:-/cache}
 MODEL_OBS_PATH=${MODEL_OBS_PATH:-obs://yw-ads-training-gy1/data/external/personal/h58801830/whu/jjh/checkpoints}
@@ -35,8 +41,9 @@ DATASET_ZIP_PATH=${DATASET_ZIP_PATH:-${OBS_CACHE}/dataset_${RUN_ID}.zip}
 DATASET_EXTRACT_ROOT=${DATASET_EXTRACT_ROOT:-${OBS_CACHE}/dataset_extract_${RUN_ID}}
 DATASET_PATH=${DATASET_PATH:-${DATASET_EXTRACT_ROOT}/data_line_samples_33w}
 IMAGE_FOLDER=${IMAGE_FOLDER:-${DATASET_PATH}}
-CLOUD_OUTPUT_PATH=${OUTPUT_URL%/}/${RUN_ID}
+CLOUD_OUTPUT_PATH=${OSB_SHARE_PATH%/}/${RUN_ID}
 LOCAL_MODEL_SAVE_ROOT=${LOCAL_MODEL_SAVE_ROOT:-/cache/local_model_save_path}
+LOCAL_MODEL_SAVE_PATH=${LOCAL_MODEL_SAVE_PATH:-${LOCAL_MODEL_SAVE_ROOT}/${RUN_ID}}
 # Stage B must continue from a trained Stage A checkpoint.
 STAGE_A_CHECKPOINT_OBS_PATH=${STAGE_A_CHECKPOINT_OBS_PATH:-}
 STAGE_A_CHECKPOINT_PATH=${STAGE_A_CHECKPOINT_PATH:-}
@@ -145,12 +152,14 @@ fi
 MASTER_PORT=${MASTER_PORT:-6060}
 export NNODES NODE_RANK NPROC_PER_NODE MASTER_ADDR MASTER_PORT
 export RDZV_ID=${RDZV_ID:-sft_phase_b_lane_dinov2_${RUN_ID}}
+mkdir -p "${LOCAL_MODEL_SAVE_PATH}"
 if [[ "${NODE_RANK}" == "0" ]]; then
   OUTPUT_PATH="${CLOUD_OUTPUT_PATH}"
 else
-  OUTPUT_PATH="${LOCAL_MODEL_SAVE_ROOT}/${RUN_ID}"
+  OUTPUT_PATH="${LOCAL_MODEL_SAVE_PATH}"
 fi
-mkdir -p "${OUTPUT_PATH}"
+echo "Run id: ${RUN_ID}"
+echo "Output path: ${OUTPUT_PATH}"
 SWANLAB_LOG_DIR=${SWANLAB_LOG_DIR:-${OUTPUT_PATH}/swanlab}
 
 # ====================== downloads ======================

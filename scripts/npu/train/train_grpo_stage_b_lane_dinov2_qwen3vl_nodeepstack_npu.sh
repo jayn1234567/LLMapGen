@@ -24,6 +24,11 @@ echo "Repo root: ${REPO_ROOT}"
 echo "Recipe: ${DATASET_PHASE} | ${MAP_TASK} | ${VISION_BACKBONE}"
 # ====================== cloud paths ======================
 OUTPUT_URL=${OUTPUT_URL:?set OUTPUT_URL to the cloud output directory}
+CLUSTER_SAVE=${OUTPUT_URL}
+OSB_SHARE_PATH="${CLUSTER_SAVE}"
+echo "System defined obs share path: ${OSB_SHARE_PATH}"
+
+# GRPO writes to local cache first, then uploads the complete run dir to OBS.
 RUN_ID=${RUN_ID:-$(date -u +%Y%m%d_%H%M%S)}
 OBS_CACHE=${OBS_CACHE:-/cache}
 MODEL_OBS_PATH=${MODEL_OBS_PATH:-obs://yw-ads-training-gy1/data/external/personal/h58801830/whu/jjh/checkpoints}
@@ -39,7 +44,7 @@ DATASET_EXTRACT_ROOT=${DATASET_EXTRACT_ROOT:-${OBS_CACHE}/dataset_extract_${RUN_
 DATASET_PATH=${DATASET_PATH:-${DATASET_EXTRACT_ROOT}/data_line_samples_33w}
 IMAGE_FOLDER=${IMAGE_FOLDER:-${DATASET_PATH}}
 LOCAL_OUTPUT_DIR=${LOCAL_OUTPUT_DIR:-${OBS_CACHE}/grpo_phase_b_lane_dinov2_output_${RUN_ID}}
-CLOUD_OUTPUT_DIR=${GRPO_RESULT_OBS:-${OUTPUT_URL%/}/grpo_results_${RUN_ID}}
+CLOUD_OUTPUT_DIR=${GRPO_RESULT_OBS:-${OSB_SHARE_PATH%/}/${RUN_ID}}
 
 # ====================== GRPO params ======================
 ACTOR_NPU_DEVICES=${ACTOR_NPU_DEVICES:-0}
@@ -191,6 +196,7 @@ echo "Recipe:        ${DATASET_PHASE} | ${MAP_TASK} | ${VISION_BACKBONE}"
 echo "SFT checkpoint:${SFT_CHECKPOINT}"
 echo "Train:         ${DATA_PATH}"
 echo "Local output:  ${LOCAL_OUTPUT_DIR}"
+echo "Run id:        ${RUN_ID}"
 echo "Cloud output:  ${CLOUD_OUTPUT_DIR}"
 echo "============================================================"
 

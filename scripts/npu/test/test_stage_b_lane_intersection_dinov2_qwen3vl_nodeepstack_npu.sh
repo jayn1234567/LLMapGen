@@ -24,6 +24,11 @@ echo "Repo root: ${REPO_ROOT}"
 echo "Recipe: ${DATASET_PHASE} | ${MAP_TASK} | ${VISION_BACKBONE}"
 # ====================== cloud paths ======================
 OUTPUT_URL=${OUTPUT_URL:?set OUTPUT_URL to the cloud output directory}
+CLUSTER_SAVE=${OUTPUT_URL}
+OSB_SHARE_PATH="${CLUSTER_SAVE}"
+echo "System defined obs share path: ${OSB_SHARE_PATH}"
+
+# Inference writes local files first, then rank0 uploads the complete result dir.
 RUN_ID=${RUN_ID:-$(date -u +%Y%m%d_%H%M%S)}
 OBS_CACHE=${OBS_CACHE:-/cache}
 MODEL_OBS_PATH=${MODEL_OBS_PATH:-obs://yw-ads-training-gy1/data/external/personal/h58801830/whu/jjh/checkpoints}
@@ -40,7 +45,7 @@ IMAGE_FOLDER=${IMAGE_FOLDER:-${DATASET_PATH}}
 TEST_JSON=${TEST_JSON:-${DATASET_PATH}/${DATASET_PHASE}/test.jsonl}
 CHECKPOINT_DOWNLOAD_ROOT=${CHECKPOINT_DOWNLOAD_ROOT:-${OBS_CACHE}/checkpoints_${RUN_ID}}
 LOCAL_OUTPUT_ROOT=${LOCAL_OUTPUT_ROOT:-${OBS_CACHE}/test_phase_b_lane_intersection_dinov2_output_${RUN_ID}}
-CLOUD_OUTPUT_DIR=${TEST_RESULT_OBS:-${OUTPUT_URL%/}/test_results_${RUN_ID}}
+CLOUD_OUTPUT_DIR=${TEST_RESULT_OBS:-${OSB_SHARE_PATH%/}/test_results_${RUN_ID}}
 
 NUM_TEST_SAMPLES=${NUM_TEST_SAMPLES:-0}
 MAX_NEW_TOKENS=${MAX_NEW_TOKENS:-2048}
@@ -141,6 +146,9 @@ python -c "import moxing as mox; mox.file.copy_parallel('${MODEL_OBS_PATH}/${VIS
 python -c "import moxing as mox; mox.file.copy('${DATASET_OBS_PATH}', '${DATASET_ZIP_PATH}')"
 mkdir -p "${DATASET_EXTRACT_ROOT}" "${CHECKPOINT_DOWNLOAD_ROOT}" "${LOCAL_OUTPUT_ROOT}"
 unzip -q "${DATASET_ZIP_PATH}" -d "${DATASET_EXTRACT_ROOT}"
+echo "Run id: ${RUN_ID}"
+echo "Local output root: ${LOCAL_OUTPUT_ROOT}"
+echo "Cloud output dir: ${CLOUD_OUTPUT_DIR}"
 
 CHECKPOINT_ITEMS=()
 CHECKPOINT_LABELS=()

@@ -1,5 +1,26 @@
 # MLLM_project 交接文档
 
+> 当前主交接信息以 `docs/交接文档.md`、`scripts/README.md` 和
+> `docs/PROJECT_STRUCTURE.md` 为准。本文件保留历史说明，并补充当前 NPU
+> 正式脚本的关键规则，避免误用旧脚本名。
+
+## 当前 NPU 正式脚本规则
+
+- 正式训练入口在 `scripts/npu/train/`，正式推理入口在
+  `scripts/npu/test/`。这些脚本已经是自包含脚本，不再调用另一个公共
+  shell wrapper。
+- SFT、GRPO、推理脚本按 stage、task、DINO backbone 命名，例如
+  `train_sft_stage_a_lane_dinov3_qwen3vl_nodeepstack_npu.sh` 和
+  `test_stage_b_lane_intersection_dinov3_qwen3vl_nodeepstack_npu.sh`。
+- 云端输出遵循参考脚本：`CLUSTER_SAVE=${OUTPUT_URL}`，
+  `OSB_SHARE_PATH="${CLUSTER_SAVE}"`。SFT rank0 写
+  `${OSB_SHARE_PATH}/${RUN_ID}`，非 0 rank 写本地
+  `${LOCAL_MODEL_SAVE_PATH}`；GRPO/推理先写本地输出目录，再上传到 OBS。
+- 不要对云端 `OUTPUT_PATH` 手动 `mkdir -p`。只创建本地缓存目录，避免
+  create-only 云端挂载上的覆盖、重命名权限问题。
+- 关键参数都写在脚本参数区，并使用同行尾注释说明用途。云端实验应直接
+  修改脚本中的变量，不要在命令外部用一次性前缀覆盖主要实验参数。
+
 ## 项目简介
 
 基于 LLaVA 架构的 BEV 道路几何理解多模态大模型。DINOv2/DINOv3 作为视觉编码器，Qwen2/Qwen3 作为语言模型，完成 BEV 图像的道路中心线重建。

@@ -141,6 +141,21 @@ Best checkpoint behavior:
 - Best candidate directories are copied from a normal `checkpoint-*` directory after that checkpoint is fully saved, and include `config.json`, `model.safetensors`, optimizer/scheduler state, `qwen_multimodal_checkpoint.json`, metadata JSON, and `_SUCCESS`.
 - NPU inference scripts resolve best checkpoints with `scripts/tools/resolve_best_checkpoint.py`. By default they try `infer_best_candidates/` first, then `eval_best_candidates/`, then `best_candidates/`, and only accept candidate directories with `_SUCCESS`.
 
+NPU cloud output behavior:
+
+- Formal NPU scripts follow the cloud reference output convention:
+  `CLUSTER_SAVE=${OUTPUT_URL}` and `OSB_SHARE_PATH="${CLUSTER_SAVE}"`.
+- SFT scripts set `CLOUD_OUTPUT_PATH=${OSB_SHARE_PATH%/}/${RUN_ID}` for rank 0
+  and create only the local cache directory `LOCAL_MODEL_SAVE_PATH` for nonzero
+  ranks. They intentionally do not run `mkdir -p "${OUTPUT_PATH}"` when
+  `OUTPUT_PATH` points at OBS/cloud output.
+- GRPO and test scripts write to `LOCAL_OUTPUT_DIR` / `LOCAL_OUTPUT_ROOT` first,
+  then upload the complete run directory to `${OSB_SHARE_PATH}` or the explicit
+  `GRPO_RESULT_OBS` / `TEST_RESULT_OBS` override.
+- Main script parameters are documented as inline comments beside the variable,
+  so edit the parameter block inside each concrete script instead of passing
+  experiment knobs as one-off shell prefixes.
+
 SwanLab logging:
 
 - SFT and GRPO scripts define `SWANLAB_ENABLE`, `SWANLAB_PROJECT`, `SWANLAB_GROUP`, `SWANLAB_JOB_TYPE`, `SWANLAB_EXPERIMENT_NAME`, `SWANLAB_MODE`, and `SWANLAB_LOG_DIR` in their parameter blocks.

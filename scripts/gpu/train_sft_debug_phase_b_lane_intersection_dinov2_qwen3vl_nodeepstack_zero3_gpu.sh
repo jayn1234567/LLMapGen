@@ -33,7 +33,7 @@ MM_PROJECTOR_LR=1e-6
 WEIGHT_DECAY=0.0
 MODEL_MAX_LENGTH=2048
 BF16=True
-COORD_MODE=auto      # auto reads meta.coord_mode; new datasets use normalized 0-1000 coordinates.
+COORD_MODE=auto  # auto reads meta.coord_mode; new datasets use normalized 0-1000 coordinates.
 COORD_RANGE=1000
 
 LORA_TARGET_SCOPE="llm"

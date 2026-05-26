@@ -10,9 +10,9 @@ SCRIPT_DIR=$(dirname "$SCRIPT_PATH")
 REPO_ROOT=$(readlink -f "${SCRIPT_DIR}/../..")
 cd "${REPO_ROOT}"
 
-VISION_BACKBONE=${VISION_BACKBONE:-dinov2}       # dinov2 or dinov3
-DATASET_PHASE=${DATASET_PHASE:-phase_a}          # phase_a or phase_b
-MAP_TASK=${MAP_TASK:-lane}                       # lane or lane_intersection
+VISION_BACKBONE=${VISION_BACKBONE:-dinov2}  # dinov2 or dinov3
+DATASET_PHASE=${DATASET_PHASE:-phase_a}     # phase_a or phase_b
+MAP_TASK=${MAP_TASK:-lane}                  # lane or lane_intersection
 DEBUG_RUN_NAME=${DEBUG_RUN_NAME:-local_debug}
 
 DATASET_ROOT=${DATASET_ROOT:-/cache/data/data_line_samples_33w}
@@ -147,10 +147,10 @@ SWANLAB_GROUP=${SWANLAB_GROUP:-debug_sft_${DATASET_PHASE}_${MAP_TASK}_${VISION_B
 SWANLAB_JOB_TYPE=${SWANLAB_JOB_TYPE:-debug_sft}
 SWANLAB_EXPERIMENT_NAME=${SWANLAB_EXPERIMENT_NAME:-debug_sft_${DATASET_PHASE}_${MAP_TASK}_${VISION_BACKBONE}}
 SWANLAB_TAGS=${SWANLAB_TAGS:-debug,sft,${DATASET_PHASE},${MAP_TASK},${VISION_BACKBONE},nodeepstack}
-SWANLAB_MODE=${SWANLAB_MODE:-}          # Empty = SwanLab default cloud behavior; use offline/local/disabled when needed.
-SWANLAB_LOG_DIR=${SWANLAB_LOG_DIR:-${OUTPUT_DIR}/swanlab} # Local SwanLab files, beside checkpoint-* and best dirs.
-SWANLAB_API_HOST=${SWANLAB_API_HOST:-}  # Optional private SwanLab API host.
-SWANLAB_WEB_HOST=${SWANLAB_WEB_HOST:-}  # Optional private SwanLab web host.
+SWANLAB_MODE=${SWANLAB_MODE:-}                             # Empty = SwanLab default cloud behavior; use offline/local/disabled when needed.
+SWANLAB_LOG_DIR=${SWANLAB_LOG_DIR:-${OUTPUT_DIR}/swanlab}  # Local SwanLab files, beside checkpoint-* and best dirs.
+SWANLAB_API_HOST=${SWANLAB_API_HOST:-}                     # Optional private SwanLab API host.
+SWANLAB_WEB_HOST=${SWANLAB_WEB_HOST:-}                     # Optional private SwanLab web host.
 export SWANLAB_API_KEY
 
 EVAL_STRATEGY_ARG=$(python -c "import inspect, transformers; print('--eval_strategy' if 'eval_strategy' in inspect.signature(transformers.TrainingArguments.__init__).parameters else '--evaluation_strategy')")

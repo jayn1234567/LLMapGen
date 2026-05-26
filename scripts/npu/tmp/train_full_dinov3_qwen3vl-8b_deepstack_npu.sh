@@ -232,29 +232,29 @@ export PYTHONPATH="$(pwd):${PYTHONPATH:-}"
 
 # ====================== training parameters ======================
 # Edit this block for experiments. Each variable is passed to train_qwen.py below.
-MM_VISION_SELECT_LAYER=-2              # --mm_vision_select_layer; -2 means use the penultimate ViT layer as main feature.
-INPUT_IMAGE_SIZE=512                   # --input_image_size; 256 BEV patch -> 512, DINOv3-L patch16 -> 32x32=1024 visual tokens.
-MM_PROJECTOR_TYPE=mlp2x_gelu           # --mm_projector_type.
-UNFREEZE_MM_VISION_TOWER=True          # --unfreeze_mm_vision_tower; True means full-param ViT training.
-DEEPSTACK_VISUAL_INDEXES="6 12 18 23"  # --deepstack_visual_indexes; fixed DeepStack layers for DINOv3-L.
-DISABLE_DEEPSTACK=${DISABLE_DEEPSTACK:-False}  # Internal wrapper override used by the no-deepstack script.
-GRADIENT_CHECKPOINTING=True            # --gradient_checkpointing; keep enabled for large full-param jobs.
-DEEPSPEED_CONFIG="scripts/deepspeed_zero3.json" # --deepspeed; ZeRO3 with gathered checkpoint saves.
-NUM_EPOCHS=6                           # --num_train_epochs.
-LR=2e-5                                # --learning_rate.
-MM_PROJECTOR_LR=2e-5                   # --mm_projector_lr; set empty in command block if not needed.
-WEIGHT_DECAY=0.0                       # --weight_decay; keep disabled for this full-param Qwen3VL+DINO recipe.
-WARMUP_RATIO=0.03                      # --warmup_ratio; about 155 warmup steps for 11w data and 465 for 33w at batch 128, 6 epochs.
-LR_SCHEDULER_TYPE=cosine               # --lr_scheduler_type.
-MODEL_MAX_LENGTH=4096                  # --model_max_length.
-SAVE_STEPS=300                         # --save_steps.
-SAVE_TOTAL_LIMIT=10                    # --save_total_limit.
-LOGGING_STEPS=10                       # --logging_steps.
-SAMPLE_SEED=42                         # --sample_seed.
-SAVE_BEST_TRAIN_LOSS=${SAVE_BEST_TRAIN_LOSS:-False} # --save_best_train_loss; train_best wrapper sets this True.
-BEST_TRAIN_LOSS_START_STEP=${BEST_TRAIN_LOSS_START_STEP:-3000} # --best_train_loss_start_step.
-BEST_TRAIN_LOSS_DIR=${BEST_TRAIN_LOSS_DIR:-best} # --best_train_loss_dir.
-USE_HF_PROGRESS_BAR=True               # --use_hf_progress_bar; True prints HF tqdm progress on console.
+MM_VISION_SELECT_LAYER=-2                                       # --mm_vision_select_layer; -2 means use the penultimate ViT layer as main feature.
+INPUT_IMAGE_SIZE=512                                            # --input_image_size; 256 BEV patch -> 512, DINOv3-L patch16 -> 32x32=1024 visual tokens.
+MM_PROJECTOR_TYPE=mlp2x_gelu                                    # --mm_projector_type.
+UNFREEZE_MM_VISION_TOWER=True                                   # --unfreeze_mm_vision_tower; True means full-param ViT training.
+DEEPSTACK_VISUAL_INDEXES="6 12 18 23"                           # --deepstack_visual_indexes; fixed DeepStack layers for DINOv3-L.
+DISABLE_DEEPSTACK=${DISABLE_DEEPSTACK:-False}                   # Internal wrapper override used by the no-deepstack script.
+GRADIENT_CHECKPOINTING=True                                     # --gradient_checkpointing; keep enabled for large full-param jobs.
+DEEPSPEED_CONFIG="scripts/deepspeed_zero3.json"                 # --deepspeed; ZeRO3 with gathered checkpoint saves.
+NUM_EPOCHS=6                                                    # --num_train_epochs.
+LR=2e-5                                                         # --learning_rate.
+MM_PROJECTOR_LR=2e-5                                            # --mm_projector_lr; set empty in command block if not needed.
+WEIGHT_DECAY=0.0                                                # --weight_decay; keep disabled for this full-param Qwen3VL+DINO recipe.
+WARMUP_RATIO=0.03                                               # --warmup_ratio; about 155 warmup steps for 11w data and 465 for 33w at batch 128, 6 epochs.
+LR_SCHEDULER_TYPE=cosine                                        # --lr_scheduler_type.
+MODEL_MAX_LENGTH=4096                                           # --model_max_length.
+SAVE_STEPS=300                                                  # --save_steps.
+SAVE_TOTAL_LIMIT=10                                             # --save_total_limit.
+LOGGING_STEPS=10                                                # --logging_steps.
+SAMPLE_SEED=42                                                  # --sample_seed.
+SAVE_BEST_TRAIN_LOSS=${SAVE_BEST_TRAIN_LOSS:-False}             # --save_best_train_loss; train_best wrapper sets this True.
+BEST_TRAIN_LOSS_START_STEP=${BEST_TRAIN_LOSS_START_STEP:-3000}  # --best_train_loss_start_step.
+BEST_TRAIN_LOSS_DIR=${BEST_TRAIN_LOSS_DIR:-best}                # --best_train_loss_dir.
+USE_HF_PROGRESS_BAR=True                                        # --use_hf_progress_bar; True prints HF tqdm progress on console.
 
 # ---------- DeepStack ----------
 DEEPSTACK_ARGS=()

@@ -26,9 +26,9 @@ echo "Repo root: ${REPO_ROOT}"
 echo "Current working path: ${PWD}"
 
 # ====================== user-editable experiment block ======================
-VISION_BACKBONE=${VISION_BACKBONE:-dinov3}     # dinov2 or dinov3.
-DATASET_PHASE=phase_b                          # Fixed Stage B.
-MAP_TASK=${MAP_TASK:-lane}                     # lane or lane_intersection.
+VISION_BACKBONE=${VISION_BACKBONE:-dinov3}  # dinov2 or dinov3.
+DATASET_PHASE=phase_b                       # Fixed Stage B.
+MAP_TASK=${MAP_TASK:-lane}                  # lane or lane_intersection.
 
 # Stage A initialization. Provide either an exact checkpoint/best directory or
 # a training output root. If a root is provided, infer_best -> eval_best -> best
@@ -45,7 +45,7 @@ DATASET_OBS_PATH=${DATASET_OBS_PATH:-obs://yw-ads-training-gy1/data/external/per
 # Batch and training recipe.
 TARGET_GLOBAL_BATCH_SIZE=${TARGET_GLOBAL_BATCH_SIZE:-128}
 PER_DEVICE_TRAIN_BATCH_SIZE=${PER_DEVICE_TRAIN_BATCH_SIZE:-4}
-NUM_EPOCHS=${NUM_EPOCHS:-2}                    # Stage B usually starts from Stage A, so default is shorter.
+NUM_EPOCHS=${NUM_EPOCHS:-2}  # Stage B usually starts from Stage A, so default is shorter.
 LR=${LR:-1e-5}
 MM_PROJECTOR_LR=${MM_PROJECTOR_LR:-1e-5}
 MM_VISION_TOWER_LR=${MM_VISION_TOWER_LR:-1e-6}
@@ -66,7 +66,7 @@ BEST_EVAL_LOSS_DIR=${BEST_EVAL_LOSS_DIR:-eval_best}
 SAVE_BEST_INFER_INDEX=${SAVE_BEST_INFER_INDEX:-True}
 BEST_INFER_INDEX_DIR=${BEST_INFER_INDEX_DIR:-infer_best}
 BEST_INFER_INDEX_METRIC=${BEST_INFER_INDEX_METRIC:-length_f1}
-BEST_INFER_INDEX_NUM_SAMPLES=${BEST_INFER_INDEX_NUM_SAMPLES:-0} # 0 means full eval.
+BEST_INFER_INDEX_NUM_SAMPLES=${BEST_INFER_INDEX_NUM_SAMPLES:-0}  # 0 means full eval.
 BEST_INFER_INDEX_EVAL_STEPS=${BEST_INFER_INDEX_EVAL_STEPS:-${SAVE_STEPS}}
 BEST_INFER_INDEX_MAX_NEW_TOKENS=${BEST_INFER_INDEX_MAX_NEW_TOKENS:-2048}
 BEST_INFER_INDEX_DEVICE=${BEST_INFER_INDEX_DEVICE:-auto}

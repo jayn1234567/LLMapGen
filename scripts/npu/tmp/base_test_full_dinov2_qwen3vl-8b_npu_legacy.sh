@@ -158,7 +158,7 @@ fi
 # out of test at runtime.
 DATASET_PHASE=${DATASET_PHASE:-phase_a}
 MAP_TASK=${MAP_TASK:-lane}
-COORD_MODE=${COORD_MODE:-auto}     # auto reads meta.coord_mode; new datasets use normalized 0-1000 coordinates.
+COORD_MODE=${COORD_MODE:-auto}  # auto reads meta.coord_mode; new datasets use normalized 0-1000 coordinates.
 COORD_RANGE=${COORD_RANGE:-1000}
 if [ -f "${DATASET_PATH}/${DATASET_PHASE}/test.jsonl" ]; then
     TEST_JSON="${DATASET_PATH}/${DATASET_PHASE}/test.jsonl"
@@ -196,7 +196,7 @@ if [ ! -f "${CHECKPOINT_DIR}/pytorch_model.bin" ] && [ ! -f "${CHECKPOINT_DIR}/m
     echo "If weights are in a subdir, you may need to adjust CHECKPOINT_DIR."
 fi
 
-NUM_TEST_SAMPLES=${NUM_TEST_SAMPLES:-0} # 0 means all final-test rows after eval split.
+NUM_TEST_SAMPLES=${NUM_TEST_SAMPLES:-0}  # 0 means all final-test rows after eval split.
 
 echo "CHECKPOINT_DIR: $CHECKPOINT_DIR"
 echo "TEST_JSON: $TEST_JSON"

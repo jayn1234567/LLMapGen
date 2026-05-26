@@ -131,10 +131,10 @@ SWANLAB_GROUP=${SWANLAB_GROUP:-debug_grpo_${DATASET_PHASE}_${MAP_TASK}_${VISION_
 SWANLAB_JOB_TYPE=${SWANLAB_JOB_TYPE:-debug_grpo}
 SWANLAB_EXPERIMENT_NAME=${SWANLAB_EXPERIMENT_NAME:-debug_grpo_${DATASET_PHASE}_${MAP_TASK}_${VISION_BACKBONE}}
 SWANLAB_TAGS=${SWANLAB_TAGS:-debug,grpo,${DATASET_PHASE},${MAP_TASK},${VISION_BACKBONE},nodeepstack}
-SWANLAB_MODE=${SWANLAB_MODE:-}          # Empty = SwanLab default cloud behavior; use offline/local/disabled when needed.
-SWANLAB_LOG_DIR=${SWANLAB_LOG_DIR:-${OUTPUT_DIR}/swanlab} # Local SwanLab files, beside checkpoint-* and merged/.
-SWANLAB_API_HOST=${SWANLAB_API_HOST:-}  # Optional private SwanLab API host.
-SWANLAB_WEB_HOST=${SWANLAB_WEB_HOST:-}  # Optional private SwanLab web host.
+SWANLAB_MODE=${SWANLAB_MODE:-}                             # Empty = SwanLab default cloud behavior; use offline/local/disabled when needed.
+SWANLAB_LOG_DIR=${SWANLAB_LOG_DIR:-${OUTPUT_DIR}/swanlab}  # Local SwanLab files, beside checkpoint-* and merged/.
+SWANLAB_API_HOST=${SWANLAB_API_HOST:-}                     # Optional private SwanLab API host.
+SWANLAB_WEB_HOST=${SWANLAB_WEB_HOST:-}                     # Optional private SwanLab web host.
 export SWANLAB_API_KEY
 
 echo "GRPO debug:"

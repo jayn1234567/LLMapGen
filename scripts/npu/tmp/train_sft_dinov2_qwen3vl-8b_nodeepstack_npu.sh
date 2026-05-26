@@ -194,8 +194,8 @@ fi
 # New datasets are split at raw-sample level and already contain train/eval/test.
 # If the dataset has phase_a/phase_b directories, use those; otherwise fall back
 # to the legacy flat train.jsonl/eval.jsonl/test.jsonl layout.
-DATASET_PHASE=${DATASET_PHASE:-phase_a}   # phase_a or phase_b.
-MAP_TASK=${MAP_TASK:-lane}                # lane or lane_intersection; used by inference/eval scripts.
+DATASET_PHASE=${DATASET_PHASE:-phase_a}  # phase_a or phase_b.
+MAP_TASK=${MAP_TASK:-lane}               # lane or lane_intersection; used by inference/eval scripts.
 
 if [ -f "${DATASET_PATH}/${DATASET_PHASE}/train.jsonl" ]; then
     TRAIN_PATH="${DATASET_PATH}/${DATASET_PHASE}/train.jsonl"
@@ -255,31 +255,31 @@ export PYTHONPATH="$(pwd):${PYTHONPATH:-}"
 
 # ====================== training parameters ======================
 # Edit this block for experiments. Each variable is passed to train_qwen.py below.
-MM_VISION_SELECT_LAYER=-2              # --mm_vision_select_layer; -2 means use the penultimate ViT layer as main feature.
-MM_PROJECTOR_TYPE=mlp2x_gelu           # --mm_projector_type.
-UNFREEZE_MM_VISION_TOWER=True          # --unfreeze_mm_vision_tower; True means full-param ViT training.
-DISABLE_DEEPSTACK=True                  # Fixed no-DeepStack mode.
-GRADIENT_CHECKPOINTING=True            # --gradient_checkpointing; keep enabled for large full-param jobs.
-DEEPSPEED_CONFIG="scripts/deepspeed_zero3.json" # --deepspeed; ZeRO3 with gathered checkpoint saves.
-NUM_EPOCHS=6                           # --num_train_epochs.
-LR=2e-5                                # --learning_rate.
-MM_PROJECTOR_LR=2e-5                   # --mm_projector_lr.
-WEIGHT_DECAY=0.0                       # --weight_decay; keep disabled for this full-param Qwen3VL+DINO recipe.
-WARMUP_RATIO=0.03                      # --warmup_ratio; about 155 warmup steps for 11w data and 465 for 33w at batch 128, 6 epochs.
-LR_SCHEDULER_TYPE=cosine               # --lr_scheduler_type.
-MODEL_MAX_LENGTH=4096                  # --model_max_length.
-SAVE_STEPS=300                         # --save_steps.
-SAVE_TOTAL_LIMIT=10                    # --save_total_limit.
-LOGGING_STEPS=10                       # --logging_steps.
-EVAL_STEPS=300                         # --eval_steps; only used when ENABLE_EVAL=True.
-SAMPLE_SEED=42                         # --sample_seed.
-SAVE_BEST_TRAIN_LOSS=${SAVE_BEST_TRAIN_LOSS:-False} # --save_best_train_loss.
-BEST_TRAIN_LOSS_START_STEP=${BEST_TRAIN_LOSS_START_STEP:-3000} # --best_train_loss_start_step.
-BEST_TRAIN_LOSS_DIR=${BEST_TRAIN_LOSS_DIR:-best} # --best_train_loss_dir.
-ENABLE_EVAL=${ENABLE_EVAL:-False}       # If True, run eval_loss on EVAL_PATH by steps.
-SAVE_BEST_EVAL_LOSS=${SAVE_BEST_EVAL_LOSS:-False} # If True with ENABLE_EVAL, maintain OUTPUT_PATH/eval_best.
+MM_VISION_SELECT_LAYER=-2                                       # --mm_vision_select_layer; -2 means use the penultimate ViT layer as main feature.
+MM_PROJECTOR_TYPE=mlp2x_gelu                                    # --mm_projector_type.
+UNFREEZE_MM_VISION_TOWER=True                                   # --unfreeze_mm_vision_tower; True means full-param ViT training.
+DISABLE_DEEPSTACK=True                                          # Fixed no-DeepStack mode.
+GRADIENT_CHECKPOINTING=True                                     # --gradient_checkpointing; keep enabled for large full-param jobs.
+DEEPSPEED_CONFIG="scripts/deepspeed_zero3.json"                 # --deepspeed; ZeRO3 with gathered checkpoint saves.
+NUM_EPOCHS=6                                                    # --num_train_epochs.
+LR=2e-5                                                         # --learning_rate.
+MM_PROJECTOR_LR=2e-5                                            # --mm_projector_lr.
+WEIGHT_DECAY=0.0                                                # --weight_decay; keep disabled for this full-param Qwen3VL+DINO recipe.
+WARMUP_RATIO=0.03                                               # --warmup_ratio; about 155 warmup steps for 11w data and 465 for 33w at batch 128, 6 epochs.
+LR_SCHEDULER_TYPE=cosine                                        # --lr_scheduler_type.
+MODEL_MAX_LENGTH=4096                                           # --model_max_length.
+SAVE_STEPS=300                                                  # --save_steps.
+SAVE_TOTAL_LIMIT=10                                             # --save_total_limit.
+LOGGING_STEPS=10                                                # --logging_steps.
+EVAL_STEPS=300                                                  # --eval_steps; only used when ENABLE_EVAL=True.
+SAMPLE_SEED=42                                                  # --sample_seed.
+SAVE_BEST_TRAIN_LOSS=${SAVE_BEST_TRAIN_LOSS:-False}             # --save_best_train_loss.
+BEST_TRAIN_LOSS_START_STEP=${BEST_TRAIN_LOSS_START_STEP:-3000}  # --best_train_loss_start_step.
+BEST_TRAIN_LOSS_DIR=${BEST_TRAIN_LOSS_DIR:-best}                # --best_train_loss_dir.
+ENABLE_EVAL=${ENABLE_EVAL:-False}                               # If True, run eval_loss on EVAL_PATH by steps.
+SAVE_BEST_EVAL_LOSS=${SAVE_BEST_EVAL_LOSS:-False}               # If True with ENABLE_EVAL, maintain OUTPUT_PATH/eval_best.
 BEST_EVAL_LOSS_DIR=${BEST_EVAL_LOSS_DIR:-eval_best}
-USE_HF_PROGRESS_BAR=True               # --use_hf_progress_bar; True prints HF tqdm progress on console.
+USE_HF_PROGRESS_BAR=True  # --use_hf_progress_bar; True prints HF tqdm progress on console.
 EVAL_STRATEGY_ARG=$(python -c "import inspect, transformers; print('--eval_strategy' if 'eval_strategy' in inspect.signature(transformers.TrainingArguments.__init__).parameters else '--evaluation_strategy')")
 
 EVAL_ARGS=()

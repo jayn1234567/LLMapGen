@@ -622,7 +622,7 @@ for index in "${!CHECKPOINT_ITEMS[@]}"; do
   echo "  [$index] ${CHECKPOINT_LABELS[$index]} -> ${CHECKPOINT_ITEMS[$index]}"
 done
 
-CHECKPOINT_COUNT=${#CHECKPOINT_ITEMS[@]}
+CHECKPOINT_COUNT=${  # CHECKPOINT_ITEMS[@]}
 for index in "${!CHECKPOINT_ITEMS[@]}"; do
   current_label="${CHECKPOINT_LABELS[$index]}"
   current_checkpoint="${CHECKPOINT_ITEMS[$index]}"

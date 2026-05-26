@@ -208,8 +208,8 @@ fi
 # New datasets are split at raw-sample level and already contain train/eval/test.
 # If the dataset has phase_a/phase_b directories, use those; otherwise fall back
 # to the legacy flat train.jsonl/eval.jsonl/test.jsonl layout.
-DATASET_PHASE=${DATASET_PHASE:-phase_a}   # phase_a or phase_b.
-MAP_TASK=${MAP_TASK:-lane}                # lane or lane_intersection; used by inference/eval scripts.
+DATASET_PHASE=${DATASET_PHASE:-phase_a}  # phase_a or phase_b.
+MAP_TASK=${MAP_TASK:-lane}               # lane or lane_intersection; used by inference/eval scripts.
 
 if [ -f "${DATASET_PATH}/${DATASET_PHASE}/train.jsonl" ]; then
     TRAIN_PATH="${DATASET_PATH}/${DATASET_PHASE}/train.jsonl"
@@ -269,55 +269,55 @@ export PYTHONPATH="$(pwd):${PYTHONPATH:-}"
 
 # ====================== training parameters ======================
 # Edit this block for experiments. Each variable is passed to train_qwen.py below.
-MM_VISION_SELECT_LAYER=-2              # --mm_vision_select_layer; -2 means use the penultimate ViT layer as main feature.
-INPUT_IMAGE_SIZE=512                   # --input_image_size; 256 BEV patch -> 512, DINOv3-L patch16 -> 32x32=1024 visual tokens.
-MM_PROJECTOR_TYPE=mlp2x_gelu           # --mm_projector_type.
-UNFREEZE_MM_VISION_TOWER=True          # --unfreeze_mm_vision_tower; True means full-param ViT training.
-DISABLE_DEEPSTACK=True                  # Fixed no-DeepStack mode.
-GRADIENT_CHECKPOINTING=True            # --gradient_checkpointing; keep enabled for large full-param jobs.
-DEEPSPEED_CONFIG="scripts/deepspeed_zero3.json" # --deepspeed; ZeRO3 with gathered checkpoint saves.
-NUM_EPOCHS=3                           # --num_train_epochs; first 33w run targets roughly the old 3.4w/6ep update count.
-LR=2e-5                                # --learning_rate for LLM and any non-special trainable modules.
-MM_PROJECTOR_LR=2e-5                   # --mm_projector_lr; projector follows the LLM LR.
-MM_VISION_TOWER_LR=2e-6                # --mm_vision_tower_lr; keep DINO updates conservative during full-param finetune.
-WEIGHT_DECAY=0.0                       # --weight_decay; keep disabled for this full-param Qwen3VL+DINO recipe.
-WARMUP_RATIO=0.03                      # --warmup_ratio; about 232 warmup steps for 33w data, batch 128, 3 epochs.
-LR_SCHEDULER_TYPE=cosine               # --lr_scheduler_type.
-MODEL_MAX_LENGTH=4096                  # --model_max_length.
-SAVE_STEPS=500                         # --save_steps; should be aligned with EVAL_STEPS when keeping eval_best.
-SAVE_TOTAL_LIMIT=${SAVE_TOTAL_LIMIT:-10} # --save_total_limit; deletes old regular checkpoint-* dirs.
-LOGGING_STEPS=10                       # --logging_steps.
-EVAL_STEPS=500                         # --eval_steps; eval loss is computed during training when ENABLE_EVAL=True.
-SAMPLE_SEED=42                         # --sample_seed.
-SAVE_BEST_TRAIN_LOSS=${SAVE_BEST_TRAIN_LOSS:-False} # --save_best_train_loss.
-BEST_TRAIN_LOSS_START_STEP=${BEST_TRAIN_LOSS_START_STEP:-3000} # --best_train_loss_start_step.
-BEST_TRAIN_LOSS_DIR=${BEST_TRAIN_LOSS_DIR:-best} # --best_train_loss_dir.
-ENABLE_EVAL=${ENABLE_EVAL:-True}        # If True, run eval_loss on EVAL_PATH by steps.
-SAVE_BEST_EVAL_LOSS=${SAVE_BEST_EVAL_LOSS:-True} # Maintain OUTPUT_PATH/eval_best.
+MM_VISION_SELECT_LAYER=-2                                       # --mm_vision_select_layer; -2 means use the penultimate ViT layer as main feature.
+INPUT_IMAGE_SIZE=512                                            # --input_image_size; 256 BEV patch -> 512, DINOv3-L patch16 -> 32x32=1024 visual tokens.
+MM_PROJECTOR_TYPE=mlp2x_gelu                                    # --mm_projector_type.
+UNFREEZE_MM_VISION_TOWER=True                                   # --unfreeze_mm_vision_tower; True means full-param ViT training.
+DISABLE_DEEPSTACK=True                                          # Fixed no-DeepStack mode.
+GRADIENT_CHECKPOINTING=True                                     # --gradient_checkpointing; keep enabled for large full-param jobs.
+DEEPSPEED_CONFIG="scripts/deepspeed_zero3.json"                 # --deepspeed; ZeRO3 with gathered checkpoint saves.
+NUM_EPOCHS=3                                                    # --num_train_epochs; first 33w run targets roughly the old 3.4w/6ep update count.
+LR=2e-5                                                         # --learning_rate for LLM and any non-special trainable modules.
+MM_PROJECTOR_LR=2e-5                                            # --mm_projector_lr; projector follows the LLM LR.
+MM_VISION_TOWER_LR=2e-6                                         # --mm_vision_tower_lr; keep DINO updates conservative during full-param finetune.
+WEIGHT_DECAY=0.0                                                # --weight_decay; keep disabled for this full-param Qwen3VL+DINO recipe.
+WARMUP_RATIO=0.03                                               # --warmup_ratio; about 232 warmup steps for 33w data, batch 128, 3 epochs.
+LR_SCHEDULER_TYPE=cosine                                        # --lr_scheduler_type.
+MODEL_MAX_LENGTH=4096                                           # --model_max_length.
+SAVE_STEPS=500                                                  # --save_steps; should be aligned with EVAL_STEPS when keeping eval_best.
+SAVE_TOTAL_LIMIT=${SAVE_TOTAL_LIMIT:-10}                        # --save_total_limit; deletes old regular checkpoint-* dirs.
+LOGGING_STEPS=10                                                # --logging_steps.
+EVAL_STEPS=500                                                  # --eval_steps; eval loss is computed during training when ENABLE_EVAL=True.
+SAMPLE_SEED=42                                                  # --sample_seed.
+SAVE_BEST_TRAIN_LOSS=${SAVE_BEST_TRAIN_LOSS:-False}             # --save_best_train_loss.
+BEST_TRAIN_LOSS_START_STEP=${BEST_TRAIN_LOSS_START_STEP:-3000}  # --best_train_loss_start_step.
+BEST_TRAIN_LOSS_DIR=${BEST_TRAIN_LOSS_DIR:-best}                # --best_train_loss_dir.
+ENABLE_EVAL=${ENABLE_EVAL:-True}                                # If True, run eval_loss on EVAL_PATH by steps.
+SAVE_BEST_EVAL_LOSS=${SAVE_BEST_EVAL_LOSS:-True}                # Maintain OUTPUT_PATH/eval_best.
 BEST_EVAL_LOSS_DIR=${BEST_EVAL_LOSS_DIR:-eval_best}
-SAVE_BEST_INFER_INDEX=${SAVE_BEST_INFER_INDEX:-False} # If True, run generation infer_index eval after saved checkpoints and maintain OUTPUT_PATH/infer_best_candidates.
+SAVE_BEST_INFER_INDEX=${SAVE_BEST_INFER_INDEX:-False}  # If True, run generation infer_index eval after saved checkpoints and maintain OUTPUT_PATH/infer_best_candidates.
 BEST_INFER_INDEX_DIR=${BEST_INFER_INDEX_DIR:-infer_best}
-BEST_INFER_INDEX_METRIC=${BEST_INFER_INDEX_METRIC:-length_f1} # Main metric for missing/unaligned centerlines; higher is better.
-BEST_INFER_INDEX_NUM_SAMPLES=${BEST_INFER_INDEX_NUM_SAMPLES:-0} # phase_a eval size; 0 means all eval rows, recommended for best selection.
-BEST_INFER_INDEX_EVAL_STEPS=${BEST_INFER_INDEX_EVAL_STEPS:-${SAVE_STEPS}} # 0 means every saved checkpoint; default matches SAVE_STEPS.
+BEST_INFER_INDEX_METRIC=${BEST_INFER_INDEX_METRIC:-length_f1}              # Main metric for missing/unaligned centerlines; higher is better.
+BEST_INFER_INDEX_NUM_SAMPLES=${BEST_INFER_INDEX_NUM_SAMPLES:-0}            # phase_a eval size; 0 means all eval rows, recommended for best selection.
+BEST_INFER_INDEX_EVAL_STEPS=${BEST_INFER_INDEX_EVAL_STEPS:-${SAVE_STEPS}}  # 0 means every saved checkpoint; default matches SAVE_STEPS.
 BEST_INFER_INDEX_MAX_NEW_TOKENS=${BEST_INFER_INDEX_MAX_NEW_TOKENS:-2048}
 BEST_INFER_INDEX_DEVICE=${BEST_INFER_INDEX_DEVICE:-auto}
 BEST_INFER_INDEX_WORK_DIR=${BEST_INFER_INDEX_WORK_DIR:-${OUTPUT_PATH}/infer_index_eval}
-BEST_CHECKPOINT_SAVE_MODE=${BEST_CHECKPOINT_SAVE_MODE:-rotating_create_only} # New best creates a unique dir, then old successful best dirs are deleted.
-BEST_CHECKPOINT_KEEP_LIMIT=${BEST_CHECKPOINT_KEEP_LIMIT:-1} # Keep only the latest successful best candidate by default.
-USE_HF_PROGRESS_BAR=True               # --use_hf_progress_bar; True prints HF tqdm progress on console.
-SWANLAB_ENABLE=${SWANLAB_ENABLE:-False} # --swanlab_enable; enable SwanLab monitoring when True.
-SWANLAB_API_KEY=${SWANLAB_API_KEY:-"5gIH7zqSwmo8dl1Ia5vRN"}  # Runtime API key; can be overridden by exporting SWANLAB_API_KEY.
-SWANLAB_PROJECT=${SWANLAB_PROJECT:-unimapgen_v3} # One SwanLab project for all SFT/GRPO runs.
-SWANLAB_WORKSPACE=${SWANLAB_WORKSPACE:-} # Optional SwanLab workspace/org.
-SWANLAB_GROUP=${SWANLAB_GROUP:-sft_${DATASET_PHASE}_${MAP_TASK}_dinov3_nodeepstack} # Groups related runs in the same project.
-SWANLAB_JOB_TYPE=${SWANLAB_JOB_TYPE:-sft} # SwanLab job type for filtering.
+BEST_CHECKPOINT_SAVE_MODE=${BEST_CHECKPOINT_SAVE_MODE:-rotating_create_only}    # New best creates a unique dir, then old successful best dirs are deleted.
+BEST_CHECKPOINT_KEEP_LIMIT=${BEST_CHECKPOINT_KEEP_LIMIT:-1}                     # Keep only the latest successful best candidate by default.
+USE_HF_PROGRESS_BAR=True                                                        # --use_hf_progress_bar; True prints HF tqdm progress on console.
+SWANLAB_ENABLE=${SWANLAB_ENABLE:-False}                                         # --swanlab_enable; enable SwanLab monitoring when True.
+SWANLAB_API_KEY=${SWANLAB_API_KEY:-"5gIH7zqSwmo8dl1Ia5vRN"}                     # Runtime API key; can be overridden by exporting SWANLAB_API_KEY.
+SWANLAB_PROJECT=${SWANLAB_PROJECT:-unimapgen_v3}                                # One SwanLab project for all SFT/GRPO runs.
+SWANLAB_WORKSPACE=${SWANLAB_WORKSPACE:-}                                        # Optional SwanLab workspace/org.
+SWANLAB_GROUP=${SWANLAB_GROUP:-sft_${DATASET_PHASE}_${MAP_TASK}_dinov3_nodeepstack}  # Groups related runs in the same project.
+SWANLAB_JOB_TYPE=${SWANLAB_JOB_TYPE:-sft}                                       # SwanLab job type for filtering.
 SWANLAB_EXPERIMENT_NAME=${SWANLAB_EXPERIMENT_NAME:-sft_33w_${DATASET_PHASE}_${MAP_TASK}_dinov3_qwen3vl8b_nodeepstack}
 SWANLAB_TAGS=${SWANLAB_TAGS:-sft,33w,${DATASET_PHASE},${MAP_TASK},dinov3,qwen3vl8b,nodeepstack}
-SWANLAB_MODE=${SWANLAB_MODE:-}          # Empty = SwanLab default cloud behavior; use offline/local/disabled when needed.
-SWANLAB_LOG_DIR=${SWANLAB_LOG_DIR:-${OUTPUT_PATH}/swanlab} # Local SwanLab files, beside checkpoint-* and best dirs.
-SWANLAB_API_HOST=${SWANLAB_API_HOST:-}  # Optional private SwanLab API host.
-SWANLAB_WEB_HOST=${SWANLAB_WEB_HOST:-}  # Optional private SwanLab web host.
+SWANLAB_MODE=${SWANLAB_MODE:-}                              # Empty = SwanLab default cloud behavior; use offline/local/disabled when needed.
+SWANLAB_LOG_DIR=${SWANLAB_LOG_DIR:-${OUTPUT_PATH}/swanlab}  # Local SwanLab files, beside checkpoint-* and best dirs.
+SWANLAB_API_HOST=${SWANLAB_API_HOST:-}                      # Optional private SwanLab API host.
+SWANLAB_WEB_HOST=${SWANLAB_WEB_HOST:-}                      # Optional private SwanLab web host.
 export SWANLAB_API_KEY
 EVAL_STRATEGY_ARG=$(python -c "import inspect, transformers; print('--eval_strategy' if 'eval_strategy' in inspect.signature(transformers.TrainingArguments.__init__).parameters else '--evaluation_strategy')")
 

@@ -27,8 +27,8 @@ REPO_ROOT=$(cd "${SCRIPT_DIR}/../../.." && pwd)
 cd "${REPO_ROOT}"
 
 # ====================== standalone default selector ======================
-VISION_BACKBONE=${VISION_BACKBONE:-dinov2}                  # dinov2 or dinov3.
-DATASET_PHASE=${DATASET_PHASE:-phase_a}                  # phase_a or phase_b.
+VISION_BACKBONE=${VISION_BACKBONE:-dinov2}  # dinov2 or dinov3.
+DATASET_PHASE=${DATASET_PHASE:-phase_a}     # phase_a or phase_b.
 MAP_TASK=${MAP_TASK:-lane}                  # lane or lane_intersection.
 
 # ====================== editable cloud/test defaults ======================
@@ -653,7 +653,7 @@ for index in "${!CHECKPOINT_ITEMS[@]}"; do
   echo "  [$index] ${CHECKPOINT_LABELS[$index]} -> ${CHECKPOINT_ITEMS[$index]}"
 done
 
-CHECKPOINT_COUNT=${#CHECKPOINT_ITEMS[@]}
+CHECKPOINT_COUNT=${  # CHECKPOINT_ITEMS[@]}
 for index in "${!CHECKPOINT_ITEMS[@]}"; do
   current_label="${CHECKPOINT_LABELS[$index]}"
   current_checkpoint="${CHECKPOINT_ITEMS[$index]}"

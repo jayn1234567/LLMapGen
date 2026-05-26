@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # set -euo pipefail
 
-# Common NPU inference launcher for explicit stage/task/vision wrappers.
+# Standalone NPU inference launcher for explicit stage/task/vision runs.
 #
 # Cloud mode:
 #   When OUTPUT_URL is set by the NPU platform, this script installs the same
@@ -318,8 +318,8 @@ echo ">>>>>>>>>>>>>>>>>>>>>>>>>>>>> machine information >>>>>>>>>>>>>>>>>>>>>>>>
 
 # ====================== paths and downloads ======================
 MODEL_OBS_PATH=${MODEL_OBS_PATH:-obs://yw-ads-training-gy1/data/external/personal/h58801830/whu/jjh/checkpoints}
-DATASET_OBS_PATH=${DATASET_OBS_PATH:-obs://yw-ads-training-gy1/data/external/personal/h58801830/whu/jjh/MLLM20260427_rc_jjh.zip}
-DATASET_DIR_NAME=${DATASET_DIR_NAME:-MLLM20260427_rc_jjh}
+DATASET_OBS_PATH=${DATASET_OBS_PATH:-obs://yw-ads-training-gy1/data/external/personal/h58801830/whu/jjh/data/data_line_samples_33w.zip}
+DATASET_DIR_NAME=${DATASET_DIR_NAME:-data_line_samples_33w}
 TRAINED_CHECKPOINT_OBS=${TRAINED_CHECKPOINT_OBS:-${CHECKPOINT_OBS:-}}
 CHECKPOINT_NAMES=${CHECKPOINT_NAMES:-}
 CHECKPOINT_OBS_LIST=${CHECKPOINT_OBS_LIST:-}
@@ -342,7 +342,7 @@ esac
 if [[ "${CLOUD_MODE}" == "True" ]]; then
   DATASET_EXTRACT_ROOT=${DATASET_EXTRACT_ROOT:-${OBS_CACHE}/dataset_extract_${RUN_ID}}
   DATASET_ZIP_PATH=${DATASET_ZIP_PATH:-${OBS_CACHE}/dataset_${RUN_ID}.zip}
-  DATASET_PATH=${DATASET_PATH:-${DATASET_EXTRACT_ROOT}/${DATASET_DIR_NAME}}
+  DATASET_PATH=${DATASET_PATH:-${DATASET_EXTRACT_ROOT}/data_line_samples_33w}
   IMAGE_FOLDER=${IMAGE_FOLDER:-${DATASET_PATH}}
 
   echo ">>>>>>>>>>>>>>>>>>>>>>>>>>>>> Downloading vision tower >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>"

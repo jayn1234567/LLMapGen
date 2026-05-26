@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
-set -euo pipefail
+# set -euo pipefail
 
-# Common Ascend NPU GRPO launcher for explicit stage/task/vision wrappers.
+# Standalone Ascend NPU GRPO launcher for explicit stage/task/vision runs.
 #
 # Architecture:
 #   multimodal actor on Ascend NPU -> prompt embeddings -> vLLM-Ascend rollout
 #   -> map reward -> GRPO LoRA update -> adapter / merged checkpoint export.
 #
-# Required wrapper variables:
+# Required run variables:
 #   VISION_BACKBONE=dinov2|dinov3
 #   DATASET_PHASE=phase_a|phase_b
 #   MAP_TASK=lane|lane_intersection
@@ -162,8 +162,8 @@ fi
 
 # ====================== paths and cloud downloads ======================
 MODEL_OBS_PATH=${MODEL_OBS_PATH:-obs://yw-ads-training-gy1/data/external/personal/h58801830/whu/jjh/checkpoints}
-DATASET_OBS_PATH=${DATASET_OBS_PATH:-obs://yw-ads-training-gy1/data/external/personal/h58801830/whu/jjh/MLLM20260427_rc_jjh.zip}
-DATASET_DIR_NAME=${DATASET_DIR_NAME:-MLLM20260427_rc_jjh}
+DATASET_OBS_PATH=${DATASET_OBS_PATH:-obs://yw-ads-training-gy1/data/external/personal/h58801830/whu/jjh/data/data_line_samples_33w.zip}
+DATASET_DIR_NAME=${DATASET_DIR_NAME:-data_line_samples_33w}
 SFT_CHECKPOINT_OBS=${SFT_CHECKPOINT_OBS:-${TRAINED_CHECKPOINT_OBS:-${CHECKPOINT_OBS:-}}}
 
 case "${VISION_BACKBONE}" in
@@ -184,7 +184,7 @@ esac
 if [[ "${CLOUD_MODE}" == "True" ]]; then
   DATASET_EXTRACT_ROOT=${DATASET_EXTRACT_ROOT:-${OBS_CACHE}/dataset_extract_${RUN_ID}}
   DATASET_ZIP_PATH=${DATASET_ZIP_PATH:-${OBS_CACHE}/dataset_${RUN_ID}.zip}
-  DATASET_PATH=${DATASET_PATH:-${DATASET_EXTRACT_ROOT}/${DATASET_DIR_NAME}}
+  DATASET_PATH=${DATASET_PATH:-${DATASET_EXTRACT_ROOT}/data_line_samples_33w}
   IMAGE_FOLDER=${IMAGE_FOLDER:-${DATASET_PATH}}
 
   echo ">>>>>>>>>>>>>>>>>>>>>>>>>>>>> Downloading vision tower >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>"

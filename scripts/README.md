@@ -3,8 +3,8 @@
 Top-level `scripts/` now keeps only shared configs and this README. Runnable
 scripts live under platform/purpose folders:
 
-- `scripts/npu/train/`: current NPU SFT/GRPO training entrypoints and base recipes.
-- `scripts/npu/test/`: current NPU inference/eval entrypoints and base recipes.
+- `scripts/npu/train/`: current self-contained NPU SFT/GRPO training entrypoints.
+- `scripts/npu/test/`: current self-contained NPU inference/eval entrypoints.
 - `scripts/gpu/`: local GPU debug, smoke-test, and inference scripts.
 - `scripts/tools/`: Python tool implementations.
 - `scripts/data/`: dataset helper scripts.
@@ -34,24 +34,27 @@ NPU train entrypoints:
   - `scripts/npu/train/train_sft_stage_b_lane_intersection_dinov2_qwen3vl_nodeepstack_npu.sh`
   - `scripts/npu/train/train_sft_stage_a_lane_intersection_dinov3_qwen3vl_nodeepstack_npu.sh`
   - `scripts/npu/train/train_sft_stage_b_lane_intersection_dinov3_qwen3vl_nodeepstack_npu.sh`
-- GRPO wrappers use the same stage/task/vision naming:
+- Standalone Stage-B-from-Stage-A SFT:
+  - `scripts/npu/train/train_sft_stage_b_from_stage_a_qwen3vl_nodeepstack_npu.sh`
+  - This script is also self-contained. Set `VISION_BACKBONE`, `MAP_TASK`, and either `STAGE_A_CHECKPOINT_OBS_PATH` or `STAGE_A_CHECKPOINT_PATH` inside the script before launch.
+- GRPO scripts use the same stage/task/vision naming:
   - `scripts/npu/train/train_grpo_stage_a_lane_dinov2_qwen3vl_nodeepstack_npu.sh`
   - `scripts/npu/train/train_grpo_stage_b_lane_dinov2_qwen3vl_nodeepstack_npu.sh`
   - `scripts/npu/train/train_grpo_stage_a_lane_dinov3_qwen3vl_nodeepstack_npu.sh`
   - `scripts/npu/train/train_grpo_stage_b_lane_dinov3_qwen3vl_nodeepstack_npu.sh`
-  - the four `*_lane_intersection_*` GRPO wrappers mirror the SFT names.
+  - the four `*_lane_intersection_*` GRPO scripts mirror the SFT names.
 
 NPU test entrypoints mirror the same matrix under `scripts/npu/test/`, for example:
 
 - `scripts/npu/test/test_stage_a_lane_dinov2_qwen3vl_nodeepstack_npu.sh`
 - `scripts/npu/test/test_stage_b_lane_intersection_dinov3_qwen3vl_nodeepstack_npu.sh`
 
-Each concrete test wrapper, such as
-`scripts/npu/test/test_stage_a_lane_dinov2_qwen3vl_nodeepstack_npu.sh`,
-contains its own editable parameter block for dataset OBS paths, dataset folder
-name, checkpoint OBS/local paths, output path, and sample count. Edit the
-concrete stage/task/backbone script you plan to launch; `run_infer_nodeepstack_npu.sh`
-is the shared execution implementation and should not need per-job edits.
+Each concrete train/test script is now standalone. For example,
+`scripts/npu/test/test_stage_a_lane_dinov2_qwen3vl_nodeepstack_npu.sh`
+contains its own editable parameter block plus the full download, inference,
+visualization, metric, and upload flow. Edit the concrete stage/task/backbone
+script you plan to launch; it no longer dispatches through a second shell
+launcher.
 
 Local path inputs:
 
@@ -65,8 +68,9 @@ Local path inputs:
 
 Cloud/OBS inputs:
 
-- `DATASET_OBS_PATH`: OBS dataset zip path.
-- `DATASET_DIR_NAME`: directory name expected after unzip, for example `MLLM20260427_rc_jjh`.
+- `DATASET_OBS_PATH`: OBS dataset zip path. Current NPU train/test defaults use `obs://yw-ads-training-gy1/data/external/personal/h58801830/whu/jjh/data/data_line_samples_33w.zip`.
+- `DATASET_DIR_NAME`: directory name expected after unzip, currently `data_line_samples_33w`.
+- `DATASET_PATH`: by default `${DATASET_EXTRACT_ROOT}/data_line_samples_33w` after unzip.
 - `MODEL_OBS_PATH`: OBS root containing DINO model directories.
 - `CHECKPOINT_OBS_LIST`: comma/semicolon/newline separated full OBS checkpoint dirs.
 - `TRAINED_CHECKPOINT_OBS`: one OBS training output root.
@@ -92,7 +96,7 @@ before patch visualization, whole-map stitching, and `eval.json`. This keeps
 left/top state-update dependencies inside each original map intact while still
 using multiple cards.
 
-The SFT train wrappers call the 33w no-DeepStack NPU recipes after setting `DATASET_PHASE` and `MAP_TASK`. The GRPO train wrappers use the formal vLLM prompt-embedding rollout path on Ascend through vLLM-Ascend; they are not HF-local generation scripts and no longer require a CUDA compatibility escape hatch. The NPU GRPO base script installs/uses the NPU RL stack and separates actor and rollout devices with `ACTOR_NPU_DEVICES` and `ROLLOUT_NPU_DEVICES`.
+The concrete SFT train scripts now contain the full 33w no-DeepStack NPU recipe after pinning `DATASET_PHASE` and `MAP_TASK`. The concrete GRPO train scripts contain the formal vLLM prompt-embedding rollout path on Ascend through vLLM-Ascend; they are not HF-local generation scripts and no longer require a CUDA compatibility escape hatch. The NPU GRPO script installs/uses the NPU RL stack and separates actor and rollout devices with `ACTOR_NPU_DEVICES` and `ROLLOUT_NPU_DEVICES`.
 
 Training mode in filenames:
 
@@ -135,7 +139,7 @@ Best checkpoint behavior:
 - This mode never renames or replaces files in the output mount. It only creates the new best candidate and then deletes older successful candidates, which matches cloud mounts that allow create/delete but not rename/replace.
 - Regular `checkpoint-*` rotation still uses `SAVE_TOTAL_LIMIT` and may delete old normal checkpoints; current NPU SFT scripts default it to 10.
 - Best candidate directories are copied from a normal `checkpoint-*` directory after that checkpoint is fully saved, and include `config.json`, `model.safetensors`, optimizer/scheduler state, `qwen_multimodal_checkpoint.json`, metadata JSON, and `_SUCCESS`.
-- NPU inference wrappers resolve best checkpoints with `scripts/tools/resolve_best_checkpoint.py`. By default they try `infer_best_candidates/` first, then `eval_best_candidates/`, then `best_candidates/`, and only accept candidate directories with `_SUCCESS`.
+- NPU inference scripts resolve best checkpoints with `scripts/tools/resolve_best_checkpoint.py`. By default they try `infer_best_candidates/` first, then `eval_best_candidates/`, then `best_candidates/`, and only accept candidate directories with `_SUCCESS`.
 
 SwanLab logging:
 

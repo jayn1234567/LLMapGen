@@ -23,7 +23,9 @@ echo "Script path: ${SCRIPT_PATH}"
 echo "Repo root: ${REPO_ROOT}"
 echo "Recipe: ${DATASET_PHASE} | ${MAP_TASK} | ${VISION_BACKBONE}"
 # ====================== cloud paths ======================
-OUTPUT_URL=${OUTPUT_URL:?set OUTPUT_URL to the cloud output directory}
+# OUTPUT_URL is injected by the cloud training platform.
+# Keep the reference-script convention: mirror it into OSB_SHARE_PATH,
+# then place cloud outputs under OSB_SHARE_PATH/RUN_ID.
 CLUSTER_SAVE=${OUTPUT_URL}
 OSB_SHARE_PATH="${CLUSTER_SAVE}"
 echo "System defined obs share path: ${OSB_SHARE_PATH}"
@@ -47,6 +49,10 @@ LOCAL_MODEL_SAVE_PATH=${LOCAL_MODEL_SAVE_PATH:-${LOCAL_MODEL_SAVE_ROOT}/${RUN_ID
 QWEN_PATH=${QWEN_PATH:-${OBS_CACHE}/checkpoints/Qwen3-VL-8B-Instruct}
 
 # ====================== training params ======================
+# Main knobs for this SFT recipe. Edit values here instead of passing one-off shell prefixes.
+# TARGET_GLOBAL_BATCH_SIZE is the effective batch across all nodes and NPUs.
+# SAVE_STEPS/SAVE_TOTAL_LIMIT control regular checkpoint-* retention.
+# BEST_* options control train-loss, eval-loss, or infer-index best checkpoint folders.
 TARGET_GLOBAL_BATCH_SIZE=${TARGET_GLOBAL_BATCH_SIZE:-128}
 PER_DEVICE_TRAIN_BATCH_SIZE=${PER_DEVICE_TRAIN_BATCH_SIZE:-4}
 NUM_EPOCHS=${NUM_EPOCHS:-3}

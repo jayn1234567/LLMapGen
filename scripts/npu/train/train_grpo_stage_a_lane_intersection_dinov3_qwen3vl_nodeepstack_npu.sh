@@ -23,7 +23,9 @@ echo "Script path: ${SCRIPT_PATH}"
 echo "Repo root: ${REPO_ROOT}"
 echo "Recipe: ${DATASET_PHASE} | ${MAP_TASK} | ${VISION_BACKBONE}"
 # ====================== cloud paths ======================
-OUTPUT_URL=${OUTPUT_URL:?set OUTPUT_URL to the cloud output directory}
+# OUTPUT_URL is injected by the cloud training platform.
+# Keep the reference-script convention: mirror it into OSB_SHARE_PATH,
+# then place cloud outputs under OSB_SHARE_PATH/RUN_ID.
 CLUSTER_SAVE=${OUTPUT_URL}
 OSB_SHARE_PATH="${CLUSTER_SAVE}"
 echo "System defined obs share path: ${OSB_SHARE_PATH}"
@@ -47,6 +49,9 @@ LOCAL_OUTPUT_DIR=${LOCAL_OUTPUT_DIR:-${OBS_CACHE}/grpo_phase_a_lane_intersection
 CLOUD_OUTPUT_DIR=${GRPO_RESULT_OBS:-${OSB_SHARE_PATH%/}/${RUN_ID}}
 
 # ====================== GRPO params ======================
+# Main knobs for this GRPO recipe. Edit values here instead of passing one-off shell prefixes.
+# ACTOR_NPU_DEVICES and ROLLOUT_NPU_DEVICES select the training actor and rollout engine devices.
+# KL_BETA controls reference-policy regularization; reward weights are task-specific.
 ACTOR_NPU_DEVICES=${ACTOR_NPU_DEVICES:-0}
 ROLLOUT_NPU_DEVICES=${ROLLOUT_NPU_DEVICES:-1}
 NUM_GENERATIONS=${NUM_GENERATIONS:-2}

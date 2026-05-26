@@ -23,7 +23,9 @@ echo "Script path: ${SCRIPT_PATH}"
 echo "Repo root: ${REPO_ROOT}"
 echo "Recipe: ${DATASET_PHASE} | ${MAP_TASK} | ${VISION_BACKBONE}"
 # ====================== cloud paths ======================
-OUTPUT_URL=${OUTPUT_URL:?set OUTPUT_URL to the cloud output directory}
+# OUTPUT_URL is injected by the cloud training platform.
+# Keep the reference-script convention: mirror it into OSB_SHARE_PATH,
+# then place cloud outputs under OSB_SHARE_PATH/RUN_ID.
 CLUSTER_SAVE=${OUTPUT_URL}
 OSB_SHARE_PATH="${CLUSTER_SAVE}"
 echo "System defined obs share path: ${OSB_SHARE_PATH}"
@@ -47,6 +49,10 @@ CHECKPOINT_DOWNLOAD_ROOT=${CHECKPOINT_DOWNLOAD_ROOT:-${OBS_CACHE}/checkpoints_${
 LOCAL_OUTPUT_ROOT=${LOCAL_OUTPUT_ROOT:-${OBS_CACHE}/test_phase_a_lane_dinov3_output_${RUN_ID}}
 CLOUD_OUTPUT_DIR=${TEST_RESULT_OBS:-${OSB_SHARE_PATH%/}/test_results_${RUN_ID}}
 
+# ====================== inference params ======================
+# CHECKPOINT_OBS_LIST or CHECKPOINT_DIRS can contain one or multiple checkpoints.
+# NUM_TEST_SAMPLES=0 means run the full test jsonl.
+# Patch json, visualization, metrics, and stitched maps are written locally first, then uploaded.
 NUM_TEST_SAMPLES=${NUM_TEST_SAMPLES:-0}
 MAX_NEW_TOKENS=${MAX_NEW_TOKENS:-2048}
 COORD_MODE=${COORD_MODE:-auto}

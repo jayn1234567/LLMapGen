@@ -145,10 +145,10 @@ NPU cloud output behavior:
 
 - Formal NPU scripts follow the cloud reference output convention:
   `CLUSTER_SAVE=${OUTPUT_URL}` and `OSB_SHARE_PATH="${CLUSTER_SAVE}"`.
-- SFT scripts set `CLOUD_OUTPUT_PATH=${OSB_SHARE_PATH%/}/${RUN_ID}` for rank 0
-  and create only the local cache directory `LOCAL_MODEL_SAVE_PATH` for nonzero
-  ranks. They intentionally do not run `mkdir -p "${OUTPUT_PATH}"` when
-  `OUTPUT_PATH` points at OBS/cloud output.
+- SFT scripts train into local `LOCAL_MODEL_SAVE_PATH` on every node. After
+  successful training, only `NODE_RANK=0` moves its local run directory to
+  `CLOUD_OUTPUT_PATH=${OSB_SHARE_PATH%/}/${RUN_ID}`. This keeps checkpoint
+  rotation on local `/cache` instead of the ModelArts OBS-mounted output path.
 - GRPO and test scripts write to `LOCAL_OUTPUT_DIR` / `LOCAL_OUTPUT_ROOT` first,
   then upload the complete run directory to `${OSB_SHARE_PATH}` or the explicit
   `GRPO_RESULT_OBS` / `TEST_RESULT_OBS` override.

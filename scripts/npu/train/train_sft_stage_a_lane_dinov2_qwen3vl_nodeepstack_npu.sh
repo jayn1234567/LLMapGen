@@ -155,13 +155,10 @@ MASTER_PORT=${MASTER_PORT:-6060}
 export NNODES NODE_RANK NPROC_PER_NODE MASTER_ADDR MASTER_PORT
 export RDZV_ID=${RDZV_ID:-sft_phase_a_lane_dinov2_${RUN_ID}}
 mkdir -p "${LOCAL_MODEL_SAVE_PATH}"
-if [[ "${NODE_RANK}" == "0" ]]; then
-  OUTPUT_PATH="${CLOUD_OUTPUT_PATH}"
-else
-  OUTPUT_PATH="${LOCAL_MODEL_SAVE_PATH}"
-fi
+OUTPUT_PATH="${LOCAL_MODEL_SAVE_PATH}"
 echo "Run id: ${RUN_ID}"
-echo "Output path: ${OUTPUT_PATH}"
+echo "Local output path: ${OUTPUT_PATH}"
+echo "Cloud output path: ${CLOUD_OUTPUT_PATH}"
 SWANLAB_LOG_DIR=${SWANLAB_LOG_DIR:-${OUTPUT_PATH}/swanlab}  # Local SwanLab log directory.
 
 # ====================== downloads ======================
@@ -283,3 +280,26 @@ torchrun \
   --ddp_find_unused_parameters False \
   --ddp_backend hccl \
   --deepspeed "${DEEPSPEED_CONFIG}"
+
+TRAIN_EXIT=$?
+if [ "${TRAIN_EXIT}" -ne 0 ]; then
+  echo "Training failed with exit code ${TRAIN_EXIT}"
+  exit "${TRAIN_EXIT}"
+fi
+
+if [[ "${NODE_RANK}" == "0" ]]; then
+  if [ -e "${CLOUD_OUTPUT_PATH}" ]; then
+    echo "ERROR: cloud output path already exists, refusing to overwrite: ${CLOUD_OUTPUT_PATH}"
+    exit 1
+  fi
+  echo "Moving rank0 local output to cloud output: ${OUTPUT_PATH} -> ${CLOUD_OUTPUT_PATH}"
+  mv "${OUTPUT_PATH}" "${CLOUD_OUTPUT_PATH}"
+  MOVE_EXIT=$?
+  if [ "${MOVE_EXIT}" -ne 0 ]; then
+    echo "ERROR: failed to move local output to cloud output with exit code ${MOVE_EXIT}"
+    exit "${MOVE_EXIT}"
+  fi
+  echo "Final cloud output path: ${CLOUD_OUTPUT_PATH}"
+else
+  echo "Non-master node ${NODE_RANK}: skip cloud output move."
+fi

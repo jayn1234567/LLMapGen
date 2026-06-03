@@ -1380,6 +1380,8 @@ def resolve_lora_target_modules(
         for name, module in model.named_modules():
             if not isinstance(module, torch.nn.Linear):
                 continue
+            if ".lora_A." in name or ".lora_B." in name or name.endswith(".base_layer"):
+                continue
             if not _module_in_scope(name, scopes):
                 continue
             targets.append(name)
@@ -1390,6 +1392,16 @@ def resolve_lora_target_modules(
             continue
         filtered.append(name)
     return sorted(set(filtered))
+
+
+def model_has_lora_adapters(model) -> bool:
+    for name, _ in model.named_modules():
+        if ".lora_A" in name or ".lora_B" in name:
+            return True
+    for name, _ in model.named_parameters():
+        if "lora_A" in name or "lora_B" in name:
+            return True
+    return False
 
 
 def find_all_linear_names(model):
@@ -2463,41 +2475,52 @@ def train(attn_implementation=None):
             model.get_input_embeddings().register_forward_hook(make_inputs_require_grad)
 
     if training_args.lora_enable:
-        from peft import LoraConfig, get_peft_model
-        lora_targets = resolve_lora_target_modules(
-            model,
-            target_scope=training_args.lora_target_scope,
-            target_modules=training_args.lora_target_modules,
-            exclude_modules=training_args.lora_exclude_modules,
-        )
-        if not lora_targets:
-            raise ValueError(
-                "No LoRA target modules were resolved. "
-                f"scope={training_args.lora_target_scope!r}, "
-                f"manual={training_args.lora_target_modules!r}, "
-                f"exclude={training_args.lora_exclude_modules!r}"
+        from peft import LoraConfig, PeftModel, get_peft_model
+        if isinstance(model, PeftModel) or model_has_lora_adapters(model):
+            rank0_print("Existing LoRA adapters detected; continuing training without adding nested adapters.")
+            for name, param in model.named_parameters():
+                if "lora_" in name:
+                    param.requires_grad = True
+            if training_args.bits == 16:
+                if training_args.bf16:
+                    model.to(torch.bfloat16)
+                if training_args.fp16:
+                    model.to(torch.float16)
+        else:
+            lora_targets = resolve_lora_target_modules(
+                model,
+                target_scope=training_args.lora_target_scope,
+                target_modules=training_args.lora_target_modules,
+                exclude_modules=training_args.lora_exclude_modules,
             )
-        lora_config = LoraConfig(
-            r=training_args.lora_r,
-            lora_alpha=training_args.lora_alpha,
-            target_modules=lora_targets,
-            lora_dropout=training_args.lora_dropout,
-            bias=training_args.lora_bias,
-            task_type="CAUSAL_LM",
-        )
-        if training_args.bits == 16:
-            if training_args.bf16:
-                model.to(torch.bfloat16)
-            if training_args.fp16:
-                model.to(torch.float16)
-        rank0_print(
-            "Adding LoRA adapters: "
-            f"scope={training_args.lora_target_scope}, targets={len(lora_targets)}"
-        )
-        rank0_print("LoRA target modules: " + ", ".join(lora_targets[:80]))
-        if len(lora_targets) > 80:
-            rank0_print(f"... {len(lora_targets) - 80} more LoRA target modules omitted")
-        model = get_peft_model(model, lora_config)
+            if not lora_targets:
+                raise ValueError(
+                    "No LoRA target modules were resolved. "
+                    f"scope={training_args.lora_target_scope!r}, "
+                    f"manual={training_args.lora_target_modules!r}, "
+                    f"exclude={training_args.lora_exclude_modules!r}"
+                )
+            lora_config = LoraConfig(
+                r=training_args.lora_r,
+                lora_alpha=training_args.lora_alpha,
+                target_modules=lora_targets,
+                lora_dropout=training_args.lora_dropout,
+                bias=training_args.lora_bias,
+                task_type="CAUSAL_LM",
+            )
+            if training_args.bits == 16:
+                if training_args.bf16:
+                    model.to(torch.bfloat16)
+                if training_args.fp16:
+                    model.to(torch.float16)
+            rank0_print(
+                "Adding LoRA adapters: "
+                f"scope={training_args.lora_target_scope}, targets={len(lora_targets)}"
+            )
+            rank0_print("LoRA target modules: " + ", ".join(lora_targets[:80]))
+            if len(lora_targets) > 80:
+                rank0_print(f"... {len(lora_targets) - 80} more LoRA target modules omitted")
+            model = get_peft_model(model, lora_config)
 
     if 'mpt' in model_args.model_name_or_path:
         tokenizer = _load_tokenizer_with_fast_fallback(

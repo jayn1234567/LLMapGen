@@ -41,6 +41,10 @@ def _load_checkpoint_file(path):
 
 
 def _iter_checkpoint_state_files(model_path, prefixes):
+    non_lora_path = os.path.join(model_path, "non_lora_trainables.bin")
+    if os.path.isfile(non_lora_path):
+        yield non_lora_path
+
     safe_index = os.path.join(model_path, "model.safetensors.index.json")
     bin_index = os.path.join(model_path, "pytorch_model.bin.index.json")
     if os.path.isfile(safe_index) or os.path.isfile(bin_index):
@@ -65,11 +69,58 @@ def _iter_checkpoint_state_files(model_path, prefixes):
             yield str(path)
 
 
+def _checkpoint_key_candidates(key):
+    candidates = [key]
+    if key.startswith("base_model.model.model."):
+        candidates.append("model." + key[len("base_model.model.model."):])
+    if key.startswith("base_model.model."):
+        candidates.append(key[len("base_model.model."):])
+    if key.startswith("model.model."):
+        candidates.append(key[len("model."):])
+    return candidates
+
+
+def _copy_checkpoint_tensor(target, value, key):
+    value = value.detach()
+    if hasattr(target, "ds_id") or hasattr(target, "ds_shape"):
+        try:
+            import deepspeed
+        except Exception as exc:
+            raise RuntimeError(
+                f"Cannot load DeepSpeed-partitioned checkpoint tensor {key}: "
+                "deepspeed is not importable."
+            ) from exc
+        rank = int(os.environ.get("RANK", "0"))
+        with deepspeed.zero.GatheredParameters([target], modifier_rank=0):
+            if rank == 0:
+                if target.data.shape != value.shape:
+                    raise RuntimeError(
+                        f"Shape mismatch while loading {key}: "
+                        f"target={tuple(target.data.shape)}, checkpoint={tuple(value.shape)}"
+                    )
+                target.data.copy_(value.to(device=target.data.device, dtype=target.data.dtype))
+        return
+
+    if target.shape != value.shape:
+        raise RuntimeError(
+            f"Shape mismatch while loading {key}: "
+            f"target={tuple(target.shape)}, checkpoint={tuple(value.shape)}"
+        )
+    target.copy_(value.to(device=target.device, dtype=target.dtype))
+
+
 def _load_multimodal_weights_if_present(model, model_path):
     if not os.path.isdir(model_path):
         return 0
 
-    prefixes = ("model.vision_tower.",)
+    prefixes = (
+        "model.vision_tower.",
+        "model.mm_projector.",
+        "model.embed_tokens.",
+        "base_model.model.model.vision_tower.",
+        "base_model.model.model.mm_projector.",
+        "base_model.model.model.embed_tokens.",
+    )
     expected = model.state_dict()
     expected_runtime = dict(model.named_parameters())
     expected_runtime.update(dict(model.named_buffers()))
@@ -77,13 +128,6 @@ def _load_multimodal_weights_if_present(model, model_path):
         hasattr(param, "ds_id") or hasattr(param, "ds_shape")
         for param in expected_runtime.values()
     )
-    if has_deepspeed_partitioned_params:
-        print(
-            "[WARN] Skipping post-init model.vision_tower.* checkpoint reload while "
-            "parameters are DeepSpeed ZeRO-3 partitioned. The vision tower remains "
-            "initialized from the requested vision_tower path."
-        )
-        return 0
 
     def expected_shape(key):
         tensor = expected_runtime.get(key)
@@ -103,34 +147,44 @@ def _load_multimodal_weights_if_present(model, model_path):
     for state_file in _iter_checkpoint_state_files(model_path, prefixes):
         state_dict = _load_checkpoint_file(state_file)
         for key, value in state_dict.items():
-            if not key.startswith(prefixes):
+            matched_key = None
+            for candidate in _checkpoint_key_candidates(key):
+                if not candidate.startswith(prefixes):
+                    continue
+                shape = expected_shape(candidate)
+                if shape is not None and shape == value.shape:
+                    matched_key = candidate
+                    break
+            if matched_key is None:
+                if any(candidate.startswith(prefixes) for candidate in _checkpoint_key_candidates(key)):
+                    seen += 1
+                skipped.append(key)
                 continue
             seen += 1
-            shape = expected_shape(key)
-            if shape is not None and shape == value.shape:
-                loaded[key] = value
-            else:
-                skipped.append(key)
+            loaded[matched_key] = value
         del state_dict
 
     if not loaded:
         if seen:
-            if has_deepspeed_partitioned_params:
-                print(
-                    f"[WARN] Found {seen} multimodal checkpoint tensors under {model_path}, "
-                    "but none could be shape-matched while parameters are DeepSpeed-partitioned. "
-                    "Continuing with the separately initialized vision tower."
-                )
-                return 0
             raise RuntimeError(
                 f"Found {seen} multimodal checkpoint tensors under {model_path}, "
                 "but none matched the initialized model. Check vision tower type, "
                 "input_image_size, deepstack_visual_indexes, and LLM hidden size."
             )
-        print(f"[WARN] No model.vision_tower.* tensors found in checkpoint: {model_path}")
+        print(f"[WARN] No multimodal trainable tensors found in checkpoint: {model_path}")
         return 0
 
-    missing, unexpected = model.load_state_dict(loaded, strict=False)
+    unexpected = []
+    if has_deepspeed_partitioned_params:
+        with torch.no_grad():
+            for key, value in loaded.items():
+                target = expected_runtime.get(key)
+                if target is None:
+                    unexpected.append(key)
+                    continue
+                _copy_checkpoint_tensor(target, value, key)
+    else:
+        missing, unexpected = model.load_state_dict(loaded, strict=False)
     print(
         f"Loaded {len(loaded)}/{seen} multimodal checkpoint tensors "
         "after vision tower init."

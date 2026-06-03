@@ -120,8 +120,13 @@ echo "Using checkpoint root directory: $CHECKPOINT_DIR"
 echo "Checkpoint directory contents:"
 ls -la ${CHECKPOINT_DIR}
 
-if [ ! -f "${CHECKPOINT_DIR}/model.safetensors" ] && [ ! -f "${CHECKPOINT_DIR}/pytorch_model.bin" ]; then
-    echo "ERROR: No model.safetensors or pytorch_model.bin found."
+if [ ! -f "${CHECKPOINT_DIR}/model.safetensors" ] \
+   && [ ! -f "${CHECKPOINT_DIR}/pytorch_model.bin" ] \
+   && [ ! -f "${CHECKPOINT_DIR}/model.safetensors.index.json" ] \
+   && [ ! -f "${CHECKPOINT_DIR}/pytorch_model.bin.index.json" ] \
+   && ! compgen -G "${CHECKPOINT_DIR}/model-*-of-*.safetensors" >/dev/null \
+   && ! compgen -G "${CHECKPOINT_DIR}/pytorch_model-*-of-*.bin" >/dev/null; then
+    echo "ERROR: No full model weight files found."
     exit 1
 fi
 echo "ViT base must be supplied separately during inference."

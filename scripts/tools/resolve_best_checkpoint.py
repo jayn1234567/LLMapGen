@@ -9,6 +9,32 @@ import sys
 from pathlib import Path
 
 
+def has_checkpoint_weights(path: Path) -> bool:
+    if any(
+        (path / name).is_file()
+        for name in (
+            "model.safetensors",
+            "pytorch_model.bin",
+            "adapter_model.safetensors",
+            "adapter_model.bin",
+            "model.safetensors.index.json",
+            "pytorch_model.bin.index.json",
+            "adapter_model.safetensors.index.json",
+            "adapter_model.bin.index.json",
+        )
+    ):
+        return True
+    for pattern in (
+        "model-*-of-*.safetensors",
+        "pytorch_model-*-of-*.bin",
+        "adapter_model-*-of-*.safetensors",
+        "adapter_model-*-of-*.bin",
+    ):
+        if next(path.glob(pattern), None) is not None:
+            return True
+    return False
+
+
 def step_from_name(name: str) -> int:
     marker = "_step-"
     if marker not in name:
@@ -72,6 +98,9 @@ def main() -> int:
     names = args.best_name or ["eval_best", "best"]
     direct_fallbacks = []
     all_candidates = []
+
+    if args.allow_direct and output_dir.is_dir() and has_checkpoint_weights(output_dir):
+        direct_fallbacks.append(output_dir)
 
     for name in names:
         all_candidates.extend(candidate_dirs(output_dir, name))

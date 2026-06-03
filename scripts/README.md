@@ -66,6 +66,24 @@ Local path inputs:
 - `VISION_TOWER`: local DINOv2/DINOv3 checkpoint path.
 - `OUTPUT_DIR`: result root.
 
+Checkpoint inputs may be direct checkpoint directories, normal `checkpoint-*`
+folders, or best-candidate roots. The shared resolver supports LoRA adapters,
+single-file full checkpoints, and standard HF sharded full checkpoints:
+
+```text
+adapter_model.safetensors
+adapter_model.bin
+model.safetensors
+pytorch_model.bin
+model.safetensors.index.json + model-00001-of-00004.safetensors ...
+pytorch_model.bin.index.json + pytorch_model-00001-of-00004.bin ...
+```
+
+Keep the index JSON beside shard files when a checkpoint will be used for
+training continuation. The inference loader has a fallback for bare
+`model-*-of-*` shards, but the indexed format is the reliable path for
+Transformers `from_pretrained`.
+
 Cloud/OBS inputs:
 
 - `DATASET_OBS_PATH`: OBS dataset zip path. Current NPU train/test defaults use `obs://yw-ads-training-gy1/data/external/personal/h58801830/whu/jjh/data/data_line_samples_33w.zip`.
@@ -96,6 +114,14 @@ before patch visualization, whole-map stitching, and `eval.json`. This keeps
 left/top state-update dependencies inside each original map intact while still
 using multiple cards.
 
+Stage A and Stage B expose task selection through different inference tools:
+
+- Stage A uses `scripts/tools/infer_centerline_checkpoint.py` and passes
+  `--map-task lane` or `--map-task lane_intersection`.
+- Stage B uses `scripts/tools/infer_centerline_state_update.py`; lane-only
+  scripts do not pass `--include-intersections`, while lane+intersection scripts
+  pass that boolean flag.
+
 The concrete SFT train scripts now contain the full 33w no-DeepStack NPU recipe after pinning `DATASET_PHASE` and `MAP_TASK`. The concrete GRPO train scripts contain the formal vLLM prompt-embedding rollout path on Ascend through vLLM-Ascend; they are not HF-local generation scripts and no longer require a CUDA compatibility escape hatch. The NPU GRPO script installs/uses the NPU RL stack and separates actor and rollout devices with `ACTOR_NPU_DEVICES` and `ROLLOUT_NPU_DEVICES`.
 
 Training mode in filenames:
@@ -117,6 +143,10 @@ DINO type and platform are explicit:
 - `_npu` or `_gpu` identifies the target platform.
 
 Common DINOv3 scripts infer DINO type from checkpoint metadata, `mm_vision_tower_type`, or the `vision_tower` path. For this BEV task they set `INPUT_IMAGE_SIZE=512` inside the scripts: 256x256 patches are resized to 512x512, and DINOv3 patch16 produces 32x32 = 1024 visual tokens.
+
+The GPU smoke script also supports `VISION_BACKBONE=multi_moe`, which builds a
+multi-vision router over comma-separated `MULTI_VISION_TOWERS` and forwards the
+same multi-vision parameters into both training and inference.
 
 DeepStack and gradient checkpointing are intended to work together. Training scripts keep `GRADIENT_CHECKPOINTING=True` by default, including DeepStack runs. Inference scripts do not hard-code DeepStack settings; they recover DeepStack enabled/disabled state from the checkpoint config unless an override is passed.
 

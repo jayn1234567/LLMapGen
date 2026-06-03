@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Multi-GPU SFT smoke for Qwen3VL + DINOv2/DINOv3 + no DeepStack.
+# Multi-GPU SFT smoke for Qwen3VL + DINOv2/DINOv3/Multi-MoE + no DeepStack.
 # Covers both lane-only patch recognition and lane+intersection state-update
 # data formats. This is a real GPU runtime check, not a syntax-only script.
 
@@ -19,7 +19,7 @@ NUM_GPUS=${NUM_GPUS:-2}
 MASTER_PORT=${MASTER_PORT:-29670}
 
 MODEL_NAME_OR_PATH=${MODEL_NAME_OR_PATH:-/media/q/data2/jjh/project/MLLM_project/outputs/test_qwen3vl}
-VISION_BACKBONE=${VISION_BACKBONE:-dinov2}  # dinov2 or dinov3
+VISION_BACKBONE=${VISION_BACKBONE:-dinov2}  # dinov2, dinov3, or multi_moe
 
 case "${VISION_BACKBONE}" in
   dinov2)
@@ -32,18 +32,38 @@ case "${VISION_BACKBONE}" in
     MM_VISION_TOWER_TYPE=${MM_VISION_TOWER_TYPE:-dinov3}
     INPUT_IMAGE_SIZE=${INPUT_IMAGE_SIZE:-512}
     ;;
+  multi_moe|multi_vision_moe|dual_dino_moe)
+    DINO_V2_TOWER=${DINO_V2_TOWER:-/media/q/data2/jjh/project/MLLM_project/checkpoints/facebook_dinov2-large}
+    DINO_V3_TOWER=${DINO_V3_TOWER:-/media/q/data2/jjh/project/MLLM_project/checkpoints/facebook/dinov3-vitl16-pretrain-lvd1689m}
+    MULTI_VISION_TOWERS=${MULTI_VISION_TOWERS:-${DINO_V2_TOWER},${DINO_V3_TOWER}}
+    MULTI_VISION_TOWER_TYPES=${MULTI_VISION_TOWER_TYPES:-dinov2,dinov3}
+    MULTI_VISION_INPUT_IMAGE_SIZES=${MULTI_VISION_INPUT_IMAGE_SIZES:-512,512}
+    MULTI_VISION_PRIMARY_INDEX=${MULTI_VISION_PRIMARY_INDEX:-1}
+    MULTI_VISION_HIDDEN_SIZE=${MULTI_VISION_HIDDEN_SIZE:-1024}
+    MULTI_VISION_TARGET_GRID=${MULTI_VISION_TARGET_GRID:-32}
+    MULTI_VISION_FUSION=${MULTI_VISION_FUSION:-softmax_router}
+    VISION_TOWER=${VISION_TOWER:-${MULTI_VISION_TOWERS}}
+    MM_VISION_TOWER_TYPE=${MM_VISION_TOWER_TYPE:-multi_moe}
+    INPUT_IMAGE_SIZE=${INPUT_IMAGE_SIZE:-512}
+    ;;
   *)
-    echo "Unsupported VISION_BACKBONE=${VISION_BACKBONE}; expected dinov2 or dinov3"
+    echo "Unsupported VISION_BACKBONE=${VISION_BACKBONE}; expected dinov2, dinov3, or multi_moe"
     exit 1
     ;;
 esac
 
-FLOW_PHASE=${FLOW_PHASE:-phase_a}  # phase_a or phase_b
+FLOW_PHASE=${FLOW_PHASE:-phase_a}  # phase_a, phase_a_lane_intersection, or phase_b
 case "${FLOW_PHASE}" in
   phase_a)
     TRAIN_JSONL=${TRAIN_JSONL:-data/debug_phase_a_lane20/train.jsonl}
     TEST_JSONL=${TEST_JSONL:-data/debug_phase_a_lane20/test.jsonl}
     MAP_TASK=${MAP_TASK:-lane}
+    RUN_STATE_UPDATE=${RUN_STATE_UPDATE:-False}
+    ;;
+  phase_a_lane_intersection)
+    TRAIN_JSONL=${TRAIN_JSONL:-data/debug_phase_a_lane_intersection20/train.jsonl}
+    TEST_JSONL=${TEST_JSONL:-data/debug_phase_a_lane_intersection20/test.jsonl}
+    MAP_TASK=${MAP_TASK:-lane_intersection}
     RUN_STATE_UPDATE=${RUN_STATE_UPDATE:-False}
     ;;
   phase_b)
@@ -53,7 +73,7 @@ case "${FLOW_PHASE}" in
     RUN_STATE_UPDATE=${RUN_STATE_UPDATE:-True}
     ;;
   *)
-    echo "Unsupported FLOW_PHASE=${FLOW_PHASE}; expected phase_a or phase_b"
+    echo "Unsupported FLOW_PHASE=${FLOW_PHASE}; expected phase_a, phase_a_lane_intersection, or phase_b"
     exit 1
     ;;
 esac
@@ -82,6 +102,7 @@ GRADIENT_ACCUMULATION_STEPS=${GRADIENT_ACCUMULATION_STEPS:-1}
 LEARNING_RATE=${LEARNING_RATE:-1e-6}
 MM_PROJECTOR_LR=${MM_PROJECTOR_LR:-1e-6}
 MM_VISION_TOWER_LR=${MM_VISION_TOWER_LR:-1e-6}
+MM_VISION_FUSION_LR=${MM_VISION_FUSION_LR:-${MM_PROJECTOR_LR}}
 WEIGHT_DECAY=${WEIGHT_DECAY:-0.0}
 MODEL_MAX_LENGTH=${MODEL_MAX_LENGTH:-2048}
 BF16=${BF16:-True}
@@ -109,7 +130,14 @@ SWANLAB_MODE=${SWANLAB_MODE:-}
 export SWANLAB_API_KEY
 
 [ -d "${MODEL_NAME_OR_PATH}" ] || { echo "Model not found: ${MODEL_NAME_OR_PATH}"; exit 1; }
-[ -d "${VISION_TOWER}" ] || { echo "Vision tower not found: ${VISION_TOWER}"; exit 1; }
+if [[ "${MM_VISION_TOWER_TYPE}" == "multi_moe" ]]; then
+  IFS=',' read -r -a _vision_tower_paths <<< "${MULTI_VISION_TOWERS}"
+  for _vision_tower_path in "${_vision_tower_paths[@]}"; do
+    [ -d "${_vision_tower_path}" ] || { echo "Vision tower not found: ${_vision_tower_path}"; exit 1; }
+  done
+else
+  [ -d "${VISION_TOWER}" ] || { echo "Vision tower not found: ${VISION_TOWER}"; exit 1; }
+fi
 [ -f "${TRAIN_JSONL}" ] || { echo "Train JSONL not found: ${TRAIN_JSONL}"; exit 1; }
 [ -f "${TEST_JSONL}" ] || { echo "Test JSONL not found: ${TEST_JSONL}"; exit 1; }
 [ -d "${IMAGE_FOLDER}" ] || { echo "Image folder not found: ${IMAGE_FOLDER}"; exit 1; }
@@ -118,11 +146,44 @@ export CUDA_VISIBLE_DEVICES="${GPU_IDS}"
 export PYTHONPATH="${REPO_ROOT}:${PYTHONPATH:-}"
 mkdir -p "${OUTPUT_DIR}"
 
+TRAIN_VISION_ARGS=(
+  --vision_tower "${VISION_TOWER}"
+  --mm_vision_tower_type "${MM_VISION_TOWER_TYPE}"
+  --input_image_size "${INPUT_IMAGE_SIZE}"
+)
+INFER_VISION_ARGS=(
+  --vision_tower "${VISION_TOWER}"
+  --mm_vision_tower_type "${MM_VISION_TOWER_TYPE}"
+  --input_image_size "${INPUT_IMAGE_SIZE}"
+  --disable_deepstack
+)
+if [[ "${MM_VISION_TOWER_TYPE}" == "multi_moe" ]]; then
+  TRAIN_VISION_ARGS+=(
+    --multi_vision_towers "${MULTI_VISION_TOWERS}"
+    --multi_vision_tower_types "${MULTI_VISION_TOWER_TYPES}"
+    --multi_vision_input_image_sizes "${MULTI_VISION_INPUT_IMAGE_SIZES}"
+    --multi_vision_primary_index "${MULTI_VISION_PRIMARY_INDEX}"
+    --multi_vision_hidden_size "${MULTI_VISION_HIDDEN_SIZE}"
+    --multi_vision_target_grid "${MULTI_VISION_TARGET_GRID}"
+    --multi_vision_fusion "${MULTI_VISION_FUSION}"
+  )
+  INFER_VISION_ARGS+=(
+    --multi_vision_towers "${MULTI_VISION_TOWERS}"
+    --multi_vision_tower_types "${MULTI_VISION_TOWER_TYPES}"
+    --multi_vision_input_image_sizes "${MULTI_VISION_INPUT_IMAGE_SIZES}"
+    --multi_vision_primary_index "${MULTI_VISION_PRIMARY_INDEX}"
+    --multi_vision_hidden_size "${MULTI_VISION_HIDDEN_SIZE}"
+    --multi_vision_target_grid "${MULTI_VISION_TARGET_GRID}"
+    --multi_vision_fusion "${MULTI_VISION_FUSION}"
+  )
+fi
+
 echo "============================================================"
 echo "SFT smoke: ${FLOW_PHASE} ${MAP_TASK} ${VISION_BACKBONE} ${TRAIN_MODE}"
 echo "GPUs:      ${CUDA_VISIBLE_DEVICES} (${NUM_GPUS} processes)"
 echo "Model:     ${MODEL_NAME_OR_PATH}"
 echo "ViT:       ${VISION_TOWER}"
+echo "ViT type:  ${MM_VISION_TOWER_TYPE}"
 echo "Input:     ${INPUT_IMAGE_SIZE}"
 echo "Train:     ${TRAIN_JSONL}"
 echo "Output:    ${OUTPUT_DIR}"
@@ -137,9 +198,7 @@ torchrun \
   -m mllm.train.train_sft \
   --model_name_or_path "${MODEL_NAME_OR_PATH}" \
   --version "${VERSION}" \
-  --vision_tower "${VISION_TOWER}" \
-  --mm_vision_tower_type "${MM_VISION_TOWER_TYPE}" \
-  --input_image_size "${INPUT_IMAGE_SIZE}" \
+  "${TRAIN_VISION_ARGS[@]}" \
   --disable_deepstack "${DISABLE_DEEPSTACK}" \
   --mm_vision_select_layer -2 \
   --mm_vision_select_feature patch \
@@ -159,6 +218,7 @@ torchrun \
   --learning_rate "${LEARNING_RATE}" \
   --mm_projector_lr "${MM_PROJECTOR_LR}" \
   --mm_vision_tower_lr "${MM_VISION_TOWER_LR}" \
+  --mm_vision_fusion_lr "${MM_VISION_FUSION_LR}" \
   --weight_decay "${WEIGHT_DECAY}" \
   --max_steps "${MAX_STEPS}" \
   --warmup_steps 0 \
@@ -194,9 +254,7 @@ fi
 
 python scripts/tools/infer_centerline_checkpoint.py \
   --checkpoint-dir "${CHECKPOINT_DIR}" \
-  --vision_tower "${VISION_TOWER}" \
-  --input_image_size "${INPUT_IMAGE_SIZE}" \
-  --disable_deepstack \
+  "${INFER_VISION_ARGS[@]}" \
   --test-json "${TEST_JSONL}" \
   --image-folder "${IMAGE_FOLDER}" \
   --num-samples "${NUM_INFER_SAMPLES}" \
@@ -216,6 +274,7 @@ python scripts/tools/infer_centerline_checkpoint.py \
 if [[ "${RUN_STATE_UPDATE}" =~ ^(1|true|True|TRUE|yes|YES)$ ]]; then
   python scripts/tools/infer_centerline_state_update.py \
     --checkpoint-dir "${CHECKPOINT_DIR}" \
+    "${INFER_VISION_ARGS[@]}" \
     --patch-json "${TEST_JSONL}" \
     --image-folder "${IMAGE_FOLDER}" \
     --output-json "${STATE_DIR}/summary.json" \

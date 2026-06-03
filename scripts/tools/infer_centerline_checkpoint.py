@@ -19,6 +19,10 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+from mllm.torch_runtime import maybe_disable_cudnn_from_env
+
+maybe_disable_cudnn_from_env(torch)
+
 from mllm import conversation as conversation_lib
 from mllm.constants import (
     DEFAULT_IMAGE_TOKEN,
@@ -67,6 +71,10 @@ def silence_non_primary_rank_output():
     if _env_flag("MLLM_SUPPRESS_NONZERO_STDERR", "0"):
         sys.stderr.flush()
         sys.stderr = open(os.devnull, "w")
+
+
+def rank_json_path(path: Path, rank: int) -> Path:
+    return path.with_name(f"{path.stem}_rank{rank:05d}{path.suffix}")
 
 
 def normalize_prediction_text(text: str) -> str:
@@ -236,7 +244,22 @@ def _load_state_dict(checkpoint_dir: Path):
             merged_state.update(shard_state)
             del shard_state
         return merged_state
+    shard_paths = _sharded_model_weight_files(checkpoint_dir)
+    if shard_paths:
+        merged_state = {}
+        for shard_path in shard_paths:
+            shard_state = _load_checkpoint_shard(shard_path)
+            merged_state.update(shard_state)
+            del shard_state
+        return merged_state
     raise FileNotFoundError(f"No model weights found under {checkpoint_dir}")
+
+
+def _sharded_model_weight_files(checkpoint_dir: Path) -> list[Path]:
+    safetensor_shards = sorted(checkpoint_dir.glob("model-*-of-*.safetensors"))
+    if safetensor_shards:
+        return safetensor_shards
+    return sorted(checkpoint_dir.glob("pytorch_model-*-of-*.bin"))
 
 
 def _load_checkpoint_shard(shard_path: Path):
@@ -283,7 +306,7 @@ def _read_checkpoint_metadata(checkpoint_dir: Path) -> dict:
 
 
 def _has_model_weights(checkpoint_dir: Path) -> bool:
-    return any(
+    if any(
         (checkpoint_dir / filename).exists()
         for filename in (
             "model.safetensors",
@@ -291,7 +314,9 @@ def _has_model_weights(checkpoint_dir: Path) -> bool:
             "model.safetensors.index.json",
             "pytorch_model.bin.index.json",
         )
-    )
+    ):
+        return True
+    return bool(_sharded_model_weight_files(checkpoint_dir))
 
 
 def _has_adapter_weights(checkpoint_dir: Path) -> bool:
@@ -320,9 +345,17 @@ def _config_overrides_from_args(args) -> dict:
     return {
         "mm_vision_tower": args.vision_tower or None,
         "vision_tower": args.vision_tower or None,
+        "mm_vision_tower_type": getattr(args, "mm_vision_tower_type", "") or None,
         "input_image_size": args.input_image_size,
         "disable_deepstack": args.disable_deepstack,
         "deepstack_visual_indexes": args.deepstack_visual_indexes,
+        "multi_vision_towers": getattr(args, "multi_vision_towers", "") or None,
+        "multi_vision_tower_types": getattr(args, "multi_vision_tower_types", "") or None,
+        "multi_vision_input_image_sizes": getattr(args, "multi_vision_input_image_sizes", "") or None,
+        "multi_vision_primary_index": getattr(args, "multi_vision_primary_index", None),
+        "multi_vision_hidden_size": getattr(args, "multi_vision_hidden_size", None),
+        "multi_vision_target_grid": getattr(args, "multi_vision_target_grid", None),
+        "multi_vision_fusion": getattr(args, "multi_vision_fusion", "") or None,
     }
 
 
@@ -342,6 +375,17 @@ def _apply_checkpoint_metadata_defaults(config, metadata: dict):
         "input_image_size",
         "disable_deepstack",
         "deepstack_visual_indexes",
+        "multi_vision_towers",
+        "multi_vision_tower_types",
+        "multi_vision_input_image_sizes",
+        "multi_vision_primary_index",
+        "multi_vision_hidden_size",
+        "multi_vision_target_grid",
+        "multi_vision_fusion",
+        "multi_vision_router_temperature",
+        "multi_vision_router_hidden_ratio",
+        "multi_vision_router_use_diff",
+        "multi_vision_dropout",
     ):
         value = metadata.get(key)
         if value is not None and getattr(config, key, None) is None:
@@ -505,7 +549,10 @@ def _report_full_checkpoint_coverage(model, state_dict, config, metadata):
     if deepstack_enabled and not _state_dict_has_prefix(state_dict, "model.vision_tower.deepstack_mergers."):
         critical_missing.append("model.vision_tower.deepstack_mergers.*")
 
-    has_vit_weights = _state_dict_has_prefix(state_dict, "model.vision_tower.vision_tower.")
+    has_vit_weights = (
+        _state_dict_has_prefix(state_dict, "model.vision_tower.vision_tower.")
+        or _state_dict_has_prefix(state_dict, "model.vision_tower.vision_towers.")
+    )
     explicit_external_vit = bool(metadata) and metadata.get("bundled_vision_tower") is False
     if not has_vit_weights and not explicit_external_vit:
         critical_missing.append("model.vision_tower.vision_tower.*")
@@ -787,6 +834,14 @@ def main():
     parser.add_argument("--sample-json-dir", default="", help="Directory for per-sample JSON files. Defaults to output-dir.")
     parser.add_argument("--print-full-output", action="store_true")
     parser.add_argument("--vision_tower", default="")
+    parser.add_argument("--mm_vision_tower_type", default="")
+    parser.add_argument("--multi_vision_towers", default="")
+    parser.add_argument("--multi_vision_tower_types", default="")
+    parser.add_argument("--multi_vision_input_image_sizes", default="")
+    parser.add_argument("--multi_vision_primary_index", type=int, default=None)
+    parser.add_argument("--multi_vision_hidden_size", type=int, default=None)
+    parser.add_argument("--multi_vision_target_grid", type=int, default=None)
+    parser.add_argument("--multi_vision_fusion", default="")
     parser.add_argument("--input_image_size", type=int, default=None)
     parser.add_argument("--disable_deepstack", action="store_true", default=None)
     parser.add_argument("--deepstack_visual_indexes", type=int, nargs="*", default=None)
@@ -841,12 +896,13 @@ def main():
         start = max(0, args.sample_offset)
         end = start + (args.num_samples if args.num_samples > 0 else len(records) - start)
         records = records[start:end]
+        indexed_records = list(enumerate(records, start=start))
         if torch.distributed.is_initialized():
-            records = records[torch.distributed.get_rank()::torch.distributed.get_world_size()]
+            indexed_records = indexed_records[torch.distributed.get_rank()::torch.distributed.get_world_size()]
     else:
         if not args.image:
             raise ValueError("Provide either --image or --test-json")
-        records = [{"id": "single_image", "image": args.image, "conversations": [{"value": args.prompt}]}]
+        indexed_records = [(0, {"id": "single_image", "image": args.image, "conversations": [{"value": args.prompt}]})]
 
     output_dir = Path(args.output_dir) if args.output_dir else None
     if output_dir is not None:
@@ -859,7 +915,7 @@ def main():
         rank_suffix = f"rank{torch.distributed.get_rank()}_"
 
     results = []
-    for idx, record in enumerate(records):
+    for idx, record in indexed_records:
         image_path = Path(record["image"])
         if args.test_json:
             image_path = Path(args.image_folder) / image_path
@@ -1042,24 +1098,51 @@ def main():
             print(prediction)
             print("NORMALIZED_PREDICTION_END")
 
-    if torch.distributed.is_initialized() and args.output_json:
-        base =args.output_json.rsplit(".",1)[0]
-        args.output_json = f"{base}_rank{torch.distributed.get_rank()}.json"
-
     if args.output_json:
         output_json_path = Path(args.output_json)
-        output_json_path.write_text(json.dumps(results, ensure_ascii=False, indent=2), encoding="utf-8")
-        if args.eval_centerline:
-            eval_summary = evaluate_records(
-                results,
-                meter_per_pixel=args.eval_meter_per_pixel,
-                buffer_size=args.eval_buffer_size,
-                match_threshold=args.eval_match_threshold,
-            )
-            eval_path = Path(args.eval_output_json) if args.eval_output_json else output_json_path.with_name("eval.json")
-            eval_path.write_text(json.dumps(eval_summary, ensure_ascii=False, indent=2), encoding="utf-8")
-            print_eval_table(eval_summary)
-            print(json.dumps({"centerline_eval_json": str(eval_path), "centerline_eval": eval_summary}, ensure_ascii=False))
+        output_json_path.parent.mkdir(parents=True, exist_ok=True)
+        if torch.distributed.is_initialized():
+            rank = torch.distributed.get_rank()
+            world_size = torch.distributed.get_world_size()
+            rank_output_json_path = rank_json_path(output_json_path, rank)
+            rank_output_json_path.write_text(json.dumps(results, ensure_ascii=False, indent=2), encoding="utf-8")
+            torch.distributed.barrier()
+            if rank == 0:
+                merged_results = []
+                for rank_idx in range(world_size):
+                    rank_path = rank_json_path(output_json_path, rank_idx)
+                    rank_payload = json.loads(rank_path.read_text(encoding="utf-8"))
+                    if isinstance(rank_payload, list):
+                        merged_results.extend(item for item in rank_payload if isinstance(item, dict))
+                merged_results.sort(key=lambda item: (item.get("idx", 0), str(item.get("record_id", ""))))
+                output_json_path.write_text(json.dumps(merged_results, ensure_ascii=False, indent=2), encoding="utf-8")
+                if args.eval_centerline:
+                    eval_summary = evaluate_records(
+                        merged_results,
+                        meter_per_pixel=args.eval_meter_per_pixel,
+                        buffer_size=args.eval_buffer_size,
+                        match_threshold=args.eval_match_threshold,
+                    )
+                    eval_path = Path(args.eval_output_json) if args.eval_output_json else output_json_path.with_name("eval.json")
+                    eval_path.parent.mkdir(parents=True, exist_ok=True)
+                    eval_path.write_text(json.dumps(eval_summary, ensure_ascii=False, indent=2), encoding="utf-8")
+                    print_eval_table(eval_summary)
+                    print(json.dumps({"centerline_eval_json": str(eval_path), "centerline_eval": eval_summary}, ensure_ascii=False))
+            torch.distributed.barrier()
+        else:
+            output_json_path.write_text(json.dumps(results, ensure_ascii=False, indent=2), encoding="utf-8")
+            if args.eval_centerline:
+                eval_summary = evaluate_records(
+                    results,
+                    meter_per_pixel=args.eval_meter_per_pixel,
+                    buffer_size=args.eval_buffer_size,
+                    match_threshold=args.eval_match_threshold,
+                )
+                eval_path = Path(args.eval_output_json) if args.eval_output_json else output_json_path.with_name("eval.json")
+                eval_path.parent.mkdir(parents=True, exist_ok=True)
+                eval_path.write_text(json.dumps(eval_summary, ensure_ascii=False, indent=2), encoding="utf-8")
+                print_eval_table(eval_summary)
+                print(json.dumps({"centerline_eval_json": str(eval_path), "centerline_eval": eval_summary}, ensure_ascii=False))
 
     if torch.distributed.is_initialized():
         torch.distributed.destroy_process_group()

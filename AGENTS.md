@@ -1,12 +1,14 @@
-# MLLM_project — 工作文档 (branch: qwen3vl_dinov3)
+# MLLM_project — 工作文档 (branch: unimapgen_v7)
 
 ## 项目概述
 
 基于通用 MLLM 框架的 BEV 道路几何理解多模态大模型（VLM），使用 DINOv2/DINOv3 作为视觉编码器 + Qwen2/Qwen3 作为语言模型，完成 BEV 图像的道路中心线重建。
 
-本分支实现 **Qwen3-VL DeepStack 真实架构**：每层 ViT 特征通过独立 merger 注入 LLM 不同层。
+本分支实现 **Qwen3-VL DeepStack 真实架构**，并新增可扩展的
+**Multi-Vision MoE**：多个视觉编码器先对齐到统一 token grid / hidden
+size，再由 token-level router 融合后进入原有 projector/LLM 流程。
 
-- **分支**: `qwen3vl_dinov3`（基于 `qwen3vl_Dinov2` 分出，加入 DINOv3 支持）
+- **分支**: `unimapgen_v7`
 - **环境**: conda `fastvlm`
 - **依赖**: transformers>=4.51.0
 
@@ -39,6 +41,7 @@ MLLM_project/
 │   │   │   ├── dino_config.py         # DINO 变体注册表 ★
 │   │   │   ├── dinov2_encoder.py      # DINOv2 编码器
 │   │   │   ├── dinov3_encoder.py      # DINOv3 编码器 ★
+│   │   │   ├── multi_moe_encoder.py   # 多视觉塔 token-level MoE 融合 ★
 │   │   │   ├── deepstack.py           # DeepStack (per-layer merger) ★
 │   │   │   └── clip_encoder.py
 │   │   └── multimodal_projector/
@@ -90,6 +93,29 @@ DINOv2/DINOv3 ViT (frozen)
     ├── main layer → mm_projector (MLP) → 替换 <image> token → LLM embedding 层
     └── deepstack layers → 独立 merger MLP → 残差注入 LLM layer 0, 1, 2, 3
 ```
+
+### Multi-Vision MoE
+
+```
+VisionTower[0] → adapter → B x T x D
+VisionTower[1] → adapter → B x T x D
+...
+concat/stat features → router softmax → token-wise weighted sum
+    → post_fusion residual MLP → mm_projector → <image> token 替换
+```
+
+关键参数：
+
+- `--mm_vision_tower_type multi_moe`
+- `--multi_vision_towers path_a,path_b`
+- `--multi_vision_tower_types dinov2,dinov3`
+- `--multi_vision_input_image_sizes 512,512`
+- `--multi_vision_target_grid 32`
+- `--multi_vision_hidden_size 1024`
+- `--mm_vision_fusion_lr` 单独控制 adapters/router/post_fusion 的学习率。
+
+当前 Multi-MoE 走 no-DeepStack 主视觉特征路径；后续新增视觉编码器时优先
+实现普通 `build_vision_tower` 支持，再加入 `multi_vision_towers` 列表。
 
 ### DeepStack 注入
 
@@ -194,6 +220,26 @@ y_pixel = round(y_norm / coord_range * (patch_height - 1))
 | `deepspeed_zero3_no_merge.json` | false | 训练时保持分片 (推荐) |
 
 使用 no_merge 时，训练结束后 NPU 脚本会自动运行 `zero_to_fp32.py` 将每个 checkpoint 的分片合并为 `model.safetensors`。
+
+### Checkpoint 分片支持
+
+训练、推理和 resolver 需要兼容以下 checkpoint 形态：
+
+- LoRA adapter: `adapter_model.safetensors` / `adapter_model.bin`
+- 单文件全参: `model.safetensors` / `pytorch_model.bin`
+- 标准 HF 分片:
+  `model.safetensors.index.json + model-00001-of-00004.safetensors ...`
+  或 `pytorch_model.bin.index.json + pytorch_model-00001-of-00004.bin ...`
+
+`scripts/tools/resolve_best_checkpoint.py --allow-direct` 会识别 direct
+checkpoint、`checkpoint-*`、以及 best candidates。推理 loader 对裸
+`model-*-of-*` shard 有兜底支持；训练 continuation 仍建议保留 index JSON，
+让 Transformers `from_pretrained` 按标准格式加载。
+
+Stage A 推理使用 `infer_centerline_checkpoint.py`，通过 `--map-task lane`
+或 `--map-task lane_intersection` 区分任务。Stage B 推理使用
+`infer_centerline_state_update.py`，lane+intersection 通过布尔参数
+`--include-intersections` 开启。
 
 ### 推荐训练命令
 

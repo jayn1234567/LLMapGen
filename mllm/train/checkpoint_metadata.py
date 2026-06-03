@@ -56,6 +56,8 @@ def _infer_vision_tower_type(vision_tower, config=None):
 
     class_name = vision_tower.__class__.__name__.lower() if vision_tower is not None else ""
     tower_name = str(getattr(vision_tower, "vision_tower_name", "")).lower()
+    if "multi" in class_name and "moe" in class_name:
+        return "multi_moe"
     if "dinov3" in class_name or "dinov3" in tower_name:
         return "dinov3"
     if "dinov2" in class_name or "dinov2" in tower_name:
@@ -120,6 +122,7 @@ def sync_qwen_multimodal_config(model):
     vision_tower_name = getattr(vision_tower, "vision_tower_name", None)
     if vision_tower_name:
         _cfg_set(config, "mm_vision_tower", vision_tower_name)
+        _cfg_set(config, "vision_tower", vision_tower_name)
     elif not _cfg_get(config, "mm_vision_tower"):
         _cfg_set(config, "mm_vision_tower", _cfg_get(config, "vision_tower"))
 
@@ -131,6 +134,24 @@ def sync_qwen_multimodal_config(model):
         _cfg_set(config, "mm_vision_tower_type", vision_tower_type)
 
     _cfg_set(config, "input_image_size", _resolve_input_image_size(vision_tower, config))
+    for attr in (
+        "multi_vision_towers",
+        "multi_vision_tower_types",
+        "multi_vision_input_image_sizes",
+        "multi_vision_primary_index",
+        "multi_vision_hidden_size",
+        "multi_vision_target_grid",
+        "multi_vision_fusion",
+        "multi_vision_router_temperature",
+        "multi_vision_router_hidden_ratio",
+        "multi_vision_router_use_diff",
+        "multi_vision_dropout",
+    ):
+        value = getattr(vision_tower, attr, _cfg_get(config, attr))
+        if attr == "multi_vision_towers" and value is None:
+            value = getattr(vision_tower, "vision_tower_name", None)
+        if value is not None:
+            _cfg_set(config, attr, value)
     deepstack_visual_indexes = _as_jsonable_list(getattr(vision_tower, "deepstack_visual_indexes", None))
     _cfg_set(config, "deepstack_visual_indexes", deepstack_visual_indexes)
     _cfg_set(config, "disable_deepstack", deepstack_visual_indexes is None)
@@ -159,6 +180,17 @@ def write_qwen_multimodal_checkpoint_metadata(model, output_dir: str, trainer=No
         "input_image_size": _cfg_get(config, "input_image_size"),
         "deepstack_visual_indexes": _cfg_get(config, "deepstack_visual_indexes"),
         "disable_deepstack": _cfg_get(config, "disable_deepstack"),
+        "multi_vision_towers": _cfg_get(config, "multi_vision_towers"),
+        "multi_vision_tower_types": _cfg_get(config, "multi_vision_tower_types"),
+        "multi_vision_input_image_sizes": _cfg_get(config, "multi_vision_input_image_sizes"),
+        "multi_vision_primary_index": _cfg_get(config, "multi_vision_primary_index"),
+        "multi_vision_hidden_size": _cfg_get(config, "multi_vision_hidden_size"),
+        "multi_vision_target_grid": _cfg_get(config, "multi_vision_target_grid"),
+        "multi_vision_fusion": _cfg_get(config, "multi_vision_fusion"),
+        "multi_vision_router_temperature": _cfg_get(config, "multi_vision_router_temperature"),
+        "multi_vision_router_hidden_ratio": _cfg_get(config, "multi_vision_router_hidden_ratio"),
+        "multi_vision_router_use_diff": _cfg_get(config, "multi_vision_router_use_diff"),
+        "multi_vision_dropout": _cfg_get(config, "multi_vision_dropout"),
         "bundled_vision_tower": True,
     }
     os.makedirs(output_dir, exist_ok=True)

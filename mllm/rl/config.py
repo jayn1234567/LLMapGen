@@ -25,6 +25,17 @@ class RLModelArguments:
     input_image_size: Optional[int] = None
     deepstack_visual_indexes: Optional[List[int]] = None
     disable_deepstack: bool = True
+    multi_vision_towers: Optional[str] = None
+    multi_vision_tower_types: Optional[str] = None
+    multi_vision_input_image_sizes: Optional[str] = None
+    multi_vision_primary_index: int = 0
+    multi_vision_hidden_size: Optional[int] = None
+    multi_vision_target_grid: Optional[int] = None
+    multi_vision_fusion: str = "softmax_router"
+    multi_vision_router_temperature: float = 1.0
+    multi_vision_router_hidden_ratio: float = 0.25
+    multi_vision_router_use_diff: bool = True
+    multi_vision_dropout: float = 0.0
     tokenizer_use_fast: Optional[bool] = False
 
 
@@ -152,6 +163,7 @@ class GRPOArguments:
     lora_exclude_modules: Optional[str] = "lm_head,embed_tokens"
     full_train_scope: str = "all"
     mm_projector_lr: Optional[float] = None
+    mm_vision_fusion_lr: Optional[float] = None
     mm_vision_tower_lr: Optional[float] = None
 
     report_to: str = "none"

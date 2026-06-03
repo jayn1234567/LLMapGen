@@ -29,6 +29,9 @@ import pathlib
 from typing import Dict, Optional, Sequence, List
 
 import torch
+from mllm.torch_runtime import maybe_disable_cudnn_from_env
+
+maybe_disable_cudnn_from_env(torch)
 
 import transformers
 import tokenizers
@@ -1120,6 +1123,35 @@ class ModelArguments:
     disable_deepstack: bool = field(default=True)
     input_image_size: Optional[int] = field(default=None)
     mm_vision_tower_type: Optional[str] = field(default=None)
+    multi_vision_towers: Optional[str] = field(
+        default=None,
+        metadata={"help": "Comma-separated expert vision tower paths for mm_vision_tower_type=multi_moe."},
+    )
+    multi_vision_tower_types: Optional[str] = field(
+        default=None,
+        metadata={"help": "Comma-separated expert tower types, for example dinov2,dinov3."},
+    )
+    multi_vision_input_image_sizes: Optional[str] = field(
+        default=None,
+        metadata={"help": "Optional comma-separated per-expert input sizes. Defaults to shared input_image_size."},
+    )
+    multi_vision_primary_index: int = field(
+        default=0,
+        metadata={"help": "Expert index whose image processor is used by the existing single-processor data pipeline."},
+    )
+    multi_vision_hidden_size: Optional[int] = field(
+        default=None,
+        metadata={"help": "Fused vision hidden size. Defaults to the maximum expert hidden size."},
+    )
+    multi_vision_target_grid: Optional[int] = field(
+        default=None,
+        metadata={"help": "Square token grid after expert alignment, e.g. 32 for 32x32 tokens. Defaults to the smallest expert grid."},
+    )
+    multi_vision_fusion: str = field(default="softmax_router")
+    multi_vision_router_temperature: float = field(default=1.0)
+    multi_vision_router_hidden_ratio: float = field(default=0.25)
+    multi_vision_router_use_diff: bool = field(default=True)
+    multi_vision_dropout: float = field(default=0.0)
     s2: Optional[bool] = field(default=False)
     hd: Optional[bool] = field(default=False)
 
@@ -1180,6 +1212,7 @@ class TrainingArguments(transformers.TrainingArguments):
     lora_target_modules: Optional[str] = None
     lora_exclude_modules: Optional[str] = "lm_head,embed_tokens"
     mm_projector_lr: Optional[float] = None
+    mm_vision_fusion_lr: Optional[float] = None
     group_by_modality_length: bool = field(default=False)
     mm_vision_tower_lr: Optional[float] = None
     save_best_train_loss: bool = field(default=False)
@@ -2304,7 +2337,7 @@ def train(attn_implementation=None):
         if not training_args.best_infer_index_image_folder:
             training_args.best_infer_index_image_folder = _first_path(data_args.eval_image_folder or data_args.image_folder)
         if not training_args.best_infer_index_vision_tower:
-            training_args.best_infer_index_vision_tower = str(model_args.vision_tower or "")
+            training_args.best_infer_index_vision_tower = str(model_args.multi_vision_towers or model_args.vision_tower or "")
         if training_args.best_infer_index_input_image_size is None:
             training_args.best_infer_index_input_image_size = model_args.input_image_size
         training_args.best_infer_index_disable_deepstack = bool(model_args.disable_deepstack)
@@ -2360,9 +2393,10 @@ def train(attn_implementation=None):
             config = transformers.AutoConfig.from_pretrained(model_args.model_name_or_path)
             _is_qwen3 = _is_qwen3 or _config_declares_qwen3(config)
             _original_vt = getattr(config, 'mm_vision_tower', None)
-            if _original_vt and _original_vt != model_args.vision_tower:
+            _requested_vt = model_args.multi_vision_towers or model_args.vision_tower
+            if _original_vt and _original_vt != _requested_vt:
                 delattr(config, 'mm_vision_tower')
-                rank0_print(f"checkpoint vision tower '{_original_vt}' != requested '{model_args.vision_tower}', will rebuild vision modules.")
+                rank0_print(f"checkpoint vision tower '{_original_vt}' != requested '{_requested_vt}', will rebuild vision modules.")
             elif _original_vt:
                 load_multimodal_checkpoint_weights = True
             if _is_qwen3:
@@ -2525,7 +2559,12 @@ def train(attn_implementation=None):
         vision_tower = model.get_vision_tower()
         # The pretrained config can carry its own unfreeze flag; enforce the CLI choice here.
         vision_tower.tune_vision_tower = model_args.unfreeze_mm_vision_tower
-        vision_tower.vision_tower.requires_grad_(model_args.unfreeze_mm_vision_tower)
+        if hasattr(vision_tower, "set_vision_tower_trainable"):
+            vision_tower.set_vision_tower_trainable(model_args.unfreeze_mm_vision_tower)
+        elif hasattr(vision_tower, "vision_tower"):
+            vision_tower.vision_tower.requires_grad_(model_args.unfreeze_mm_vision_tower)
+        else:
+            vision_tower.requires_grad_(model_args.unfreeze_mm_vision_tower)
         vision_tower.to(dtype=torch.bfloat16 if training_args.bf16 else torch.float16, device=training_args.device)
         if load_multimodal_checkpoint_weights:
             _load_multimodal_weights_if_present(model, model_args.model_name_or_path)

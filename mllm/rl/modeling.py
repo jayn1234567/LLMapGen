@@ -7,9 +7,12 @@ from typing import Any
 
 import torch
 
+from mllm.torch_runtime import maybe_disable_cudnn_from_env
 from mllm.model.builder import load_pretrained_model
 from mllm.train.checkpoint_metadata import sync_qwen_multimodal_config, write_qwen_multimodal_checkpoint_metadata
 from mllm.train.train_qwen import print_trainable_parameters, resolve_lora_target_modules
+
+maybe_disable_cudnn_from_env(torch)
 
 
 def is_peft_checkpoint(path: str | Path) -> bool:
@@ -108,9 +111,10 @@ def _load_non_lora_trainables(model, checkpoint_path: str | Path) -> int:
 
 
 def _model_config_overrides(model_args, training_args) -> dict[str, Any]:
+    vision_tower = model_args.multi_vision_towers or model_args.vision_tower
     overrides = {
-        "mm_vision_tower": model_args.vision_tower,
-        "vision_tower": model_args.vision_tower,
+        "mm_vision_tower": vision_tower,
+        "vision_tower": vision_tower,
         "mm_vision_tower_type": model_args.mm_vision_tower_type,
         "input_image_size": model_args.input_image_size,
         "deepstack_visual_indexes": None if model_args.disable_deepstack else model_args.deepstack_visual_indexes,
@@ -119,6 +123,17 @@ def _model_config_overrides(model_args, training_args) -> dict[str, Any]:
         "mm_vision_select_layer": model_args.mm_vision_select_layer,
         "mm_vision_select_feature": model_args.mm_vision_select_feature,
         "mm_patch_merge_type": model_args.mm_patch_merge_type,
+        "multi_vision_towers": model_args.multi_vision_towers,
+        "multi_vision_tower_types": model_args.multi_vision_tower_types,
+        "multi_vision_input_image_sizes": model_args.multi_vision_input_image_sizes,
+        "multi_vision_primary_index": model_args.multi_vision_primary_index,
+        "multi_vision_hidden_size": model_args.multi_vision_hidden_size,
+        "multi_vision_target_grid": model_args.multi_vision_target_grid,
+        "multi_vision_fusion": model_args.multi_vision_fusion,
+        "multi_vision_router_temperature": model_args.multi_vision_router_temperature,
+        "multi_vision_router_hidden_ratio": model_args.multi_vision_router_hidden_ratio,
+        "multi_vision_router_use_diff": model_args.multi_vision_router_use_diff,
+        "multi_vision_dropout": model_args.multi_vision_dropout,
         "tokenizer_model_max_length": training_args.model_max_length,
     }
     return {key: value for key, value in overrides.items() if value is not None}
@@ -237,6 +252,8 @@ def create_optimizer(model, training_args):
     no_decay = []
     special_projector_decay = []
     special_projector_no_decay = []
+    special_fusion_decay = []
+    special_fusion_no_decay = []
     special_vision_decay = []
     special_vision_no_decay = []
     for name, param in model.named_parameters():
@@ -245,8 +262,19 @@ def create_optimizer(model, training_args):
         is_decay = param.ndim >= 2 and "bias" not in name and "norm" not in name.lower()
         is_projector = "mm_projector" in name
         is_vision = "vision_tower" in name
+        is_vision_fusion = any(
+            keyword in name
+            for keyword in (
+                "vision_tower.expert_adapters",
+                "vision_tower.router",
+                "vision_tower.post_fusion",
+                "vision_tower.out_norm",
+            )
+        )
         if is_projector and training_args.mm_projector_lr is not None:
             (special_projector_decay if is_decay else special_projector_no_decay).append(param)
+        elif is_vision_fusion and training_args.mm_vision_fusion_lr is not None:
+            (special_fusion_decay if is_decay else special_fusion_no_decay).append(param)
         elif is_vision and training_args.mm_vision_tower_lr is not None:
             (special_vision_decay if is_decay else special_vision_no_decay).append(param)
         else:
@@ -260,6 +288,11 @@ def create_optimizer(model, training_args):
         groups.extend([
             {"params": special_projector_decay, "weight_decay": training_args.weight_decay, "lr": training_args.mm_projector_lr},
             {"params": special_projector_no_decay, "weight_decay": 0.0, "lr": training_args.mm_projector_lr},
+        ])
+    if training_args.mm_vision_fusion_lr is not None:
+        groups.extend([
+            {"params": special_fusion_decay, "weight_decay": training_args.weight_decay, "lr": training_args.mm_vision_fusion_lr},
+            {"params": special_fusion_no_decay, "weight_decay": 0.0, "lr": training_args.mm_vision_fusion_lr},
         ])
     if training_args.mm_vision_tower_lr is not None:
         groups.extend([

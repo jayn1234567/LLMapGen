@@ -15,6 +15,13 @@ def _normalize_dino_type(vision_tower_type):
     return ""
 
 
+def _normalize_multi_vision_type(vision_tower_type):
+    vision_tower_type = str(vision_tower_type or "").lower()
+    if vision_tower_type in ("multi_moe", "multivision_moe", "multi_vision_moe", "dual_dino_moe", "dual_vision_moe"):
+        return "multi_moe"
+    return ""
+
+
 def _apply_dino_config(vision_tower_cfg, dino_cfg):
     vision_tower_cfg.mm_vision_tower_type = dino_cfg.encoder_type
     if getattr(vision_tower_cfg, 'input_image_size', None) is None:
@@ -27,7 +34,7 @@ def _apply_dino_config(vision_tower_cfg, dino_cfg):
         vision_tower_cfg.deepstack_visual_indexes = dino_cfg.deepstack_visual_indexes
 
 
-def build_vision_tower(vision_tower_cfg, **kwargs):
+def _build_single_vision_tower(vision_tower_cfg, **kwargs):
     vision_tower = getattr(vision_tower_cfg, 'mm_vision_tower', getattr(vision_tower_cfg, 'vision_tower', None))
     if vision_tower is None:
         raise ValueError("Missing vision tower path")
@@ -76,3 +83,17 @@ def build_vision_tower(vision_tower_cfg, **kwargs):
         return MobileCLIPVisionTower(vision_tower, args=vision_tower_cfg, **kwargs)
 
     raise ValueError(f'Unknown vision tower: {vision_tower}')
+
+
+def build_vision_tower(vision_tower_cfg, **kwargs):
+    vision_tower_type = getattr(vision_tower_cfg, 'mm_vision_tower_type', '')
+    if _normalize_multi_vision_type(vision_tower_type):
+        from .multi_moe_encoder import MultiVisionMoEVisionTower
+        vision_tower_cfg.mm_vision_tower_type = "multi_moe"
+        return MultiVisionMoEVisionTower(
+            vision_tower_cfg,
+            single_tower_builder=_build_single_vision_tower,
+            **kwargs,
+        )
+
+    return _build_single_vision_tower(vision_tower_cfg, **kwargs)

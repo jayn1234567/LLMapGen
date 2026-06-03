@@ -7,7 +7,7 @@ code is kept task-neutral where possible.
 Current working branch:
 
 ```text
-unimapgen
+unimapgen_v7
 ```
 
 ## Stable Baseline
@@ -33,6 +33,7 @@ This branch supports:
 
 - Qwen2.5 / Qwen3-VL language backbones.
 - DINOv2 / DINOv3 vision towers.
+- Multi-vision MoE fusion for two or more vision towers, including DINOv2+DINOv3 token-level routing.
 - Qwen3-VL-style DeepStack visual injection.
 - Training with or without DeepStack.
 - Full-parameter and LoRA training.
@@ -41,6 +42,9 @@ This branch supports:
 - Checkpoint metadata for Qwen multimodal checkpoints.
 - Best checkpoint maintenance by training loss or eval loss.
 - LoRA and full-parameter checkpoint loading for inference.
+- Single-file and sharded checkpoint resolution/loading, including
+  `model.safetensors.index.json` and `model-00001-of-00004.safetensors` style
+  full-model shards.
 - Inference that recovers DeepStack settings from checkpoint metadata.
 - Centerline geometric evaluation with buffer-IoU + Hungarian matching.
 - Visualization of ground truth vs prediction after inference.
@@ -230,12 +234,39 @@ DeepStack parameters:
 | `--deepstack_visual_indexes 6 12 18 23` | unset | ViT layers used for DeepStack. Fixed DeepStack scripts pass this explicitly. |
 | `--input_image_size` | inferred | Override DINO input size. DINOv2-L defaults to 518; DINOv3 registry defaults to 224, while project DINOv3 scripts pass 512 for 1024 visual tokens on 256x256 BEV patches. |
 
+Multi-vision MoE parameters:
+
+Use `--mm_vision_tower_type multi_moe` to route multiple existing vision towers through a token-level softmax router. The current data pipeline still uses one image processor, selected by `--multi_vision_primary_index`, so prefer a shared `--input_image_size` for the first recipe.
+
+| Parameter | Purpose |
+|---|---|
+| `--vision_tower path_a,path_b` or `--multi_vision_towers path_a,path_b` | Expert vision tower paths. Any tower supported by `build_vision_tower` can be used. |
+| `--multi_vision_tower_types dinov2,dinov3` | Optional per-expert type override. |
+| `--multi_vision_target_grid 32` | Align all experts to a square token grid before fusion. Defaults to the smallest expert grid. |
+| `--multi_vision_hidden_size` | Shared expert hidden size before `mm_projector`. Defaults to the largest expert hidden size. |
+| `--multi_vision_primary_index 0` | Which expert supplies the shared image processor. |
+| `--multi_vision_fusion softmax_router` | Token-level router; each token gets a softmax weight over experts. |
+
+Example:
+
+```bash
+--mm_vision_tower_type multi_moe \
+--vision_tower "${DINO2_PATH},${DINO3_PATH}" \
+--multi_vision_tower_types dinov2,dinov3 \
+--input_image_size 512 \
+--multi_vision_target_grid 32 \
+--multi_vision_hidden_size 1024 \
+--multi_vision_primary_index 1 \
+--mm_vision_fusion_lr 2e-5
+```
+
 Optimization parameters:
 
 | Parameter | Purpose |
 |---|---|
 | `--learning_rate` | Main optimizer LR. |
 | `--mm_projector_lr` | Optional separate LR for `mm_projector`. |
+| `--mm_vision_fusion_lr` | Optional separate LR for multi-vision adapters/router/post-fusion layers. |
 | `--mm_vision_tower_lr` | Optional separate LR for the vision tower. |
 | `--weight_decay` | AdamW weight decay. |
 | `--num_train_epochs` / `--max_steps` | Epoch-based or step-based training length. |
@@ -419,6 +450,14 @@ The patch data flow has two supervised stages:
 | A | Single patch recognition, used to learn centerline/intersection JSON format and local geometry. | Incoming traces/intersections are empty. |
 | B | State-update stitching, used to train with previous patch context. | Incoming lane traces and intersection hints are filled from left/top neighbors when available. |
 
+Stage/task selection is different in the two inference tools:
+
+- Stage A uses `scripts/tools/infer_centerline_checkpoint.py`; pass
+  `--map-task lane` or `--map-task lane_intersection`.
+- Stage B uses `scripts/tools/infer_centerline_state_update.py`; lane-only mode
+  omits `--include-intersections`, while lane+intersection mode passes
+  `--include-intersections`.
+
 Local debug entrypoints:
 
 ```bash
@@ -560,6 +599,23 @@ bash scripts/npu/test/test_stage_b_lane_intersection_dinov3_qwen3vl_nodeepstack_
 The test scripts do not need a manual DeepStack flag. They infer whether DeepStack is enabled from the checkpoint configuration.
 They infer directly on the dataset's prebuilt `test.jsonl`; `eval.jsonl` is produced during data processing at raw-sample level. `NUM_TEST_SAMPLES=0` means all final-test rows; use a positive value only for a debug subset.
 The current NPU stage test scripts write `summary.json`, per-sample JSON under `json/`, single-patch PNGs under `viz/`, metrics in `eval.json`, and stitched whole-map PNGs under `whole_map_viz/`.
+
+Checkpoint paths can point to a direct checkpoint directory, a normal
+`checkpoint-*`, or a best-candidate root. The resolver accepts LoRA adapters,
+single-file full checkpoints, and standard sharded full checkpoints:
+
+```text
+adapter_model.safetensors
+model.safetensors
+pytorch_model.bin
+model.safetensors.index.json + model-00001-of-00004.safetensors ...
+pytorch_model.bin.index.json + pytorch_model-00001-of-00004.bin ...
+```
+
+For training continuation through Transformers `from_pretrained`, keep the
+index JSON with the shard files. The custom inference loader can also read bare
+`model-*-of-*` shard files as a fallback, but the indexed HF format is the
+recommended checkpoint layout.
 
 ## Validation
 

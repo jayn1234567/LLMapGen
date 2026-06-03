@@ -13,6 +13,10 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+from mllm.torch_runtime import maybe_disable_cudnn_from_env
+
+maybe_disable_cudnn_from_env(torch)
+
 from mllm.constants import IMAGE_TOKEN_INDEX
 from mllm.coord_utils import (
     COORD_MODE_PIXEL,
@@ -525,6 +529,14 @@ def main():
     parser.add_argument("--image-folder", required=True)
     parser.add_argument("--output-json", required=True)
     parser.add_argument("--vision_tower", default="", help="Override external DINO vision tower path when checkpoint metadata points elsewhere.")
+    parser.add_argument("--mm_vision_tower_type", default="")
+    parser.add_argument("--multi_vision_towers", default="")
+    parser.add_argument("--multi_vision_tower_types", default="")
+    parser.add_argument("--multi_vision_input_image_sizes", default="")
+    parser.add_argument("--multi_vision_primary_index", type=int, default=None)
+    parser.add_argument("--multi_vision_hidden_size", type=int, default=None)
+    parser.add_argument("--multi_vision_target_grid", type=int, default=None)
+    parser.add_argument("--multi_vision_fusion", default="")
     parser.add_argument("--input_image_size", type=int, default=None)
     parser.add_argument("--disable_deepstack", action="store_true")
     parser.add_argument("--deepstack_visual_indexes", nargs="*", type=int, default=None)

@@ -33,6 +33,8 @@ def _infer_vision_tower_type(vision_tower):
 
     class_name = vision_tower.__class__.__name__.lower()
     tower_name = str(getattr(vision_tower, 'vision_tower_name', '')).lower()
+    if 'multi' in class_name and 'moe' in class_name:
+        return 'multi_moe'
     if 'dinov3' in class_name or 'dinov3' in tower_name:
         return 'dinov3'
     if 'dinov2' in class_name or 'dinov2' in tower_name:
@@ -66,12 +68,14 @@ class LlavaMetaModel:
 
     def initialize_vision_modules(self, model_args, fsdp=None):
         vision_tower = model_args.vision_tower
+        expected_vision_tower_name = getattr(model_args, 'multi_vision_towers', None) or vision_tower
         mm_vision_select_layer = model_args.mm_vision_select_layer
         mm_vision_select_feature = model_args.mm_vision_select_feature
         pretrain_mm_mlp_adapter = model_args.pretrain_mm_mlp_adapter
         mm_patch_merge_type = model_args.mm_patch_merge_type
 
-        self.config.mm_vision_tower = vision_tower
+        self.config.mm_vision_tower = expected_vision_tower_name
+        self.config.vision_tower = expected_vision_tower_name
 
         if self.get_vision_tower() is None:
             vision_tower = build_vision_tower(model_args)
@@ -85,10 +89,10 @@ class LlavaMetaModel:
                 vision_tower = self.vision_tower[0]
             else:
                 vision_tower = self.vision_tower
-            if getattr(vision_tower, 'vision_tower_name', None) != model_args.vision_tower:
+            if getattr(vision_tower, 'vision_tower_name', None) != expected_vision_tower_name:
                 print(
                     f"Replacing vision tower {getattr(vision_tower, 'vision_tower_name', 'unknown')} "
-                    f"with {model_args.vision_tower}."
+                    f"with {expected_vision_tower_name}."
                 )
                 vision_tower = build_vision_tower(model_args)
                 if fsdp is not None and len(fsdp) > 0:
@@ -107,6 +111,21 @@ class LlavaMetaModel:
         self.config.mm_vision_select_layer = mm_vision_select_layer
         self.config.mm_vision_select_feature = mm_vision_select_feature
         self.config.mm_patch_merge_type = mm_patch_merge_type
+        for attr in (
+            'multi_vision_towers',
+            'multi_vision_tower_types',
+            'multi_vision_input_image_sizes',
+            'multi_vision_primary_index',
+            'multi_vision_hidden_size',
+            'multi_vision_target_grid',
+            'multi_vision_fusion',
+            'multi_vision_router_temperature',
+            'multi_vision_router_hidden_ratio',
+            'multi_vision_router_use_diff',
+            'multi_vision_dropout',
+        ):
+            if hasattr(model_args, attr):
+                setattr(self.config, attr, getattr(model_args, attr))
         self.config.input_image_size = (
             getattr(vision_tower, '_target_size', None)
             or getattr(vision_tower, 'input_image_size', None)

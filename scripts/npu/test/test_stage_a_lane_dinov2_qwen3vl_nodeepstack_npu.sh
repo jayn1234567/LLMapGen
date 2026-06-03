@@ -293,6 +293,7 @@ torchrun \
     scripts/tools/infer_centerline_checkpoint.py \
     --checkpoint-dir "${checkpoint_dir}" \
     --vision_tower "${VISION_TOWER}" \
+    --mm_vision_tower_type "${MM_VISION_TOWER_TYPE}" \
     --input_image_size "${INPUT_IMAGE_SIZE}" \
     --disable_deepstack \
     --test-json "${TEST_JSON}" \

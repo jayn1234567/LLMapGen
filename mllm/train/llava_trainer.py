@@ -360,15 +360,28 @@ class LLaVATrainer(Trainer):
             decay_parameters = get_parameter_names(opt_model, ALL_LAYERNORM_LAYERS)
             decay_parameters = [name for name in decay_parameters if "bias" not in name]
 
-            lr_mapper = {}
+            lr_mapper = []
             if self.args.mm_projector_lr is not None:
-                lr_mapper["mm_projector"] = self.args.mm_projector_lr
+                lr_mapper.append(("mm_projector", self.args.mm_projector_lr))
+            if getattr(self.args, "mm_vision_fusion_lr", None) is not None:
+                fusion_lr = self.args.mm_vision_fusion_lr
+                lr_mapper.extend([
+                    ("vision_tower.expert_adapters", fusion_lr),
+                    ("vision_tower.router", fusion_lr),
+                    ("vision_tower.post_fusion", fusion_lr),
+                    ("vision_tower.out_norm", fusion_lr),
+                ])
             if self.args.mm_vision_tower_lr is not None:
-                lr_mapper["vision_tower"] = self.args.mm_vision_tower_lr
+                lr_mapper.append(("vision_tower", self.args.mm_vision_tower_lr))
 
             if len(lr_mapper) > 0:
-                special_lr_parameters = [name for name, _ in opt_model.named_parameters() if
-                                         any(module_keyword in name for module_keyword in lr_mapper)]
+                def _matched_lr(name):
+                    for module_keyword, lr in lr_mapper:
+                        if module_keyword in name:
+                            return lr
+                    return None
+
+                special_lr_parameters = [name for name, _ in opt_model.named_parameters() if _matched_lr(name) is not None]
                 optimizer_grouped_parameters = [
                     {
                         "params": [p for n, p in opt_model.named_parameters() if
@@ -381,19 +394,19 @@ class LLaVATrainer(Trainer):
                         "weight_decay": 0.0,
                     },
                 ]
-                for module_keyword, lr in lr_mapper.items():
-                    module_parameters = [name for name, _ in opt_model.named_parameters() if module_keyword in name]
+                special_lrs = sorted({float(lr) for _, lr in lr_mapper})
+                for lr in special_lrs:
                     optimizer_grouped_parameters.extend(
                         [
                             {
                                 "params": [p for n, p in opt_model.named_parameters() if
-                                           (n in decay_parameters and n in module_parameters and p.requires_grad)],
+                                           (n in decay_parameters and _matched_lr(n) == lr and p.requires_grad)],
                                 "weight_decay": self.args.weight_decay,
                                 "lr": lr,
                             },
                             {
                                 "params": [p for n, p in opt_model.named_parameters() if
-                                           (n not in decay_parameters and n in module_parameters and p.requires_grad)],
+                                           (n not in decay_parameters and _matched_lr(n) == lr and p.requires_grad)],
                                 "weight_decay": 0.0,
                                 "lr": lr,
                             },

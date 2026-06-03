@@ -89,6 +89,10 @@ def _checkpoint_weight_files(checkpoint_dir: Path) -> list[Path]:
         path = checkpoint_dir / name
         if path.exists():
             return [path]
+    for pattern in ("model-*-of-*.safetensors", "pytorch_model-*-of-*.bin"):
+        paths = sorted(checkpoint_dir.glob(pattern))
+        if paths:
+            return paths
     raise FileNotFoundError(f"No full model weights found under {checkpoint_dir}")
 
 

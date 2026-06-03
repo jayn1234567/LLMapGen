@@ -17,6 +17,7 @@ import os
 import json
 import warnings
 import shutil
+from pathlib import Path
 
 from transformers import AutoTokenizer, AutoModelForCausalLM, AutoConfig, BitsAndBytesConfig
 import torch
@@ -59,6 +60,9 @@ def _iter_checkpoint_state_files(model_path, prefixes):
         if os.path.isfile(path):
             yield path
             return
+    for pattern in ("model-*-of-*.safetensors", "pytorch_model-*-of-*.bin"):
+        for path in sorted(Path(model_path).glob(pattern)):
+            yield str(path)
 
 
 def _load_multimodal_weights_if_present(model, model_path):
@@ -341,6 +345,17 @@ def _load_auto_config(model_path, **kwargs):
             "input_image_size",
             "deepstack_visual_indexes",
             "disable_deepstack",
+            "multi_vision_towers",
+            "multi_vision_tower_types",
+            "multi_vision_input_image_sizes",
+            "multi_vision_primary_index",
+            "multi_vision_hidden_size",
+            "multi_vision_target_grid",
+            "multi_vision_fusion",
+            "multi_vision_router_temperature",
+            "multi_vision_router_hidden_ratio",
+            "multi_vision_router_use_diff",
+            "multi_vision_dropout",
         ):
             if config_dict.get(key) is None and metadata.get(key) is not None:
                 config_dict[key] = metadata[key]

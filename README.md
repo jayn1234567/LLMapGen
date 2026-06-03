@@ -195,7 +195,7 @@ Do not pass experiment knobs as one-off shell prefixes. Edit the parameter block
 
 ## Training Parameters
 
-Most training scripts are shell wrappers around:
+Most training shell scripts launch:
 
 ```bash
 python -m mllm.train.train_qwen
@@ -218,8 +218,8 @@ Core model/data parameters:
 | Parameter | Purpose |
 |---|---|
 | `--model_name_or_path` | Qwen/Qwen3-VL base model or an existing checkpoint. |
-| `--vision_tower` | DINOv2/DINOv3 vision tower path. |
-| `--mm_vision_tower_type` | Optional explicit type: `dinov2` or `dinov3`. Usually inferred from metadata/path. |
+| `--vision_tower` | Single vision tower path, or comma-separated paths for multi-vision recipes. |
+| `--mm_vision_tower_type` | Optional explicit type: `dinov2`, `dinov3`, `siglip`, `multi_moe`, or `multi_concat`. Usually inferred from metadata/path for single towers. |
 | `--data_path` | Train json/jsonl path. |
 | `--image_folder` | Root directory for train images. |
 | `--eval_data_path` | Eval json/jsonl path, only needed when running eval. |
@@ -234,20 +234,30 @@ DeepStack parameters:
 | `--deepstack_visual_indexes 6 12 18 23` | unset | ViT layers used for DeepStack. Fixed DeepStack scripts pass this explicitly. |
 | `--input_image_size` | inferred | Override DINO input size. DINOv2-L defaults to 518; DINOv3 registry defaults to 224, while project DINOv3 scripts pass 512 for 1024 visual tokens on 256x256 BEV patches. |
 
-Multi-vision MoE parameters:
+Multi-vision recipes:
 
-Use `--mm_vision_tower_type multi_moe` to route multiple existing vision towers through a token-level softmax router. The current data pipeline still uses one image processor, selected by `--multi_vision_primary_index`, so prefer a shared `--input_image_size` for the first recipe.
+There are three clear visual-backbone families in scripts:
+
+| Recipe | `mm_vision_tower_type` | `multi_vision_fusion` | Meaning |
+|---|---|---|---|
+| Original single tower | `dinov2`, `dinov3`, or `siglip` | unset | One encoder feeds the normal `mm_projector`. |
+| Dynamic visual MoE | `multi_moe` | `softmax_router` | Per-token router learns how much to trust each encoder. |
+| Prismatic-style concat | `multi_concat` | `concat_projector` | Align token grids, concatenate encoder channels, then project back before `mm_projector`. |
+
+`multi_moe` and `multi_concat` both use the same extensible multi-vision tower. For DINO+SigLIP, the forward path also resizes and re-normalizes the already processed image tensor per expert, because DINO and SigLIP use different image statistics/input sizes.
 
 | Parameter | Purpose |
 |---|---|
 | `--vision_tower path_a,path_b` or `--multi_vision_towers path_a,path_b` | Expert vision tower paths. Any tower supported by `build_vision_tower` can be used. |
-| `--multi_vision_tower_types dinov2,dinov3` | Optional per-expert type override. |
+| `--multi_vision_tower_types dinov2,dinov3` | Optional per-expert type override, e.g. `dinov2,siglip` or `dinov3,siglip`. |
+| `--multi_vision_input_image_sizes 512,384` | Optional per-expert input sizes. Useful for DINO+SigLIP. |
 | `--multi_vision_target_grid 32` | Align all experts to a square token grid before fusion. Defaults to the smallest expert grid. |
-| `--multi_vision_hidden_size` | Shared expert hidden size before `mm_projector`. Defaults to the largest expert hidden size. |
+| `--multi_vision_hidden_size` | Fused hidden size before `mm_projector`. Defaults to the largest expert hidden size. |
 | `--multi_vision_primary_index 0` | Which expert supplies the shared image processor. |
-| `--multi_vision_fusion softmax_router` | Token-level router; each token gets a softmax weight over experts. |
+| `--multi_vision_fusion softmax_router` | Dynamic MoE fusion; each token gets a softmax weight over experts. |
+| `--multi_vision_fusion concat_projector` | Static concat fusion; closest to the Prismatic DINO+SigLIP idea. |
 
-Example:
+MoE example:
 
 ```bash
 --mm_vision_tower_type multi_moe \
@@ -260,13 +270,27 @@ Example:
 --mm_vision_fusion_lr 2e-5
 ```
 
+DINOv3 + SigLIP concat example:
+
+```bash
+--mm_vision_tower_type multi_concat \
+--vision_tower "${DINO3_PATH},${SIGLIP_PATH}" \
+--multi_vision_tower_types dinov3,siglip \
+--multi_vision_input_image_sizes 512,384 \
+--multi_vision_fusion concat_projector \
+--multi_vision_target_grid 32 \
+--multi_vision_hidden_size 1024 \
+--multi_vision_primary_index 0 \
+--mm_vision_fusion_lr 2e-5
+```
+
 Optimization parameters:
 
 | Parameter | Purpose |
 |---|---|
 | `--learning_rate` | Main optimizer LR. |
 | `--mm_projector_lr` | Optional separate LR for `mm_projector`. |
-| `--mm_vision_fusion_lr` | Optional separate LR for multi-vision adapters/router/post-fusion layers. |
+| `--mm_vision_fusion_lr` | Optional separate LR for multi-vision adapters/router/post-fusion/concat-projector layers. |
 | `--mm_vision_tower_lr` | Optional separate LR for the vision tower. |
 | `--weight_decay` | AdamW weight decay. |
 | `--num_train_epochs` / `--max_steps` | Epoch-based or step-based training length. |
@@ -458,6 +482,25 @@ Stage/task selection is different in the two inference tools:
   omits `--include-intersections`, while lane+intersection mode passes
   `--include-intersections`.
 
+Formal multi-vision NPU entrypoints:
+
+```bash
+# SFT train examples
+bash scripts/npu/train/train_sft_stage_a_lane_multi_moe_qwen3vl_nodeepstack_npu.sh
+bash scripts/npu/train/train_sft_stage_a_lane_dinov2_siglip_concat_qwen3vl_nodeepstack_npu.sh
+bash scripts/npu/train/train_sft_stage_a_lane_dinov3_siglip_concat_qwen3vl_nodeepstack_npu.sh
+
+# Test examples
+bash scripts/npu/test/test_stage_a_lane_multi_moe_qwen3vl_nodeepstack_npu.sh
+bash scripts/npu/test/test_stage_a_lane_dinov2_siglip_concat_qwen3vl_nodeepstack_npu.sh
+bash scripts/npu/test/test_stage_a_lane_dinov3_siglip_concat_qwen3vl_nodeepstack_npu.sh
+```
+
+Each multi-vision recipe has stage A/B and lane/lane_intersection variants. The
+formal SFT multi-vision defaults are: eval off, best train loss on, `SAVE_STEPS=400`,
+`SAVE_TOTAL_LIMIT=15`, `BEST_CHECKPOINT_KEEP_LIMIT=5`, `LR=2e-5`,
+`NUM_EPOCHS=5`, SwanLab enabled with `SWANLAB_MODE=offline`.
+
 Local debug entrypoints:
 
 ```bash
@@ -470,7 +513,9 @@ bash scripts/debug/run_debug_full_flow_npu.sh
 The local NPU debug scripts sample a tiny split from
 `/cache/data/data_line_samples_33w` into `checkpoints/debug_data/` and write
 outputs under `checkpoints/debug/`. Set `DATASET_PHASE`, `MAP_TASK`, and
-`VISION_BACKBONE` to switch phase/task/backbone. See
+`VISION_BACKBONE` to switch phase/task/backbone. Supported debug backbones include
+`dinov2`, `dinov3`, `multi_moe`, `dinov2_siglip_concat`, and
+`dinov3_siglip_concat`. See
 `scripts/debug/README.md` for the full command matrix.
 
 SFT debug saves normal `checkpoint-*` by `SAVE_STEPS`/`SAVE_TOTAL_LIMIT`, keeps
@@ -561,7 +606,7 @@ The script shards complete `tile_id` groups, so all patches from the same raw
 sample stay on one rank and left/top state dependencies are preserved. Each rank
 writes `summary_rank*.json`; rank0 merges them into the final `summary.json`,
 `merged_global.json`, `eval.json`, and `whole_map_viz/` outputs. The NPU
-`scripts/npu/test/test_stage_b_*_npu.sh` wrappers enable this path by default.
+`scripts/npu/test/test_stage_b_*_npu.sh` scripts enable this path by default.
 
 Visualization with metrics:
 

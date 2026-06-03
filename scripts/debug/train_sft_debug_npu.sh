@@ -10,7 +10,7 @@ SCRIPT_DIR=$(dirname "$SCRIPT_PATH")
 REPO_ROOT=$(readlink -f "${SCRIPT_DIR}/../..")
 cd "${REPO_ROOT}"
 
-VISION_BACKBONE=${VISION_BACKBONE:-dinov2}  # dinov2 or dinov3
+VISION_BACKBONE=${VISION_BACKBONE:-dinov2}  # dinov2, dinov3, multi_moe, dinov2_siglip_concat, or dinov3_siglip_concat
 DATASET_PHASE=${DATASET_PHASE:-phase_a}     # phase_a or phase_b
 MAP_TASK=${MAP_TASK:-lane}                  # lane or lane_intersection
 DEBUG_RUN_NAME=${DEBUG_RUN_NAME:-local_debug}
@@ -23,19 +23,62 @@ OUTPUT_ROOT=${OUTPUT_ROOT:-${REPO_ROOT}/checkpoints/debug}
 QWEN3VL_PATH=${QWEN3VL_PATH:-/cache/jjh/checkpoints/Qwen3-VL-8B-Instruct}
 DINOV2_PATH=${DINOV2_PATH:-/cache/jjh/checkpoints/facebook_dinov2-large}
 DINOV3_PATH=${DINOV3_PATH:-/cache/jjh/checkpoints/facebook_dinov3-vitl16-pretrain-lvd1689m}
+SIGLIP_PATH=${SIGLIP_PATH:-/cache/jjh/checkpoints/google_siglip-so400m-patch14-384}
+REQUIRED_VISION_TOWERS=()
 
 case "${VISION_BACKBONE}" in
   dinov2)
     VISION_TOWER="${DINOV2_PATH}"
     MM_VISION_TOWER_TYPE=dinov2
     INPUT_IMAGE_SIZE=${INPUT_IMAGE_SIZE:-518}
+    REQUIRED_VISION_TOWERS=("${VISION_TOWER}")
     ;;
   dinov3)
     VISION_TOWER="${DINOV3_PATH}"
     MM_VISION_TOWER_TYPE=dinov3
     INPUT_IMAGE_SIZE=${INPUT_IMAGE_SIZE:-512}
+    REQUIRED_VISION_TOWERS=("${VISION_TOWER}")
     ;;
-  *) echo "ERROR: VISION_BACKBONE must be dinov2 or dinov3"; exit 1 ;;
+  multi_moe|multi_vision_moe|dual_dino_moe)
+    MULTI_VISION_TOWERS=${MULTI_VISION_TOWERS:-${DINOV2_PATH},${DINOV3_PATH}}
+    MULTI_VISION_TOWER_TYPES=${MULTI_VISION_TOWER_TYPES:-dinov2,dinov3}
+    MULTI_VISION_INPUT_IMAGE_SIZES=${MULTI_VISION_INPUT_IMAGE_SIZES:-512,512}
+    MULTI_VISION_PRIMARY_INDEX=${MULTI_VISION_PRIMARY_INDEX:-1}
+    MULTI_VISION_HIDDEN_SIZE=${MULTI_VISION_HIDDEN_SIZE:-1024}
+    MULTI_VISION_TARGET_GRID=${MULTI_VISION_TARGET_GRID:-32}
+    MULTI_VISION_FUSION=${MULTI_VISION_FUSION:-softmax_router}
+    VISION_TOWER="${MULTI_VISION_TOWERS}"
+    MM_VISION_TOWER_TYPE=multi_moe
+    INPUT_IMAGE_SIZE=${INPUT_IMAGE_SIZE:-512}
+    IFS=',' read -r -a REQUIRED_VISION_TOWERS <<< "${MULTI_VISION_TOWERS}"
+    ;;
+  dinov2_siglip_concat|dinov2_siglip|dinosiglip_v2)
+    MULTI_VISION_TOWERS=${MULTI_VISION_TOWERS:-${DINOV2_PATH},${SIGLIP_PATH}}
+    MULTI_VISION_TOWER_TYPES=${MULTI_VISION_TOWER_TYPES:-dinov2,siglip}
+    MULTI_VISION_INPUT_IMAGE_SIZES=${MULTI_VISION_INPUT_IMAGE_SIZES:-512,384}
+    MULTI_VISION_PRIMARY_INDEX=${MULTI_VISION_PRIMARY_INDEX:-0}
+    MULTI_VISION_HIDDEN_SIZE=${MULTI_VISION_HIDDEN_SIZE:-1024}
+    MULTI_VISION_TARGET_GRID=${MULTI_VISION_TARGET_GRID:-32}
+    MULTI_VISION_FUSION=${MULTI_VISION_FUSION:-concat_projector}
+    VISION_TOWER="${MULTI_VISION_TOWERS}"
+    MM_VISION_TOWER_TYPE=multi_concat
+    INPUT_IMAGE_SIZE=${INPUT_IMAGE_SIZE:-512}
+    IFS=',' read -r -a REQUIRED_VISION_TOWERS <<< "${MULTI_VISION_TOWERS}"
+    ;;
+  dinov3_siglip_concat|dinov3_siglip|dinosiglip_v3)
+    MULTI_VISION_TOWERS=${MULTI_VISION_TOWERS:-${DINOV3_PATH},${SIGLIP_PATH}}
+    MULTI_VISION_TOWER_TYPES=${MULTI_VISION_TOWER_TYPES:-dinov3,siglip}
+    MULTI_VISION_INPUT_IMAGE_SIZES=${MULTI_VISION_INPUT_IMAGE_SIZES:-512,384}
+    MULTI_VISION_PRIMARY_INDEX=${MULTI_VISION_PRIMARY_INDEX:-0}
+    MULTI_VISION_HIDDEN_SIZE=${MULTI_VISION_HIDDEN_SIZE:-1024}
+    MULTI_VISION_TARGET_GRID=${MULTI_VISION_TARGET_GRID:-32}
+    MULTI_VISION_FUSION=${MULTI_VISION_FUSION:-concat_projector}
+    VISION_TOWER="${MULTI_VISION_TOWERS}"
+    MM_VISION_TOWER_TYPE=multi_concat
+    INPUT_IMAGE_SIZE=${INPUT_IMAGE_SIZE:-512}
+    IFS=',' read -r -a REQUIRED_VISION_TOWERS <<< "${MULTI_VISION_TOWERS}"
+    ;;
+  *) echo "ERROR: VISION_BACKBONE must be dinov2, dinov3, multi_moe, dinov2_siglip_concat, or dinov3_siglip_concat"; exit 1 ;;
 esac
 case "${DATASET_PHASE}" in
   phase_a|phase_b) ;;
@@ -101,7 +144,7 @@ EVAL_PATH="${DEBUG_DATA_ROOT}/${DATASET_PHASE}/eval.jsonl"
 OUTPUT_DIR="${OUTPUT_DIR:-${OUTPUT_ROOT}/${DEBUG_RUN_NAME}/sft_${DATASET_PHASE}_${MAP_TASK}_${VISION_BACKBONE}_nodeepstack}"
 mkdir -p "${OUTPUT_DIR}"
 
-for path in "${TRAIN_PATH}" "${EVAL_PATH}" "${IMAGE_FOLDER}" "${VISION_TOWER}" "${QWEN3VL_PATH}"; do
+for path in "${TRAIN_PATH}" "${EVAL_PATH}" "${IMAGE_FOLDER}" "${QWEN3VL_PATH}" "${REQUIRED_VISION_TOWERS[@]}"; do
   if [ ! -e "${path}" ]; then
     echo "ERROR: required path missing: ${path}"
     exit 1
@@ -122,6 +165,7 @@ NUM_EPOCHS=${NUM_EPOCHS:-1}
 LR=${LR:-2e-5}
 MM_PROJECTOR_LR=${MM_PROJECTOR_LR:-2e-5}
 MM_VISION_TOWER_LR=${MM_VISION_TOWER_LR:-2e-6}
+MM_VISION_FUSION_LR=${MM_VISION_FUSION_LR:-${MM_PROJECTOR_LR}}
 WEIGHT_DECAY=${WEIGHT_DECAY:-0.0}
 WARMUP_RATIO=${WARMUP_RATIO:-0.03}
 MODEL_MAX_LENGTH=${MODEL_MAX_LENGTH:-4096}
@@ -166,8 +210,27 @@ if [[ "${ENABLE_EVAL}" =~ ^(1|true|True|TRUE|yes|YES)$ ]]; then
   )
 fi
 
+VISION_ARGS=(
+  --vision_tower "${VISION_TOWER}"
+  --mm_vision_tower_type "${MM_VISION_TOWER_TYPE}"
+  --input_image_size "${INPUT_IMAGE_SIZE}"
+)
+if [[ "${MM_VISION_TOWER_TYPE}" == "multi_moe" || "${MM_VISION_TOWER_TYPE}" == "multi_concat" ]]; then
+  VISION_ARGS+=(
+    --multi_vision_towers "${MULTI_VISION_TOWERS}"
+    --multi_vision_tower_types "${MULTI_VISION_TOWER_TYPES}"
+    --multi_vision_input_image_sizes "${MULTI_VISION_INPUT_IMAGE_SIZES}"
+    --multi_vision_primary_index "${MULTI_VISION_PRIMARY_INDEX}"
+    --multi_vision_hidden_size "${MULTI_VISION_HIDDEN_SIZE}"
+    --multi_vision_target_grid "${MULTI_VISION_TARGET_GRID}"
+    --multi_vision_fusion "${MULTI_VISION_FUSION}"
+  )
+fi
+
 echo "SFT debug:"
 echo "  phase=${DATASET_PHASE} map_task=${MAP_TASK} vision=${VISION_BACKBONE}"
+echo "  vision_tower=${VISION_TOWER}"
+echo "  vision_type=${MM_VISION_TOWER_TYPE} fusion=${MULTI_VISION_FUSION:-single}"
 echo "  train=${TRAIN_PATH}"
 echo "  image_folder=${IMAGE_FOLDER}"
 echo "  output=${OUTPUT_DIR}"
@@ -184,9 +247,7 @@ torchrun \
   -m mllm.train.train_qwen \
   --model_name_or_path "${QWEN3VL_PATH}" \
   --version conv_qwen_3_Dinov2_huawei \
-  --vision_tower "${VISION_TOWER}" \
-  --mm_vision_tower_type "${MM_VISION_TOWER_TYPE}" \
-  --input_image_size "${INPUT_IMAGE_SIZE}" \
+  "${VISION_ARGS[@]}" \
   --mm_vision_select_layer -2 \
   --mm_projector_type mlp2x_gelu \
   --unfreeze_mm_vision_tower True \
@@ -205,6 +266,7 @@ torchrun \
   --learning_rate "${LR}" \
   --mm_projector_lr "${MM_PROJECTOR_LR}" \
   --mm_vision_tower_lr "${MM_VISION_TOWER_LR}" \
+  --mm_vision_fusion_lr "${MM_VISION_FUSION_LR}" \
   --weight_decay "${WEIGHT_DECAY}" \
   --warmup_ratio "${WARMUP_RATIO}" \
   --lr_scheduler_type cosine \

@@ -1125,7 +1125,7 @@ class ModelArguments:
     mm_vision_tower_type: Optional[str] = field(default=None)
     multi_vision_towers: Optional[str] = field(
         default=None,
-        metadata={"help": "Comma-separated expert vision tower paths for mm_vision_tower_type=multi_moe."},
+        metadata={"help": "Comma-separated expert vision tower paths for mm_vision_tower_type=multi_moe or multi_concat."},
     )
     multi_vision_tower_types: Optional[str] = field(
         default=None,
@@ -1147,7 +1147,7 @@ class ModelArguments:
         default=None,
         metadata={"help": "Square token grid after expert alignment, e.g. 32 for 32x32 tokens. Defaults to the smallest expert grid."},
     )
-    multi_vision_fusion: str = field(default="softmax_router")
+    multi_vision_fusion: str = field(default="softmax_router", metadata={"help": "softmax_router for dynamic MoE, concat_projector for static Prismatic-style concat."})
     multi_vision_router_temperature: float = field(default=1.0)
     multi_vision_router_hidden_ratio: float = field(default=0.25)
     multi_vision_router_use_diff: bool = field(default=True)

@@ -356,6 +356,10 @@ def _config_overrides_from_args(args) -> dict:
         "multi_vision_hidden_size": getattr(args, "multi_vision_hidden_size", None),
         "multi_vision_target_grid": getattr(args, "multi_vision_target_grid", None),
         "multi_vision_fusion": getattr(args, "multi_vision_fusion", "") or None,
+        "multi_vision_router_temperature": getattr(args, "multi_vision_router_temperature", None),
+        "multi_vision_router_hidden_ratio": getattr(args, "multi_vision_router_hidden_ratio", None),
+        "multi_vision_router_use_diff": getattr(args, "multi_vision_router_use_diff", None),
+        "multi_vision_dropout": getattr(args, "multi_vision_dropout", None),
     }
 
 
@@ -842,6 +846,10 @@ def main():
     parser.add_argument("--multi_vision_hidden_size", type=int, default=None)
     parser.add_argument("--multi_vision_target_grid", type=int, default=None)
     parser.add_argument("--multi_vision_fusion", default="")
+    parser.add_argument("--multi_vision_router_temperature", type=float, default=None)
+    parser.add_argument("--multi_vision_router_hidden_ratio", type=float, default=None)
+    parser.add_argument("--multi_vision_router_use_diff", type=lambda x: str(x).lower() in ("1", "true", "yes", "on"), default=None)
+    parser.add_argument("--multi_vision_dropout", type=float, default=None)
     parser.add_argument("--input_image_size", type=int, default=None)
     parser.add_argument("--disable_deepstack", action="store_true", default=None)
     parser.add_argument("--deepstack_visual_indexes", type=int, nargs="*", default=None)

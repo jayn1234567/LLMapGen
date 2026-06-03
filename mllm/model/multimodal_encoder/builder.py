@@ -3,6 +3,7 @@ from .clip_encoder import CLIPVisionTower, CLIPVisionTowerS2
 from .dinov2_encoder import DINOv2VisionTower
 from .dinov3_encoder import DINOv3VisionTower
 from .mobileclip_encoder import MobileCLIPVisionTower
+from .siglip_encoder import SigLIPVisionTower
 from .dino_config import get_dino_config
 
 
@@ -19,6 +20,23 @@ def _normalize_multi_vision_type(vision_tower_type):
     vision_tower_type = str(vision_tower_type or "").lower()
     if vision_tower_type in ("multi_moe", "multivision_moe", "multi_vision_moe", "dual_dino_moe", "dual_vision_moe"):
         return "multi_moe"
+    if vision_tower_type in (
+        "multi_concat",
+        "multi_vision_concat",
+        "dual_vision_concat",
+        "prismatic_concat",
+        "dino_siglip_concat",
+        "dinov2_siglip_concat",
+        "dinov3_siglip_concat",
+    ):
+        return "multi_concat"
+    return ""
+
+
+def _normalize_siglip_type(vision_tower_type):
+    vision_tower_type = str(vision_tower_type or "").lower()
+    if vision_tower_type in ("siglip", "siglip2", "siglip_vision"):
+        return "siglip"
     return ""
 
 
@@ -60,6 +78,10 @@ def _build_single_vision_tower(vision_tower_cfg, **kwargs):
     if vit_type == "dinov2":
         return DINOv2VisionTower(vision_tower, args=vision_tower_cfg, **kwargs)
 
+    if _normalize_siglip_type(getattr(vision_tower_cfg, 'mm_vision_tower_type', '')):
+        vision_tower_cfg.mm_vision_tower_type = "siglip"
+        return SigLIPVisionTower(vision_tower, args=vision_tower_cfg, **kwargs)
+
     if "dinov3" in vision_tower_lower or "dinov2" in vision_tower_lower:
         dino_cfg = get_dino_config(vision_tower_str, input_image_size=img_size)
         _apply_dino_config(vision_tower_cfg, dino_cfg)
@@ -74,6 +96,10 @@ def _build_single_vision_tower(vision_tower_cfg, **kwargs):
             "whose folder name contains an exact DINO variant such as dinov3-vitl16."
         )
 
+    if "siglip" in vision_tower_lower:
+        vision_tower_cfg.mm_vision_tower_type = "siglip"
+        return SigLIPVisionTower(vision_tower, args=vision_tower_cfg, **kwargs)
+
     if is_absolute_path_exists or vision_tower_str.startswith("openai") or vision_tower_str.startswith("laion") or "ShareGPT4V" in vision_tower_str:
         if use_s2:
             return CLIPVisionTowerS2(vision_tower, args=vision_tower_cfg, **kwargs)
@@ -87,9 +113,10 @@ def _build_single_vision_tower(vision_tower_cfg, **kwargs):
 
 def build_vision_tower(vision_tower_cfg, **kwargs):
     vision_tower_type = getattr(vision_tower_cfg, 'mm_vision_tower_type', '')
-    if _normalize_multi_vision_type(vision_tower_type):
+    multi_vision_type = _normalize_multi_vision_type(vision_tower_type)
+    if multi_vision_type:
         from .multi_moe_encoder import MultiVisionMoEVisionTower
-        vision_tower_cfg.mm_vision_tower_type = "multi_moe"
+        vision_tower_cfg.mm_vision_tower_type = multi_vision_type
         return MultiVisionMoEVisionTower(
             vision_tower_cfg,
             single_tower_builder=_build_single_vision_tower,

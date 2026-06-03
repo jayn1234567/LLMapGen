@@ -8,6 +8,7 @@ This directory is for small-sample local debug runs based on:
 - Qwen3VL: `/cache/jjh/checkpoints/Qwen3-VL-8B-Instruct`
 - DINOv2: `/cache/jjh/checkpoints/facebook_dinov2-large`
 - DINOv3: `/cache/jjh/checkpoints/facebook_dinov3-vitl16-pretrain-lvd1689m`
+- SigLIP: `/cache/jjh/checkpoints/google_siglip-so400m-patch14-384`
 
 The scripts sample a tiny subset from `phase_a` or `phase_b` and keep image paths pointing to the original dataset root. SFT, inference, and GRPO are local Ascend NPU flows. GRPO uses vLLM-Ascend prompt-embedding rollout, so the active environment must have `vllm`, `vllm-ascend`, `torch==2.7.1`, and the OBS `torch_npu-2.7.1.dev20250724` wheel installed.
 
@@ -23,6 +24,18 @@ NPROC_PER_NODE=8
 ```
 
 `MAP_TASK=lane` predicts centerlines only. Use `MAP_TASK=lane_intersection` when the dataset split contains lane + intersection targets.
+
+`VISION_BACKBONE` supports:
+
+| Value | Meaning |
+|---|---|
+| `dinov2` | Original single DINOv2 tower. |
+| `dinov3` | Original single DINOv3 tower. |
+| `multi_moe` | DINOv2+DINOv3 dynamic token-level router. |
+| `dinov2_siglip_concat` | DINOv2+SigLIP static concat projector. |
+| `dinov3_siglip_concat` | DINOv3+SigLIP static concat projector. |
+
+Override `SIGLIP_PATH` if your SigLIP checkpoint is stored elsewhere.
 
 ## Sample JSONL Only
 
@@ -60,6 +73,27 @@ Phase A, lane, DINOv3:
 ```bash
 DATASET_PHASE=phase_a MAP_TASK=lane VISION_BACKBONE=dinov3 \
   bash scripts/debug/train_sft_debug_npu.sh
+```
+
+Phase A, lane, DINOv2+DINOv3 MoE:
+
+```bash
+DATASET_PHASE=phase_a MAP_TASK=lane \
+  bash scripts/debug/train_sft_debug_moe_npu.sh
+```
+
+Phase A, lane, DINOv2+SigLIP concat:
+
+```bash
+DATASET_PHASE=phase_a MAP_TASK=lane \
+  bash scripts/debug/train_sft_debug_dinov2_siglip_concat_npu.sh
+```
+
+Phase A, lane, DINOv3+SigLIP concat:
+
+```bash
+DATASET_PHASE=phase_a MAP_TASK=lane \
+  bash scripts/debug/train_sft_debug_dinov3_siglip_concat_npu.sh
 ```
 
 Phase B, lane, DINOv2:
@@ -185,6 +219,21 @@ DATASET_PHASE=phase_a MAP_TASK=lane VISION_BACKBONE=dinov3 \
   bash scripts/debug/infer_debug_npu.sh
 ```
 
+```bash
+DATASET_PHASE=phase_a MAP_TASK=lane \
+  bash scripts/debug/infer_debug_moe_npu.sh
+```
+
+```bash
+DATASET_PHASE=phase_a MAP_TASK=lane \
+  bash scripts/debug/infer_debug_dinov2_siglip_concat_npu.sh
+```
+
+```bash
+DATASET_PHASE=phase_a MAP_TASK=lane \
+  bash scripts/debug/infer_debug_dinov3_siglip_concat_npu.sh
+```
+
 Phase B, lane:
 
 ```bash
@@ -232,6 +281,7 @@ DATASET_PHASE=phase_a MAP_TASK=lane VISION_BACKBONE=dinov2 \
 GRPO imports the SFT checkpoint from the matching SFT output directory unless `SFT_CHECKPOINT` is set. It uses the same resolver priority as inference: eval-best first, train-loss best second, newest normal checkpoint last.
 By default the actor uses `ACTOR_NPU_DEVICES=0` and vLLM-Ascend rollout uses `ROLLOUT_NPU_DEVICES=1`.
 For a one-card debug machine, set `ACTOR_NPU_DEVICES=0 ROLLOUT_NPU_DEVICES=0`; this is slower and can OOM on large settings, so keep `MAX_STEPS`, `NUM_GENERATIONS`, and `MAX_NEW_TOKENS` small.
+GRPO debug accepts the same `VISION_BACKBONE` values as SFT/inference, including `multi_moe`, `dinov2_siglip_concat`, and `dinov3_siglip_concat`.
 
 Phase A, lane, DINOv2:
 

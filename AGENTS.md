@@ -41,7 +41,8 @@ MLLM_project/
 │   │   │   ├── dino_config.py         # DINO 变体注册表 ★
 │   │   │   ├── dinov2_encoder.py      # DINOv2 编码器
 │   │   │   ├── dinov3_encoder.py      # DINOv3 编码器 ★
-│   │   │   ├── multi_moe_encoder.py   # 多视觉塔 token-level MoE 融合 ★
+│   │   │   ├── multi_moe_encoder.py   # 多视觉塔 MoE/concat 融合 ★
+│   │   │   ├── siglip_encoder.py      # SigLIP 视觉编码器 ★
 │   │   │   ├── deepstack.py           # DeepStack (per-layer merger) ★
 │   │   │   └── clip_encoder.py
 │   │   └── multimodal_projector/
@@ -94,7 +95,7 @@ DINOv2/DINOv3 ViT (frozen)
     └── deepstack layers → 独立 merger MLP → 残差注入 LLM layer 0, 1, 2, 3
 ```
 
-### Multi-Vision MoE
+### Multi-Vision MoE / Concat
 
 ```
 VisionTower[0] → adapter → B x T x D
@@ -104,18 +105,42 @@ concat/stat features → router softmax → token-wise weighted sum
     → post_fusion residual MLP → mm_projector → <image> token 替换
 ```
 
+另有 Prismatic-style 静态拼接路径：
+
+```
+DINO feature   → align grid → B x T x D1
+SigLIP feature → align grid → B x T x D2
+concat(D1,D2) → concat_projector → B x T x D → mm_projector
+```
+
 关键参数：
 
 - `--mm_vision_tower_type multi_moe`
+- `--mm_vision_tower_type multi_concat`
 - `--multi_vision_towers path_a,path_b`
-- `--multi_vision_tower_types dinov2,dinov3`
+- `--multi_vision_tower_types dinov2,dinov3` / `dinov2,siglip` / `dinov3,siglip`
 - `--multi_vision_input_image_sizes 512,512`
 - `--multi_vision_target_grid 32`
 - `--multi_vision_hidden_size 1024`
-- `--mm_vision_fusion_lr` 单独控制 adapters/router/post_fusion 的学习率。
+- `--multi_vision_fusion softmax_router`：动态 token router / 轻量 MoE。
+- `--multi_vision_fusion concat_projector`：静态 concat + MLP 投影，接近 Prismatic DINO+SigLIP。
+- `--mm_vision_fusion_lr` 单独控制 adapters/router/post_fusion/concat_projector 的学习率。
 
-当前 Multi-MoE 走 no-DeepStack 主视觉特征路径；后续新增视觉编码器时优先
-实现普通 `build_vision_tower` 支持，再加入 `multi_vision_towers` 列表。
+当前 multi-vision 走 no-DeepStack 主视觉特征路径；后续新增视觉编码器时优先
+实现普通 `build_vision_tower` 支持，再加入 `multi_vision_towers` 列表。DINO+SigLIP
+会在 multi-vision forward 内按 expert 做 tensor resize 和 re-normalize，避免只用
+primary image processor 导致 SigLIP 输入分布明显偏掉。
+
+正式 NPU SFT/test 多视觉脚本：
+
+- 每个正式 stage/task/recipe 文件都是完整自包含脚本，不调用另一个 shell 脚本。
+- 命名包含 stage/task/recipe，例如
+  `train_sft_stage_a_lane_multi_moe_qwen3vl_nodeepstack_npu.sh`、
+  `train_sft_stage_a_lane_dinov2_siglip_concat_qwen3vl_nodeepstack_npu.sh`、
+  `train_sft_stage_a_lane_dinov3_siglip_concat_qwen3vl_nodeepstack_npu.sh`。
+- 正式 SFT multi-vision 默认：`ENABLE_EVAL=False`、`SAVE_BEST_TRAIN_LOSS=True`、
+  `SAVE_STEPS=400`、`SAVE_TOTAL_LIMIT=15`、`BEST_CHECKPOINT_KEEP_LIMIT=5`、
+  `LR=2e-5`、`NUM_EPOCHS=5`、`SWANLAB_ENABLE=True`、`SWANLAB_MODE=offline`。
 
 ### DeepStack 注入
 

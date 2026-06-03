@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Multi-GPU SFT smoke for Qwen3VL + DINOv2/DINOv3/Multi-MoE + no DeepStack.
+# Multi-GPU SFT smoke for Qwen3VL + single-tower/Multi-MoE/Multi-Concat + no DeepStack.
 # Covers both lane-only patch recognition and lane+intersection state-update
 # data formats. This is a real GPU runtime check, not a syntax-only script.
 
@@ -19,7 +19,7 @@ NUM_GPUS=${NUM_GPUS:-2}
 MASTER_PORT=${MASTER_PORT:-29670}
 
 MODEL_NAME_OR_PATH=${MODEL_NAME_OR_PATH:-/media/q/data2/jjh/project/MLLM_project/outputs/test_qwen3vl}
-VISION_BACKBONE=${VISION_BACKBONE:-dinov2}  # dinov2, dinov3, or multi_moe
+VISION_BACKBONE=${VISION_BACKBONE:-dinov2}  # dinov2, dinov3, multi_moe, dinov2_siglip_concat, or dinov3_siglip_concat
 
 case "${VISION_BACKBONE}" in
   dinov2)
@@ -46,8 +46,36 @@ case "${VISION_BACKBONE}" in
     MM_VISION_TOWER_TYPE=${MM_VISION_TOWER_TYPE:-multi_moe}
     INPUT_IMAGE_SIZE=${INPUT_IMAGE_SIZE:-512}
     ;;
+  dinov2_siglip_concat|dinov2_siglip|dinosiglip_v2)
+    DINO_V2_TOWER=${DINO_V2_TOWER:-/media/q/data2/jjh/project/MLLM_project/checkpoints/facebook_dinov2-large}
+    SIGLIP_TOWER=${SIGLIP_TOWER:-/media/q/data2/jjh/project/MLLM_project/checkpoints/google_siglip-so400m-patch14-384}
+    MULTI_VISION_TOWERS=${MULTI_VISION_TOWERS:-${DINO_V2_TOWER},${SIGLIP_TOWER}}
+    MULTI_VISION_TOWER_TYPES=${MULTI_VISION_TOWER_TYPES:-dinov2,siglip}
+    MULTI_VISION_INPUT_IMAGE_SIZES=${MULTI_VISION_INPUT_IMAGE_SIZES:-512,384}
+    MULTI_VISION_PRIMARY_INDEX=${MULTI_VISION_PRIMARY_INDEX:-0}
+    MULTI_VISION_HIDDEN_SIZE=${MULTI_VISION_HIDDEN_SIZE:-1024}
+    MULTI_VISION_TARGET_GRID=${MULTI_VISION_TARGET_GRID:-32}
+    MULTI_VISION_FUSION=${MULTI_VISION_FUSION:-concat_projector}
+    VISION_TOWER=${VISION_TOWER:-${MULTI_VISION_TOWERS}}
+    MM_VISION_TOWER_TYPE=${MM_VISION_TOWER_TYPE:-multi_concat}
+    INPUT_IMAGE_SIZE=${INPUT_IMAGE_SIZE:-512}
+    ;;
+  dinov3_siglip_concat|dinov3_siglip|dinosiglip_v3)
+    DINO_V3_TOWER=${DINO_V3_TOWER:-/media/q/data2/jjh/project/MLLM_project/checkpoints/facebook/dinov3-vitl16-pretrain-lvd1689m}
+    SIGLIP_TOWER=${SIGLIP_TOWER:-/media/q/data2/jjh/project/MLLM_project/checkpoints/google_siglip-so400m-patch14-384}
+    MULTI_VISION_TOWERS=${MULTI_VISION_TOWERS:-${DINO_V3_TOWER},${SIGLIP_TOWER}}
+    MULTI_VISION_TOWER_TYPES=${MULTI_VISION_TOWER_TYPES:-dinov3,siglip}
+    MULTI_VISION_INPUT_IMAGE_SIZES=${MULTI_VISION_INPUT_IMAGE_SIZES:-512,384}
+    MULTI_VISION_PRIMARY_INDEX=${MULTI_VISION_PRIMARY_INDEX:-0}
+    MULTI_VISION_HIDDEN_SIZE=${MULTI_VISION_HIDDEN_SIZE:-1024}
+    MULTI_VISION_TARGET_GRID=${MULTI_VISION_TARGET_GRID:-32}
+    MULTI_VISION_FUSION=${MULTI_VISION_FUSION:-concat_projector}
+    VISION_TOWER=${VISION_TOWER:-${MULTI_VISION_TOWERS}}
+    MM_VISION_TOWER_TYPE=${MM_VISION_TOWER_TYPE:-multi_concat}
+    INPUT_IMAGE_SIZE=${INPUT_IMAGE_SIZE:-512}
+    ;;
   *)
-    echo "Unsupported VISION_BACKBONE=${VISION_BACKBONE}; expected dinov2, dinov3, or multi_moe"
+    echo "Unsupported VISION_BACKBONE=${VISION_BACKBONE}; expected dinov2, dinov3, multi_moe, dinov2_siglip_concat, or dinov3_siglip_concat"
     exit 1
     ;;
 esac
@@ -130,7 +158,7 @@ SWANLAB_MODE=${SWANLAB_MODE:-}
 export SWANLAB_API_KEY
 
 [ -d "${MODEL_NAME_OR_PATH}" ] || { echo "Model not found: ${MODEL_NAME_OR_PATH}"; exit 1; }
-if [[ "${MM_VISION_TOWER_TYPE}" == "multi_moe" ]]; then
+if [[ "${MM_VISION_TOWER_TYPE}" == "multi_moe" || "${MM_VISION_TOWER_TYPE}" == "multi_concat" ]]; then
   IFS=',' read -r -a _vision_tower_paths <<< "${MULTI_VISION_TOWERS}"
   for _vision_tower_path in "${_vision_tower_paths[@]}"; do
     [ -d "${_vision_tower_path}" ] || { echo "Vision tower not found: ${_vision_tower_path}"; exit 1; }
@@ -157,7 +185,7 @@ INFER_VISION_ARGS=(
   --input_image_size "${INPUT_IMAGE_SIZE}"
   --disable_deepstack
 )
-if [[ "${MM_VISION_TOWER_TYPE}" == "multi_moe" ]]; then
+if [[ "${MM_VISION_TOWER_TYPE}" == "multi_moe" || "${MM_VISION_TOWER_TYPE}" == "multi_concat" ]]; then
   TRAIN_VISION_ARGS+=(
     --multi_vision_towers "${MULTI_VISION_TOWERS}"
     --multi_vision_tower_types "${MULTI_VISION_TOWER_TYPES}"
@@ -184,6 +212,7 @@ echo "GPUs:      ${CUDA_VISIBLE_DEVICES} (${NUM_GPUS} processes)"
 echo "Model:     ${MODEL_NAME_OR_PATH}"
 echo "ViT:       ${VISION_TOWER}"
 echo "ViT type:  ${MM_VISION_TOWER_TYPE}"
+echo "Fusion:    ${MULTI_VISION_FUSION:-single}"
 echo "Input:     ${INPUT_IMAGE_SIZE}"
 echo "Train:     ${TRAIN_JSONL}"
 echo "Output:    ${OUTPUT_DIR}"

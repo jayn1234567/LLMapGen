@@ -34,6 +34,13 @@ NPU train entrypoints:
   - `scripts/npu/train/train_sft_stage_b_lane_intersection_dinov2_qwen3vl_nodeepstack_npu.sh`
   - `scripts/npu/train/train_sft_stage_a_lane_intersection_dinov3_qwen3vl_nodeepstack_npu.sh`
   - `scripts/npu/train/train_sft_stage_b_lane_intersection_dinov3_qwen3vl_nodeepstack_npu.sh`
+- SFT multi-vision formal scripts:
+  - MoE scripts use names like `train_sft_stage_a_lane_multi_moe_qwen3vl_nodeepstack_npu.sh`
+  - DINOv2+SigLIP concat scripts use names like `train_sft_stage_a_lane_dinov2_siglip_concat_qwen3vl_nodeepstack_npu.sh`
+  - DINOv3+SigLIP concat scripts use names like `train_sft_stage_a_lane_dinov3_siglip_concat_qwen3vl_nodeepstack_npu.sh`
+  - Each recipe has stage A/B and lane/lane_intersection variants.
+  - These formal multi-vision files are self-contained full scripts; they do not dispatch to another shell launcher.
+  - Current formal multi-vision defaults: `ENABLE_EVAL=False`, `SAVE_BEST_TRAIN_LOSS=True`, `SAVE_STEPS=400`, `SAVE_TOTAL_LIMIT=15`, `BEST_CHECKPOINT_KEEP_LIMIT=5`, `LR=2e-5`, `NUM_EPOCHS=5`, `SWANLAB_ENABLE=True`, `SWANLAB_MODE=offline`.
 - Standalone Stage-B-from-Stage-A SFT:
   - `scripts/npu/train/train_sft_stage_b_from_stage_a_qwen3vl_nodeepstack_npu.sh`
   - This script is also self-contained. Set `VISION_BACKBONE`, `MAP_TASK`, and either `STAGE_A_CHECKPOINT_OBS_PATH` or `STAGE_A_CHECKPOINT_PATH` inside the script before launch.
@@ -48,13 +55,16 @@ NPU test entrypoints mirror the same matrix under `scripts/npu/test/`, for examp
 
 - `scripts/npu/test/test_stage_a_lane_dinov2_qwen3vl_nodeepstack_npu.sh`
 - `scripts/npu/test/test_stage_b_lane_intersection_dinov3_qwen3vl_nodeepstack_npu.sh`
+- `scripts/npu/test/test_stage_a_lane_multi_moe_qwen3vl_nodeepstack_npu.sh`
+- `scripts/npu/test/test_stage_a_lane_dinov2_siglip_concat_qwen3vl_nodeepstack_npu.sh`
+- `scripts/npu/test/test_stage_a_lane_dinov3_siglip_concat_qwen3vl_nodeepstack_npu.sh`
 
-Each concrete train/test script is now standalone. For example,
+Concrete train/test scripts are standalone, including the formal multi-vision
+files. For example,
 `scripts/npu/test/test_stage_a_lane_dinov2_qwen3vl_nodeepstack_npu.sh`
 contains its own editable parameter block plus the full download, inference,
 visualization, metric, and upload flow. Edit the concrete stage/task/backbone
-script you plan to launch; it no longer dispatches through a second shell
-launcher.
+script you plan to launch.
 
 Local path inputs:
 
@@ -137,16 +147,49 @@ Training mode in filenames:
 - `phase_b`: supervised state-update data with left/top incoming lane and intersection hints.
 - `ckpt3200`: starts from the local/cloud checkpoint-3200 variant instead of the base Qwen3-VL checkpoint.
 
-DINO type and platform are explicit:
+DINO type, fusion recipe, and platform are explicit:
 
 - `dinov2` or `dinov3` identifies the vision tower family.
+- `multi_moe` identifies the dynamic DINOv2+DINOv3 token-router recipe.
+- `dinov2_siglip_concat` and `dinov3_siglip_concat` identify the Prismatic-style static DINO+SigLIP concat recipe.
 - `_npu` or `_gpu` identifies the target platform.
 
 Common DINOv3 scripts infer DINO type from checkpoint metadata, `mm_vision_tower_type`, or the `vision_tower` path. For this BEV task they set `INPUT_IMAGE_SIZE=512` inside the scripts: 256x256 patches are resized to 512x512, and DINOv3 patch16 produces 32x32 = 1024 visual tokens.
 
-The GPU smoke script also supports `VISION_BACKBONE=multi_moe`, which builds a
-multi-vision router over comma-separated `MULTI_VISION_TOWERS` and forwards the
-same multi-vision parameters into both training and inference.
+Script families:
+
+| Family | Example script/setting | Fusion |
+|---|---|---|
+| Original single tower | `VISION_BACKBONE=dinov2` or `dinov3` | none |
+| Dynamic MoE | `scripts/gpu/train_sft_qwen3vl_nodeepstack_moe_smoke_gpu.sh` or `VISION_BACKBONE=multi_moe` | `softmax_router` |
+| DINOv2 + SigLIP concat | `scripts/gpu/train_sft_qwen3vl_nodeepstack_dinov2_siglip_concat_smoke_gpu.sh` or `VISION_BACKBONE=dinov2_siglip_concat` | `concat_projector` |
+| DINOv3 + SigLIP concat | `scripts/gpu/train_sft_qwen3vl_nodeepstack_dinov3_siglip_concat_smoke_gpu.sh` or `VISION_BACKBONE=dinov3_siglip_concat` | `concat_projector` |
+
+The GPU smoke script forwards the same multi-vision parameters into training,
+patch inference, and state-update inference. NPU debug scripts under
+`scripts/debug/` support the same `VISION_BACKBONE` values and have thin wrapper
+files named by recipe. Formal NPU SFT/test scripts now also include self-contained
+MoE and DINO+SigLIP concat files under `scripts/npu/train/` and `scripts/npu/test/`.
+
+For DINO+SigLIP concat, set or verify these paths:
+
+```bash
+DINO_V2_TOWER=/path/to/facebook_dinov2-large
+DINO_V3_TOWER=/path/to/dinov3-vitl16-pretrain-lvd1689m
+SIGLIP_TOWER=/path/to/google_siglip-so400m-patch14-384
+```
+
+Core multi-vision arguments:
+
+```bash
+--mm_vision_tower_type multi_concat
+--multi_vision_tower_types dinov3,siglip
+--multi_vision_input_image_sizes 512,384
+--multi_vision_fusion concat_projector
+--multi_vision_target_grid 32
+--multi_vision_hidden_size 1024
+--multi_vision_primary_index 0
+```
 
 DeepStack and gradient checkpointing are intended to work together. Training scripts keep `GRADIENT_CHECKPOINTING=True` by default, including DeepStack runs. Inference scripts do not hard-code DeepStack settings; they recover DeepStack enabled/disabled state from the checkpoint config unless an override is passed.
 

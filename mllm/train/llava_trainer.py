@@ -369,6 +369,7 @@ class LLaVATrainer(Trainer):
                     ("vision_tower.expert_adapters", fusion_lr),
                     ("vision_tower.router", fusion_lr),
                     ("vision_tower.post_fusion", fusion_lr),
+                    ("vision_tower.concat_projector", fusion_lr),
                     ("vision_tower.out_norm", fusion_lr),
                 ])
             if self.args.mm_vision_tower_lr is not None:

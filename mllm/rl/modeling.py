@@ -268,6 +268,7 @@ def create_optimizer(model, training_args):
                 "vision_tower.expert_adapters",
                 "vision_tower.router",
                 "vision_tower.post_fusion",
+                "vision_tower.concat_projector",
                 "vision_tower.out_norm",
             )
         )

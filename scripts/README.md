@@ -176,7 +176,7 @@ For DINO+SigLIP concat, set or verify these paths:
 ```bash
 DINO_V2_TOWER=/path/to/facebook_dinov2-large
 DINO_V3_TOWER=/path/to/dinov3-vitl16-pretrain-lvd1689m
-SIGLIP_TOWER=/path/to/google_siglip-so400m-patch14-384
+SIGLIP_TOWER=/path/to/google_siglip-large-patch16-384
 ```
 
 Core multi-vision arguments:

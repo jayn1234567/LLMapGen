@@ -8,7 +8,7 @@ This directory is for small-sample local debug runs based on:
 - Qwen3VL: `/cache/jjh/checkpoints/Qwen3-VL-8B-Instruct`
 - DINOv2: `/cache/jjh/checkpoints/facebook_dinov2-large`
 - DINOv3: `/cache/jjh/checkpoints/facebook_dinov3-vitl16-pretrain-lvd1689m`
-- SigLIP: `/cache/jjh/checkpoints/google_siglip-so400m-patch14-384`
+- SigLIP: `/cache/jjh/checkpoints/google_siglip-large-patch16-384`
 
 The scripts sample a tiny subset from `phase_a` or `phase_b` and keep image paths pointing to the original dataset root. SFT, inference, and GRPO are local Ascend NPU flows. GRPO uses vLLM-Ascend prompt-embedding rollout, so the active environment must have `vllm`, `vllm-ascend`, `torch==2.7.1`, and the OBS `torch_npu-2.7.1.dev20250724` wheel installed.
 

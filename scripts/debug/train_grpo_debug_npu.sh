@@ -21,7 +21,7 @@ OUTPUT_ROOT=${OUTPUT_ROOT:-${REPO_ROOT}/checkpoints/debug}
 
 DINOV2_PATH=${DINOV2_PATH:-/cache/jjh/checkpoints/facebook_dinov2-large}
 DINOV3_PATH=${DINOV3_PATH:-/cache/jjh/checkpoints/facebook_dinov3-vitl16-pretrain-lvd1689m}
-SIGLIP_PATH=${SIGLIP_PATH:-/cache/jjh/checkpoints/google_siglip-so400m-patch14-384}
+SIGLIP_PATH=${SIGLIP_PATH:-/cache/jjh/checkpoints/google_siglip-large-patch16-384}
 REQUIRED_VISION_TOWERS=()
 
 case "${VISION_BACKBONE}" in

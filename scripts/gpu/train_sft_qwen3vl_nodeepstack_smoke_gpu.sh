@@ -48,7 +48,7 @@ case "${VISION_BACKBONE}" in
     ;;
   dinov2_siglip_concat|dinov2_siglip|dinosiglip_v2)
     DINO_V2_TOWER=${DINO_V2_TOWER:-/media/q/data2/jjh/project/MLLM_project/checkpoints/facebook_dinov2-large}
-    SIGLIP_TOWER=${SIGLIP_TOWER:-/media/q/data2/jjh/project/MLLM_project/checkpoints/google_siglip-so400m-patch14-384}
+    SIGLIP_TOWER=${SIGLIP_TOWER:-/media/q/data2/jjh/project/MLLM_project/checkpoints/google_siglip-large-patch16-384}
     MULTI_VISION_TOWERS=${MULTI_VISION_TOWERS:-${DINO_V2_TOWER},${SIGLIP_TOWER}}
     MULTI_VISION_TOWER_TYPES=${MULTI_VISION_TOWER_TYPES:-dinov2,siglip}
     MULTI_VISION_INPUT_IMAGE_SIZES=${MULTI_VISION_INPUT_IMAGE_SIZES:-512,384}
@@ -62,7 +62,7 @@ case "${VISION_BACKBONE}" in
     ;;
   dinov3_siglip_concat|dinov3_siglip|dinosiglip_v3)
     DINO_V3_TOWER=${DINO_V3_TOWER:-/media/q/data2/jjh/project/MLLM_project/checkpoints/facebook/dinov3-vitl16-pretrain-lvd1689m}
-    SIGLIP_TOWER=${SIGLIP_TOWER:-/media/q/data2/jjh/project/MLLM_project/checkpoints/google_siglip-so400m-patch14-384}
+    SIGLIP_TOWER=${SIGLIP_TOWER:-/media/q/data2/jjh/project/MLLM_project/checkpoints/google_siglip-large-patch16-384}
     MULTI_VISION_TOWERS=${MULTI_VISION_TOWERS:-${DINO_V3_TOWER},${SIGLIP_TOWER}}
     MULTI_VISION_TOWER_TYPES=${MULTI_VISION_TOWER_TYPES:-dinov3,siglip}
     MULTI_VISION_INPUT_IMAGE_SIZES=${MULTI_VISION_INPUT_IMAGE_SIZES:-512,384}

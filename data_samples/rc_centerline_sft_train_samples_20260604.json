@@ -1,0 +1,307 @@
+{
+  "name": "rc_centerline_sft_train_samples_20260604",
+  "purpose": "Concrete examples of the ShareGPT-style samples used by the Qwen3-VL-4B direct RC centerline SFT run.",
+  "task": "Given a 256x256 RC-style road-structure patch image, predict road centerlines as patch-local JSON.",
+  "sft_run": {
+    "model": "Qwen3-VL-4B-Instruct",
+    "training_job_family": "stage3_rc_qwen3vl4b_direct_centerline_patch256_douglas_merge6h22_plus_rot45_135_json_purelora_colorprompt_4gpu_e6_lr1e4_clean_dataset_xiuzheng_20260429",
+    "best_checkpoint_used_later": "/mingli01/data/outputs/stage3_rc_qwen3vl4b_direct_centerline_patch256_douglas_merge6h22_plus_rot45_135_json_purelora_colorprompt_4gpu_e6_lr1e4_clean_dataset_xiuzheng_rcstyle_20260429/manual_best_step167500_eval_loss0p234529_20260501"
+  },
+  "source_dataset": {
+    "trainroot": "/mingli01/data/outputs/rc_clean_dataset_xiuzheng_trainroot_patch256_douglas_merge6h22_plus_rot45_135_centerline_rcstyle_20260428",
+    "train_jsonl": "/mingli01/data/outputs/rc_clean_dataset_xiuzheng_trainroot_patch256_douglas_merge6h22_plus_rot45_135_centerline_rcstyle_20260428/train.jsonl",
+    "val_jsonl": "/mingli01/data/outputs/rc_clean_dataset_xiuzheng_trainroot_patch256_douglas_merge6h22_plus_rot45_135_centerline_rcstyle_20260428/val.jsonl",
+    "meta_train_jsonl": "/mingli01/data/outputs/rc_clean_dataset_xiuzheng_trainroot_patch256_douglas_merge6h22_plus_rot45_135_centerline_rcstyle_20260428/meta_train.jsonl",
+    "train_rows": 134162,
+    "val_rows": 2166,
+    "media_root_used_for_training_and_eval": "/mingli01/data/outputs/rc_centerline_dpo_media_patch256_offset_rot45_135_20260528",
+    "sample_type_counts_in_train": {
+      "offset_patch256": 42254,
+      "rotated_patch256_045deg": 45954,
+      "rotated_patch256_135deg": 45954
+    }
+  },
+  "format_notes": [
+    "Each training row has id, images, and messages fields.",
+    "messages contains system, user, and assistant turns in ShareGPT/LLaMAFactory style.",
+    "The user turn contains an <image> placeholder; images[0] is the relative path under the media root.",
+    "The assistant turn is a JSON string with lines and intersections fields.",
+    "Coordinates are patch-local integer pixels in the 0..255 range.",
+    "This centerline-only SFT dataset keeps intersections empty; later joint datasets add intersection targets.",
+    "Centerline targets use Douglas sampling and relaxed fragment merging before serialization."
+  ],
+  "assistant_schema": {
+    "lines": [
+      {
+        "category": "centerline",
+        "start_type": "cut|start|end",
+        "end_type": "cut|start|end",
+        "points": [
+          [
+            0,
+            0
+          ],
+          [
+            255,
+            255
+          ]
+        ]
+      }
+    ],
+    "intersections": []
+  },
+  "samples": [
+    {
+      "sample_kind": "offset_patch256",
+      "source_row_index_in_train_jsonl": 0,
+      "id": "01bb304d7bd835f8bbef7086b688e35e__Summer_2019__ox000oy000__r03c07",
+      "image": "patches256_offset/rc_input/clean_dataset_xiuzheng_rcstyle_20260428/WDC/01bb304d7bd835f8bbef7086b688e35e__Summer_2019__ox000oy000__r03c07.png",
+      "raw_train_jsonl_record": {
+        "id": "01bb304d7bd835f8bbef7086b688e35e__Summer_2019__ox000oy000__r03c07",
+        "messages": [
+          {
+            "role": "system",
+            "content": "You are a road-centerline reconstruction assistant for RC-style road-structure images.\nPredict only the road centerlines visible in the current RC patch.\nReturn only valid JSON in the required schema.\nDo not output markdown fences or extra explanation.\nKeep all coordinates in the patch-local coordinate system."
+          },
+          {
+            "role": "user",
+            "content": "<image>\nPlease construct the road centerline map in the current RC patch.\nKeep all coordinates in the patch-local coordinate system."
+          },
+          {
+            "role": "assistant",
+            "content": "{\"lines\":[{\"category\":\"centerline\",\"start_type\":\"cut\",\"end_type\":\"start\",\"points\":[[72,255],[186,61]]},{\"category\":\"centerline\",\"start_type\":\"cut\",\"end_type\":\"end\",\"points\":[[114,255],[217,79]]}],\"intersections\":[]}"
+          }
+        ],
+        "images": [
+          "patches256_offset/rc_input/clean_dataset_xiuzheng_rcstyle_20260428/WDC/01bb304d7bd835f8bbef7086b688e35e__Summer_2019__ox000oy000__r03c07.png"
+        ]
+      },
+      "parsed_assistant_json": {
+        "lines": [
+          {
+            "category": "centerline",
+            "start_type": "cut",
+            "end_type": "start",
+            "points": [
+              [
+                72,
+                255
+              ],
+              [
+                186,
+                61
+              ]
+            ]
+          },
+          {
+            "category": "centerline",
+            "start_type": "cut",
+            "end_type": "end",
+            "points": [
+              [
+                114,
+                255
+              ],
+              [
+                217,
+                79
+              ]
+            ]
+          }
+        ],
+        "intersections": []
+      },
+      "meta_train_subset": {
+        "id": "01bb304d7bd835f8bbef7086b688e35e__Summer_2019__ox000oy000__r03c07",
+        "split": "train",
+        "tile_id": "01bb304d7bd835f8bbef7086b688e35e__Summer_2019",
+        "city": "WDC",
+        "source_mode": "clean_dataset_xiuzheng_rcstyle_20260428",
+        "image": "patches256_offset/rc_input/clean_dataset_xiuzheng_rcstyle_20260428/WDC/01bb304d7bd835f8bbef7086b688e35e__Summer_2019__ox000oy000__r03c07.png",
+        "centerline_gt": "patches256_offset/centerline_gt/clean_dataset_xiuzheng_rcstyle_20260428/WDC/01bb304d7bd835f8bbef7086b688e35e__Summer_2019__ox000oy000__r03c07.png",
+        "centerline_json": "patches256_offset/centerline_json/clean_dataset_xiuzheng_rcstyle_20260428/WDC/01bb304d7bd835f8bbef7086b688e35e__Summer_2019__ox000oy000__r03c07.json",
+        "structure_json": "patches256_offset/structure_json/clean_dataset_xiuzheng_rcstyle_20260428/WDC/01bb304d7bd835f8bbef7086b688e35e__Summer_2019__ox000oy000__r03c07.json",
+        "patch_row": 3,
+        "patch_col": 7,
+        "base_patch_box_full4096": [
+          1792,
+          768,
+          2048,
+          1024
+        ],
+        "coord_system": "patch_local_256",
+        "sampling_mode": "douglas",
+        "resample_step_px": 24.0,
+        "douglas_epsilon_px": 2.5,
+        "target_fragment_merge_enabled": true,
+        "target_merge_endpoint_tol_px": 6.0,
+        "target_merge_heading_tol_deg": 22.5,
+        "num_target_lines_before_merge": 2,
+        "num_target_lines_after_merge": 2,
+        "num_target_lines": 2,
+        "num_target_intersections": 0,
+        "line_direction_mode": "canonical_cut_then_origin",
+        "line_sort_mode": "first_point_distance_to_patch_origin",
+        "serialization_mode": "paper_structured"
+      }
+    },
+    {
+      "sample_kind": "rotated_patch256_045deg",
+      "source_row_index_in_train_jsonl": 42254,
+      "id": "01bb304d7bd835f8bbef7086b688e35e__Summer_2019__r03c04__rot045",
+      "image": "patches256_rotcrop/rc_input/clean_dataset_xiuzheng_rcstyle_20260428/WDC/01bb304d7bd835f8bbef7086b688e35e__Summer_2019__r03c04__rot045.png",
+      "raw_train_jsonl_record": {
+        "id": "01bb304d7bd835f8bbef7086b688e35e__Summer_2019__r03c04__rot045",
+        "messages": [
+          {
+            "role": "system",
+            "content": "You are a road-centerline reconstruction assistant for RC-style road-structure images.\nPredict only the road centerlines visible in the current RC patch.\nReturn only valid JSON in the required schema.\nDo not output markdown fences or extra explanation.\nKeep all coordinates in the patch-local coordinate system."
+          },
+          {
+            "role": "user",
+            "content": "<image>\nPlease construct the road centerline map in the current RC patch.\nKeep all coordinates in the patch-local coordinate system."
+          },
+          {
+            "role": "assistant",
+            "content": "{\"lines\":[{\"category\":\"centerline\",\"start_type\":\"cut\",\"end_type\":\"end\",\"points\":[[255,250],[246,220]]}],\"intersections\":[]}"
+          }
+        ],
+        "images": [
+          "patches256_rotcrop/rc_input/clean_dataset_xiuzheng_rcstyle_20260428/WDC/01bb304d7bd835f8bbef7086b688e35e__Summer_2019__r03c04__rot045.png"
+        ]
+      },
+      "parsed_assistant_json": {
+        "lines": [
+          {
+            "category": "centerline",
+            "start_type": "cut",
+            "end_type": "end",
+            "points": [
+              [
+                255,
+                250
+              ],
+              [
+                246,
+                220
+              ]
+            ]
+          }
+        ],
+        "intersections": []
+      },
+      "meta_train_subset": {
+        "id": "01bb304d7bd835f8bbef7086b688e35e__Summer_2019__r03c04__rot045",
+        "split": "train",
+        "tile_id": "01bb304d7bd835f8bbef7086b688e35e__Summer_2019",
+        "city": "WDC",
+        "source_mode": "clean_dataset_xiuzheng_rcstyle_20260428",
+        "image": "patches256_rotcrop/rc_input/clean_dataset_xiuzheng_rcstyle_20260428/WDC/01bb304d7bd835f8bbef7086b688e35e__Summer_2019__r03c04__rot045.png",
+        "centerline_gt": "patches256_rotcrop/centerline_gt/clean_dataset_xiuzheng_rcstyle_20260428/WDC/01bb304d7bd835f8bbef7086b688e35e__Summer_2019__r03c04__rot045.png",
+        "centerline_json": "patches256_rotcrop/centerline_json/clean_dataset_xiuzheng_rcstyle_20260428/WDC/01bb304d7bd835f8bbef7086b688e35e__Summer_2019__r03c04__rot045.json",
+        "structure_json": "",
+        "patch_row": 3,
+        "patch_col": 4,
+        "base_patch_box_full4096": [
+          1024,
+          768,
+          1280,
+          1024
+        ],
+        "coord_system": "patch_local_256",
+        "sampling_mode": "douglas",
+        "resample_step_px": 24.0,
+        "douglas_epsilon_px": 2.5,
+        "target_fragment_merge_enabled": true,
+        "target_merge_endpoint_tol_px": 6.0,
+        "target_merge_heading_tol_deg": 22.5,
+        "num_target_lines_before_merge": 1,
+        "num_target_lines_after_merge": 1,
+        "num_target_lines": 1,
+        "num_target_intersections": 0,
+        "line_direction_mode": "canonical_cut_then_origin",
+        "line_sort_mode": "first_point_distance_to_patch_origin",
+        "serialization_mode": "paper_structured"
+      }
+    },
+    {
+      "sample_kind": "rotated_patch256_135deg",
+      "source_row_index_in_train_jsonl": 42255,
+      "id": "01bb304d7bd835f8bbef7086b688e35e__Summer_2019__r03c04__rot135",
+      "image": "patches256_rotcrop/rc_input/clean_dataset_xiuzheng_rcstyle_20260428/WDC/01bb304d7bd835f8bbef7086b688e35e__Summer_2019__r03c04__rot135.png",
+      "raw_train_jsonl_record": {
+        "id": "01bb304d7bd835f8bbef7086b688e35e__Summer_2019__r03c04__rot135",
+        "messages": [
+          {
+            "role": "system",
+            "content": "You are a road-centerline reconstruction assistant for RC-style road-structure images.\nPredict only the road centerlines visible in the current RC patch.\nReturn only valid JSON in the required schema.\nDo not output markdown fences or extra explanation.\nKeep all coordinates in the patch-local coordinate system."
+          },
+          {
+            "role": "user",
+            "content": "<image>\nPlease construct the road centerline map in the current RC patch.\nKeep all coordinates in the patch-local coordinate system."
+          },
+          {
+            "role": "assistant",
+            "content": "{\"lines\":[{\"category\":\"centerline\",\"start_type\":\"cut\",\"end_type\":\"end\",\"points\":[[250,0],[220,9]]}],\"intersections\":[]}"
+          }
+        ],
+        "images": [
+          "patches256_rotcrop/rc_input/clean_dataset_xiuzheng_rcstyle_20260428/WDC/01bb304d7bd835f8bbef7086b688e35e__Summer_2019__r03c04__rot135.png"
+        ]
+      },
+      "parsed_assistant_json": {
+        "lines": [
+          {
+            "category": "centerline",
+            "start_type": "cut",
+            "end_type": "end",
+            "points": [
+              [
+                250,
+                0
+              ],
+              [
+                220,
+                9
+              ]
+            ]
+          }
+        ],
+        "intersections": []
+      },
+      "meta_train_subset": {
+        "id": "01bb304d7bd835f8bbef7086b688e35e__Summer_2019__r03c04__rot135",
+        "split": "train",
+        "tile_id": "01bb304d7bd835f8bbef7086b688e35e__Summer_2019",
+        "city": "WDC",
+        "source_mode": "clean_dataset_xiuzheng_rcstyle_20260428",
+        "image": "patches256_rotcrop/rc_input/clean_dataset_xiuzheng_rcstyle_20260428/WDC/01bb304d7bd835f8bbef7086b688e35e__Summer_2019__r03c04__rot135.png",
+        "centerline_gt": "patches256_rotcrop/centerline_gt/clean_dataset_xiuzheng_rcstyle_20260428/WDC/01bb304d7bd835f8bbef7086b688e35e__Summer_2019__r03c04__rot135.png",
+        "centerline_json": "patches256_rotcrop/centerline_json/clean_dataset_xiuzheng_rcstyle_20260428/WDC/01bb304d7bd835f8bbef7086b688e35e__Summer_2019__r03c04__rot135.json",
+        "structure_json": "",
+        "patch_row": 3,
+        "patch_col": 4,
+        "base_patch_box_full4096": [
+          1024,
+          768,
+          1280,
+          1024
+        ],
+        "coord_system": "patch_local_256",
+        "sampling_mode": "douglas",
+        "resample_step_px": 24.0,
+        "douglas_epsilon_px": 2.5,
+        "target_fragment_merge_enabled": true,
+        "target_merge_endpoint_tol_px": 6.0,
+        "target_merge_heading_tol_deg": 22.5,
+        "num_target_lines_before_merge": 1,
+        "num_target_lines_after_merge": 1,
+        "num_target_lines": 1,
+        "num_target_intersections": 0,
+        "line_direction_mode": "canonical_cut_then_origin",
+        "line_sort_mode": "first_point_distance_to_patch_origin",
+        "serialization_mode": "paper_structured"
+      }
+    }
+  ]
+}

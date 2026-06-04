@@ -142,6 +142,28 @@ Target points and parsed model outputs are clamped into the valid in-patch range
 Incoming hints are not clamped, so a left-neighbor pixel point like `[-1,128]`
 becomes approximately `[-4,502]`.
 
+## Point Sampling
+
+Centerline target point count is controlled by two things:
+
+- Raw `Lane.geojson` vertex density: the processor keeps source line vertices after clipping.
+- `--line-sample-distance-px`: default `0`; when set, clipped lane targets are sampled at this fixed patch-pixel distance along the polyline.
+
+Douglas-Peucker simplification is disabled by default: `--simplify-tolerance 0`.
+If you need to reproduce the old simplified data behavior, pass `--simplify-tolerance 0.5` explicitly.
+
+`--trace-points` only controls Phase B incoming lane hints from left/top neighbors. It does not make the assistant target centerlines denser.
+`--intersection-hint-points` only controls Phase B incoming intersection boundary hints.
+
+Recommended first try for evenly sampled lane targets:
+
+```bash
+--line-sample-distance-px 12
+```
+
+For the default `patch_size=256` and `coord_mode=norm1000`, `12` patch pixels is about `47` normalized coordinate units.
+Use `16` for a lighter target, or `8` for denser supervision. Very small values such as `4` can noticeably increase JSON length and generation length.
+
 ## Cut Rules
 
 `centerline` cut is endpoint-level:
@@ -190,6 +212,7 @@ python data_process/build_lane_dataset.py \
   --patch-size 256 \
   --stride 256 \
   --coord-mode norm1000 \
+  --line-sample-distance-px 12 \
   --train-ratio 0.9 \
   --eval-ratio 0.05
 ```
@@ -203,6 +226,7 @@ python data_process/build_lane_intersection_dataset.py \
   --patch-size 256 \
   --stride 256 \
   --coord-mode norm1000 \
+  --line-sample-distance-px 12 \
   --train-ratio 0.9 \
   --eval-ratio 0.05
 ```

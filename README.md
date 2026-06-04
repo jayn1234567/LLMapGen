@@ -539,6 +539,23 @@ empty-target downsampling is applied only where it is safe: `phase_a/train` uses
 `--phase-b-max-empty-ratio -1` for normal B-stage training/eval/test so left/top
 state-update chains and stitched maps remain complete.
 
+### Centerline Point Sampling
+
+Data processing no longer simplifies lane geometry by default:
+`--simplify-tolerance` defaults to `0`, so Douglas-Peucker simplification is
+disabled. To control centerline target density, use fixed-distance sampling
+after patch clipping:
+
+```bash
+--line-sample-distance-px 12
+```
+
+This samples each clipped lane target along the polyline every 12 patch pixels
+and keeps the final endpoint. Use `8` for denser labels or `16` for shorter
+targets. Passing `--line-sample-distance-px 0` keeps the original clipped
+GeoJSON vertices. To reproduce the old simplified behavior, explicitly pass
+`--simplify-tolerance 0.5`.
+
 ## Coordinate Convention
 
 Newly generated A/B datasets keep patch images at their original patch size

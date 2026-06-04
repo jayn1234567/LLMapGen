@@ -466,6 +466,66 @@ def map_coord_to_local_point(coord, window_transform, patch_size):
     return [x, y]
 
 
+def map_coord_to_local_float_point(coord, window_transform):
+    px, py = ~window_transform * (float(coord[0]), float(coord[1]))
+    return [abs(float(px)), abs(float(py))]
+
+
+def round_local_float_point(point, patch_size):
+    x = clamp(int(round(point[0])), 0, patch_size - 1)
+    y = clamp(int(round(point[1])), 0, patch_size - 1)
+    return [x, y]
+
+
+def sample_local_points_by_distance(points, sample_distance_px: float):
+    if sample_distance_px is None or sample_distance_px <= 0 or len(points) < 2:
+        return points
+
+    segment_lengths = []
+    total_length = 0.0
+    for p0, p1 in zip(points[:-1], points[1:]):
+        dx = float(p1[0]) - float(p0[0])
+        dy = float(p1[1]) - float(p0[1])
+        dist = math.hypot(dx, dy)
+        segment_lengths.append(dist)
+        total_length += dist
+
+    if total_length <= 0:
+        return points
+
+    sample_distances = []
+    current_distance = 0.0
+    while current_distance < total_length:
+        sample_distances.append(current_distance)
+        current_distance += sample_distance_px
+    if not sample_distances or not math.isclose(sample_distances[-1], total_length):
+        sample_distances.append(total_length)
+
+    out = []
+    segment_idx = 0
+    distance_before_segment = 0.0
+    for target_distance in sample_distances:
+        while (
+            segment_idx < len(segment_lengths) - 1
+            and distance_before_segment + segment_lengths[segment_idx] < target_distance
+        ):
+            distance_before_segment += segment_lengths[segment_idx]
+            segment_idx += 1
+
+        p0 = points[segment_idx]
+        p1 = points[segment_idx + 1]
+        segment_length = segment_lengths[segment_idx]
+        if segment_length <= 0:
+            out.append([float(p0[0]), float(p0[1])])
+            continue
+        t = (target_distance - distance_before_segment) / segment_length
+        out.append([
+            float(p0[0]) + (float(p1[0]) - float(p0[0])) * t,
+            float(p0[1]) + (float(p1[1]) - float(p0[1])) * t,
+        ])
+    return out
+
+
 def line_parts(geom):
     if isinstance(geom, LineString):
         return [geom]
@@ -488,7 +548,7 @@ def endpoint_type_from_map_line(original_line, clipped_endpoint, tol=1e-6):
     return "cut"
 
 
-def clip_lanes_to_patch(lines, transform, x0, y0, patch_size):
+def clip_lanes_to_patch(lines, transform, x0, y0, patch_size, line_sample_distance_px=0.0):
     window_polygon = patch_window_polygon(transform, x0, y0, patch_size)
     window_transform = patch_window_transform(transform, x0, y0)
     results = []
@@ -500,7 +560,15 @@ def clip_lanes_to_patch(lines, transform, x0, y0, patch_size):
         for part_idx, clipped_line in enumerate(line_parts(clipped)):
             if clipped_line.is_empty or len(clipped_line.coords) < 2:
                 continue
-            local_points = [map_coord_to_local_point(coord, window_transform, patch_size) for coord in clipped_line.coords]
+            local_float_points = [
+                map_coord_to_local_float_point(coord, window_transform)
+                for coord in clipped_line.coords
+            ]
+            local_float_points = sample_local_points_by_distance(local_float_points, line_sample_distance_px)
+            local_points = [
+                round_local_float_point(point, patch_size)
+                for point in local_float_points
+            ]
             local_points = dedupe_points(local_points)
             if len(local_points) < 2:
                 continue
@@ -1073,7 +1141,14 @@ def process_sample(
             row = y0 // args.stride
             col = x0 // args.stride
             local_lines = []
-            local_lines.extend(clip_lanes_to_patch(lines, transform, x0, y0, args.patch_size))
+            local_lines.extend(clip_lanes_to_patch(
+                lines,
+                transform,
+                x0,
+                y0,
+                args.patch_size,
+                line_sample_distance_px=args.line_sample_distance_px,
+            ))
             if include_intersections:
                 local_lines.extend(clip_intersections_to_patch(intersections, x0, y0, args.patch_size, transform=transform))
             local_lines = sort_target_lines(local_lines, args.patch_size, args.boundary_tol)
@@ -1272,6 +1347,10 @@ def build_dataset(include_intersections: bool, args):
             "phase_a_test_max_empty_ratio": empty_ratio_for_phase_split(args, "a", "test"),
             "phase_b_max_empty_ratio": empty_ratio_for_phase_split(args, "b", "train"),
         },
+        "point_generation": {
+            "simplify_tolerance": args.simplify_tolerance,
+            "line_sample_distance_px": args.line_sample_distance_px,
+        },
         "allow_empty_splits": args.allow_empty_splits,
         "train_ids": [sample.sample_id for sample in train_samples],
         "eval_ids": [sample.sample_id for sample in eval_samples],
@@ -1342,6 +1421,7 @@ def build_dataset(include_intersections: bool, args):
         "coord_system": coord_system_name(args.coord_mode, args.patch_size, args.coord_range),
         "max_empty_ratio": args.max_empty_ratio,
         "empty_patch_filtering": split_manifest["empty_patch_filtering"],
+        "point_generation": split_manifest["point_generation"],
         "eval_ratio": args.eval_ratio,
         "eval_count": args.eval_count,
         "intersection_files_required": False,
@@ -1404,7 +1484,21 @@ def add_common_args(parser):
         help="Empty-target patch cap for all phase_b splits. Keep -1 so state-update neighbor chains and stitched maps stay complete.",
     )
     parser.add_argument("--boundary-tol", type=float, default=1.0)
-    parser.add_argument("--simplify-tolerance", type=float, default=0.5)
+    parser.add_argument(
+        "--simplify-tolerance",
+        type=float,
+        default=0.0,
+        help="Douglas-Peucker simplify tolerance. Default 0 disables simplification.",
+    )
+    parser.add_argument(
+        "--line-sample-distance-px",
+        type=float,
+        default=0.0,
+        help=(
+            "Sample clipped lane target polylines at this fixed patch-pixel distance. "
+            "0 keeps the original clipped vertices only."
+        ),
+    )
     parser.add_argument("--trace-points", type=int, default=3)
     parser.add_argument("--intersection-hint-points", type=int, default=3)
     parser.add_argument("--max-traces-per-side", type=int, default=8)

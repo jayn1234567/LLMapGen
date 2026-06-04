@@ -110,7 +110,7 @@ def main():
     parser.add_argument("sample_root", help="Path to one extracted raw sample folder.")
     parser.add_argument("--patch-size", type=int, default=256)
     parser.add_argument("--stride", type=int, default=256)
-    parser.add_argument("--simplify-tolerance", type=float, default=0.5)
+    parser.add_argument("--simplify-tolerance", type=float, default=0.0)
     parser.add_argument("--boundary-tol", type=float, default=1.0)
     parser.add_argument("--max-examples", type=int, default=5)
     args = parser.parse_args()

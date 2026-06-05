@@ -28,11 +28,11 @@ class LineEvalRes:
     valid_string_format: int = 0 # 有多少样本格式是可被解析的，越高越好
     samples_num: int = 0
 
-    def table_lines(self):
+    def table_lines(self, title: str = "Line Evaluation Results"):
         prec = self.valid_string_format / self.samples_num if self.samples_num > 1e-6 else 0
         return [
             "=" * 58,
-            f"{' Line Evaluation Results ':^58}",
+            f"{(' ' + title + ' '):^58}",
             "=" * 58,
             f"{'Metric':<18} {'Precision':<12} {'Recall':<12} {'F1':<12}",
             "-" * 58,
@@ -42,15 +42,15 @@ class LineEvalRes:
             f'格式合法的推理结果占比: {prec:.4f}({self.valid_string_format}/{self.samples_num})',
         ]
 
-    def table_text(self):
-        return "\n".join(self.table_lines())
+    def table_text(self, title: str = "Line Evaluation Results"):
+        return "\n".join(self.table_lines(title=title))
 
-    def show_res(self, logger=None):
+    def show_res(self, logger=None, title: str = "Line Evaluation Results"):
         def out(msg):
             if logger is not None:
                 logger.info(msg)
             else:
                 print(msg)
 
-        for line in self.table_lines():
+        for line in self.table_lines(title=title):
             out(line)

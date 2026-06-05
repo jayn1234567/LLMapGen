@@ -59,6 +59,24 @@ def payload_for_draw(record: dict, pixel_keys: list[str], raw_keys: list[str]):
     return load_json_maybe(raw_text)
 
 
+def payload_has_intersection(payload) -> bool:
+    return any(
+        str(item.get("category", "centerline")).strip().lower() == "intersection"
+        for item in normalize_lines(payload)
+        if isinstance(item, dict)
+    )
+
+
+def record_has_intersection(record: dict) -> bool:
+    gt_payload = payload_for_draw(record, ["ground_truth_pixel", "labels_pixel"], ["ground_truth", "labels"])
+    pred_payload = payload_for_draw(record, ["prediction_json_pixel", "response_pixel", "prediction_pixel"], ["prediction_json", "response", "prediction"])
+    return payload_has_intersection(gt_payload) or payload_has_intersection(pred_payload)
+
+
+def record_has_ground_truth(record: dict) -> bool:
+    return any(record.get(key) for key in ("ground_truth", "labels", "ground_truth_pixel", "labels_pixel"))
+
+
 def draw_map_lines(image: Image.Image, payload, centerline_color: tuple, intersection_color: tuple, width: int = 3) -> Image.Image:
     draw = ImageDraw.Draw(image)
     for item in normalize_lines(payload):
@@ -145,6 +163,7 @@ def main():
     parser.add_argument("--output-dir", default="")
     parser.add_argument("--color-gt", default="green")
     parser.add_argument("--color-pred", default="red")
+    parser.add_argument("--map-task", choices=["auto", "lane", "lane_intersection"], default="auto")
     parser.add_argument("--no-eval-centerline", action="store_true")
     parser.add_argument("--eval-output-json", default="")
     parser.add_argument("--eval-meter-per-pixel", type=float, default=0.2)
@@ -209,18 +228,38 @@ def main():
         whole_map_viz_dir = Path(args.whole_map_viz_dir) if args.whole_map_viz_dir else input_dir / "whole_map_viz"
         rendered = render_whole_map_visualizations(results, image_folder, whole_map_viz_dir)
         print(json.dumps({"whole_map_viz_dir": str(whole_map_viz_dir), "whole_map_visualizations": rendered}, ensure_ascii=False))
-    if not args.no_eval_centerline and any("ground_truth" in result for result in results):
-        from infer_index.line_eval import evaluate_records, print_eval_table
+    if not args.no_eval_centerline and any(record_has_ground_truth(result) for result in results):
+        from infer_index.line_eval import (
+            evaluate_records,
+            evaluate_lane_intersection_records,
+            print_eval_table,
+            print_lane_intersection_eval_tables,
+        )
 
-        eval_summary = evaluate_records(
-            results,
+        eval_kwargs = dict(
             meter_per_pixel=args.eval_meter_per_pixel,
             buffer_size=args.eval_buffer_size,
             match_threshold=args.eval_match_threshold,
         )
+        map_task = args.map_task
+        if map_task == "auto":
+            map_task = "lane_intersection" if any(record_has_intersection(result) for result in results) else "lane"
+        if map_task == "lane_intersection":
+            map_eval = evaluate_lane_intersection_records(results, **eval_kwargs)
+            eval_summary = {
+                "centerline_eval": map_eval["lane"],
+                "intersection_eval": map_eval["intersection"],
+                "lane_intersection_eval": map_eval["lane_intersection"],
+                "map_eval": map_eval,
+            }
+        else:
+            eval_summary = evaluate_records(results, **eval_kwargs)
         eval_path = Path(args.eval_output_json) if args.eval_output_json else input_dir / "eval.json"
         eval_path.write_text(json.dumps(eval_summary, ensure_ascii=False, indent=2), encoding="utf-8")
-        print_eval_table(eval_summary)
+        if map_task == "lane_intersection":
+            print_lane_intersection_eval_tables(eval_summary["map_eval"])
+        else:
+            print_eval_table(eval_summary)
         print(json.dumps({"centerline_eval_json": str(eval_path), "centerline_eval": eval_summary}, ensure_ascii=False))
 
 

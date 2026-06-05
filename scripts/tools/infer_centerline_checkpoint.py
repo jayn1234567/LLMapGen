@@ -793,6 +793,43 @@ def sanitize_filename(name: str) -> str:
     return "".join(ch if ch.isalnum() or ch in ("-", "_") else "_" for ch in name)
 
 
+def build_eval_payload(records, args, evaluate_records_fn, evaluate_lane_intersection_records_fn):
+    eval_kwargs = dict(
+        meter_per_pixel=args.eval_meter_per_pixel,
+        buffer_size=args.eval_buffer_size,
+        match_threshold=args.eval_match_threshold,
+    )
+    if args.map_task == "lane_intersection":
+        map_eval = evaluate_lane_intersection_records_fn(records, **eval_kwargs)
+        return {
+            "centerline_eval": map_eval["lane"],
+            "intersection_eval": map_eval["intersection"],
+            "lane_intersection_eval": map_eval["lane_intersection"],
+            "map_eval": map_eval,
+        }
+    return evaluate_records_fn(records, **eval_kwargs)
+
+
+def print_eval_payload(eval_payload, args, print_eval_table_fn, print_lane_intersection_eval_tables_fn):
+    if args.map_task == "lane_intersection":
+        print_lane_intersection_eval_tables_fn(eval_payload["map_eval"])
+    else:
+        print_eval_table_fn(eval_payload)
+
+
+def eval_console_payload(eval_path, eval_payload, args):
+    payload = {"eval_json": str(eval_path), "centerline_eval_json": str(eval_path)}
+    if args.map_task == "lane_intersection":
+        payload.update({
+            "centerline_eval": eval_payload["centerline_eval"],
+            "intersection_eval": eval_payload["intersection_eval"],
+            "lane_intersection_eval": eval_payload["lane_intersection_eval"],
+        })
+    else:
+        payload["centerline_eval"] = eval_payload
+    return payload
+
+
 def main():
     import os
     import torch
@@ -870,8 +907,15 @@ def main():
     args.device = device_str
 
     evaluate_one_sample = evaluate_records = print_eval_table = None
+    evaluate_lane_intersection_records = print_lane_intersection_eval_tables = None
     if args.eval_centerline:
-        from infer_index.line_eval import evaluate_one_sample, evaluate_records, print_eval_table
+        from infer_index.line_eval import (
+            evaluate_one_sample,
+            evaluate_records,
+            evaluate_lane_intersection_records,
+            print_eval_table,
+            print_lane_intersection_eval_tables,
+        )
 
     checkpoint_dir = Path(args.checkpoint_dir)
     manifest = read_manifest(checkpoint_dir)
@@ -1129,32 +1173,32 @@ def main():
                 merged_results.sort(key=lambda item: (item.get("idx", 0), str(item.get("record_id", ""))))
                 output_json_path.write_text(json.dumps(merged_results, ensure_ascii=False, indent=2), encoding="utf-8")
                 if args.eval_centerline:
-                    eval_summary = evaluate_records(
+                    eval_summary = build_eval_payload(
                         merged_results,
-                        meter_per_pixel=args.eval_meter_per_pixel,
-                        buffer_size=args.eval_buffer_size,
-                        match_threshold=args.eval_match_threshold,
+                        args,
+                        evaluate_records,
+                        evaluate_lane_intersection_records,
                     )
                     eval_path = Path(args.eval_output_json) if args.eval_output_json else output_json_path.with_name("eval.json")
                     eval_path.parent.mkdir(parents=True, exist_ok=True)
                     eval_path.write_text(json.dumps(eval_summary, ensure_ascii=False, indent=2), encoding="utf-8")
-                    print_eval_table(eval_summary)
-                    print(json.dumps({"centerline_eval_json": str(eval_path), "centerline_eval": eval_summary}, ensure_ascii=False))
+                    print_eval_payload(eval_summary, args, print_eval_table, print_lane_intersection_eval_tables)
+                    print(json.dumps(eval_console_payload(eval_path, eval_summary, args), ensure_ascii=False))
             torch.distributed.barrier()
         else:
             output_json_path.write_text(json.dumps(results, ensure_ascii=False, indent=2), encoding="utf-8")
             if args.eval_centerline:
-                eval_summary = evaluate_records(
+                eval_summary = build_eval_payload(
                     results,
-                    meter_per_pixel=args.eval_meter_per_pixel,
-                    buffer_size=args.eval_buffer_size,
-                    match_threshold=args.eval_match_threshold,
+                    args,
+                    evaluate_records,
+                    evaluate_lane_intersection_records,
                 )
                 eval_path = Path(args.eval_output_json) if args.eval_output_json else output_json_path.with_name("eval.json")
                 eval_path.parent.mkdir(parents=True, exist_ok=True)
                 eval_path.write_text(json.dumps(eval_summary, ensure_ascii=False, indent=2), encoding="utf-8")
-                print_eval_table(eval_summary)
-                print(json.dumps({"centerline_eval_json": str(eval_path), "centerline_eval": eval_summary}, ensure_ascii=False))
+                print_eval_payload(eval_summary, args, print_eval_table, print_lane_intersection_eval_tables)
+                print(json.dumps(eval_console_payload(eval_path, eval_summary, args), ensure_ascii=False))
 
     if torch.distributed.is_initialized():
         torch.distributed.destroy_process_group()

@@ -176,6 +176,43 @@ def merge_rank_summaries(rank_paths):
     return summary
 
 
+def build_eval_payload(records, args, evaluate_records_fn, evaluate_lane_intersection_records_fn):
+    eval_kwargs = dict(
+        meter_per_pixel=args.eval_meter_per_pixel,
+        buffer_size=args.eval_buffer_size,
+        match_threshold=args.eval_match_threshold,
+    )
+    if args.include_intersections:
+        map_eval = evaluate_lane_intersection_records_fn(records, **eval_kwargs)
+        return {
+            "centerline_eval": map_eval["lane"],
+            "intersection_eval": map_eval["intersection"],
+            "lane_intersection_eval": map_eval["lane_intersection"],
+            "map_eval": map_eval,
+        }
+    return evaluate_records_fn(records, **eval_kwargs)
+
+
+def print_eval_payload(eval_payload, args, print_eval_table_fn, print_lane_intersection_eval_tables_fn):
+    if args.include_intersections:
+        print_lane_intersection_eval_tables_fn(eval_payload["map_eval"])
+    else:
+        print_eval_table_fn(eval_payload)
+
+
+def eval_console_payload(eval_path, eval_payload, args):
+    payload = {"eval_json": str(eval_path), "centerline_eval_json": str(eval_path)}
+    if args.include_intersections:
+        payload.update({
+            "centerline_eval": eval_payload["centerline_eval"],
+            "intersection_eval": eval_payload["intersection_eval"],
+            "lane_intersection_eval": eval_payload["lane_intersection_eval"],
+        })
+    else:
+        payload["centerline_eval"] = eval_payload
+    return payload
+
+
 def coord_description(coord_mode: str, coord_range: int, patch_size: int) -> str:
     if coord_mode == COORD_MODE_NORM1000:
         return f"Coordinates use a normalized 0-{coord_range} grid over the original {patch_size}x{patch_size} image patch."
@@ -576,8 +613,14 @@ def main():
     args = parser.parse_args()
 
     evaluate_records = print_eval_table = None
+    evaluate_lane_intersection_records = print_lane_intersection_eval_tables = None
     if args.eval_centerline:
-        from infer_index.line_eval import evaluate_records, print_eval_table
+        from infer_index.line_eval import (
+            evaluate_records,
+            evaluate_lane_intersection_records,
+            print_eval_table,
+            print_lane_intersection_eval_tables,
+        )
 
     rank, local_rank, world_size = distributed_info(args)
     distributed = args.distributed_by_tile and world_size > 1
@@ -869,16 +912,20 @@ def main():
         summary["whole_map_viz_dir"] = str(whole_map_viz_dir)
         summary["whole_map_visualizations"] = render_common_whole_map_visualizations(patch_results, image_folder, whole_map_viz_dir)
     if args.eval_centerline:
-        summary["centerline_eval"] = evaluate_records(
+        eval_payload = build_eval_payload(
             patch_results,
-            meter_per_pixel=args.eval_meter_per_pixel,
-            buffer_size=args.eval_buffer_size,
-            match_threshold=args.eval_match_threshold,
+            args,
+            evaluate_records,
+            evaluate_lane_intersection_records,
         )
+        if args.include_intersections:
+            summary.update(eval_payload)
+        else:
+            summary["centerline_eval"] = eval_payload
         eval_path = Path(args.eval_output_json) if args.eval_output_json else Path(args.output_json).with_name("eval.json")
-        dump_json(eval_path, summary["centerline_eval"])
-        print_eval_table(summary["centerline_eval"])
-        print(json.dumps({"centerline_eval_json": str(eval_path), "centerline_eval": summary["centerline_eval"]}, ensure_ascii=False))
+        dump_json(eval_path, eval_payload)
+        print_eval_payload(eval_payload, args, print_eval_table, print_lane_intersection_eval_tables)
+        print(json.dumps(eval_console_payload(eval_path, eval_payload, args), ensure_ascii=False))
     if args.merged_output_json:
         dump_json(Path(args.merged_output_json), summary["merged_global"])
     dump_json(output_json_path, summary)

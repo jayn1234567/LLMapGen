@@ -120,22 +120,45 @@ def _iter_line_items(payload):
     return payload
 
 
-def _is_centerline_item(item):
+def _item_category(item):
     if not isinstance(item, dict):
-        return True
+        return "centerline"
     category = str(item.get("category", "centerline")).strip().lower()
-    return category in {"centerline", "center_line", "lane", ""}
+    if category in {"centerline", "center_line", "lane", ""}:
+        return "centerline"
+    if category in {"intersection", "junction", "crossing"}:
+        return "intersection"
+    return category
 
 
-def convert_QA_data(data: str) -> list[list]:
+def _normalize_categories(categories=None):
+    if categories is None:
+        return {"centerline"}
+    if isinstance(categories, str):
+        text = categories.strip().lower()
+        if text in {"all", "lane_intersection", "combined", "*"}:
+            return {"centerline", "intersection"}
+        if text in {"lane", "centerline", "center_line"}:
+            return {"centerline"}
+        if text in {"intersection", "junction", "crossing"}:
+            return {"intersection"}
+        return {text}
+    normalized = set()
+    for category in categories:
+        normalized.update(_normalize_categories(category))
+    return normalized
+
+
+def convert_QA_data(data: str, categories=None) -> list[list]:
     ''' 将QA数据集/大模型的infer结果，转换成点的列表
 
         data: 单条QA数据集或大模型infer结果
     '''
     json_res = []
+    allowed_categories = _normalize_categories(categories)
     payload = _load_prediction_payload(data)
     for one_sample in _iter_line_items(payload):
-        if not _is_centerline_item(one_sample):
+        if _item_category(one_sample) not in allowed_categories:
             continue
         try:
             json_res.append(one_sample['points'])

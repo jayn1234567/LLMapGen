@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
-
 # ============================================================
 # NPU SFT training
-# Fixed recipe: phase_a | lane + intersection | dinov2 + Qwen3-VL-8B | no DeepStack | LLM LoRA
+# Fixed recipe: phase_a | lane-only centerline | dinov2 + Qwen3-VL-8B | DeepStack + layer fusion
 # This file is self-contained and does not call another project .sh file.
 # ============================================================
 
@@ -12,15 +11,15 @@ REPO_ROOT=$(readlink -f "${SCRIPT_DIR}/../../..")
 cd "${REPO_ROOT}"
 
 DATASET_PHASE=phase_a
-MAP_TASK=lane_intersection
-VISION_BACKBONE=dinov2
+MAP_TASK=lane
+VISION_BACKBONE=dinov2_deepstack_layer_fusion
 VISION_TOWER_NAME=facebook_dinov2-large
 MM_VISION_TOWER_TYPE=dinov2
 INPUT_IMAGE_SIZE=518
 
 echo "Script path: ${SCRIPT_PATH}"
 echo "Repo root: ${REPO_ROOT}"
-echo "Recipe: ${DATASET_PHASE} | ${MAP_TASK} | ${VISION_BACKBONE} | llm_lora"
+echo "Recipe: ${DATASET_PHASE} | ${MAP_TASK} | ${VISION_BACKBONE}"
 # ====================== cloud paths ======================
 # OUTPUT_URL is injected by the cloud training platform.
 # Keep the reference-script convention: mirror OUTPUT_URL into OSB_SHARE_PATH.
@@ -54,15 +53,9 @@ QWEN_PATH=${QWEN_PATH:-${OBS_CACHE}/checkpoints/Qwen3-VL-8B-Instruct}           
 TARGET_GLOBAL_BATCH_SIZE=${TARGET_GLOBAL_BATCH_SIZE:-128}                     # Target effective global batch size across all nodes, NPUs, and grad accumulation.
 PER_DEVICE_TRAIN_BATCH_SIZE=${PER_DEVICE_TRAIN_BATCH_SIZE:-4}                 # Micro batch size on each NPU process.
 NUM_EPOCHS=${NUM_EPOCHS:-5}                                                   # Number of SFT epochs. Stage-A usually uses more epochs than Stage-B.
-LR=${LR:-2e-5}                                                                # Base learning rate for LLM LoRA adapters and default trainable parameters.
+LR=${LR:-2e-5}                                                                # Base learning rate for the LLM and default trainable parameters.
 MM_PROJECTOR_LR=${MM_PROJECTOR_LR:-2e-5}                                      # Learning rate for the multimodal projector.
 MM_VISION_TOWER_LR=${MM_VISION_TOWER_LR:-2e-6}                                # Learning rate for the DINO vision tower; keep lower than LLM LR for full-param training.
-LORA_ENABLE=${LORA_ENABLE:-True}                                              # Enable LoRA on the language model while keeping projector/vision trainable.
-LORA_TARGET_SCOPE=${LORA_TARGET_SCOPE:-llm}                                   # Keep LoRA on LLM modules only; projector and vision tower are trained as ordinary parameters.
-LORA_R=${LORA_R:-8}                                                           # LoRA rank.
-LORA_ALPHA=${LORA_ALPHA:-16}                                                  # LoRA alpha.
-LORA_DROPOUT=${LORA_DROPOUT:-0.05}                                            # LoRA dropout.
-LORA_BIAS=${LORA_BIAS:-none}                                                  # LoRA bias handling.
 WEIGHT_DECAY=${WEIGHT_DECAY:-0.0}                                             # Weight decay passed to Trainer. Current recipe keeps it disabled.
 WARMUP_RATIO=${WARMUP_RATIO:-0.03}                                            # Warmup ratio for the LR scheduler.
 MODEL_MAX_LENGTH=${MODEL_MAX_LENGTH:-4096}                                    # Max text sequence length including prompt, image token, and generated coordinate text.
@@ -80,13 +73,16 @@ BEST_INFER_INDEX_METRIC=${BEST_INFER_INDEX_METRIC:-length_f1}                 # 
 BEST_INFER_INDEX_NUM_SAMPLES=${BEST_INFER_INDEX_NUM_SAMPLES:-0}               # Number of eval samples for infer-index best. 0 means full eval set.
 BEST_CHECKPOINT_SAVE_MODE=${BEST_CHECKPOINT_SAVE_MODE:-rotating_create_only}  # Best checkpoint save mode. rotating_create_only avoids overwrite/rename on create-only filesystems.
 BEST_CHECKPOINT_KEEP_LIMIT=${BEST_CHECKPOINT_KEEP_LIMIT:-5}                   # How many best checkpoint candidates to keep in each best folder.
+DEEPSTACK_VISUAL_INDEXES=${DEEPSTACK_VISUAL_INDEXES:-"6 12 18 23"}            # ViT layers injected into early LLM layers through DeepStack mergers.
+VISION_LAYER_FUSION_INDEXES=${VISION_LAYER_FUSION_INDEXES:-"6 12 18 23"}      # ViT layers fused into the main visual stream before mm_projector.
+VISION_LAYER_FUSION_TYPE=${VISION_LAYER_FUSION_TYPE:-mean}                    # mean, sum, or learned_weighted.
 
 SWANLAB_ENABLE=${SWANLAB_ENABLE:-True}                                         # Enable SwanLab logging for this run.
 export SWANLAB_API_KEY=${SWANLAB_API_KEY:-"5gIH7zqSwmo8dl1Ia5vRN"}              # SwanLab API key. Override from the platform env if needed.
 SWANLAB_PROJECT=${SWANLAB_PROJECT:-unimapgen_v3}                                # SwanLab project name.
-SWANLAB_GROUP=${SWANLAB_GROUP:-sft_phase_a_lane_intersection_dinov2_nodeepstack_lora_llm}  # SwanLab group name for related experiments.
-SWANLAB_EXPERIMENT_NAME=${SWANLAB_EXPERIMENT_NAME:-sft_phase_a_lane_intersection_dinov2_qwen3vl8b_nodeepstack_lora_llm}  # SwanLab experiment display name.
-SWANLAB_TAGS=${SWANLAB_TAGS:-sft,phase_a,lane_intersection,dinov2,qwen3vl8b,nodeepstack,lora,llm_lora,unimapgen_v9}  # SwanLab comma-separated tags.
+SWANLAB_GROUP=${SWANLAB_GROUP:-sft_phase_a_lane_dinov2_deepstack_layer_fusion}  # SwanLab group name for related experiments.
+SWANLAB_EXPERIMENT_NAME=${SWANLAB_EXPERIMENT_NAME:-sft_phase_a_lane_dinov2_qwen3vl8b_deepstack_layer_fusion}  # SwanLab experiment display name.
+SWANLAB_TAGS=${SWANLAB_TAGS:-sft,phase_a,lane,dinov2,qwen3vl8b,deepstack,layer_fusion,unimapgen_v9}  # SwanLab comma-separated tags.
 SWANLAB_MODE=${SWANLAB_MODE:-offline}                                                  # SwanLab mode. Use offline if the cloud cannot reach SwanLab.
 SWANLAB_API_HOST=${SWANLAB_API_HOST:-}                                          # SwanLab private deployment API host, if used.
 SWANLAB_WEB_HOST=${SWANLAB_WEB_HOST:-}                                          # SwanLab private deployment web host, if used.
@@ -158,7 +154,7 @@ else
 fi
 MASTER_PORT=${MASTER_PORT:-6060}
 export NNODES NODE_RANK NPROC_PER_NODE MASTER_ADDR MASTER_PORT
-export RDZV_ID=${RDZV_ID:-sft_phase_a_lane_intersection_dinov2_lora_llm_${RUN_ID}}
+export RDZV_ID=${RDZV_ID:-sft_${DATASET_PHASE}_${MAP_TASK}_${VISION_BACKBONE}_${RUN_ID}}
 mkdir -p "${LOCAL_MODEL_SAVE_PATH}"
 OUTPUT_PATH="${LOCAL_MODEL_SAVE_PATH}"
 echo "Run id: ${RUN_ID}"
@@ -203,14 +199,23 @@ if [[ "${ENABLE_EVAL}" =~ ^(1|true|True|TRUE|yes|YES)$ ]]; then
   )
 fi
 
+VISION_LAYER_FUSION_ARGS=()
+if [ -n "${VISION_LAYER_FUSION_INDEXES}" ]; then
+  VISION_LAYER_FUSION_ARGS=(
+    --vision_layer_fusion_indexes ${VISION_LAYER_FUSION_INDEXES}
+    --vision_layer_fusion_type "${VISION_LAYER_FUSION_TYPE}"
+  )
+fi
+
 echo "============================================================"
 echo "Recipe:       ${DATASET_PHASE} | ${MAP_TASK} | ${VISION_BACKBONE}"
 echo "Init model:   ${INIT_MODEL_PATH}"
 echo "Vision tower: ${VISION_TOWER}"
+echo "DeepStack:    ${DEEPSTACK_VISUAL_INDEXES}"
+echo "Layer fusion: ${VISION_LAYER_FUSION_INDEXES:-off} (${VISION_LAYER_FUSION_TYPE})"
 echo "Train:        ${TRAIN_PATH}"
 echo "Eval:         ${EVAL_PATH}"
 echo "Output:       ${OUTPUT_PATH}"
-echo "LoRA:         enable=${LORA_ENABLE}, scope=${LORA_TARGET_SCOPE}, r=${LORA_R}, alpha=${LORA_ALPHA}, dropout=${LORA_DROPOUT}"
 echo "============================================================"
 
 torchrun \
@@ -225,10 +230,12 @@ torchrun \
   --vision_tower "${VISION_TOWER}" \
   --mm_vision_tower_type "${MM_VISION_TOWER_TYPE}" \
   --input_image_size "${INPUT_IMAGE_SIZE}" \
+  "${VISION_LAYER_FUSION_ARGS[@]}" \
   --mm_vision_select_layer -2 \
   --mm_projector_type mlp2x_gelu \
   --unfreeze_mm_vision_tower True \
-  --disable_deepstack True \
+  --disable_deepstack False \
+  --deepstack_visual_indexes ${DEEPSTACK_VISUAL_INDEXES} \
   --data_path "${TRAIN_PATH}" \
   --image_folder "${IMAGE_FOLDER}" \
   "${EVAL_ARGS[@]}" \
@@ -236,12 +243,6 @@ torchrun \
   --image_aspect_ratio pad \
   --bf16 True \
   --output_dir "${OUTPUT_PATH}" \
-  --lora_enable "${LORA_ENABLE}" \
-  --lora_target_scope "${LORA_TARGET_SCOPE}" \
-  --lora_r "${LORA_R}" \
-  --lora_alpha "${LORA_ALPHA}" \
-  --lora_dropout "${LORA_DROPOUT}" \
-  --lora_bias "${LORA_BIAS}" \
   --num_train_epochs "${NUM_EPOCHS}" \
   --per_device_train_batch_size "${PER_DEVICE_TRAIN_BATCH_SIZE}" \
   --gradient_accumulation_steps "${GRADIENT_ACCUMULATION_STEPS}" \

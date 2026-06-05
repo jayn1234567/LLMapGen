@@ -1,5 +1,4 @@
 #!/usr/bin/env bash
-# set -euo pipefail
 
 # ============================================================
 # NPU SFT training
@@ -54,7 +53,7 @@ QWEN_PATH=${QWEN_PATH:-${OBS_CACHE}/checkpoints/Qwen3-VL-8B-Instruct}           
 # BEST_* options control train-loss, eval-loss, or infer-index best checkpoint folders.
 TARGET_GLOBAL_BATCH_SIZE=${TARGET_GLOBAL_BATCH_SIZE:-128}                     # Target effective global batch size across all nodes, NPUs, and grad accumulation.
 PER_DEVICE_TRAIN_BATCH_SIZE=${PER_DEVICE_TRAIN_BATCH_SIZE:-4}                 # Micro batch size on each NPU process.
-NUM_EPOCHS=${NUM_EPOCHS:-3}                                                   # Number of SFT epochs. Stage-A usually uses more epochs than Stage-B.
+NUM_EPOCHS=${NUM_EPOCHS:-5}                                                   # Number of SFT epochs. Stage-A usually uses more epochs than Stage-B.
 LR=${LR:-2e-5}                                                                # Base learning rate for the LLM and default trainable parameters.
 MM_PROJECTOR_LR=${MM_PROJECTOR_LR:-2e-5}                                      # Learning rate for the multimodal projector.
 MM_VISION_TOWER_LR=${MM_VISION_TOWER_LR:-2e-6}                                # Learning rate for the DINO vision tower; keep lower than LLM LR for full-param training.
@@ -62,29 +61,29 @@ WEIGHT_DECAY=${WEIGHT_DECAY:-0.0}                                             # 
 WARMUP_RATIO=${WARMUP_RATIO:-0.03}                                            # Warmup ratio for the LR scheduler.
 MODEL_MAX_LENGTH=${MODEL_MAX_LENGTH:-4096}                                    # Max text sequence length including prompt, image token, and generated coordinate text.
 SAVE_STEPS=${SAVE_STEPS:-500}                                                 # Save a regular checkpoint-* every this many optimizer steps.
-SAVE_TOTAL_LIMIT=${SAVE_TOTAL_LIMIT:-10}                                      # Keep this many latest regular checkpoint-* directories.
+SAVE_TOTAL_LIMIT=${SAVE_TOTAL_LIMIT:-15}                                      # Keep this many latest regular checkpoint-* directories.
 LOGGING_STEPS=${LOGGING_STEPS:-10}                                            # Console/SwanLab logging interval in optimizer steps.
 EVAL_STEPS=${EVAL_STEPS:-500}                                                 # Eval-loss interval in optimizer steps when ENABLE_EVAL=True.
 DEEPSPEED_CONFIG=${DEEPSPEED_CONFIG:-scripts/deepspeed_zero3.json}            # DeepSpeed config file. Current NPU SFT recipe uses ZeRO3.
-ENABLE_EVAL=${ENABLE_EVAL:-True}                                              # Whether to run eval loss during SFT training.
-SAVE_BEST_EVAL_LOSS=${SAVE_BEST_EVAL_LOSS:-True}                              # Whether to save the best eval-loss checkpoint under eval_best.
-SAVE_BEST_TRAIN_LOSS=${SAVE_BEST_TRAIN_LOSS:-False}                           # Whether to save the best train-loss checkpoint under best.
-BEST_TRAIN_LOSS_START_STEP=${BEST_TRAIN_LOSS_START_STEP:-3000}                # Ignore train-loss best saving before this step.
+ENABLE_EVAL=${ENABLE_EVAL:-False}                                              # Whether to run eval loss during SFT training.
+SAVE_BEST_EVAL_LOSS=${SAVE_BEST_EVAL_LOSS:-False}                              # Whether to save the best eval-loss checkpoint under eval_best.
+SAVE_BEST_TRAIN_LOSS=${SAVE_BEST_TRAIN_LOSS:-True}                           # Whether to save the best train-loss checkpoint under best.
+BEST_TRAIN_LOSS_START_STEP=${BEST_TRAIN_LOSS_START_STEP:-5000}                # Ignore train-loss best saving before this step.
 SAVE_BEST_INFER_INDEX=${SAVE_BEST_INFER_INDEX:-False}                         # Whether to run inference-index evaluation during training and save infer_best.
 BEST_INFER_INDEX_METRIC=${BEST_INFER_INDEX_METRIC:-length_f1}                 # Metric name used to select infer_best, for example length_f1.
 BEST_INFER_INDEX_NUM_SAMPLES=${BEST_INFER_INDEX_NUM_SAMPLES:-0}               # Number of eval samples for infer-index best. 0 means full eval set.
 BEST_CHECKPOINT_SAVE_MODE=${BEST_CHECKPOINT_SAVE_MODE:-rotating_create_only}  # Best checkpoint save mode. rotating_create_only avoids overwrite/rename on create-only filesystems.
-BEST_CHECKPOINT_KEEP_LIMIT=${BEST_CHECKPOINT_KEEP_LIMIT:-1}                   # How many best checkpoint candidates to keep in each best folder.
+BEST_CHECKPOINT_KEEP_LIMIT=${BEST_CHECKPOINT_KEEP_LIMIT:-5}                   # How many best checkpoint candidates to keep in each best folder.
 VISION_LAYER_FUSION_INDEXES=${VISION_LAYER_FUSION_INDEXES:-}                       # Optional ViT layers fused into the main visual stream, e.g. "6 12 18 23". Empty disables layer fusion.
 VISION_LAYER_FUSION_TYPE=${VISION_LAYER_FUSION_TYPE:-mean}                         # mean, sum, or learned_weighted.
 
-SWANLAB_ENABLE=${SWANLAB_ENABLE:-False}                                         # Enable SwanLab logging for this run.
+SWANLAB_ENABLE=${SWANLAB_ENABLE:-True}                                         # Enable SwanLab logging for this run.
 export SWANLAB_API_KEY=${SWANLAB_API_KEY:-"5gIH7zqSwmo8dl1Ia5vRN"}              # SwanLab API key. Override from the platform env if needed.
 SWANLAB_PROJECT=${SWANLAB_PROJECT:-unimapgen_v3}                                # SwanLab project name.
 SWANLAB_GROUP=${SWANLAB_GROUP:-sft_phase_a_lane_dinov2_nodeepstack}             # SwanLab group name for related experiments.
 SWANLAB_EXPERIMENT_NAME=${SWANLAB_EXPERIMENT_NAME:-sft_phase_a_lane_dinov2_qwen3vl8b_nodeepstack}  # SwanLab experiment display name.
-SWANLAB_TAGS=${SWANLAB_TAGS:-sft,phase_a,lane,dinov2,qwen3vl8b,nodeepstack}     # SwanLab comma-separated tags.
-SWANLAB_MODE=${SWANLAB_MODE:-}                                                  # SwanLab mode. Use offline if the cloud cannot reach SwanLab.
+SWANLAB_TAGS=${SWANLAB_TAGS:-sft,phase_a,lane,dinov2,qwen3vl8b,nodeepstack,unimapgen_v9}     # SwanLab comma-separated tags.
+SWANLAB_MODE=${SWANLAB_MODE:-offline}                                                  # SwanLab mode. Use offline if the cloud cannot reach SwanLab.
 SWANLAB_API_HOST=${SWANLAB_API_HOST:-}                                          # SwanLab private deployment API host, if used.
 SWANLAB_WEB_HOST=${SWANLAB_WEB_HOST:-}                                          # SwanLab private deployment web host, if used.
 # ====================== Ascend environment ======================

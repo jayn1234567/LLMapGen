@@ -87,8 +87,8 @@ def safe_div(num, den):
     return num / den if den else 0.0
 
 
-def convert_str_2_linestring(data: str) -> list[LineString]:
-    res = convert_QA_data(data) # 把QA标签和大模型infer结果转换成几何
+def convert_str_2_linestring(data: str, categories=None) -> list[LineString]:
+    res = convert_QA_data(data, categories=categories) # 把QA标签和大模型infer结果转换成几何
     res = convert_img_coord_to_meter(res, Parameter.METER_PER_PIXEL) # 像素单位转成米
     res = [LineString(i) for i in res] # 转成linestring
     return res
@@ -124,7 +124,7 @@ def _text_in_pixel_coords(record: dict, pixel_keys: list[str], raw_keys: list[st
         return raw_text
 
 
-def eval_one_line_sample(one_sample, buffer_size: float, match_thres: float) -> LineMatchRes:
+def eval_one_line_sample(one_sample, buffer_size: float, match_thres: float, categories=None) -> LineMatchRes:
     ''' buffer_size: 对linestring取buffer时要取多大
         match_thres: 两个linestring的交并比大于该阈值时才认为他们匹配上了
     '''
@@ -137,7 +137,7 @@ def eval_one_line_sample(one_sample, buffer_size: float, match_thres: float) -> 
     )
     parse_ok = one_sample.get('parse_ok', True)
     try:
-        gt = convert_str_2_linestring(gt_text)
+        gt = convert_str_2_linestring(gt_text, categories=categories)
     except Exception as e:
         logger.debug(e)
         gt = []
@@ -146,7 +146,7 @@ def eval_one_line_sample(one_sample, buffer_size: float, match_thres: float) -> 
     try:
         if not parse_ok:
             raise ValueError(one_sample.get('parse_error') or 'prediction parse_ok is false')
-        pred = convert_str_2_linestring(pred_text)
+        pred = convert_str_2_linestring(pred_text, categories=categories)
     except Exception as e:
         logger.debug(e)
         pred = []
@@ -170,6 +170,8 @@ def evaluate_records(
     buffer_size: float = 1.0,
     match_threshold: float = 0.33,
     include_samples: bool = False,
+    categories=None,
+    eval_name: str = "Line Evaluation Results",
     **kwargs,
 ):
     old_meter_per_pixel = Parameter.METER_PER_PIXEL
@@ -180,7 +182,7 @@ def evaluate_records(
         for idx, record in enumerate(records):
             if not isinstance(record, dict) or not any(key in record for key in ("ground_truth", "labels", "ground_truth_pixel", "labels_pixel")):
                 continue
-            one = eval_one_line_sample(record, buffer_size, match_threshold)
+            one = eval_one_line_sample(record, buffer_size, match_threshold, categories=categories)
             sample_results.append(one)
             if include_samples:
                 payload = asdict(one)
@@ -191,10 +193,12 @@ def evaluate_records(
         summary = asdict(eval_res)
         summary.update({
             "backend": "infer_index.line_eval",
+            "eval_name": eval_name,
+            "category_filter": categories,
             "meter_per_pixel": meter_per_pixel,
             "buffer_size": buffer_size,
             "match_threshold": match_threshold,
-            "table": eval_res.table_text(),
+            "table": eval_res.table_text(title=eval_name),
         })
         if include_samples:
             return {"summary": summary, "samples": sample_payloads}
@@ -215,12 +219,61 @@ def line_eval_res_from_summary(summary) -> LineEvalRes:
     return res
 
 
-def print_eval_table(summary, logger=None) -> None:
-    line_eval_res_from_summary(summary).show_res(logger)
+def print_eval_table(summary, logger=None, title: str = None) -> None:
+    if title is None and isinstance(summary, dict):
+        title = summary.get("eval_name")
+    line_eval_res_from_summary(summary).show_res(logger, title=title or "Line Evaluation Results")
 
 
-def format_eval_table(summary) -> str:
-    return line_eval_res_from_summary(summary).table_text()
+def format_eval_table(summary, title: str = None) -> str:
+    if title is None and isinstance(summary, dict):
+        title = summary.get("eval_name")
+    return line_eval_res_from_summary(summary).table_text(title=title or "Line Evaluation Results")
+
+
+def evaluate_lane_intersection_records(
+    records,
+    meter_per_pixel: float = Parameter.METER_PER_PIXEL,
+    buffer_size: float = 1.0,
+    match_threshold: float = 0.33,
+    include_samples: bool = False,
+    **kwargs,
+):
+    return {
+        "lane": evaluate_records(
+            records,
+            meter_per_pixel=meter_per_pixel,
+            buffer_size=buffer_size,
+            match_threshold=match_threshold,
+            include_samples=include_samples,
+            categories="lane",
+            eval_name="Lane Evaluation Results",
+        ),
+        "intersection": evaluate_records(
+            records,
+            meter_per_pixel=meter_per_pixel,
+            buffer_size=buffer_size,
+            match_threshold=match_threshold,
+            include_samples=include_samples,
+            categories="intersection",
+            eval_name="Intersection Evaluation Results",
+        ),
+        "lane_intersection": evaluate_records(
+            records,
+            meter_per_pixel=meter_per_pixel,
+            buffer_size=buffer_size,
+            match_threshold=match_threshold,
+            include_samples=include_samples,
+            categories="all",
+            eval_name="Lane + Intersection Evaluation Results",
+        ),
+    }
+
+
+def print_lane_intersection_eval_tables(payload, logger=None) -> None:
+    for key in ("lane", "intersection", "lane_intersection"):
+        if isinstance(payload, dict) and key in payload:
+            print_eval_table(payload[key], logger=logger)
 
 
 def evaluate_one_sample(
@@ -249,6 +302,7 @@ def evaluate_one_sample(
             },
             buffer_size,
             match_threshold,
+            categories=None,
         )
     finally:
         Parameter.METER_PER_PIXEL = old_meter_per_pixel

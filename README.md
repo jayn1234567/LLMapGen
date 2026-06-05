@@ -321,7 +321,7 @@ SwanLab monitoring:
 
 | Parameter | Purpose |
 |---|---|
-| `--swanlab_enable True` | Enable SwanLab logging. Default scripts keep it off unless changed in the script parameter block. |
+| `--swanlab_enable True` | Enable SwanLab logging. Formal SFT scripts enable it by default. |
 | `--swanlab_project` | Project name. Main scripts default to the shared project `unimapgen_v3`. |
 | `--swanlab_workspace` | Optional SwanLab workspace/org. Leave empty for the account default. |
 | `--swanlab_experiment_name` | Run name, usually including SFT/GRPO, data scale, phase, task, backbone, and DeepStack mode. |
@@ -337,8 +337,9 @@ The provided SFT/GRPO scripts define `SWANLAB_API_KEY`, `SWANLAB_PROJECT`,
 `SWANLAB_MODE`, and `SWANLAB_LOG_DIR` in their parameter blocks. Keep
 `SWANLAB_PROJECT=unimapgen_v3` to compare all runs in one project; use
 group/job type/tags to separate SFT, GRPO, stage/task, backbone, and
-debug/formal runs. For offline recording, set `SWANLAB_ENABLE=True` and
-`SWANLAB_MODE=offline` or `local` inside the target script. Local SwanLab files
+debug/formal runs. Formal SFT scripts tag current runs with `unimapgen_v9` and
+default to offline recording with `SWANLAB_ENABLE=True` and
+`SWANLAB_MODE=offline`. Local SwanLab files
 are written under the run output directory, beside `checkpoint-*`, `eval_best*`,
 `best*`, `best_reward_candidates/`, and `merged/` directories. For private deployment, set
 `SWANLAB_API_HOST` and `SWANLAB_WEB_HOST` in the same script parameter block.
@@ -497,17 +498,23 @@ Formal multi-vision NPU entrypoints:
 bash scripts/npu/train/train_sft_stage_a_lane_multi_moe_qwen3vl_nodeepstack_npu.sh
 bash scripts/npu/train/train_sft_stage_a_lane_dinov2_siglip_concat_qwen3vl_nodeepstack_npu.sh
 bash scripts/npu/train/train_sft_stage_a_lane_dinov3_siglip_concat_qwen3vl_nodeepstack_npu.sh
+bash scripts/npu/train/train_sft_stage_a_lane_dinov2_qwen3vl_deepstack_layer_fusion_npu.sh
 
 # Test examples
 bash scripts/npu/test/test_stage_a_lane_multi_moe_qwen3vl_nodeepstack_npu.sh
 bash scripts/npu/test/test_stage_a_lane_dinov2_siglip_concat_qwen3vl_nodeepstack_npu.sh
 bash scripts/npu/test/test_stage_a_lane_dinov3_siglip_concat_qwen3vl_nodeepstack_npu.sh
+bash scripts/npu/test/test_stage_a_lane_dinov2_qwen3vl_deepstack_layer_fusion_npu.sh
 ```
 
 Each multi-vision recipe has stage A/B and lane/lane_intersection variants. The
-formal SFT multi-vision defaults are: eval off, best train loss on, `SAVE_STEPS=400`,
+formal SFT defaults are: eval off, best train loss on after
+`BEST_TRAIN_LOSS_START_STEP=5000`, `SAVE_STEPS=500`,
 `SAVE_TOTAL_LIMIT=15`, `BEST_CHECKPOINT_KEEP_LIMIT=5`, `LR=2e-5`,
-`NUM_EPOCHS=5`, SwanLab enabled with `SWANLAB_MODE=offline`.
+`NUM_EPOCHS=5`, SwanLab enabled offline, and `SWANLAB_TAGS` includes
+`unimapgen_v9`. The DINOv2 DeepStack + layer-fusion script enables both
+`--deepstack_visual_indexes 6 12 18 23` and
+`--vision_layer_fusion_indexes 6 12 18 23`.
 
 Local debug entrypoints:
 
@@ -658,6 +665,12 @@ Length Level       0.0000       0.0000       0.0000
 
 The metric backend is `infer_index/line_eval.py`, using LineString buffer IoU
 plus Hungarian matching. The default scale is `--eval-meter-per-pixel 0.2`.
+For `lane_intersection` inference, `eval.json` contains three separate metric
+blocks and the console prints three tables:
+
+- `centerline_eval`: lane-only centerline evaluation.
+- `intersection_eval`: intersection boundary polyline evaluation.
+- `lane_intersection_eval`: combined lane + intersection evaluation.
 
 Full-checkpoint testing:
 

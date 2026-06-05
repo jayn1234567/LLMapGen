@@ -8,7 +8,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from infer_index.line_eval import evaluate_records
+from infer_index.line_eval import evaluate_lane_intersection_records, evaluate_records
 
 
 def main():
@@ -18,6 +18,7 @@ def main():
     parser.add_argument("--meter-per-pixel", type=float, default=0.2)
     parser.add_argument("--buffer-size", type=float, default=1.0)
     parser.add_argument("--match-threshold", type=float, default=0.33)
+    parser.add_argument("--map-task", choices=["lane", "lane_intersection"], default="lane")
     args = parser.parse_args()
 
     records = json.loads(Path(args.summary_json).read_text(encoding="utf-8"))
@@ -26,6 +27,12 @@ def main():
     non_empty = sum(1 for x in records if x.get("prediction", "").strip())
     avg_items = (sum(x.get("num_items", 0) for x in records) / total) if total else 0.0
 
+    line_eval = evaluate_records(
+        records,
+        meter_per_pixel=args.meter_per_pixel,
+        buffer_size=args.buffer_size,
+        match_threshold=args.match_threshold,
+    )
     summary = {
         "summary_json": args.summary_json,
         "total": total,
@@ -34,13 +41,21 @@ def main():
         "non_empty": non_empty,
         "non_empty_rate": (non_empty / total) if total else 0.0,
         "avg_num_items": avg_items,
-        "line_eval": evaluate_records(
+        "line_eval": line_eval,
+    }
+    if args.map_task == "lane_intersection":
+        map_eval = evaluate_lane_intersection_records(
             records,
             meter_per_pixel=args.meter_per_pixel,
             buffer_size=args.buffer_size,
             match_threshold=args.match_threshold,
-        ),
-    }
+        )
+        summary.update({
+            "centerline_eval": map_eval["lane"],
+            "intersection_eval": map_eval["intersection"],
+            "lane_intersection_eval": map_eval["lane_intersection"],
+            "map_eval": map_eval,
+        })
     text = json.dumps(summary, ensure_ascii=False, indent=2)
     print(text)
     if args.output_json:

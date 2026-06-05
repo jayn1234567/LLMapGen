@@ -29,6 +29,7 @@ NPU train entrypoints:
   - `scripts/npu/train/train_sft_stage_b_lane_dinov2_qwen3vl_nodeepstack_npu.sh`
   - `scripts/npu/train/train_sft_stage_a_lane_dinov3_qwen3vl_nodeepstack_npu.sh`
   - `scripts/npu/train/train_sft_stage_b_lane_dinov3_qwen3vl_nodeepstack_npu.sh`
+  - `scripts/npu/train/train_sft_stage_a_lane_dinov2_qwen3vl_deepstack_layer_fusion_npu.sh`
 - SFT lane+intersection:
   - `scripts/npu/train/train_sft_stage_a_lane_intersection_dinov2_qwen3vl_nodeepstack_npu.sh`
   - `scripts/npu/train/train_sft_stage_b_lane_intersection_dinov2_qwen3vl_nodeepstack_npu.sh`
@@ -40,7 +41,7 @@ NPU train entrypoints:
   - DINOv3+SigLIP concat scripts use names like `train_sft_stage_a_lane_dinov3_siglip_concat_qwen3vl_nodeepstack_npu.sh`
   - Each recipe has stage A/B and lane/lane_intersection variants.
   - These formal multi-vision files are self-contained full scripts; they do not dispatch to another shell launcher.
-  - Current formal multi-vision defaults: `ENABLE_EVAL=False`, `SAVE_BEST_TRAIN_LOSS=True`, `SAVE_STEPS=400`, `SAVE_TOTAL_LIMIT=15`, `BEST_CHECKPOINT_KEEP_LIMIT=5`, `LR=2e-5`, `NUM_EPOCHS=5`, `SWANLAB_ENABLE=True`, `SWANLAB_MODE=offline`.
+  - Current formal SFT defaults: `ENABLE_EVAL=False`, `SAVE_BEST_TRAIN_LOSS=True`, `BEST_TRAIN_LOSS_START_STEP=5000`, `SAVE_STEPS=500`, `SAVE_TOTAL_LIMIT=15`, `BEST_CHECKPOINT_KEEP_LIMIT=5`, `LR=2e-5`, `NUM_EPOCHS=5`, `SWANLAB_ENABLE=True`, `SWANLAB_MODE=offline`, and `SWANLAB_TAGS` includes `unimapgen_v9`.
 - Standalone Stage-B-from-Stage-A SFT:
   - `scripts/npu/train/train_sft_stage_b_from_stage_a_qwen3vl_nodeepstack_npu.sh`
   - This script is also self-contained. Set `VISION_BACKBONE`, `MAP_TASK`, and either `STAGE_A_CHECKPOINT_OBS_PATH` or `STAGE_A_CHECKPOINT_PATH` inside the script before launch.
@@ -163,6 +164,7 @@ Script families:
 |---|---|---|
 | Original single tower | `VISION_BACKBONE=dinov2` or `dinov3` | none |
 | Single-DINO layer fusion | `scripts/gpu/train_sft_qwen3vl_nodeepstack_dinov2_layer_fusion_smoke_gpu.sh` or `...dinov3_layer_fusion...` | `vision_layer_fusion_indexes` |
+| DINOv2 DeepStack + layer fusion | `scripts/npu/train/train_sft_stage_a_lane_dinov2_qwen3vl_deepstack_layer_fusion_npu.sh` and `scripts/npu/test/test_stage_a_lane_dinov2_qwen3vl_deepstack_layer_fusion_npu.sh` | `deepstack_visual_indexes` + `vision_layer_fusion_indexes` |
 | Dynamic MoE | `scripts/gpu/train_sft_qwen3vl_nodeepstack_moe_smoke_gpu.sh` or `VISION_BACKBONE=multi_moe` | `softmax_router` |
 | DINOv2 + SigLIP concat | `scripts/gpu/train_sft_qwen3vl_nodeepstack_dinov2_siglip_concat_smoke_gpu.sh` or `VISION_BACKBONE=dinov2_siglip_concat` | `concat_projector` |
 | DINOv3 + SigLIP concat | `scripts/gpu/train_sft_qwen3vl_nodeepstack_dinov3_siglip_concat_smoke_gpu.sh` or `VISION_BACKBONE=dinov3_siglip_concat` | `concat_projector` |
@@ -171,7 +173,8 @@ The GPU smoke script forwards the same multi-vision parameters into training,
 patch inference, and state-update inference. NPU debug scripts under
 `scripts/debug/` support the same `VISION_BACKBONE` values and have thin wrapper
 files named by recipe. Formal NPU SFT/test scripts now also include self-contained
-MoE and DINO+SigLIP concat files under `scripts/npu/train/` and `scripts/npu/test/`.
+MoE, DINO+SigLIP concat, and DINOv2 DeepStack+layer-fusion files under
+`scripts/npu/train/` and `scripts/npu/test/`.
 
 For DINO+SigLIP concat, set or verify these paths:
 
@@ -254,6 +257,7 @@ NPU cloud output behavior:
 SwanLab logging:
 
 - SFT and GRPO scripts define `SWANLAB_ENABLE`, `SWANLAB_PROJECT`, `SWANLAB_GROUP`, `SWANLAB_JOB_TYPE`, `SWANLAB_EXPERIMENT_NAME`, `SWANLAB_MODE`, and `SWANLAB_LOG_DIR` in their parameter blocks.
+- Formal SFT scripts default to `SWANLAB_ENABLE=True`, `SWANLAB_MODE=offline`, and include the tag `unimapgen_v9`.
 - Leave `SWANLAB_MODE` empty for SwanLab default cloud behavior. Set it to `offline` or `local` when the NPU job cannot upload during training, or `disabled` to suppress SwanLab runtime logging.
 - Local SwanLab files are stored next to the training checkpoints: SFT uses `${OUTPUT_PATH}/swanlab`; GRPO uses `${OUTPUT_DIR}/swanlab`.
 - Offline/local modes skip `swanlab.login(...)`; cloud mode still uses `SWANLAB_API_KEY` when it is set.
@@ -263,6 +267,7 @@ Centerline geometry evaluation:
 
 - The project uses `infer_index/line_eval.py` for centerline metrics: LineString buffer IoU plus Hungarian matching, reporting instance-level and length-level precision/recall/F1.
 - `scripts/tools/infer_centerline_checkpoint.py --eval-centerline` and `scripts/tools/infer_centerline_state_update.py --eval-centerline` write these metrics to `eval.json` by default; pass `--eval-output-json` to override.
+- For `lane_intersection` runs, evaluation is split into three tables: lane-only (`centerline_eval`), intersection-only (`intersection_eval`), and combined lane+intersection (`lane_intersection_eval`). The combined payload is also available under `map_eval`.
 - `scripts/tools/visualize_centerline.py` automatically prints and saves `eval.json` after visualization when ground truth is present. Use `--no-eval-centerline` to disable it.
 - The saved metrics include scalar JSON fields and a `table` string matching the console table.
 - The default metric scale is `--eval-meter-per-pixel 0.2`, matching `infer_index/param.py`.

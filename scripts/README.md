@@ -150,6 +150,7 @@ Training mode in filenames:
 DINO type, fusion recipe, and platform are explicit:
 
 - `dinov2` or `dinov3` identifies the vision tower family.
+- `*_layer_fusion` identifies a single-DINO multi-layer feature fusion recipe.
 - `multi_moe` identifies the dynamic DINOv2+DINOv3 token-router recipe.
 - `dinov2_siglip_concat` and `dinov3_siglip_concat` identify the Prismatic-style static DINO+SigLIP concat recipe.
 - `_npu` or `_gpu` identifies the target platform.
@@ -161,6 +162,7 @@ Script families:
 | Family | Example script/setting | Fusion |
 |---|---|---|
 | Original single tower | `VISION_BACKBONE=dinov2` or `dinov3` | none |
+| Single-DINO layer fusion | `scripts/gpu/train_sft_qwen3vl_nodeepstack_dinov2_layer_fusion_smoke_gpu.sh` or `...dinov3_layer_fusion...` | `vision_layer_fusion_indexes` |
 | Dynamic MoE | `scripts/gpu/train_sft_qwen3vl_nodeepstack_moe_smoke_gpu.sh` or `VISION_BACKBONE=multi_moe` | `softmax_router` |
 | DINOv2 + SigLIP concat | `scripts/gpu/train_sft_qwen3vl_nodeepstack_dinov2_siglip_concat_smoke_gpu.sh` or `VISION_BACKBONE=dinov2_siglip_concat` | `concat_projector` |
 | DINOv3 + SigLIP concat | `scripts/gpu/train_sft_qwen3vl_nodeepstack_dinov3_siglip_concat_smoke_gpu.sh` or `VISION_BACKBONE=dinov3_siglip_concat` | `concat_projector` |
@@ -189,6 +191,26 @@ Core multi-vision arguments:
 --multi_vision_target_grid 32
 --multi_vision_hidden_size 1024
 --multi_vision_primary_index 0
+```
+
+Single-DINO layer fusion keeps one DINO encoder and replaces the normal main
+ViT layer with a fused feature before `mm_projector`:
+
+```bash
+--vision_layer_fusion_indexes 6 12 18 23
+--vision_layer_fusion_type mean
+```
+
+Use `3 6 9 11` for DINOv3-S/B. Supported fusion types are `mean`, `sum`, and
+`learned_weighted`. This is a no-DeepStack baseline unless you also explicitly
+pass DeepStack args.
+
+Formal single-tower NPU SFT scripts expose the same feature through script
+parameters:
+
+```bash
+VISION_LAYER_FUSION_INDEXES="6 12 18 23"
+VISION_LAYER_FUSION_TYPE=mean
 ```
 
 DeepStack and gradient checkpointing are intended to work together. Training scripts keep `GRADIENT_CHECKPOINTING=True` by default, including DeepStack runs. Inference scripts do not hard-code DeepStack settings; they recover DeepStack enabled/disabled state from the checkpoint config unless an override is passed.

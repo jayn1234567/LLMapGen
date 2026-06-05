@@ -410,6 +410,8 @@ def _load_auto_config(model_path, **kwargs):
             "multi_vision_router_hidden_ratio",
             "multi_vision_router_use_diff",
             "multi_vision_dropout",
+            "vision_layer_fusion_indexes",
+            "vision_layer_fusion_type",
         ):
             if config_dict.get(key) is None and metadata.get(key) is not None:
                 config_dict[key] = metadata[key]

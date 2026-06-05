@@ -1121,6 +1121,14 @@ class ModelArguments:
     unfreeze_mm_vision_tower: bool = field(default=False)
     deepstack_visual_indexes: Optional[List[int]] = field(default=None)
     disable_deepstack: bool = field(default=True)
+    vision_layer_fusion_indexes: Optional[List[int]] = field(
+        default=None,
+        metadata={"help": "ViT layer indexes to fuse into the main visual feature stream. Disabled when unset."},
+    )
+    vision_layer_fusion_type: str = field(
+        default="mean",
+        metadata={"help": "Fusion type for vision_layer_fusion_indexes: mean, sum, or learned_weighted."},
+    )
     input_image_size: Optional[int] = field(default=None)
     mm_vision_tower_type: Optional[str] = field(default=None)
     multi_vision_towers: Optional[str] = field(

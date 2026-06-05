@@ -8,6 +8,7 @@ from transformers import AutoImageProcessor
 from transformers import DINOv3ViTConfig, DINOv3ViTModel
 
 from .deepstack import build_deepstack_mergers
+from .visual_layer_fusion import VisualLayerFusion
 
 
 class DINOv3VisionTower(nn.Module):
@@ -23,6 +24,9 @@ class DINOv3VisionTower(nn.Module):
 
         self.deepstack_visual_indexes = getattr(args, 'deepstack_visual_indexes', None)
         self.deepstack_mergers = None
+        self.vision_layer_fusion_indexes = getattr(args, 'vision_layer_fusion_indexes', None)
+        self.vision_layer_fusion_type = getattr(args, 'vision_layer_fusion_type', 'mean')
+        self.vision_layer_fusion = None
         self._preferred_dtype = torch.bfloat16
 
         if self.tune_vision_tower:
@@ -55,6 +59,8 @@ class DINOv3VisionTower(nn.Module):
             self.vision_tower.to(dtype=stable_dtype)
             if self.deepstack_mergers is not None:
                 self.deepstack_mergers.to(dtype=stable_dtype)
+            if self.vision_layer_fusion is not None:
+                self.vision_layer_fusion.to(dtype=stable_dtype)
 
     def _apply(self, fn):
         module = super()._apply(fn)
@@ -91,6 +97,8 @@ class DINOv3VisionTower(nn.Module):
 
         if self.deepstack_visual_indexes is not None:
             self._build_deepstack()
+        if self.vision_layer_fusion_indexes is not None:
+            self._build_vision_layer_fusion()
 
         self.cfg_only = self.vision_tower.config
         self.is_loaded = True
@@ -123,6 +131,8 @@ class DINOv3VisionTower(nn.Module):
 
         if self.deepstack_visual_indexes is not None:
             self._build_deepstack()
+        if self.vision_layer_fusion_indexes is not None:
+            self._build_vision_layer_fusion()
 
         self.cfg_only = self.vision_tower.config
         self.is_loaded = True
@@ -146,6 +156,20 @@ class DINOv3VisionTower(nn.Module):
         print(f"DeepStack (real injection) enabled: ViT layers={self.deepstack_visual_indexes}, "
               f"num={len(self.deepstack_visual_indexes)}, main_layer={self.select_layer_idx}")
 
+    def _build_vision_layer_fusion(self):
+        vit_hidden_size = self.vision_tower.config.hidden_size
+        self.vision_layer_fusion = VisualLayerFusion(
+            hidden_size=vit_hidden_size,
+            num_layers=len(self.vision_layer_fusion_indexes),
+            fusion_type=self.vision_layer_fusion_type,
+        )
+        print(
+            "Vision layer fusion enabled: "
+            f"type={self.vision_layer_fusion_type}, "
+            f"ViT layers={self.vision_layer_fusion_indexes}, "
+            f"main_layer_replaced={self.select_layer_idx}"
+        )
+
     def set_llm_hidden_size(self, llm_hidden_size):
         if self.deepstack_mergers is not None:
             vit_hidden_size = self.vision_tower.config.hidden_size
@@ -159,13 +183,23 @@ class DINOv3VisionTower(nn.Module):
     def feature_select(self, image_forward_outs):
         hidden_states = image_forward_outs.hidden_states
 
-        main_features = hidden_states[self.select_layer_idx]
-        if self.select_feature == 'patch':
-            main_features = main_features[:, self.skip_tokens:]
-        elif self.select_feature == 'cls_patch':
-            pass
-        else:
+        def select_features_from_layer(layer_idx):
+            layer_idx = max(0, min(layer_idx, len(hidden_states) - 1))
+            features = hidden_states[layer_idx]
+            if self.select_feature == 'patch':
+                return features[:, self.skip_tokens:]
+            if self.select_feature == 'cls_patch':
+                return features
             raise ValueError(f'Unexpected select feature: {self.select_feature}')
+
+        if self.vision_layer_fusion is not None:
+            fusion_features = [
+                select_features_from_layer(idx)
+                for idx in self.vision_layer_fusion_indexes
+            ]
+            main_features = self.vision_layer_fusion(fusion_features)
+        else:
+            main_features = select_features_from_layer(self.select_layer_idx)
         if not torch.isfinite(main_features).all():
             raise RuntimeError(
                 "DINOv3 produced non-finite visual features. "
@@ -175,10 +209,7 @@ class DINOv3VisionTower(nn.Module):
         if self.deepstack_mergers is not None:
             deepstack_features = []
             for i, idx in enumerate(self.deepstack_visual_indexes):
-                idx = max(0, min(idx, len(hidden_states) - 1))
-                hs = hidden_states[idx]
-                if self.select_feature == 'patch':
-                    hs = hs[:, self.skip_tokens:]
+                hs = select_features_from_layer(idx)
                 deepstack_features.append(self.deepstack_mergers[i](hs))
             return main_features, deepstack_features
 

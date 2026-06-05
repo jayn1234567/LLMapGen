@@ -123,6 +123,8 @@ class LlavaMetaModel:
             'multi_vision_router_hidden_ratio',
             'multi_vision_router_use_diff',
             'multi_vision_dropout',
+            'vision_layer_fusion_indexes',
+            'vision_layer_fusion_type',
         ):
             if hasattr(model_args, attr):
                 setattr(self.config, attr, getattr(model_args, attr))

@@ -541,6 +541,8 @@ def main():
     parser.add_argument("--multi_vision_router_hidden_ratio", type=float, default=None)
     parser.add_argument("--multi_vision_router_use_diff", type=lambda x: str(x).lower() in ("1", "true", "yes", "on"), default=None)
     parser.add_argument("--multi_vision_dropout", type=float, default=None)
+    parser.add_argument("--vision_layer_fusion_indexes", nargs="*", type=int, default=None)
+    parser.add_argument("--vision_layer_fusion_type", default="")
     parser.add_argument("--input_image_size", type=int, default=None)
     parser.add_argument("--disable_deepstack", action="store_true")
     parser.add_argument("--deepstack_visual_indexes", nargs="*", type=int, default=None)

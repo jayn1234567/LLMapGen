@@ -234,6 +234,13 @@ DeepStack parameters:
 | `--deepstack_visual_indexes 6 12 18 23` | unset | ViT layers used for DeepStack. Fixed DeepStack scripts pass this explicitly. |
 | `--input_image_size` | inferred | Override DINO input size. DINOv2-L defaults to 518; DINOv3 registry defaults to 224, while project DINOv3 scripts pass 512 for 1024 visual tokens on 256x256 BEV patches. |
 
+Single-tower layer-fusion parameters:
+
+| Parameter | Default | Purpose |
+|---|---:|---|
+| `--vision_layer_fusion_indexes 6 12 18 23` | unset | Fuse selected ViT layers into the main visual stream before `mm_projector`. This is not DeepStack; it replaces the single selected main ViT layer. |
+| `--vision_layer_fusion_type mean` | `mean` | Fusion rule: `mean`, `sum`, or `learned_weighted`. `mean` is the simplest LayerNorm + average baseline. |
+
 Multi-vision recipes:
 
 There are three clear visual-backbone families in scripts:
@@ -241,6 +248,7 @@ There are three clear visual-backbone families in scripts:
 | Recipe | `mm_vision_tower_type` | `multi_vision_fusion` | Meaning |
 |---|---|---|---|
 | Original single tower | `dinov2`, `dinov3`, or `siglip` | unset | One encoder feeds the normal `mm_projector`. |
+| Single-tower layer fusion | `dinov2` or `dinov3` | unset | One DINO encoder; selected hidden layers are LayerNorm-fused before `mm_projector`. |
 | Dynamic visual MoE | `multi_moe` | `softmax_router` | Per-token router learns how much to trust each encoder. |
 | Prismatic-style concat | `multi_concat` | `concat_projector` | Align token grids, concatenate encoder channels, then project back before `mm_projector`. |
 

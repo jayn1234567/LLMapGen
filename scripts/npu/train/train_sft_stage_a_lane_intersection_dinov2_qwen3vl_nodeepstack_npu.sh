@@ -75,6 +75,8 @@ BEST_INFER_INDEX_METRIC=${BEST_INFER_INDEX_METRIC:-length_f1}                 # 
 BEST_INFER_INDEX_NUM_SAMPLES=${BEST_INFER_INDEX_NUM_SAMPLES:-0}               # Number of eval samples for infer-index best. 0 means full eval set.
 BEST_CHECKPOINT_SAVE_MODE=${BEST_CHECKPOINT_SAVE_MODE:-rotating_create_only}  # Best checkpoint save mode. rotating_create_only avoids overwrite/rename on create-only filesystems.
 BEST_CHECKPOINT_KEEP_LIMIT=${BEST_CHECKPOINT_KEEP_LIMIT:-1}                   # How many best checkpoint candidates to keep in each best folder.
+VISION_LAYER_FUSION_INDEXES=${VISION_LAYER_FUSION_INDEXES:-}                       # Optional ViT layers fused into the main visual stream, e.g. "6 12 18 23". Empty disables layer fusion.
+VISION_LAYER_FUSION_TYPE=${VISION_LAYER_FUSION_TYPE:-mean}                         # mean, sum, or learned_weighted.
 
 SWANLAB_ENABLE=${SWANLAB_ENABLE:-False}                                         # Enable SwanLab logging for this run.
 export SWANLAB_API_KEY=${SWANLAB_API_KEY:-"5gIH7zqSwmo8dl1Ia5vRN"}              # SwanLab API key. Override from the platform env if needed.
@@ -198,10 +200,19 @@ if [[ "${ENABLE_EVAL}" =~ ^(1|true|True|TRUE|yes|YES)$ ]]; then
   )
 fi
 
+VISION_LAYER_FUSION_ARGS=()
+if [ -n "${VISION_LAYER_FUSION_INDEXES}" ]; then
+  VISION_LAYER_FUSION_ARGS=(
+    --vision_layer_fusion_indexes ${VISION_LAYER_FUSION_INDEXES}
+    --vision_layer_fusion_type "${VISION_LAYER_FUSION_TYPE}"
+  )
+fi
+
 echo "============================================================"
 echo "Recipe:       ${DATASET_PHASE} | ${MAP_TASK} | ${VISION_BACKBONE}"
 echo "Init model:   ${INIT_MODEL_PATH}"
 echo "Vision tower: ${VISION_TOWER}"
+echo "Layer fusion: ${VISION_LAYER_FUSION_INDEXES:-off} (${VISION_LAYER_FUSION_TYPE})"
 echo "Train:        ${TRAIN_PATH}"
 echo "Eval:         ${EVAL_PATH}"
 echo "Output:       ${OUTPUT_PATH}"
@@ -219,6 +230,7 @@ torchrun \
   --vision_tower "${VISION_TOWER}" \
   --mm_vision_tower_type "${MM_VISION_TOWER_TYPE}" \
   --input_image_size "${INPUT_IMAGE_SIZE}" \
+  "${VISION_LAYER_FUSION_ARGS[@]}" \
   --mm_vision_select_layer -2 \
   --mm_projector_type mlp2x_gelu \
   --unfreeze_mm_vision_tower True \

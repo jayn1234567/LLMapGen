@@ -146,6 +146,8 @@ def sync_qwen_multimodal_config(model):
         "multi_vision_router_hidden_ratio",
         "multi_vision_router_use_diff",
         "multi_vision_dropout",
+        "vision_layer_fusion_indexes",
+        "vision_layer_fusion_type",
     ):
         value = getattr(vision_tower, attr, _cfg_get(config, attr))
         if attr == "multi_vision_towers" and value is None:
@@ -191,6 +193,8 @@ def write_qwen_multimodal_checkpoint_metadata(model, output_dir: str, trainer=No
         "multi_vision_router_hidden_ratio": _cfg_get(config, "multi_vision_router_hidden_ratio"),
         "multi_vision_router_use_diff": _cfg_get(config, "multi_vision_router_use_diff"),
         "multi_vision_dropout": _cfg_get(config, "multi_vision_dropout"),
+        "vision_layer_fusion_indexes": _cfg_get(config, "vision_layer_fusion_indexes"),
+        "vision_layer_fusion_type": _cfg_get(config, "vision_layer_fusion_type"),
         "bundled_vision_tower": True,
     }
     os.makedirs(output_dir, exist_ok=True)

@@ -109,6 +109,8 @@ esac
 IMAGE_FOLDER=${IMAGE_FOLDER:-data/av2_patch_256_fullimage_cutflag_test_v2}
 VERSION=${VERSION:-conv_qwen_3_Dinov2_huawei}
 DISABLE_DEEPSTACK=${DISABLE_DEEPSTACK:-True}
+VISION_LAYER_FUSION_INDEXES=${VISION_LAYER_FUSION_INDEXES:-}
+VISION_LAYER_FUSION_TYPE=${VISION_LAYER_FUSION_TYPE:-mean}
 DEEPSPEED_CONFIG=${DEEPSPEED_CONFIG:-scripts/deepspeed_zero3.json}
 
 LORA_ENABLE=${LORA_ENABLE:-True}
@@ -185,6 +187,16 @@ INFER_VISION_ARGS=(
   --input_image_size "${INPUT_IMAGE_SIZE}"
   --disable_deepstack
 )
+if [[ -n "${VISION_LAYER_FUSION_INDEXES}" ]]; then
+  TRAIN_VISION_ARGS+=(
+    --vision_layer_fusion_indexes ${VISION_LAYER_FUSION_INDEXES}
+    --vision_layer_fusion_type "${VISION_LAYER_FUSION_TYPE}"
+  )
+  INFER_VISION_ARGS+=(
+    --vision_layer_fusion_indexes ${VISION_LAYER_FUSION_INDEXES}
+    --vision_layer_fusion_type "${VISION_LAYER_FUSION_TYPE}"
+  )
+fi
 if [[ "${MM_VISION_TOWER_TYPE}" == "multi_moe" || "${MM_VISION_TOWER_TYPE}" == "multi_concat" ]]; then
   TRAIN_VISION_ARGS+=(
     --multi_vision_towers "${MULTI_VISION_TOWERS}"
@@ -213,6 +225,7 @@ echo "Model:     ${MODEL_NAME_OR_PATH}"
 echo "ViT:       ${VISION_TOWER}"
 echo "ViT type:  ${MM_VISION_TOWER_TYPE}"
 echo "Fusion:    ${MULTI_VISION_FUSION:-single}"
+echo "Layer fusion: ${VISION_LAYER_FUSION_INDEXES:-off} (${VISION_LAYER_FUSION_TYPE})"
 echo "Input:     ${INPUT_IMAGE_SIZE}"
 echo "Train:     ${TRAIN_JSONL}"
 echo "Output:    ${OUTPUT_DIR}"

@@ -371,6 +371,7 @@ class LLaVATrainer(Trainer):
                     ("vision_tower.post_fusion", fusion_lr),
                     ("vision_tower.concat_projector", fusion_lr),
                     ("vision_tower.out_norm", fusion_lr),
+                    ("vision_tower.vision_layer_fusion", fusion_lr),
                 ])
             if self.args.mm_vision_tower_lr is not None:
                 lr_mapper.append(("vision_tower", self.args.mm_vision_tower_lr))

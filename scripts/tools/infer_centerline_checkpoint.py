@@ -360,6 +360,8 @@ def _config_overrides_from_args(args) -> dict:
         "multi_vision_router_hidden_ratio": getattr(args, "multi_vision_router_hidden_ratio", None),
         "multi_vision_router_use_diff": getattr(args, "multi_vision_router_use_diff", None),
         "multi_vision_dropout": getattr(args, "multi_vision_dropout", None),
+        "vision_layer_fusion_indexes": getattr(args, "vision_layer_fusion_indexes", None),
+        "vision_layer_fusion_type": getattr(args, "vision_layer_fusion_type", "") or None,
     }
 
 
@@ -850,6 +852,8 @@ def main():
     parser.add_argument("--multi_vision_router_hidden_ratio", type=float, default=None)
     parser.add_argument("--multi_vision_router_use_diff", type=lambda x: str(x).lower() in ("1", "true", "yes", "on"), default=None)
     parser.add_argument("--multi_vision_dropout", type=float, default=None)
+    parser.add_argument("--vision_layer_fusion_indexes", type=int, nargs="*", default=None)
+    parser.add_argument("--vision_layer_fusion_type", default="")
     parser.add_argument("--input_image_size", type=int, default=None)
     parser.add_argument("--disable_deepstack", action="store_true", default=None)
     parser.add_argument("--deepstack_visual_indexes", type=int, nargs="*", default=None)

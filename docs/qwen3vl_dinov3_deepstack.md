@@ -7,8 +7,9 @@ This document records the current behavior of branch `unimapgen`.
 The framework is generic MLLM code; this branch uses it for BEV road centerline reconstruction with:
 
 - Qwen2.5 or Qwen3-VL as the language model.
-- DINOv2 or DINOv3 as the vision tower.
+- DINOv2 or DINOv3 as the main vision tower, with optional SigLIP in multi-vision recipes.
 - Optional DeepStack visual injection.
+- Optional single-DINO layer fusion and multi-vision MoE/concat fusion.
 - Full-parameter or LoRA training.
 - Checkpoint-driven inference that avoids manual DeepStack flags.
 - Best checkpoint maintenance by training loss or eval loss.
@@ -96,6 +97,31 @@ so a patch16 DINOv3-L tower produces 32x32 = 1024 visual tokens. The registry
 default remains 224 for compatibility with generic DINOv3 checkpoints.
 
 Training and inference derive the DINO type from checkpoint metadata, `mm_vision_tower_type`, or the `vision_tower` path. Vision tower paths should include a recognizable DINO key or alias such as `dinov3-vitl16`.
+
+## Vision Fusion Recipes And Scripts
+
+The project currently has these vision-side recipes:
+
+| Recipe | Data flow | Main scripts |
+|---|---|---|
+| Single DINO, no fusion | one selected ViT layer -> `mm_projector` -> Qwen image token | GPU: `scripts/gpu/train_sft_qwen3vl_nodeepstack_smoke_gpu.sh`; NPU: `scripts/npu/train/train_sft_stage_*_dinov2_qwen3vl_nodeepstack_npu.sh`, `...dinov3...`, with matching `scripts/npu/test/test_stage_*` files. |
+| Qwen-style DeepStack | main ViT layer -> `mm_projector`; selected intermediate ViT layers -> independent mergers -> residual injection into early Qwen decoder layers | GPU: `scripts/gpu/train_sft_qwen3vl_deepstack_smoke_gpu.sh`; inference recovers DeepStack from checkpoint metadata or accepts `--deepstack_visual_indexes`. Current formal NPU pure-DeepStack files are legacy under `scripts/npu/tmp/`; the current formal DeepStack recipe is DINOv2 DeepStack + layer fusion. |
+| Single-DINO layer fusion | selected ViT layers -> per-layer LayerNorm -> `mean`/`sum`/`learned_weighted` -> one main visual stream -> `mm_projector` | GPU: `scripts/gpu/train_sft_qwen3vl_nodeepstack_dinov2_layer_fusion_smoke_gpu.sh`, `...dinov3_layer_fusion...`; NPU: set `VISION_LAYER_FUSION_INDEXES` and `VISION_LAYER_FUSION_TYPE` inside the target single-DINO SFT script. |
+| DeepStack + layer fusion | layer-fused main visual stream plus DeepStack residual stream | GPU: `scripts/gpu/train_sft_qwen3vl_deepstack_layer_fusion_smoke_gpu.sh`; NPU: `scripts/npu/train/train_sft_stage_a_lane_dinov2_qwen3vl_deepstack_layer_fusion_npu.sh` and `scripts/npu/test/test_stage_a_lane_dinov2_qwen3vl_deepstack_layer_fusion_npu.sh`. |
+| Dynamic DINO MoE | DINOv2/DINOv3 experts -> token-grid alignment -> adapters -> token router softmax -> post-fusion MLP -> `mm_projector` | GPU: `scripts/gpu/train_sft_qwen3vl_nodeepstack_moe_smoke_gpu.sh`; NPU: `scripts/npu/train/train_sft_stage_*_multi_moe_qwen3vl_nodeepstack_npu.sh`, with matching test scripts. |
+| DINO + SigLIP concat | DINO expert and SigLIP expert -> per-expert resize/renormalize -> grid alignment -> concat -> MLP projector -> `mm_projector` | GPU: `scripts/gpu/train_sft_qwen3vl_nodeepstack_dinov2_siglip_concat_smoke_gpu.sh`, `...dinov3_siglip_concat...`; NPU: matching `dinov2_siglip_concat` and `dinov3_siglip_concat` train/test scripts. |
+
+Multi-vision recipes are currently no-DeepStack recipes: they return a single
+fused main visual stream and do not create DeepStack residual features. Single
+DINO layer fusion can be combined with DeepStack because both streams are still
+available: the fused stream replaces the normal main ViT layer, and the
+DeepStack stream remains separate.
+
+On 2026-06-08, real-GPU smoke checks were run on one RTX A6000 for DINOv2/DINOv3
+DeepStack and DINOv2/DINOv3 layer fusion. Each check covered one SFT train step,
+checkpoint save, checkpoint reload, patch inference, and `eval.json` writing.
+These are runtime smoke checks only; they are not evidence of final model
+quality or full-scale training stability.
 
 ## Training Modes
 

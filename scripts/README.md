@@ -158,23 +158,27 @@ DINO type, fusion recipe, and platform are explicit:
 
 Common DINOv3 scripts infer DINO type from checkpoint metadata, `mm_vision_tower_type`, or the `vision_tower` path. For this BEV task they set `INPUT_IMAGE_SIZE=512` inside the scripts: 256x256 patches are resized to 512x512, and DINOv3 patch16 produces 32x32 = 1024 visual tokens.
 
-Script families:
+Script coverage by fusion recipe:
 
-| Family | Example script/setting | Fusion |
-|---|---|---|
-| Original single tower | `VISION_BACKBONE=dinov2` or `dinov3` | none |
-| Single-DINO layer fusion | `scripts/gpu/train_sft_qwen3vl_nodeepstack_dinov2_layer_fusion_smoke_gpu.sh` or `...dinov3_layer_fusion...` | `vision_layer_fusion_indexes` |
-| DINOv2 DeepStack + layer fusion | `scripts/npu/train/train_sft_stage_a_lane_dinov2_qwen3vl_deepstack_layer_fusion_npu.sh` and `scripts/npu/test/test_stage_a_lane_dinov2_qwen3vl_deepstack_layer_fusion_npu.sh` | `deepstack_visual_indexes` + `vision_layer_fusion_indexes` |
-| Dynamic MoE | `scripts/gpu/train_sft_qwen3vl_nodeepstack_moe_smoke_gpu.sh` or `VISION_BACKBONE=multi_moe` | `softmax_router` |
-| DINOv2 + SigLIP concat | `scripts/gpu/train_sft_qwen3vl_nodeepstack_dinov2_siglip_concat_smoke_gpu.sh` or `VISION_BACKBONE=dinov2_siglip_concat` | `concat_projector` |
-| DINOv3 + SigLIP concat | `scripts/gpu/train_sft_qwen3vl_nodeepstack_dinov3_siglip_concat_smoke_gpu.sh` or `VISION_BACKBONE=dinov3_siglip_concat` | `concat_projector` |
+| Recipe | GPU smoke train + patch infer | Formal NPU train | Formal NPU test/infer | Notes |
+|---|---|---|---|---|
+| Single DINO, no fusion | `scripts/gpu/train_sft_qwen3vl_nodeepstack_smoke_gpu.sh` with `VISION_BACKBONE=dinov2` or `dinov3` | `scripts/npu/train/train_sft_stage_*_dinov2_qwen3vl_nodeepstack_npu.sh`, `...dinov3...` | Matching `scripts/npu/test/test_stage_*_dinov2_qwen3vl_nodeepstack_npu.sh`, `...dinov3...` | Baseline path: selected ViT layer -> `mm_projector` -> Qwen. |
+| Single-DINO layer fusion | `scripts/gpu/train_sft_qwen3vl_nodeepstack_dinov2_layer_fusion_smoke_gpu.sh`, `...dinov3_layer_fusion...` | Single-DINO NPU SFT scripts expose `VISION_LAYER_FUSION_INDEXES` and `VISION_LAYER_FUSION_TYPE`; set them inside the target script. | NPU test scripts recover layer-fusion metadata from checkpoints; dedicated DeepStack+fusion test also exposes explicit args. | No-DeepStack unless `DISABLE_DEEPSTACK=False` is also set. |
+| DeepStack only | `scripts/gpu/train_sft_qwen3vl_deepstack_smoke_gpu.sh` | No separate current formal NPU pure-DeepStack SFT file; legacy full DeepStack scripts are under `scripts/npu/tmp/`. | Inference recovers DeepStack from checkpoint metadata, or use explicit `--deepstack_visual_indexes`. | Qwen-style visual residual injection into early decoder layers. |
+| DeepStack + layer fusion | `scripts/gpu/train_sft_qwen3vl_deepstack_layer_fusion_smoke_gpu.sh` | `scripts/npu/train/train_sft_stage_a_lane_dinov2_qwen3vl_deepstack_layer_fusion_npu.sh` | `scripts/npu/test/test_stage_a_lane_dinov2_qwen3vl_deepstack_layer_fusion_npu.sh` | Main visual stream uses layer fusion; DeepStack residual stream is also enabled. |
+| Dynamic DINO MoE | `scripts/gpu/train_sft_qwen3vl_nodeepstack_moe_smoke_gpu.sh` or base smoke with `VISION_BACKBONE=multi_moe` | `scripts/npu/train/train_sft_stage_*_multi_moe_qwen3vl_nodeepstack_npu.sh` | `scripts/npu/test/test_stage_*_multi_moe_qwen3vl_nodeepstack_npu.sh` | No-DeepStack multi-vision path; token router uses `softmax_router`. |
+| DINOv2 + SigLIP concat | `scripts/gpu/train_sft_qwen3vl_nodeepstack_dinov2_siglip_concat_smoke_gpu.sh` | `scripts/npu/train/train_sft_stage_*_dinov2_siglip_concat_qwen3vl_nodeepstack_npu.sh` | `scripts/npu/test/test_stage_*_dinov2_siglip_concat_qwen3vl_nodeepstack_npu.sh` | No-DeepStack multi-vision path; static concat + MLP projector. |
+| DINOv3 + SigLIP concat | `scripts/gpu/train_sft_qwen3vl_nodeepstack_dinov3_siglip_concat_smoke_gpu.sh` | `scripts/npu/train/train_sft_stage_*_dinov3_siglip_concat_qwen3vl_nodeepstack_npu.sh` | `scripts/npu/test/test_stage_*_dinov3_siglip_concat_qwen3vl_nodeepstack_npu.sh` | No-DeepStack multi-vision path; DINOv3 uses `INPUT_IMAGE_SIZE=512`, SigLIP usually uses 384. |
 
-The GPU smoke script forwards the same multi-vision parameters into training,
-patch inference, and state-update inference. NPU debug scripts under
-`scripts/debug/` support the same `VISION_BACKBONE` values and have thin wrapper
-files named by recipe. Formal NPU SFT/test scripts now also include self-contained
-MoE, DINO+SigLIP concat, and DINOv2 DeepStack+layer-fusion files under
-`scripts/npu/train/` and `scripts/npu/test/`.
+The GPU smoke scripts run a tiny train step, save a checkpoint, then run patch
+inference from that checkpoint. Set `RUN_STATE_UPDATE=True` to also run the
+state-update inference path where supported. The base GPU smoke remains
+no-DeepStack by default; the DeepStack wrappers set `DISABLE_DEEPSTACK=False`
+and pass `DEEPSTACK_VISUAL_INDEXES` through training and inference. NPU debug
+scripts under `scripts/debug/` support the same `VISION_BACKBONE` values and
+have thin wrapper files named by recipe. Formal NPU SFT/test scripts include
+self-contained MoE, DINO+SigLIP concat, and DINOv2 DeepStack+layer-fusion files
+under `scripts/npu/train/` and `scripts/npu/test/`.
 
 For DINO+SigLIP concat, set or verify these paths:
 

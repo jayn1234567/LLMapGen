@@ -109,6 +109,7 @@ esac
 IMAGE_FOLDER=${IMAGE_FOLDER:-data/av2_patch_256_fullimage_cutflag_test_v2}
 VERSION=${VERSION:-conv_qwen_3_Dinov2_huawei}
 DISABLE_DEEPSTACK=${DISABLE_DEEPSTACK:-True}
+DEEPSTACK_VISUAL_INDEXES=${DEEPSTACK_VISUAL_INDEXES:-}
 VISION_LAYER_FUSION_INDEXES=${VISION_LAYER_FUSION_INDEXES:-}
 VISION_LAYER_FUSION_TYPE=${VISION_LAYER_FUSION_TYPE:-mean}
 DEEPSPEED_CONFIG=${DEEPSPEED_CONFIG:-scripts/deepspeed_zero3.json}
@@ -185,8 +186,15 @@ INFER_VISION_ARGS=(
   --vision_tower "${VISION_TOWER}"
   --mm_vision_tower_type "${MM_VISION_TOWER_TYPE}"
   --input_image_size "${INPUT_IMAGE_SIZE}"
-  --disable_deepstack
 )
+if [[ "${DISABLE_DEEPSTACK}" =~ ^(1|true|True|TRUE|yes|YES)$ ]]; then
+  INFER_VISION_ARGS+=(--disable_deepstack)
+else
+  if [[ -n "${DEEPSTACK_VISUAL_INDEXES}" ]]; then
+    TRAIN_VISION_ARGS+=(--deepstack_visual_indexes ${DEEPSTACK_VISUAL_INDEXES})
+    INFER_VISION_ARGS+=(--deepstack_visual_indexes ${DEEPSTACK_VISUAL_INDEXES})
+  fi
+fi
 if [[ -n "${VISION_LAYER_FUSION_INDEXES}" ]]; then
   TRAIN_VISION_ARGS+=(
     --vision_layer_fusion_indexes ${VISION_LAYER_FUSION_INDEXES}
@@ -225,6 +233,7 @@ echo "Model:     ${MODEL_NAME_OR_PATH}"
 echo "ViT:       ${VISION_TOWER}"
 echo "ViT type:  ${MM_VISION_TOWER_TYPE}"
 echo "Fusion:    ${MULTI_VISION_FUSION:-single}"
+echo "DeepStack disabled: ${DISABLE_DEEPSTACK}, indexes=${DEEPSTACK_VISUAL_INDEXES:-auto}"
 echo "Layer fusion: ${VISION_LAYER_FUSION_INDEXES:-off} (${VISION_LAYER_FUSION_TYPE})"
 echo "Input:     ${INPUT_IMAGE_SIZE}"
 echo "Train:     ${TRAIN_JSONL}"

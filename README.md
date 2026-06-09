@@ -453,7 +453,7 @@ RL environment:
 
 Use the dedicated `unimapgen` conda environment. The GPU debug path has been
 validated with `torch==2.7.0+cu126`, `vllm==0.9.2`, `ray==2.55.1`,
-`transformers==4.56.2`, and `huggingface-hub==0.36.2`.
+`transformers>=5.7.0`, and `huggingface-hub==0.36.2`.
 
 Ascend NPU GRPO uses the same formal vLLM prompt-embedding rollout path through
 vLLM-Ascend. The NPU scripts install `torch==2.7.1`, force reinstall the OBS

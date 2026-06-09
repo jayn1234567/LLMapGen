@@ -6,9 +6,9 @@
 # torchaudio
 
 # Core model stack.
-transformers==4.56.2
+transformers>=5.7.0
 huggingface-hub==0.36.2
-tokenizers>=0.22.0,<0.23.0
+tokenizers>=0.22.0
 sentencepiece>=0.1.99
 tiktoken>=0.7.0
 accelerate==1.6.0

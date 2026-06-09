@@ -311,7 +311,7 @@ RL notes:
   Qwen text decoder rollout from those embeddings.
 - Run RL scripts from the dedicated `unimapgen` conda environment. The verified
   local GPU stack is `torch==2.7.0+cu126`, `vllm==0.9.2`, `ray==2.55.1`,
-  `transformers==4.56.2`, and `huggingface-hub==0.36.2`.
+  `transformers>=5.7.0`, and `huggingface-hub==0.36.2`.
 - Use `scripts/gpu/train_grpo_dinov3_qwen3vl_nodeepstack_vllm_debug_gpu.sh`
   for local GPU debug. It is not an HF-local generation script.
 - The RL task is selected by `MAP_TASK` / `--map_task`: `lane` for current

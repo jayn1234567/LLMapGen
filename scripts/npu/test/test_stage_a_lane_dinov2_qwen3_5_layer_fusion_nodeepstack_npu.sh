@@ -3,7 +3,7 @@ set -euo pipefail
 
 # ============================================================
 # NPU inference
-# Fixed recipe: phase_a | lane-only centerline | DINOv2 layer fusion + Qwen3.5 text LLM | direct ViT layer fusion, no DeepStack
+# Fixed recipe: phase_a | lane-only centerline | DINOv2 direct ViT layer fusion, no DeepStack | Qwen3.5 text LLM
 # This file is self-contained and does not call another project .sh file.
 # ============================================================
 
@@ -21,12 +21,9 @@ MODEL_FAMILY=qwen3_5
 MODEL_LABEL=qwen3_5
 TRAIN_VARIANT=full
 
+case "${DATASET_PHASE}" in phase_a|phase_b) ;; *) echo "ERROR: DATASET_PHASE must be phase_a or phase_b"; exit 1 ;; esac
 case "${MAP_TASK}" in lane|lane_intersection) ;; *) echo "ERROR: MAP_TASK must be lane or lane_intersection"; exit 1 ;; esac
 case "${MODEL_FAMILY}" in qwen3|qwen3_5) ;; *) echo "ERROR: MODEL_FAMILY must be qwen3 or qwen3_5"; exit 1 ;; esac
-
-echo "Script path: ${SCRIPT_PATH}"
-echo "Repo root: ${REPO_ROOT}"
-echo "Recipe: ${DATASET_PHASE} | ${MAP_TASK} | ${VISION_RECIPE} | ${MODEL_FAMILY} | ${TRAIN_VARIANT}"
 
 CLUSTER_SAVE=${OUTPUT_URL}
 OSB_SHARE_PATH="${CLUSTER_SAVE}"
@@ -35,9 +32,9 @@ OBS_CACHE=${OBS_CACHE:-/cache}
 MODEL_OBS_PATH=${MODEL_OBS_PATH:-obs://yw-ads-training-gy1/data/external/personal/h58801830/whu/jjh/checkpoints}
 DATASET_OBS_PATH=${DATASET_OBS_PATH:-obs://yw-ads-training-gy1/data/external/personal/h58801830/whu/jjh/data/data_line_samples_33w.zip}
 DATASET_DIR_NAME=${DATASET_DIR_NAME:-data_line_samples_33w}
-
 CHECKPOINT_OBS_LIST=${CHECKPOINT_OBS_LIST:-}
 CHECKPOINT_DIRS=${CHECKPOINT_DIRS:-}
+
 DINO_V2_TOWER_NAME=${DINO_V2_TOWER_NAME:-facebook_dinov2-large}
 DINO_V3_TOWER_NAME=${DINO_V3_TOWER_NAME:-facebook_dinov3-vitl16-pretrain-lvd1689m}
 SIGLIP_TOWER_NAME=${SIGLIP_TOWER_NAME:-google_siglip-large-patch16-384}
@@ -67,6 +64,14 @@ case "${VISION_RECIPE}" in
     DOWNLOAD_TOWER_NAMES=("${DINO_V2_TOWER_NAME}")
     REQUIRED_VISION_TOWERS=("${DINO_V2_TOWER}")
     ;;
+  dinov3|dinov3_layer_fusion|dinov3_deepstack)
+    VISION_BACKBONE=dinov3
+    VISION_TOWER=${VISION_TOWER:-${DINO_V3_TOWER}}
+    MM_VISION_TOWER_TYPE=dinov3
+    INPUT_IMAGE_SIZE=${INPUT_IMAGE_SIZE:-512}
+    DOWNLOAD_TOWER_NAMES=("${DINO_V3_TOWER_NAME}")
+    REQUIRED_VISION_TOWERS=("${DINO_V3_TOWER}")
+    ;;
   dinov2_siglip_concat)
     VISION_BACKBONE=dinov2_siglip_concat
     MULTI_VISION_TOWERS=${MULTI_VISION_TOWERS:-${DINO_V2_TOWER},${SIGLIP_TOWER}}
@@ -81,6 +86,21 @@ case "${VISION_RECIPE}" in
     INPUT_IMAGE_SIZE=${INPUT_IMAGE_SIZE:-512}
     DOWNLOAD_TOWER_NAMES=("${DINO_V2_TOWER_NAME}" "${SIGLIP_TOWER_NAME}")
     REQUIRED_VISION_TOWERS=("${DINO_V2_TOWER}" "${SIGLIP_TOWER}")
+    ;;
+  dinov3_siglip_concat)
+    VISION_BACKBONE=dinov3_siglip_concat
+    MULTI_VISION_TOWERS=${MULTI_VISION_TOWERS:-${DINO_V3_TOWER},${SIGLIP_TOWER}}
+    MULTI_VISION_TOWER_TYPES=${MULTI_VISION_TOWER_TYPES:-dinov3,siglip}
+    MULTI_VISION_INPUT_IMAGE_SIZES=${MULTI_VISION_INPUT_IMAGE_SIZES:-512,384}
+    MULTI_VISION_PRIMARY_INDEX=${MULTI_VISION_PRIMARY_INDEX:-0}
+    MULTI_VISION_HIDDEN_SIZE=${MULTI_VISION_HIDDEN_SIZE:-1024}
+    MULTI_VISION_TARGET_GRID=${MULTI_VISION_TARGET_GRID:-32}
+    MULTI_VISION_FUSION=${MULTI_VISION_FUSION:-concat_projector}
+    VISION_TOWER=${VISION_TOWER:-${MULTI_VISION_TOWERS}}
+    MM_VISION_TOWER_TYPE=multi_concat
+    INPUT_IMAGE_SIZE=${INPUT_IMAGE_SIZE:-512}
+    DOWNLOAD_TOWER_NAMES=("${DINO_V3_TOWER_NAME}" "${SIGLIP_TOWER_NAME}")
+    REQUIRED_VISION_TOWERS=("${DINO_V3_TOWER}" "${SIGLIP_TOWER}")
     ;;
   multi_moe)
     VISION_BACKBONE=multi_moe
@@ -105,12 +125,11 @@ DEEPSTACK_VISUAL_INDEXES=${DEEPSTACK_VISUAL_INDEXES:-}
 VISION_LAYER_FUSION_INDEXES=${VISION_LAYER_FUSION_INDEXES:-}
 VISION_LAYER_FUSION_TYPE=${VISION_LAYER_FUSION_TYPE:-mean}
 case "${VISION_RECIPE}" in
-  dinov2_deepstack)
-    DISABLE_DEEPSTACK=${DISABLE_DEEPSTACK:-False}
+  dinov2_deepstack|dinov3_deepstack)
     if [[ "${DISABLE_DEEPSTACK}" =~ ^(1|true|True|TRUE|yes|YES)$ ]]; then DISABLE_DEEPSTACK=False; fi
     DEEPSTACK_VISUAL_INDEXES=${DEEPSTACK_VISUAL_INDEXES:-"6 12 18 23"}
     ;;
-  dinov2_layer_fusion)
+  dinov2_layer_fusion|dinov3_layer_fusion)
     VISION_LAYER_FUSION_INDEXES=${VISION_LAYER_FUSION_INDEXES:-"6 12 18 23"}
     ;;
 esac
@@ -287,6 +306,7 @@ run_one_checkpoint() {
   local patch_viz_dir="${output_dir}/viz"
   local whole_map_viz_dir="${output_dir}/whole_map_viz"
   local summary_json="${output_dir}/summary.json"
+  local merged_global_json="${output_dir}/merged_global.json"
   local eval_json="${output_dir}/eval.json"
   mkdir -p "${json_dir}" "${patch_viz_dir}" "${whole_map_viz_dir}"
   echo "============================================================"
@@ -295,31 +315,66 @@ run_one_checkpoint() {
   echo "Recipe:     ${DATASET_PHASE} | ${MAP_TASK} | ${VISION_RECIPE} | ${MODEL_FAMILY} | ${TRAIN_VARIANT}"
   echo "Output:     ${output_dir}"
   echo "============================================================"
-  torchrun \
-    --nnodes="${NNODES}" \
-    --nproc_per_node="${NPROC_PER_NODE}" \
-    --node_rank="${NODE_RANK}" \
-    --master_addr="${MASTER_ADDR}" \
-    --master_port="${MASTER_PORT}" \
-    scripts/tools/infer_centerline_checkpoint.py \
-    --checkpoint-dir "${checkpoint_dir}" \
-    "${VISION_ARGS[@]}" \
-    --test-json "${TEST_JSON}" \
-    --num-samples "${NUM_TEST_SAMPLES}" \
-    --image-folder "${IMAGE_FOLDER}" \
-    --prompt-mode dataset \
-    --map-task "${MAP_TASK}" \
-    --patch-size 256 \
-    --coord-mode "${COORD_MODE}" \
-    --coord-range "${COORD_RANGE}" \
-    --conv-template conv_qwen_3_Dinov2_huawei \
-    --output-dir "${output_dir}" \
-    --sample-json-dir "${json_dir}" \
-    --output-json "${summary_json}" \
-    --temperature 0.0 \
-    --max-new-tokens "${MAX_NEW_TOKENS}" \
-    --eval-centerline \
-    --eval-output-json "${eval_json}"
+  if [ "${DATASET_PHASE}" = "phase_a" ]; then
+    torchrun \
+      --nnodes="${NNODES}" \
+      --nproc_per_node="${NPROC_PER_NODE}" \
+      --node_rank="${NODE_RANK}" \
+      --master_addr="${MASTER_ADDR}" \
+      --master_port="${MASTER_PORT}" \
+      scripts/tools/infer_centerline_checkpoint.py \
+      --checkpoint-dir "${checkpoint_dir}" \
+      "${VISION_ARGS[@]}" \
+      --test-json "${TEST_JSON}" \
+      --num-samples "${NUM_TEST_SAMPLES}" \
+      --image-folder "${IMAGE_FOLDER}" \
+      --prompt-mode dataset \
+      --map-task "${MAP_TASK}" \
+      --patch-size 256 \
+      --coord-mode "${COORD_MODE}" \
+      --coord-range "${COORD_RANGE}" \
+      --conv-template conv_qwen_3_Dinov2_huawei \
+      --output-dir "${output_dir}" \
+      --sample-json-dir "${json_dir}" \
+      --output-json "${summary_json}" \
+      --temperature 0.0 \
+      --max-new-tokens "${MAX_NEW_TOKENS}" \
+      --eval-centerline \
+      --eval-output-json "${eval_json}"
+  else
+    INCLUDE_INTERSECTION_ARGS=()
+    if [ "${MAP_TASK}" = "lane_intersection" ]; then
+      INCLUDE_INTERSECTION_ARGS+=(--include-intersections)
+    fi
+    torchrun \
+      --nnodes="${NNODES}" \
+      --nproc_per_node="${NPROC_PER_NODE}" \
+      --node_rank="${NODE_RANK}" \
+      --master_addr="${MASTER_ADDR}" \
+      --master_port="${MASTER_PORT}" \
+      scripts/tools/infer_centerline_state_update.py \
+      --checkpoint-dir "${checkpoint_dir}" \
+      "${VISION_ARGS[@]}" \
+      --patch-json "${TEST_JSON}" \
+      --image-folder "${IMAGE_FOLDER}" \
+      --output-json "${summary_json}" \
+      --output-dir "${json_dir}" \
+      --sample-json-dir "${json_dir}" \
+      --merged-output-json "${merged_global_json}" \
+      --whole-map-viz-dir "${whole_map_viz_dir}" \
+      --conv-template conv_qwen_3_Dinov2_huawei \
+      --device "${DEVICE:-auto}" \
+      --patch-size 256 \
+      --coord-mode "${COORD_MODE}" \
+      --coord-range "${COORD_RANGE}" \
+      "${INCLUDE_INTERSECTION_ARGS[@]}" \
+      --max-new-tokens "${MAX_NEW_TOKENS}" \
+      --temperature 0.0 \
+      --eval-centerline \
+      --eval-output-json "${eval_json}" \
+      --distributed-by-tile \
+      --distributed-merge-timeout "${DISTRIBUTED_MERGE_TIMEOUT:-7200}"
+  fi
   if [ "${NODE_RANK}" -ne 0 ]; then
     return 0
   fi
@@ -329,6 +384,17 @@ run_one_checkpoint() {
     --output-dir "${patch_viz_dir}" \
     --eval-output-json "${eval_json}" \
     --whole-map-viz-dir "${whole_map_viz_dir}"
+  if [ -f "${eval_json}" ]; then
+    python - "${eval_json}" <<'PYTABLE'
+import json
+import sys
+from pathlib import Path
+from infer_index.line_eval import format_eval_table
+payload = json.loads(Path(sys.argv[1]).read_text(encoding='utf-8'))
+payload = payload.get('summary', payload) if isinstance(payload, dict) else payload
+print(payload.get('table') if isinstance(payload, dict) and payload.get('table') else format_eval_table(payload))
+PYTABLE
+  fi
 }
 
 for index in "${!CHECKPOINT_ITEMS[@]}"; do

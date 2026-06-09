@@ -3,7 +3,7 @@ set -euo pipefail
 
 # ============================================================
 # NPU SFT training
-# Fixed recipe: phase_a | lane + intersection | DINOv2 + SigLIP concat + Qwen3 text LLM | DINOv2+SigLIP concat, no DeepStack
+# Fixed recipe: phase_a | lane+intersection | DINOv2+SigLIP concat fusion, no DeepStack | Qwen3 text LLM
 # This file is self-contained and does not call another project .sh file.
 # ============================================================
 
@@ -21,13 +21,10 @@ MODEL_FAMILY=qwen3
 MODEL_LABEL=qwen3
 TRAIN_VARIANT=full
 
+case "${DATASET_PHASE}" in phase_a|phase_b) ;; *) echo "ERROR: DATASET_PHASE must be phase_a or phase_b"; exit 1 ;; esac
 case "${MAP_TASK}" in lane|lane_intersection) ;; *) echo "ERROR: MAP_TASK must be lane or lane_intersection"; exit 1 ;; esac
 case "${MODEL_FAMILY}" in qwen3|qwen3_5) ;; *) echo "ERROR: MODEL_FAMILY must be qwen3 or qwen3_5"; exit 1 ;; esac
 case "${TRAIN_VARIANT}" in full|lora_llm) ;; *) echo "ERROR: TRAIN_VARIANT must be full or lora_llm"; exit 1 ;; esac
-
-echo "Script path: ${SCRIPT_PATH}"
-echo "Repo root: ${REPO_ROOT}"
-echo "Recipe: ${DATASET_PHASE} | ${MAP_TASK} | ${VISION_RECIPE} | ${MODEL_FAMILY} | ${TRAIN_VARIANT}"
 
 CLUSTER_SAVE=${OUTPUT_URL}
 OSB_SHARE_PATH="${CLUSTER_SAVE}"
@@ -60,6 +57,9 @@ IMAGE_FOLDER=${IMAGE_FOLDER:-${DATASET_PATH}}
 CLOUD_OUTPUT_PATH=${OSB_SHARE_PATH%/}/${RUN_ID}
 LOCAL_MODEL_SAVE_ROOT=${LOCAL_MODEL_SAVE_ROOT:-/cache/local_model_save_path}
 LOCAL_MODEL_SAVE_PATH=${LOCAL_MODEL_SAVE_PATH:-${LOCAL_MODEL_SAVE_ROOT}/${RUN_ID}}
+STAGE_A_CHECKPOINT_OBS_PATH=${STAGE_A_CHECKPOINT_OBS_PATH:-}
+STAGE_A_CHECKPOINT_PATH=${STAGE_A_CHECKPOINT_PATH:-}
+STAGE_A_DOWNLOAD_DIR=${STAGE_A_DOWNLOAD_DIR:-${OBS_CACHE}/stage_a_checkpoint_${RUN_ID}}
 
 case "${VISION_RECIPE}" in
   dinov2|dinov2_layer_fusion|dinov2_deepstack)
@@ -69,6 +69,14 @@ case "${VISION_RECIPE}" in
     INPUT_IMAGE_SIZE=${INPUT_IMAGE_SIZE:-518}
     DOWNLOAD_TOWER_NAMES=("${DINO_V2_TOWER_NAME}")
     REQUIRED_VISION_TOWERS=("${DINO_V2_TOWER}")
+    ;;
+  dinov3|dinov3_layer_fusion|dinov3_deepstack)
+    VISION_BACKBONE=dinov3
+    VISION_TOWER=${VISION_TOWER:-${DINO_V3_TOWER}}
+    MM_VISION_TOWER_TYPE=dinov3
+    INPUT_IMAGE_SIZE=${INPUT_IMAGE_SIZE:-512}
+    DOWNLOAD_TOWER_NAMES=("${DINO_V3_TOWER_NAME}")
+    REQUIRED_VISION_TOWERS=("${DINO_V3_TOWER}")
     ;;
   dinov2_siglip_concat)
     VISION_BACKBONE=dinov2_siglip_concat
@@ -84,6 +92,21 @@ case "${VISION_RECIPE}" in
     INPUT_IMAGE_SIZE=${INPUT_IMAGE_SIZE:-512}
     DOWNLOAD_TOWER_NAMES=("${DINO_V2_TOWER_NAME}" "${SIGLIP_TOWER_NAME}")
     REQUIRED_VISION_TOWERS=("${DINO_V2_TOWER}" "${SIGLIP_TOWER}")
+    ;;
+  dinov3_siglip_concat)
+    VISION_BACKBONE=dinov3_siglip_concat
+    MULTI_VISION_TOWERS=${MULTI_VISION_TOWERS:-${DINO_V3_TOWER},${SIGLIP_TOWER}}
+    MULTI_VISION_TOWER_TYPES=${MULTI_VISION_TOWER_TYPES:-dinov3,siglip}
+    MULTI_VISION_INPUT_IMAGE_SIZES=${MULTI_VISION_INPUT_IMAGE_SIZES:-512,384}
+    MULTI_VISION_PRIMARY_INDEX=${MULTI_VISION_PRIMARY_INDEX:-0}
+    MULTI_VISION_HIDDEN_SIZE=${MULTI_VISION_HIDDEN_SIZE:-1024}
+    MULTI_VISION_TARGET_GRID=${MULTI_VISION_TARGET_GRID:-32}
+    MULTI_VISION_FUSION=${MULTI_VISION_FUSION:-concat_projector}
+    VISION_TOWER=${VISION_TOWER:-${MULTI_VISION_TOWERS}}
+    MM_VISION_TOWER_TYPE=multi_concat
+    INPUT_IMAGE_SIZE=${INPUT_IMAGE_SIZE:-512}
+    DOWNLOAD_TOWER_NAMES=("${DINO_V3_TOWER_NAME}" "${SIGLIP_TOWER_NAME}")
+    REQUIRED_VISION_TOWERS=("${DINO_V3_TOWER}" "${SIGLIP_TOWER}")
     ;;
   multi_moe)
     VISION_BACKBONE=multi_moe
@@ -108,12 +131,11 @@ DEEPSTACK_VISUAL_INDEXES=${DEEPSTACK_VISUAL_INDEXES:-}
 VISION_LAYER_FUSION_INDEXES=${VISION_LAYER_FUSION_INDEXES:-}
 VISION_LAYER_FUSION_TYPE=${VISION_LAYER_FUSION_TYPE:-mean}
 case "${VISION_RECIPE}" in
-  dinov2_deepstack)
-    DISABLE_DEEPSTACK=${DISABLE_DEEPSTACK:-False}
+  dinov2_deepstack|dinov3_deepstack)
     if [[ "${DISABLE_DEEPSTACK}" =~ ^(1|true|True|TRUE|yes|YES)$ ]]; then DISABLE_DEEPSTACK=False; fi
     DEEPSTACK_VISUAL_INDEXES=${DEEPSTACK_VISUAL_INDEXES:-"6 12 18 23"}
     ;;
-  dinov2_layer_fusion)
+  dinov2_layer_fusion|dinov3_layer_fusion)
     VISION_LAYER_FUSION_INDEXES=${VISION_LAYER_FUSION_INDEXES:-"6 12 18 23"}
     ;;
 esac
@@ -218,6 +240,37 @@ if [[ "${INSTALL_DEPS}" =~ ^(1|true|True|TRUE|yes|YES)$ ]]; then
   pip install 'loguru>=0.7.0' 'shapely>=2.0.0' wandb swanlab "huggingface-hub==0.36.2" urllib3==1.26.15
 fi
 
+resolve_training_checkpoint() {
+  python - "$1" <<'PYRESOLVE'
+from pathlib import Path
+import subprocess
+import sys
+root = Path(sys.argv[1])
+if not root.exists():
+    raise SystemExit(f"checkpoint path does not exist: {root}")
+if any((root / name).is_file() for name in ("model.safetensors", "pytorch_model.bin", "adapter_model.safetensors", "adapter_model.bin")):
+    print(root)
+    raise SystemExit(0)
+cmd = [sys.executable, "scripts/tools/resolve_best_checkpoint.py", "--output-dir", str(root), "--best-name", "infer_best", "--best-name", "eval_best", "--best-name", "best", "--best-name", "best_reward", "--allow-direct"]
+result = subprocess.run(cmd, text=True, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+if result.returncode == 0 and result.stdout.strip():
+    print(result.stdout.strip())
+    raise SystemExit(0)
+checkpoints = []
+for path in root.glob("checkpoint-*"):
+    if path.is_dir():
+        try:
+            step = int(path.name.rsplit("-", 1)[1])
+        except Exception:
+            step = -1
+        checkpoints.append((step, path))
+if checkpoints:
+    print(sorted(checkpoints)[-1][1])
+    raise SystemExit(0)
+raise SystemExit(f"cannot resolve a usable checkpoint under: {root}")
+PYRESOLVE
+}
+
 if [[ -z "${MA_VJ_NAME:-}" ]]; then
   NNODES=${NNODES:-1}
   NODE_RANK=${NODE_RANK:-0}
@@ -242,10 +295,29 @@ done
 python -c "import moxing as mox; mox.file.copy('${DATASET_OBS_PATH}', '${DATASET_ZIP_PATH}')"
 mkdir -p "${DATASET_EXTRACT_ROOT}"
 unzip -q "${DATASET_ZIP_PATH}" -d "${DATASET_EXTRACT_ROOT}"
-if [ ! -e "${QWEN_PATH}/config.json" ]; then
-  python -c "import moxing as mox; mox.file.copy_parallel('${QWEN_MODEL_OBS_PATH}', '${QWEN_PATH}')"
+
+if [ "${DATASET_PHASE}" = "phase_b" ]; then
+  if [ -n "${STAGE_A_CHECKPOINT_OBS_PATH}" ]; then
+    python -c "import moxing as mox; mox.file.copy_parallel('${STAGE_A_CHECKPOINT_OBS_PATH}', '${STAGE_A_DOWNLOAD_DIR}')"
+    CHECKPOINT_INPUT_PATH="${STAGE_A_DOWNLOAD_DIR}"
+  elif [ -n "${STAGE_A_CHECKPOINT_PATH}" ]; then
+    CHECKPOINT_INPUT_PATH="${STAGE_A_CHECKPOINT_PATH}"
+  else
+    echo "ERROR: set STAGE_A_CHECKPOINT_OBS_PATH or STAGE_A_CHECKPOINT_PATH for Stage-B SFT."
+    exit 1
+  fi
+  INIT_MODEL_PATH=$(resolve_training_checkpoint "${CHECKPOINT_INPUT_PATH}")
+  if [ "${TRAIN_VARIANT}" = "lora_llm" ] && compgen -G "${INIT_MODEL_PATH}/adapter_model*" > /dev/null; then
+    echo "ERROR: Stage-B lora_llm expects a full Stage-A checkpoint. Adapter-only Stage-A LoRA continuation is not supported by this train entrypoint."
+    exit 1
+  fi
+else
+  if [ ! -e "${QWEN_PATH}/config.json" ]; then
+    python -c "import moxing as mox; mox.file.copy_parallel('${QWEN_MODEL_OBS_PATH}', '${QWEN_PATH}')"
+  fi
+  INIT_MODEL_PATH="${QWEN_PATH}"
 fi
-INIT_MODEL_PATH="${QWEN_PATH}"
+
 TRAIN_PATH="${DATASET_PATH}/${DATASET_PHASE}/train.jsonl"
 EVAL_PATH="${DATASET_PATH}/${DATASET_PHASE}/eval.jsonl"
 for path in "${INIT_MODEL_PATH}" "${TRAIN_PATH}" "${EVAL_PATH}" "${IMAGE_FOLDER}" "${REQUIRED_VISION_TOWERS[@]}"; do

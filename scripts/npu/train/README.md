@@ -6,6 +6,15 @@ environment setup, dependency install, OBS download, training launch,
 checkpoint handling, and upload flow. They do not call another project shell
 script.
 
+## Comment Style
+
+Formal train scripts keep editable paths and knobs as shell variables near the
+top of each file. Each path, model asset, fusion switch, training hyperparameter,
+logging option, and NPU/HCCL runtime variable has an inline comment beside the
+assignment. Longer workflow sections also have short block comments, so recipe
+validation, asset download, checkpoint resolution, argument assembly, launch,
+and upload steps can be scanned without reading every command.
+
 ## Current Qwen Text Matrix
 
 The Qwen3/Qwen3.5 text-LLM matrix now covers Stage A and Stage B, both `lane`

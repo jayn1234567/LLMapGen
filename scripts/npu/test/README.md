@@ -5,6 +5,15 @@ They mirror the train recipe matrix, download checkpoints/datasets when needed,
 run patch or state-update inference, write visualizations and metrics, and
 upload outputs.
 
+## Comment Style
+
+Formal test scripts keep editable paths and knobs as shell variables near the
+top of each file. Each dataset path, checkpoint input, model asset, fusion
+switch, inference parameter, and NPU/HCCL runtime variable has an inline comment
+beside the assignment. Key workflow sections also have short block comments for
+asset download, checkpoint resolution, argument assembly, per-checkpoint
+inference/evaluation, visualization, and OBS upload.
+
 ## Common Inputs
 
 | Variable | Meaning |

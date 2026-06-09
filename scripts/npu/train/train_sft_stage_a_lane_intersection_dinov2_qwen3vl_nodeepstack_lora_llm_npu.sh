@@ -70,7 +70,6 @@ SAVE_STEPS=${SAVE_STEPS:-500}                                                 # 
 SAVE_TOTAL_LIMIT=${SAVE_TOTAL_LIMIT:-15}                                      # Keep this many latest regular checkpoint-* directories.
 LOGGING_STEPS=${LOGGING_STEPS:-10}                                            # Console/SwanLab logging interval in optimizer steps.
 EVAL_STEPS=${EVAL_STEPS:-500}                                                 # Eval-loss interval in optimizer steps when ENABLE_EVAL=True.
-DEEPSPEED_CONFIG=${DEEPSPEED_CONFIG:-scripts/deepspeed_zero3.json}            # DeepSpeed config file. Current NPU SFT recipe uses ZeRO3.
 ENABLE_EVAL=${ENABLE_EVAL:-False}                                              # Whether to run eval loss during SFT training.
 SAVE_BEST_EVAL_LOSS=${SAVE_BEST_EVAL_LOSS:-False}                              # Whether to save the best eval-loss checkpoint under eval_best.
 SAVE_BEST_TRAIN_LOSS=${SAVE_BEST_TRAIN_LOSS:-True}                           # Whether to save the best train-loss checkpoint under best.
@@ -290,8 +289,7 @@ torchrun \
   --swanlab_api_host "${SWANLAB_API_HOST}" \
   --swanlab_web_host "${SWANLAB_WEB_HOST}" \
   --ddp_find_unused_parameters False \
-  --ddp_backend hccl \
-  --deepspeed "${DEEPSPEED_CONFIG}"
+  --ddp_backend hccl
 
 TRAIN_EXIT=$?
 if [ "${TRAIN_EXIT}" -ne 0 ]; then

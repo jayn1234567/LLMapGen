@@ -154,7 +154,6 @@ SAVE_STEPS=${SAVE_STEPS:-500}
 SAVE_TOTAL_LIMIT=${SAVE_TOTAL_LIMIT:-15}
 LOGGING_STEPS=${LOGGING_STEPS:-10}
 EVAL_STEPS=${EVAL_STEPS:-500}
-DEEPSPEED_CONFIG=${DEEPSPEED_CONFIG:-scripts/deepspeed_zero3.json}
 ENABLE_EVAL=${ENABLE_EVAL:-False}
 SAVE_BEST_EVAL_LOSS=${SAVE_BEST_EVAL_LOSS:-False}
 SAVE_BEST_TRAIN_LOSS=${SAVE_BEST_TRAIN_LOSS:-True}
@@ -443,8 +442,7 @@ torchrun \
   --swanlab_api_host "${SWANLAB_API_HOST}" \
   --swanlab_web_host "${SWANLAB_WEB_HOST}" \
   --ddp_find_unused_parameters False \
-  --ddp_backend hccl \
-  --deepspeed "${DEEPSPEED_CONFIG}"
+  --ddp_backend hccl
 
 if [[ "${NODE_RANK}" == "0" ]]; then
   if [ -e "${CLOUD_OUTPUT_PATH}" ]; then

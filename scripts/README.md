@@ -151,13 +151,14 @@ Training mode in filenames:
 
 - `llm_align_*_freeze-vit`: freeze the ViT, train the LLM plus alignment/projector/DeepStack modules.
 - `vit_align_*_freeze-llm`: freeze the LLM, train the ViT plus alignment/projector/DeepStack modules.
-- `full`: train all model components.
+- `full`: train all model components; formal NPU SFT scripts use the configured DeepSpeed/ZeRO path.
 - `deepstack`: enable DeepStack during training.
 - `no-deepstack`: disable DeepStack during training.
 - `train_best`: keep the best training-loss checkpoint under `best_candidates/`.
 - `eval_best`: keep the best validation-loss checkpoint under `eval_best_candidates/`.
 - `phase_a`: supervised patch-recognition data without incoming state hints.
 - `phase_b`: supervised state-update data with left/top incoming lane and intersection hints.
+- `lora_llm`: train LLM LoRA adapters; NPU LoRA SFT scripts use torchrun DDP/HCCL and do not pass DeepSpeed.
 - `ckpt3200`: starts from the local/cloud checkpoint-3200 variant instead of the base Qwen3-VL checkpoint.
 
 DINO type, fusion recipe, and platform are explicit:

@@ -33,6 +33,10 @@ folders, `checkpoint-*`, and best-candidate roots such as `best`, `eval_best`,
 Stage-A checkpoint and then add LLM LoRA for the Stage-B run; adapter-only
 Stage-A LoRA continuation is intentionally rejected with a clear error.
 
+`*_lora_llm_npu.sh` scripts use plain torchrun DDP on HCCL by default and do
+not pass `--deepspeed`. Full-parameter SFT scripts still use the configured
+DeepSpeed/ZeRO path.
+
 Qwen text LLM overrides:
 
 | Variable | Meaning |
@@ -182,4 +186,4 @@ Qwen text LLM overrides:
 | `layer_fusion` | Direct multi-layer ViT feature fusion before the projector. |
 | `deepstack` | Per-layer visual residual injection into Qwen decoder layers. |
 | `nodeepstack` | Main visual tokens only, no per-layer residual injection. |
-| `lora_llm` | LoRA adapters on language-model modules. |
+| `lora_llm` | LoRA adapters on language-model modules; NPU train scripts use DDP/HCCL without DeepSpeed. |

@@ -75,7 +75,7 @@ BEST_CHECKPOINT_SAVE_MODE=${BEST_CHECKPOINT_SAVE_MODE:-rotating_create_only}  # 
 BEST_CHECKPOINT_KEEP_LIMIT=${BEST_CHECKPOINT_KEEP_LIMIT:-5}                   # How many best checkpoint candidates to keep in each best folder.
 DEEPSTACK_VISUAL_INDEXES=${DEEPSTACK_VISUAL_INDEXES:-"6 12 18 23"}            # ViT layers injected into early LLM layers through DeepStack mergers.
 VISION_LAYER_FUSION_INDEXES=${VISION_LAYER_FUSION_INDEXES:-"6 12 18 23"}      # ViT layers fused into the main visual stream before mm_projector.
-VISION_LAYER_FUSION_TYPE=${VISION_LAYER_FUSION_TYPE:-mean}                    # mean, sum, or learned_weighted.
+VISION_LAYER_FUSION_TYPE=${VISION_LAYER_FUSION_TYPE:-mean}                         # Fusion mode: mean, sum, learned_weighted (aliases: weighted, softmax_weighted).
 
 SWANLAB_ENABLE=${SWANLAB_ENABLE:-True}                                         # Enable SwanLab logging for this run.
 export SWANLAB_API_KEY=${SWANLAB_API_KEY:-"5gIH7zqSwmo8dl1Ia5vRN"}              # SwanLab API key. Override from the platform env if needed.

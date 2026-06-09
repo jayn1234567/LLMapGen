@@ -78,7 +78,7 @@ BEST_INFER_INDEX_NUM_SAMPLES=${BEST_INFER_INDEX_NUM_SAMPLES:-0}               # 
 BEST_CHECKPOINT_SAVE_MODE=${BEST_CHECKPOINT_SAVE_MODE:-rotating_create_only}  # Best checkpoint save mode. rotating_create_only avoids overwrite/rename on create-only filesystems.
 BEST_CHECKPOINT_KEEP_LIMIT=${BEST_CHECKPOINT_KEEP_LIMIT:-5}                   # How many best checkpoint candidates to keep in each best folder.
 VISION_LAYER_FUSION_INDEXES=${VISION_LAYER_FUSION_INDEXES:-}                       # Optional ViT layers fused into the main visual stream, e.g. "6 12 18 23". Empty disables layer fusion.
-VISION_LAYER_FUSION_TYPE=${VISION_LAYER_FUSION_TYPE:-mean}                         # mean, sum, or learned_weighted.
+VISION_LAYER_FUSION_TYPE=${VISION_LAYER_FUSION_TYPE:-mean}                         # Fusion mode: mean, sum, learned_weighted (aliases: weighted, softmax_weighted).
 
 SWANLAB_ENABLE=${SWANLAB_ENABLE:-True}                                         # Enable SwanLab logging for this run.
 export SWANLAB_API_KEY=${SWANLAB_API_KEY:-"5gIH7zqSwmo8dl1Ia5vRN"}              # SwanLab API key. Override from the platform env if needed.

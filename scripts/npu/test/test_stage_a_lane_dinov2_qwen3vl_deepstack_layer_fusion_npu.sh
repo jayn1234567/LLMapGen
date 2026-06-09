@@ -56,7 +56,8 @@ COORD_MODE=${COORD_MODE:-auto}           # Coordinate mode for decoding. auto re
 COORD_RANGE=${COORD_RANGE:-1000}         # Normalized coordinate range used when COORD_MODE is norm1000/auto.
 DEEPSTACK_VISUAL_INDEXES=${DEEPSTACK_VISUAL_INDEXES:-"6 12 18 23"}            # ViT layers injected into early LLM layers through DeepStack mergers.
 VISION_LAYER_FUSION_INDEXES=${VISION_LAYER_FUSION_INDEXES:-"6 12 18 23"}      # ViT layers fused into the main visual stream before mm_projector.
-VISION_LAYER_FUSION_TYPE=${VISION_LAYER_FUSION_TYPE:-mean}                    # mean, sum, or learned_weighted.
+VISION_LAYER_FUSION_TYPE=${VISION_LAYER_FUSION_TYPE:-mean}                         # Fusion mode: mean, sum, learned_weighted (aliases: weighted, softmax_weighted).
+
 # ====================== Ascend environment ======================
 export ASCEND_CUSTOM_PATH=${ASCEND_CUSTOM_PATH:-/usr/local/Ascend/ascend-toolkit/latest}
 export ASCEND_CUSTOM_OPP_PATH=${ASCEND_CUSTOM_OPP_PATH:-/usr/local/Ascend/ascend-toolkit/latest}

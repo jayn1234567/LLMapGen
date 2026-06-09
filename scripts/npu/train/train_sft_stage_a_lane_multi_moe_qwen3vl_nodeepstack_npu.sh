@@ -1,7 +1,11 @@
 #!/usr/bin/env bash
+set -euo pipefail
 
-# Formal NPU SFT training script for one fixed multi-vision no-DeepStack recipe.
-# This file is self-contained and does not call another project shell script.
+# ============================================================
+# NPU SFT training
+# Fixed recipe: phase_a | lane-only centerline | DINOv2+DINOv3 token-router MoE, no DeepStack | Qwen3-VL-derived Qwen3 LLM
+# This file is self-contained and only downloads the model assets required by this recipe.
+# ============================================================
 
 SCRIPT_PATH=$(readlink -f "$0")
 SCRIPT_DIR=$(dirname "$SCRIPT_PATH")
@@ -12,13 +16,14 @@ cd "${REPO_ROOT}"
 
 DATASET_PHASE=phase_a
 MAP_TASK=lane
-VISION_BACKBONE=multi_moe
-case "${DATASET_PHASE}" in phase_a|phase_b) ;; *) echo "ERROR: DATASET_PHASE must be phase_a or phase_b"; exit 1 ;; esac
-case "${MAP_TASK}" in lane|lane_intersection) ;; *) echo "ERROR: MAP_TASK must be lane or lane_intersection"; exit 1 ;; esac
+VISION_RECIPE=multi_moe
+MODEL_FAMILY=qwen3vl
+MODEL_LABEL=qwen3vl
+TRAIN_VARIANT=full
 
-echo "Script path: ${SCRIPT_PATH}"
-echo "Repo root: ${REPO_ROOT}"
-echo "Recipe: ${DATASET_PHASE} | ${MAP_TASK} | ${VISION_BACKBONE}"
+case "${MAP_TASK}" in lane|lane_intersection) ;; *) echo "ERROR: MAP_TASK must be lane or lane_intersection"; exit 1 ;; esac
+case "${MODEL_FAMILY}" in qwen3vl) ;; *) echo "ERROR: MODEL_FAMILY must be qwen3vl"; exit 1 ;; esac
+case "${TRAIN_VARIANT}" in full|lora_llm) ;; *) echo "ERROR: TRAIN_VARIANT must be full or lora_llm"; exit 1 ;; esac
 
 CLUSTER_SAVE=${OUTPUT_URL}
 OSB_SHARE_PATH="${CLUSTER_SAVE}"
@@ -30,11 +35,26 @@ DATASET_DIR_NAME=${DATASET_DIR_NAME:-data_line_samples_33w}
 
 DINO_V2_TOWER_NAME=${DINO_V2_TOWER_NAME:-facebook_dinov2-large}
 DINO_V3_TOWER_NAME=${DINO_V3_TOWER_NAME:-facebook_dinov3-vitl16-pretrain-lvd1689m}
-SIGLIP_TOWER_NAME=${SIGLIP_TOWER_NAME:-google_siglip-large-patch16-384}
 DINO_V2_TOWER=${DINO_V2_TOWER:-${OBS_CACHE}/checkpoints/${DINO_V2_TOWER_NAME}}
 DINO_V3_TOWER=${DINO_V3_TOWER:-${OBS_CACHE}/checkpoints/${DINO_V3_TOWER_NAME}}
-SIGLIP_TOWER=${SIGLIP_TOWER:-${OBS_CACHE}/checkpoints/${SIGLIP_TOWER_NAME}}
-QWEN_PATH=${QWEN_PATH:-${OBS_CACHE}/checkpoints/Qwen3-VL-8B-Instruct}
+DINO_V2_TOWER_OBS_PATH=${DINO_V2_TOWER_OBS_PATH:-${MODEL_OBS_PATH}/${DINO_V2_TOWER_NAME}}
+DINO_V3_TOWER_OBS_PATH=${DINO_V3_TOWER_OBS_PATH:-${MODEL_OBS_PATH}/${DINO_V3_TOWER_NAME}}
+MULTI_VISION_TOWERS=${MULTI_VISION_TOWERS:-${DINO_V2_TOWER},${DINO_V3_TOWER}}
+MULTI_VISION_TOWER_TYPES=${MULTI_VISION_TOWER_TYPES:-dinov2,dinov3}
+MULTI_VISION_INPUT_IMAGE_SIZES=${MULTI_VISION_INPUT_IMAGE_SIZES:-512,512}
+MULTI_VISION_PRIMARY_INDEX=${MULTI_VISION_PRIMARY_INDEX:-1}
+MULTI_VISION_HIDDEN_SIZE=${MULTI_VISION_HIDDEN_SIZE:-1024}
+MULTI_VISION_TARGET_GRID=${MULTI_VISION_TARGET_GRID:-32}
+MULTI_VISION_FUSION=${MULTI_VISION_FUSION:-softmax_router}
+VISION_TOWER=${VISION_TOWER:-${MULTI_VISION_TOWERS}}
+MM_VISION_TOWER_TYPE=multi_moe
+INPUT_IMAGE_SIZE=${INPUT_IMAGE_SIZE:-512}
+REQUIRED_VISION_TOWERS=("${DINO_V2_TOWER}" "${DINO_V3_TOWER}")
+
+DEFAULT_QWEN_MODEL_NAME=Qwen3-VL-8B-Instruct
+QWEN_MODEL_NAME=${QWEN_MODEL_NAME:-${DEFAULT_QWEN_MODEL_NAME}}
+QWEN_MODEL_OBS_PATH=${QWEN_MODEL_OBS_PATH:-${MODEL_OBS_PATH}/${QWEN_MODEL_NAME}}
+QWEN_PATH=${QWEN_PATH:-${OBS_CACHE}/checkpoints/${QWEN_MODEL_NAME}}
 
 DATASET_ZIP_PATH=${DATASET_ZIP_PATH:-${OBS_CACHE}/dataset_${RUN_ID}.zip}
 DATASET_EXTRACT_ROOT=${DATASET_EXTRACT_ROOT:-${OBS_CACHE}/dataset_extract_${RUN_ID}}
@@ -44,53 +64,10 @@ CLOUD_OUTPUT_PATH=${OSB_SHARE_PATH%/}/${RUN_ID}
 LOCAL_MODEL_SAVE_ROOT=${LOCAL_MODEL_SAVE_ROOT:-/cache/local_model_save_path}
 LOCAL_MODEL_SAVE_PATH=${LOCAL_MODEL_SAVE_PATH:-${LOCAL_MODEL_SAVE_ROOT}/${RUN_ID}}
 
-STAGE_A_CHECKPOINT_OBS_PATH=${STAGE_A_CHECKPOINT_OBS_PATH:-}
-STAGE_A_CHECKPOINT_PATH=${STAGE_A_CHECKPOINT_PATH:-}
-STAGE_A_DOWNLOAD_DIR=${STAGE_A_DOWNLOAD_DIR:-${OBS_CACHE}/stage_a_checkpoint_${RUN_ID}}
-
-case "${VISION_BACKBONE}" in
-  multi_moe|multi_vision_moe|dual_dino_moe)
-    MULTI_VISION_TOWERS=${MULTI_VISION_TOWERS:-${DINO_V2_TOWER},${DINO_V3_TOWER}}
-    MULTI_VISION_TOWER_TYPES=${MULTI_VISION_TOWER_TYPES:-dinov2,dinov3}
-    MULTI_VISION_INPUT_IMAGE_SIZES=${MULTI_VISION_INPUT_IMAGE_SIZES:-512,512}
-    MULTI_VISION_PRIMARY_INDEX=${MULTI_VISION_PRIMARY_INDEX:-1}
-    MULTI_VISION_HIDDEN_SIZE=${MULTI_VISION_HIDDEN_SIZE:-1024}
-    MULTI_VISION_TARGET_GRID=${MULTI_VISION_TARGET_GRID:-32}
-    MULTI_VISION_FUSION=${MULTI_VISION_FUSION:-softmax_router}
-    MM_VISION_TOWER_TYPE=multi_moe
-    INPUT_IMAGE_SIZE=${INPUT_IMAGE_SIZE:-512}
-    DOWNLOAD_TOWER_NAMES=("${DINO_V2_TOWER_NAME}" "${DINO_V3_TOWER_NAME}")
-    REQUIRED_VISION_TOWERS=("${DINO_V2_TOWER}" "${DINO_V3_TOWER}")
-    ;;
-  dinov2_siglip_concat|dinov2_siglip|dinosiglip_v2)
-    MULTI_VISION_TOWERS=${MULTI_VISION_TOWERS:-${DINO_V2_TOWER},${SIGLIP_TOWER}}
-    MULTI_VISION_TOWER_TYPES=${MULTI_VISION_TOWER_TYPES:-dinov2,siglip}
-    MULTI_VISION_INPUT_IMAGE_SIZES=${MULTI_VISION_INPUT_IMAGE_SIZES:-512,384}
-    MULTI_VISION_PRIMARY_INDEX=${MULTI_VISION_PRIMARY_INDEX:-0}
-    MULTI_VISION_HIDDEN_SIZE=${MULTI_VISION_HIDDEN_SIZE:-1024}
-    MULTI_VISION_TARGET_GRID=${MULTI_VISION_TARGET_GRID:-32}
-    MULTI_VISION_FUSION=${MULTI_VISION_FUSION:-concat_projector}
-    MM_VISION_TOWER_TYPE=multi_concat
-    INPUT_IMAGE_SIZE=${INPUT_IMAGE_SIZE:-512}
-    DOWNLOAD_TOWER_NAMES=("${DINO_V2_TOWER_NAME}" "${SIGLIP_TOWER_NAME}")
-    REQUIRED_VISION_TOWERS=("${DINO_V2_TOWER}" "${SIGLIP_TOWER}")
-    ;;
-  dinov3_siglip_concat|dinov3_siglip|dinosiglip_v3)
-    MULTI_VISION_TOWERS=${MULTI_VISION_TOWERS:-${DINO_V3_TOWER},${SIGLIP_TOWER}}
-    MULTI_VISION_TOWER_TYPES=${MULTI_VISION_TOWER_TYPES:-dinov3,siglip}
-    MULTI_VISION_INPUT_IMAGE_SIZES=${MULTI_VISION_INPUT_IMAGE_SIZES:-512,384}
-    MULTI_VISION_PRIMARY_INDEX=${MULTI_VISION_PRIMARY_INDEX:-0}
-    MULTI_VISION_HIDDEN_SIZE=${MULTI_VISION_HIDDEN_SIZE:-1024}
-    MULTI_VISION_TARGET_GRID=${MULTI_VISION_TARGET_GRID:-32}
-    MULTI_VISION_FUSION=${MULTI_VISION_FUSION:-concat_projector}
-    MM_VISION_TOWER_TYPE=multi_concat
-    INPUT_IMAGE_SIZE=${INPUT_IMAGE_SIZE:-512}
-    DOWNLOAD_TOWER_NAMES=("${DINO_V3_TOWER_NAME}" "${SIGLIP_TOWER_NAME}")
-    REQUIRED_VISION_TOWERS=("${DINO_V3_TOWER}" "${SIGLIP_TOWER}")
-    ;;
-  *) echo "ERROR: unsupported VISION_BACKBONE=${VISION_BACKBONE}"; exit 1 ;;
-esac
-VISION_TOWER=${VISION_TOWER:-${MULTI_VISION_TOWERS}}
+DISABLE_DEEPSTACK=${DISABLE_DEEPSTACK:-True}
+DEEPSTACK_VISUAL_INDEXES=${DEEPSTACK_VISUAL_INDEXES:-}
+VISION_LAYER_FUSION_INDEXES=${VISION_LAYER_FUSION_INDEXES:-}
+VISION_LAYER_FUSION_TYPE=${VISION_LAYER_FUSION_TYPE:-mean}
 
 TARGET_GLOBAL_BATCH_SIZE=${TARGET_GLOBAL_BATCH_SIZE:-128}
 PER_DEVICE_TRAIN_BATCH_SIZE=${PER_DEVICE_TRAIN_BATCH_SIZE:-4}
@@ -117,12 +94,30 @@ BEST_INFER_INDEX_NUM_SAMPLES=${BEST_INFER_INDEX_NUM_SAMPLES:-0}
 BEST_CHECKPOINT_SAVE_MODE=${BEST_CHECKPOINT_SAVE_MODE:-rotating_create_only}
 BEST_CHECKPOINT_KEEP_LIMIT=${BEST_CHECKPOINT_KEEP_LIMIT:-5}
 
+if [ "${TRAIN_VARIANT}" = "lora_llm" ]; then
+  LORA_ENABLE=${LORA_ENABLE:-True}
+  LORA_TARGET_SCOPE=${LORA_TARGET_SCOPE:-llm}
+  LORA_R=${LORA_R:-8}
+  LORA_ALPHA=${LORA_ALPHA:-16}
+  LORA_DROPOUT=${LORA_DROPOUT:-0.05}
+  LORA_BIAS=${LORA_BIAS:-none}
+  UNFREEZE_MM_VISION_TOWER=${UNFREEZE_MM_VISION_TOWER:-True}
+else
+  LORA_ENABLE=${LORA_ENABLE:-False}
+  LORA_TARGET_SCOPE=${LORA_TARGET_SCOPE:-llm}
+  LORA_R=${LORA_R:-8}
+  LORA_ALPHA=${LORA_ALPHA:-16}
+  LORA_DROPOUT=${LORA_DROPOUT:-0.05}
+  LORA_BIAS=${LORA_BIAS:-none}
+  UNFREEZE_MM_VISION_TOWER=${UNFREEZE_MM_VISION_TOWER:-True}
+fi
+
 SWANLAB_ENABLE=${SWANLAB_ENABLE:-True}
 export SWANLAB_API_KEY=${SWANLAB_API_KEY:-"5gIH7zqSwmo8dl1Ia5vRN"}
 SWANLAB_PROJECT=${SWANLAB_PROJECT:-unimapgen_v3}
-SWANLAB_GROUP=${SWANLAB_GROUP:-sft_${DATASET_PHASE}_${MAP_TASK}_${VISION_BACKBONE}_nodeepstack}
-SWANLAB_EXPERIMENT_NAME=${SWANLAB_EXPERIMENT_NAME:-sft_${DATASET_PHASE}_${MAP_TASK}_${VISION_BACKBONE}_qwen3vl8b_nodeepstack}
-SWANLAB_TAGS=${SWANLAB_TAGS:-sft,${DATASET_PHASE},${MAP_TASK},${VISION_BACKBONE},qwen3vl8b,nodeepstack,unimapgen_v9}
+SWANLAB_GROUP=${SWANLAB_GROUP:-sft_${DATASET_PHASE}_${MAP_TASK}_${VISION_RECIPE}_${MODEL_LABEL}_${TRAIN_VARIANT}}
+SWANLAB_EXPERIMENT_NAME=${SWANLAB_EXPERIMENT_NAME:-sft_${DATASET_PHASE}_${MAP_TASK}_${VISION_RECIPE}_${MODEL_LABEL}_${TRAIN_VARIANT}}
+SWANLAB_TAGS=${SWANLAB_TAGS:-sft,${DATASET_PHASE},${MAP_TASK},${VISION_RECIPE},${MODEL_LABEL},${TRAIN_VARIANT},unimapgen_v9}
 SWANLAB_MODE=${SWANLAB_MODE:-offline}
 SWANLAB_API_HOST=${SWANLAB_API_HOST:-}
 SWANLAB_WEB_HOST=${SWANLAB_WEB_HOST:-}
@@ -152,6 +147,8 @@ export PYTHONPATH="${REPO_ROOT}:${PYTHONPATH:-}"
 
 INSTALL_DEPS=${INSTALL_DEPS:-True}
 ENABLE_MOXING_UPGRADE=${ENABLE_MOXING_UPGRADE:-True}
+TRANSFORMERS_SPEC=${TRANSFORMERS_SPEC:-"transformers==4.56.2"}
+TOKENIZERS_SPEC=${TOKENIZERS_SPEC:-"tokenizers>=0.22.0,<0.23.0"}
 if [[ "${ENABLE_MOXING_UPGRADE}" =~ ^(1|true|True|TRUE|yes|YES)$ ]]; then
   USE_MEMARTS=0 python -c "import moxing; moxing.file.copy('obs://yw-ads-training-gy1/data/external/personal/00592907/dataset_index/pkgs/moxing_framework-2.3.8-py2.py3-none-any.250714.whl', '/home/ma-user/moxing_framework-2.3.8-py2.py3-none-any.whl')"
   pip uninstall moxing-framework -y
@@ -165,12 +162,43 @@ if [[ "${INSTALL_DEPS}" =~ ^(1|true|True|TRUE|yes|YES)$ ]]; then
   pip install torch==2.7.1 torch_npu==2.7.1rc1
   python -c "import moxing as mox; mox.file.copy_parallel('obs://yw-ads-training-gy1/data/external/personal/w00886412/llm4drive_utils/torch_npu/whl/torch_npu-2.7.1.dev20250724-cp311-cp311-manylinux_2_28_aarch64.whl', '/home/ma-user/torch_npu-2.7.1.dev20250724-cp311-cp311-manylinux_2_28_aarch64.whl')"
   pip install --force-reinstall /home/ma-user/torch_npu-2.7.1.dev20250724-cp311-cp311-manylinux_2_28_aarch64.whl
-  pip install "sentencepiece>=0.1.99" "tiktoken>=0.7.0" "transformers==4.56.2" "tokenizers>=0.22.0,<0.23.0"
+  pip install "sentencepiece>=0.1.99" "tiktoken>=0.7.0" "${TRANSFORMERS_SPEC}" "${TOKENIZERS_SPEC}"
   pip install accelerate==1.6.0 deepspeed==0.14.4 "safetensors>=0.4.3" packaging "Pillow>=10.0.0" torchvision==0.22.1
   pip install shortuuid "peft>=0.10.0" pydantic 'markdown2[all]' 'numpy>=1.26' 'scipy>=1.10' 'scikit-learn>=1.2'
   pip install requests uvicorn fastapi 'einops>=0.6' 'einops-exts>=0.0.4' 'timm>=0.9.0' 'opencv-python-headless>=4.8.0'
   pip install 'loguru>=0.7.0' 'shapely>=2.0.0' wandb swanlab "huggingface-hub==0.36.2" urllib3==1.26.15
 fi
+
+resolve_training_checkpoint() {
+  python - "$1" <<'PYRESOLVE'
+from pathlib import Path
+import subprocess
+import sys
+root = Path(sys.argv[1])
+if not root.exists():
+    raise SystemExit(f"checkpoint path does not exist: {root}")
+if any((root / name).is_file() for name in ("model.safetensors", "pytorch_model.bin", "adapter_model.safetensors", "adapter_model.bin")):
+    print(root)
+    raise SystemExit(0)
+cmd = [sys.executable, "scripts/tools/resolve_best_checkpoint.py", "--output-dir", str(root), "--best-name", "infer_best", "--best-name", "eval_best", "--best-name", "best", "--best-name", "best_reward", "--allow-direct"]
+result = subprocess.run(cmd, text=True, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+if result.returncode == 0 and result.stdout.strip():
+    print(result.stdout.strip())
+    raise SystemExit(0)
+checkpoints = []
+for path in root.glob("checkpoint-*"):
+    if path.is_dir():
+        try:
+            step = int(path.name.rsplit("-", 1)[1])
+        except Exception:
+            step = -1
+        checkpoints.append((step, path))
+if checkpoints:
+    print(sorted(checkpoints)[-1][1])
+    raise SystemExit(0)
+raise SystemExit(f"cannot resolve a usable checkpoint under: {root}")
+PYRESOLVE
+}
 
 if [[ -z "${MA_VJ_NAME:-}" ]]; then
   NNODES=${NNODES:-1}
@@ -185,33 +213,25 @@ else
 fi
 MASTER_PORT=${MASTER_PORT:-6060}
 export NNODES NODE_RANK NPROC_PER_NODE MASTER_ADDR MASTER_PORT
-export RDZV_ID=${RDZV_ID:-sft_${DATASET_PHASE}_${MAP_TASK}_${VISION_BACKBONE}_${RUN_ID}}
+export RDZV_ID=${RDZV_ID:-sft_${DATASET_PHASE}_${MAP_TASK}_${VISION_RECIPE}_${MODEL_LABEL}_${TRAIN_VARIANT}_${RUN_ID}}
 mkdir -p "${LOCAL_MODEL_SAVE_PATH}"
 OUTPUT_PATH="${LOCAL_MODEL_SAVE_PATH}"
 SWANLAB_LOG_DIR=${SWANLAB_LOG_DIR:-${OUTPUT_PATH}/swanlab}
 
-for i in "${!DOWNLOAD_TOWER_NAMES[@]}"; do
-  python -c "import moxing as mox; mox.file.copy_parallel('${MODEL_OBS_PATH}/${DOWNLOAD_TOWER_NAMES[$i]}', '${REQUIRED_VISION_TOWERS[$i]}')"
-done
+if [ ! -e "${DINO_V2_TOWER}/config.json" ]; then
+  python -c "import moxing as mox; mox.file.copy_parallel('${DINO_V2_TOWER_OBS_PATH}', '${DINO_V2_TOWER}')"
+fi
+if [ ! -e "${DINO_V3_TOWER}/config.json" ]; then
+  python -c "import moxing as mox; mox.file.copy_parallel('${DINO_V3_TOWER_OBS_PATH}', '${DINO_V3_TOWER}')"
+fi
 python -c "import moxing as mox; mox.file.copy('${DATASET_OBS_PATH}', '${DATASET_ZIP_PATH}')"
 mkdir -p "${DATASET_EXTRACT_ROOT}"
 unzip -q "${DATASET_ZIP_PATH}" -d "${DATASET_EXTRACT_ROOT}"
 
-if [ "${DATASET_PHASE}" = "phase_b" ]; then
-  if [ -n "${STAGE_A_CHECKPOINT_OBS_PATH}" ]; then
-    python -c "import moxing as mox; mox.file.copy_parallel('${STAGE_A_CHECKPOINT_OBS_PATH}', '${STAGE_A_DOWNLOAD_DIR}')"
-    CHECKPOINT_INPUT_PATH="${STAGE_A_DOWNLOAD_DIR}"
-  elif [ -n "${STAGE_A_CHECKPOINT_PATH}" ]; then
-    CHECKPOINT_INPUT_PATH="${STAGE_A_CHECKPOINT_PATH}"
-  else
-    echo "ERROR: set STAGE_A_CHECKPOINT_OBS_PATH or STAGE_A_CHECKPOINT_PATH for Stage-B SFT."
-    exit 1
-  fi
-  INIT_MODEL_PATH=$(python scripts/tools/resolve_best_checkpoint.py --output-dir "${CHECKPOINT_INPUT_PATH}" --best-name infer_best --best-name eval_best --best-name best --best-name best_reward --allow-direct)
-else
-  python -c "import moxing as mox; mox.file.copy_parallel('${MODEL_OBS_PATH}/Qwen3-VL-8B-Instruct', '${QWEN_PATH}')"
-  INIT_MODEL_PATH="${QWEN_PATH}"
+if [ ! -e "${QWEN_PATH}/config.json" ]; then
+  python -c "import moxing as mox; mox.file.copy_parallel('${QWEN_MODEL_OBS_PATH}', '${QWEN_PATH}')"
 fi
+INIT_MODEL_PATH="${QWEN_PATH}"
 
 TRAIN_PATH="${DATASET_PATH}/${DATASET_PHASE}/train.jsonl"
 EVAL_PATH="${DATASET_PATH}/${DATASET_PHASE}/eval.jsonl"
@@ -232,24 +252,24 @@ EVAL_ARGS=()
 if [[ "${ENABLE_EVAL}" =~ ^(1|true|True|TRUE|yes|YES)$ ]]; then
   EVAL_ARGS=(--eval_data_path "${EVAL_PATH}" --eval_image_folder "${IMAGE_FOLDER}" "${EVAL_STRATEGY_ARG}" steps --eval_steps "${EVAL_STEPS}" --save_best_eval_loss "${SAVE_BEST_EVAL_LOSS}" --best_eval_loss_dir eval_best)
 fi
-VISION_ARGS=(
-  --vision_tower "${VISION_TOWER}"
-  --mm_vision_tower_type "${MM_VISION_TOWER_TYPE}"
-  --input_image_size "${INPUT_IMAGE_SIZE}"
-  --multi_vision_towers "${MULTI_VISION_TOWERS}"
-  --multi_vision_tower_types "${MULTI_VISION_TOWER_TYPES}"
-  --multi_vision_input_image_sizes "${MULTI_VISION_INPUT_IMAGE_SIZES}"
-  --multi_vision_primary_index "${MULTI_VISION_PRIMARY_INDEX}"
-  --multi_vision_hidden_size "${MULTI_VISION_HIDDEN_SIZE}"
-  --multi_vision_target_grid "${MULTI_VISION_TARGET_GRID}"
-  --multi_vision_fusion "${MULTI_VISION_FUSION}"
-)
+VISION_ARGS=(--vision_tower "${VISION_TOWER}" --mm_vision_tower_type "${MM_VISION_TOWER_TYPE}" --input_image_size "${INPUT_IMAGE_SIZE}")
+VISION_ARGS+=(--multi_vision_towers "${MULTI_VISION_TOWERS}" --multi_vision_tower_types "${MULTI_VISION_TOWER_TYPES}" --multi_vision_input_image_sizes "${MULTI_VISION_INPUT_IMAGE_SIZES}" --multi_vision_primary_index "${MULTI_VISION_PRIMARY_INDEX}" --multi_vision_hidden_size "${MULTI_VISION_HIDDEN_SIZE}" --multi_vision_target_grid "${MULTI_VISION_TARGET_GRID}" --multi_vision_fusion "${MULTI_VISION_FUSION}")
+if [ -n "${VISION_LAYER_FUSION_INDEXES}" ]; then
+  VISION_ARGS+=(--vision_layer_fusion_indexes ${VISION_LAYER_FUSION_INDEXES} --vision_layer_fusion_type "${VISION_LAYER_FUSION_TYPE}")
+fi
+if [[ ! "${DISABLE_DEEPSTACK}" =~ ^(1|true|True|TRUE|yes|YES)$ && -n "${DEEPSTACK_VISUAL_INDEXES}" ]]; then
+  VISION_ARGS+=(--deepstack_visual_indexes ${DEEPSTACK_VISUAL_INDEXES})
+fi
+BEST_INFER_VISION_TOWER="${MULTI_VISION_TOWERS}"
 
 echo "============================================================"
-echo "Recipe:       ${DATASET_PHASE} | ${MAP_TASK} | ${VISION_BACKBONE}"
+echo "Recipe:       ${DATASET_PHASE} | ${MAP_TASK} | ${VISION_RECIPE} | ${MODEL_FAMILY} | ${TRAIN_VARIANT}"
 echo "Init model:   ${INIT_MODEL_PATH}"
 echo "Vision tower: ${VISION_TOWER}"
-echo "Vision type:  ${MM_VISION_TOWER_TYPE} fusion=${MULTI_VISION_FUSION}"
+echo "Vision type:  ${MM_VISION_TOWER_TYPE} fusion=${MULTI_VISION_FUSION:-single}"
+echo "DeepStack disabled: ${DISABLE_DEEPSTACK}, indexes=${DEEPSTACK_VISUAL_INDEXES:-auto}"
+echo "Layer fusion: ${VISION_LAYER_FUSION_INDEXES:-off} (${VISION_LAYER_FUSION_TYPE})"
+echo "LoRA:         enable=${LORA_ENABLE}, scope=${LORA_TARGET_SCOPE}, r=${LORA_R}"
 echo "Train:        ${TRAIN_PATH}"
 echo "Eval:         ${EVAL_PATH}"
 echo "Output:       ${OUTPUT_PATH}"
@@ -268,8 +288,8 @@ torchrun \
   "${VISION_ARGS[@]}" \
   --mm_vision_select_layer -2 \
   --mm_projector_type mlp2x_gelu \
-  --unfreeze_mm_vision_tower True \
-  --disable_deepstack True \
+  --unfreeze_mm_vision_tower "${UNFREEZE_MM_VISION_TOWER}" \
+  --disable_deepstack "${DISABLE_DEEPSTACK}" \
   --data_path "${TRAIN_PATH}" \
   --image_folder "${IMAGE_FOLDER}" \
   "${EVAL_ARGS[@]}" \
@@ -277,6 +297,12 @@ torchrun \
   --image_aspect_ratio pad \
   --bf16 True \
   --output_dir "${OUTPUT_PATH}" \
+  --lora_enable "${LORA_ENABLE}" \
+  --lora_target_scope "${LORA_TARGET_SCOPE}" \
+  --lora_r "${LORA_R}" \
+  --lora_alpha "${LORA_ALPHA}" \
+  --lora_dropout "${LORA_DROPOUT}" \
+  --lora_bias "${LORA_BIAS}" \
   --num_train_epochs "${NUM_EPOCHS}" \
   --per_device_train_batch_size "${PER_DEVICE_TRAIN_BATCH_SIZE}" \
   --gradient_accumulation_steps "${GRADIENT_ACCUMULATION_STEPS}" \
@@ -303,7 +329,7 @@ torchrun \
   --best_infer_index_phase "${DATASET_PHASE}" \
   --best_infer_index_eval_data_path "${EVAL_PATH}" \
   --best_infer_index_image_folder "${IMAGE_FOLDER}" \
-  --best_infer_index_vision_tower "${VISION_TOWER}" \
+  --best_infer_index_vision_tower "${BEST_INFER_VISION_TOWER}" \
   --best_infer_index_input_image_size "${INPUT_IMAGE_SIZE}" \
   --best_infer_index_conv_template conv_qwen_3_Dinov2_huawei \
   --best_infer_index_map_task "${MAP_TASK}" \
@@ -329,17 +355,12 @@ torchrun \
   --ddp_backend hccl \
   --deepspeed "${DEEPSPEED_CONFIG}"
 
-TRAIN_EXIT=$?
-if [ "${TRAIN_EXIT}" -ne 0 ]; then
-  echo "Training failed with exit code ${TRAIN_EXIT}"
-  exit "${TRAIN_EXIT}"
-fi
-
 if [[ "${NODE_RANK}" == "0" ]]; then
   if [ -e "${CLOUD_OUTPUT_PATH}" ]; then
     echo "ERROR: cloud output path already exists, refusing to overwrite: ${CLOUD_OUTPUT_PATH}"
     exit 1
   fi
+  echo "Moving rank0 local output to cloud output: ${OUTPUT_PATH} -> ${CLOUD_OUTPUT_PATH}"
   mv "${OUTPUT_PATH}" "${CLOUD_OUTPUT_PATH}"
   echo "Final cloud output path: ${CLOUD_OUTPUT_PATH}"
 else

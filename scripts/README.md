@@ -17,14 +17,13 @@ Per-folder script catalogs:
 - `scripts/npu/train/README.md`: every current NPU training script and the stage/task/vision recipe naming rules.
 - `scripts/npu/test/README.md`: every current NPU inference/eval script and checkpoint input variables.
 
-The NPU catalog includes formal Qwen3/Qwen3.5 text-LLM scripts for the Stage-A
-and Stage-B lane/lane+intersection matrix: DINOv2 and DINOv3 no-DeepStack,
-DeepStack, direct ViT layer fusion, DINO+SigLIP concat, DINOv2+DINOv3
-multi-MoE, and LLM-LoRA variants. These fixed recipe files only declare and
-download the assets they actually need. Stage-A train scripts download the base
-Qwen model and recipe vision assets; Stage-B train scripts continue from a
-Stage-A checkpoint and do not download the base Qwen model. Existing Qwen3-VL
-scripts remain available for the earlier Qwen3-VL-derived LLM recipes.
+The NPU catalog includes formal Qwen3-VL, Qwen3, and Qwen3.5 scripts for the
+Stage-A and Stage-B lane/lane+intersection matrix: DINOv2 and DINOv3
+no-DeepStack, DeepStack, direct ViT layer fusion, DINO+SigLIP concat,
+DINOv2+DINOv3 multi-MoE, and LLM-LoRA variants. These fixed recipe files only
+declare and download the assets they actually need. Stage-A train scripts
+download the base Qwen/Qwen3-VL model and recipe vision assets; Stage-B train
+scripts continue from a Stage-A checkpoint and do not download the base model.
 
 NPU scripts are grouped by purpose:
 

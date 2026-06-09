@@ -29,7 +29,7 @@ Each fixed recipe test script only downloads the vision assets needed by that
 recipe and the checkpoints requested through `CHECKPOINT_OBS_LIST` or
 `CHECKPOINT_DIRS`. A DINOv2-only script does not declare or download DINOv3 or
 SigLIP. LoRA test scripts also prepare the required LoRA base model path:
-Stage-A LoRA tests can download the base Qwen text model, while Stage-B LoRA
+Stage-A LoRA tests can download the base Qwen/Qwen3-VL model, while Stage-B LoRA
 tests require `LORA_BASE_CHECKPOINT_OBS_PATH`, `LORA_BASE_CHECKPOINT_PATH`,
 `QWEN_BASE_MODEL_PATH`, or `MODEL_BASE` so the adapter is merged with its
 Stage-A base checkpoint.

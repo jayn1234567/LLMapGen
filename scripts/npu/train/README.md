@@ -39,8 +39,8 @@ not declare or download DINOv3 or SigLIP. `dinov2_siglip_concat_*` downloads
 DINOv2 and SigLIP, `dinov3_siglip_concat_*` downloads DINOv3 and SigLIP, and
 `multi_moe_*` downloads DINOv2 and DINOv3.
 
-Stage-A train scripts download the base Qwen text model plus the recipe's
-vision tower assets. Stage-B train scripts do not download the base Qwen model;
+Stage-A train scripts download the base Qwen/Qwen3-VL model plus the recipe's
+vision tower assets. Stage-B train scripts do not download the base model;
 they download or use the Stage-A checkpoint through `STAGE_A_CHECKPOINT_*` and
 continue from that checkpoint.
 

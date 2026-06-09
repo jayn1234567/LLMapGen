@@ -17,6 +17,10 @@ Per-folder script catalogs:
 - `scripts/npu/train/README.md`: every current NPU training script and the stage/task/vision recipe naming rules.
 - `scripts/npu/test/README.md`: every current NPU inference/eval script and checkpoint input variables.
 
+The NPU catalog includes formal Qwen3/Qwen3.5 text-LLM scripts for the Stage-A
+lane DINOv2 no-DeepStack baseline, plus the existing Qwen3-VL multi-vision,
+concat, and DeepStack+layer-fusion formal matrix.
+
 NPU scripts are grouped by purpose:
 
 - `scripts/npu/train/`: explicit NPU training entrypoints for SFT/GRPO, stage A/B, lane-only/lane+intersection, and DINOv2/DINOv3.

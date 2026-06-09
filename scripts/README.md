@@ -18,8 +18,10 @@ Per-folder script catalogs:
 - `scripts/npu/test/README.md`: every current NPU inference/eval script and checkpoint input variables.
 
 The NPU catalog includes formal Qwen3/Qwen3.5 text-LLM scripts for the Stage-A
-lane DINOv2 no-DeepStack baseline, plus the existing Qwen3-VL multi-vision,
-concat, and DeepStack+layer-fusion formal matrix.
+lane and lane+intersection matrix: DINOv2 no-DeepStack, DINOv2 DeepStack,
+direct ViT layer fusion, DINOv2+SigLIP concat, DINOv2+DINOv3 multi-MoE, and
+LLM-LoRA variants. Existing Qwen3-VL scripts still cover the broader Stage A/B
+multi-vision, concat, and DeepStack+layer-fusion matrix.
 
 NPU scripts are grouped by purpose:
 

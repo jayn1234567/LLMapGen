@@ -2,8 +2,8 @@
 set -euo pipefail
 
 # ============================================================
-# NPU inference
-# Fixed recipe: phase_a | lane-only centerline | DINOv2 + Qwen3 text LLM | main ViT stream, no DeepStack
+# NPU SFT training
+# Fixed recipe: phase_a | lane + intersection | DINOv2 DeepStack + Qwen3.5 text LLM | DeepStack residual injection
 # This file is self-contained and does not call another project .sh file.
 # ============================================================
 
@@ -15,14 +15,15 @@ cd "${REPO_ROOT}"
 : "${OUTPUT_URL:?OUTPUT_URL is required on the training platform}"
 
 DATASET_PHASE=phase_a
-MAP_TASK=lane
-VISION_RECIPE=dinov2
-MODEL_FAMILY=qwen3
-MODEL_LABEL=qwen3
+MAP_TASK=lane_intersection
+VISION_RECIPE=dinov2_deepstack
+MODEL_FAMILY=qwen3_5
+MODEL_LABEL=qwen3_5
 TRAIN_VARIANT=full
 
 case "${MAP_TASK}" in lane|lane_intersection) ;; *) echo "ERROR: MAP_TASK must be lane or lane_intersection"; exit 1 ;; esac
 case "${MODEL_FAMILY}" in qwen3|qwen3_5) ;; *) echo "ERROR: MODEL_FAMILY must be qwen3 or qwen3_5"; exit 1 ;; esac
+case "${TRAIN_VARIANT}" in full|lora_llm) ;; *) echo "ERROR: TRAIN_VARIANT must be full or lora_llm"; exit 1 ;; esac
 
 echo "Script path: ${SCRIPT_PATH}"
 echo "Repo root: ${REPO_ROOT}"
@@ -36,8 +37,6 @@ MODEL_OBS_PATH=${MODEL_OBS_PATH:-obs://yw-ads-training-gy1/data/external/persona
 DATASET_OBS_PATH=${DATASET_OBS_PATH:-obs://yw-ads-training-gy1/data/external/personal/h58801830/whu/jjh/data/data_line_samples_33w.zip}
 DATASET_DIR_NAME=${DATASET_DIR_NAME:-data_line_samples_33w}
 
-CHECKPOINT_OBS_LIST=${CHECKPOINT_OBS_LIST:-}
-CHECKPOINT_DIRS=${CHECKPOINT_DIRS:-}
 DINO_V2_TOWER_NAME=${DINO_V2_TOWER_NAME:-facebook_dinov2-large}
 DINO_V3_TOWER_NAME=${DINO_V3_TOWER_NAME:-facebook_dinov3-vitl16-pretrain-lvd1689m}
 SIGLIP_TOWER_NAME=${SIGLIP_TOWER_NAME:-google_siglip-large-patch16-384}
@@ -45,18 +44,22 @@ DINO_V2_TOWER=${DINO_V2_TOWER:-${OBS_CACHE}/checkpoints/${DINO_V2_TOWER_NAME}}
 DINO_V3_TOWER=${DINO_V3_TOWER:-${OBS_CACHE}/checkpoints/${DINO_V3_TOWER_NAME}}
 SIGLIP_TOWER=${SIGLIP_TOWER:-${OBS_CACHE}/checkpoints/${SIGLIP_TOWER_NAME}}
 
+if [ "${MODEL_FAMILY}" = "qwen3_5" ]; then
+  DEFAULT_QWEN_MODEL_NAME=Qwen3.5-4B-Instruct
+else
+  DEFAULT_QWEN_MODEL_NAME=Qwen3-8B
+fi
+QWEN_MODEL_NAME=${QWEN_MODEL_NAME:-${DEFAULT_QWEN_MODEL_NAME}}
+QWEN_MODEL_OBS_PATH=${QWEN_MODEL_OBS_PATH:-${MODEL_OBS_PATH}/${QWEN_MODEL_NAME}}
+QWEN_PATH=${QWEN_PATH:-${OBS_CACHE}/checkpoints/${QWEN_MODEL_NAME}}
+
 DATASET_ZIP_PATH=${DATASET_ZIP_PATH:-${OBS_CACHE}/dataset_${RUN_ID}.zip}
 DATASET_EXTRACT_ROOT=${DATASET_EXTRACT_ROOT:-${OBS_CACHE}/dataset_extract_${RUN_ID}}
 DATASET_PATH=${DATASET_PATH:-${DATASET_EXTRACT_ROOT}/${DATASET_DIR_NAME}}
 IMAGE_FOLDER=${IMAGE_FOLDER:-${DATASET_PATH}}
-TEST_JSON=${TEST_JSON:-${DATASET_PATH}/${DATASET_PHASE}/test.jsonl}
-CHECKPOINT_DOWNLOAD_ROOT=${CHECKPOINT_DOWNLOAD_ROOT:-${OBS_CACHE}/checkpoints_${RUN_ID}}
-LOCAL_OUTPUT_ROOT=${LOCAL_OUTPUT_ROOT:-${OBS_CACHE}/test_${DATASET_PHASE}_${MAP_TASK}_${VISION_RECIPE}_${MODEL_LABEL}_${TRAIN_VARIANT}_${RUN_ID}}
-CLOUD_OUTPUT_DIR=${TEST_RESULT_OBS:-${OSB_SHARE_PATH%/}/test_results_${RUN_ID}}
-NUM_TEST_SAMPLES=${NUM_TEST_SAMPLES:-0}
-MAX_NEW_TOKENS=${MAX_NEW_TOKENS:-2048}
-COORD_MODE=${COORD_MODE:-auto}
-COORD_RANGE=${COORD_RANGE:-1000}
+CLOUD_OUTPUT_PATH=${OSB_SHARE_PATH%/}/${RUN_ID}
+LOCAL_MODEL_SAVE_ROOT=${LOCAL_MODEL_SAVE_ROOT:-/cache/local_model_save_path}
+LOCAL_MODEL_SAVE_PATH=${LOCAL_MODEL_SAVE_PATH:-${LOCAL_MODEL_SAVE_ROOT}/${RUN_ID}}
 
 case "${VISION_RECIPE}" in
   dinov2|dinov2_layer_fusion|dinov2_deepstack)
@@ -115,6 +118,59 @@ case "${VISION_RECIPE}" in
     ;;
 esac
 
+TARGET_GLOBAL_BATCH_SIZE=${TARGET_GLOBAL_BATCH_SIZE:-128}
+PER_DEVICE_TRAIN_BATCH_SIZE=${PER_DEVICE_TRAIN_BATCH_SIZE:-4}
+NUM_EPOCHS=${NUM_EPOCHS:-5}
+LR=${LR:-2e-5}
+MM_PROJECTOR_LR=${MM_PROJECTOR_LR:-2e-5}
+MM_VISION_TOWER_LR=${MM_VISION_TOWER_LR:-2e-6}
+MM_VISION_FUSION_LR=${MM_VISION_FUSION_LR:-${MM_PROJECTOR_LR}}
+WEIGHT_DECAY=${WEIGHT_DECAY:-0.0}
+WARMUP_RATIO=${WARMUP_RATIO:-0.03}
+MODEL_MAX_LENGTH=${MODEL_MAX_LENGTH:-4096}
+SAVE_STEPS=${SAVE_STEPS:-500}
+SAVE_TOTAL_LIMIT=${SAVE_TOTAL_LIMIT:-15}
+LOGGING_STEPS=${LOGGING_STEPS:-10}
+EVAL_STEPS=${EVAL_STEPS:-500}
+DEEPSPEED_CONFIG=${DEEPSPEED_CONFIG:-scripts/deepspeed_zero3.json}
+ENABLE_EVAL=${ENABLE_EVAL:-False}
+SAVE_BEST_EVAL_LOSS=${SAVE_BEST_EVAL_LOSS:-False}
+SAVE_BEST_TRAIN_LOSS=${SAVE_BEST_TRAIN_LOSS:-True}
+BEST_TRAIN_LOSS_START_STEP=${BEST_TRAIN_LOSS_START_STEP:-5000}
+SAVE_BEST_INFER_INDEX=${SAVE_BEST_INFER_INDEX:-False}
+BEST_INFER_INDEX_METRIC=${BEST_INFER_INDEX_METRIC:-length_f1}
+BEST_INFER_INDEX_NUM_SAMPLES=${BEST_INFER_INDEX_NUM_SAMPLES:-0}
+BEST_CHECKPOINT_SAVE_MODE=${BEST_CHECKPOINT_SAVE_MODE:-rotating_create_only}
+BEST_CHECKPOINT_KEEP_LIMIT=${BEST_CHECKPOINT_KEEP_LIMIT:-5}
+
+if [ "${TRAIN_VARIANT}" = "lora_llm" ]; then
+  LORA_ENABLE=${LORA_ENABLE:-True}
+  LORA_TARGET_SCOPE=${LORA_TARGET_SCOPE:-llm}
+  LORA_R=${LORA_R:-8}
+  LORA_ALPHA=${LORA_ALPHA:-16}
+  LORA_DROPOUT=${LORA_DROPOUT:-0.05}
+  LORA_BIAS=${LORA_BIAS:-none}
+  UNFREEZE_MM_VISION_TOWER=${UNFREEZE_MM_VISION_TOWER:-True}
+else
+  LORA_ENABLE=${LORA_ENABLE:-False}
+  LORA_TARGET_SCOPE=${LORA_TARGET_SCOPE:-llm}
+  LORA_R=${LORA_R:-8}
+  LORA_ALPHA=${LORA_ALPHA:-16}
+  LORA_DROPOUT=${LORA_DROPOUT:-0.05}
+  LORA_BIAS=${LORA_BIAS:-none}
+  UNFREEZE_MM_VISION_TOWER=${UNFREEZE_MM_VISION_TOWER:-True}
+fi
+
+SWANLAB_ENABLE=${SWANLAB_ENABLE:-True}
+export SWANLAB_API_KEY=${SWANLAB_API_KEY:-"5gIH7zqSwmo8dl1Ia5vRN"}
+SWANLAB_PROJECT=${SWANLAB_PROJECT:-unimapgen_v3}
+SWANLAB_GROUP=${SWANLAB_GROUP:-sft_${DATASET_PHASE}_${MAP_TASK}_${VISION_RECIPE}_${MODEL_LABEL}_${TRAIN_VARIANT}}
+SWANLAB_EXPERIMENT_NAME=${SWANLAB_EXPERIMENT_NAME:-sft_${DATASET_PHASE}_${MAP_TASK}_${VISION_RECIPE}_${MODEL_LABEL}_${TRAIN_VARIANT}}
+SWANLAB_TAGS=${SWANLAB_TAGS:-sft,${DATASET_PHASE},${MAP_TASK},${VISION_RECIPE},${MODEL_LABEL},${TRAIN_VARIANT},unimapgen_v9}
+SWANLAB_MODE=${SWANLAB_MODE:-offline}
+SWANLAB_API_HOST=${SWANLAB_API_HOST:-}
+SWANLAB_WEB_HOST=${SWANLAB_WEB_HOST:-}
+
 export ASCEND_CUSTOM_PATH=${ASCEND_CUSTOM_PATH:-/usr/local/Ascend/ascend-toolkit/latest}
 export ASCEND_CUSTOM_OPP_PATH=${ASCEND_CUSTOM_OPP_PATH:-/usr/local/Ascend/ascend-toolkit/latest}
 export ASCEND_OPP_PATH=${ASCEND_OPP_PATH:-/usr/local/Ascend/ascend-toolkit/latest/opp}
@@ -162,58 +218,6 @@ if [[ "${INSTALL_DEPS}" =~ ^(1|true|True|TRUE|yes|YES)$ ]]; then
   pip install 'loguru>=0.7.0' 'shapely>=2.0.0' wandb swanlab "huggingface-hub==0.36.2" urllib3==1.26.15
 fi
 
-read_list() {
-  python - "$1" <<'PYREAD'
-import re
-import sys
-for item in re.split("[,;" + chr(10) + "]+", sys.argv[1] or ""):
-    item = item.strip()
-    if item:
-        print(item)
-PYREAD
-}
-
-safe_label() {
-  python - "$1" <<'PYLABEL'
-import re
-import sys
-value = sys.argv[1].strip().rstrip("/") or "checkpoint"
-label = re.sub(r"[^A-Za-z0-9._-]+", "_", value.split("/")[-1]).strip("._-")
-print(label or "checkpoint")
-PYLABEL
-}
-
-resolve_checkpoint() {
-  python - "$1" <<'PYRESOLVE'
-from pathlib import Path
-import subprocess
-import sys
-root = Path(sys.argv[1])
-if not root.exists():
-    raise SystemExit(f"checkpoint path does not exist: {root}")
-if any((root / name).is_file() for name in ("model.safetensors", "pytorch_model.bin", "adapter_model.safetensors", "adapter_model.bin")):
-    print(root)
-    raise SystemExit(0)
-cmd = [sys.executable, "scripts/tools/resolve_best_checkpoint.py", "--output-dir", str(root), "--best-name", "infer_best", "--best-name", "eval_best", "--best-name", "best", "--best-name", "best_reward", "--allow-direct"]
-result = subprocess.run(cmd, text=True, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
-if result.returncode == 0 and result.stdout.strip():
-    print(result.stdout.strip())
-    raise SystemExit(0)
-checkpoints = []
-for path in root.glob("checkpoint-*"):
-    if path.is_dir():
-        try:
-            step = int(path.name.rsplit("-", 1)[1])
-        except Exception:
-            step = -1
-        checkpoints.append((step, path))
-if checkpoints:
-    print(sorted(checkpoints)[-1][1])
-    raise SystemExit(0)
-raise SystemExit(f"cannot resolve a usable checkpoint under: {root}")
-PYRESOLVE
-}
-
 if [[ -z "${MA_VJ_NAME:-}" ]]; then
   NNODES=${NNODES:-1}
   NODE_RANK=${NODE_RANK:-0}
@@ -227,48 +231,41 @@ else
 fi
 MASTER_PORT=${MASTER_PORT:-6060}
 export NNODES NODE_RANK NPROC_PER_NODE MASTER_ADDR MASTER_PORT
-export RDZV_ID=${RDZV_ID:-test_${DATASET_PHASE}_${MAP_TASK}_${VISION_RECIPE}_${MODEL_LABEL}_${TRAIN_VARIANT}_${RUN_ID}}
+export RDZV_ID=${RDZV_ID:-sft_${DATASET_PHASE}_${MAP_TASK}_${VISION_RECIPE}_${MODEL_LABEL}_${TRAIN_VARIANT}_${RUN_ID}}
+mkdir -p "${LOCAL_MODEL_SAVE_PATH}"
+OUTPUT_PATH="${LOCAL_MODEL_SAVE_PATH}"
+SWANLAB_LOG_DIR=${SWANLAB_LOG_DIR:-${OUTPUT_PATH}/swanlab}
 
 for i in "${!DOWNLOAD_TOWER_NAMES[@]}"; do
   python -c "import moxing as mox; mox.file.copy_parallel('${MODEL_OBS_PATH}/${DOWNLOAD_TOWER_NAMES[$i]}', '${REQUIRED_VISION_TOWERS[$i]}')"
 done
 python -c "import moxing as mox; mox.file.copy('${DATASET_OBS_PATH}', '${DATASET_ZIP_PATH}')"
-mkdir -p "${DATASET_EXTRACT_ROOT}" "${CHECKPOINT_DOWNLOAD_ROOT}" "${LOCAL_OUTPUT_ROOT}"
+mkdir -p "${DATASET_EXTRACT_ROOT}"
 unzip -q "${DATASET_ZIP_PATH}" -d "${DATASET_EXTRACT_ROOT}"
-
-CHECKPOINT_ITEMS=()
-CHECKPOINT_LABELS=()
-if [ -n "${CHECKPOINT_OBS_LIST}" ]; then
-  while IFS= read -r obs_item; do
-    label=$(safe_label "${obs_item}")
-    local_dir="${CHECKPOINT_DOWNLOAD_ROOT}/${label}"
-    python -c "import moxing as mox; mox.file.copy_parallel('${obs_item}', '${local_dir}')"
-    resolved=$(resolve_checkpoint "${local_dir}")
-    CHECKPOINT_ITEMS+=("${resolved}")
-    CHECKPOINT_LABELS+=("${label}")
-  done < <(read_list "${CHECKPOINT_OBS_LIST}")
-elif [ -n "${CHECKPOINT_DIRS}" ]; then
-  while IFS= read -r local_item; do
-    resolved=$(resolve_checkpoint "${local_item}")
-    CHECKPOINT_ITEMS+=("${resolved}")
-    CHECKPOINT_LABELS+=("$(safe_label "${local_item}")")
-  done < <(read_list "${CHECKPOINT_DIRS}")
-else
-  echo "ERROR: set CHECKPOINT_OBS_LIST or CHECKPOINT_DIRS for inference."
-  exit 1
+if [ ! -e "${QWEN_PATH}/config.json" ]; then
+  python -c "import moxing as mox; mox.file.copy_parallel('${QWEN_MODEL_OBS_PATH}', '${QWEN_PATH}')"
 fi
-
-for path in "${TEST_JSON}" "${IMAGE_FOLDER}" "${REQUIRED_VISION_TOWERS[@]}"; do
+INIT_MODEL_PATH="${QWEN_PATH}"
+TRAIN_PATH="${DATASET_PATH}/${DATASET_PHASE}/train.jsonl"
+EVAL_PATH="${DATASET_PATH}/${DATASET_PHASE}/eval.jsonl"
+for path in "${INIT_MODEL_PATH}" "${TRAIN_PATH}" "${EVAL_PATH}" "${IMAGE_FOLDER}" "${REQUIRED_VISION_TOWERS[@]}"; do
   if [ ! -e "${path}" ]; then
     echo "ERROR: required path not found: ${path}"
     exit 1
   fi
 done
 
-VISION_ARGS=(--vision_tower "${VISION_TOWER}" --mm_vision_tower_type "${MM_VISION_TOWER_TYPE}" --input_image_size "${INPUT_IMAGE_SIZE}")
-if [[ "${DISABLE_DEEPSTACK}" =~ ^(1|true|True|TRUE|yes|YES)$ ]]; then
-  VISION_ARGS+=(--disable_deepstack)
+TOTAL_DEVICES=$(( NNODES * NPROC_PER_NODE ))
+MICRO_BATCH=$(( TOTAL_DEVICES * PER_DEVICE_TRAIN_BATCH_SIZE ))
+GRADIENT_ACCUMULATION_STEPS=$(( (TARGET_GLOBAL_BATCH_SIZE + MICRO_BATCH - 1) / MICRO_BATCH ))
+if [ "${GRADIENT_ACCUMULATION_STEPS}" -lt 1 ]; then GRADIENT_ACCUMULATION_STEPS=1; fi
+
+EVAL_STRATEGY_ARG=$(python -c "import inspect, transformers; print('--eval_strategy' if 'eval_strategy' in inspect.signature(transformers.TrainingArguments.__init__).parameters else '--evaluation_strategy')")
+EVAL_ARGS=()
+if [[ "${ENABLE_EVAL}" =~ ^(1|true|True|TRUE|yes|YES)$ ]]; then
+  EVAL_ARGS=(--eval_data_path "${EVAL_PATH}" --eval_image_folder "${IMAGE_FOLDER}" "${EVAL_STRATEGY_ARG}" steps --eval_steps "${EVAL_STEPS}" --save_best_eval_loss "${SAVE_BEST_EVAL_LOSS}" --best_eval_loss_dir eval_best)
 fi
+VISION_ARGS=(--vision_tower "${VISION_TOWER}" --mm_vision_tower_type "${MM_VISION_TOWER_TYPE}" --input_image_size "${INPUT_IMAGE_SIZE}")
 if [[ "${MM_VISION_TOWER_TYPE}" == "multi_moe" || "${MM_VISION_TOWER_TYPE}" == "multi_concat" ]]; then
   VISION_ARGS+=(--multi_vision_towers "${MULTI_VISION_TOWERS}" --multi_vision_tower_types "${MULTI_VISION_TOWER_TYPES}" --multi_vision_input_image_sizes "${MULTI_VISION_INPUT_IMAGE_SIZES}" --multi_vision_primary_index "${MULTI_VISION_PRIMARY_INDEX}" --multi_vision_hidden_size "${MULTI_VISION_HIDDEN_SIZE}" --multi_vision_target_grid "${MULTI_VISION_TARGET_GRID}" --multi_vision_fusion "${MULTI_VISION_FUSION}")
 fi
@@ -279,70 +276,112 @@ if [[ ! "${DISABLE_DEEPSTACK}" =~ ^(1|true|True|TRUE|yes|YES)$ && -n "${DEEPSTAC
   VISION_ARGS+=(--deepstack_visual_indexes ${DEEPSTACK_VISUAL_INDEXES})
 fi
 
-run_one_checkpoint() {
-  local checkpoint_dir="$1"
-  local checkpoint_label="$2"
-  local output_dir="$3"
-  local json_dir="${output_dir}/json"
-  local patch_viz_dir="${output_dir}/viz"
-  local whole_map_viz_dir="${output_dir}/whole_map_viz"
-  local summary_json="${output_dir}/summary.json"
-  local eval_json="${output_dir}/eval.json"
-  mkdir -p "${json_dir}" "${patch_viz_dir}" "${whole_map_viz_dir}"
-  echo "============================================================"
-  echo "Infer:      ${checkpoint_label}"
-  echo "Checkpoint: ${checkpoint_dir}"
-  echo "Recipe:     ${DATASET_PHASE} | ${MAP_TASK} | ${VISION_RECIPE} | ${MODEL_FAMILY} | ${TRAIN_VARIANT}"
-  echo "Output:     ${output_dir}"
-  echo "============================================================"
-  torchrun \
-    --nnodes="${NNODES}" \
-    --nproc_per_node="${NPROC_PER_NODE}" \
-    --node_rank="${NODE_RANK}" \
-    --master_addr="${MASTER_ADDR}" \
-    --master_port="${MASTER_PORT}" \
-    scripts/tools/infer_centerline_checkpoint.py \
-    --checkpoint-dir "${checkpoint_dir}" \
-    "${VISION_ARGS[@]}" \
-    --test-json "${TEST_JSON}" \
-    --num-samples "${NUM_TEST_SAMPLES}" \
-    --image-folder "${IMAGE_FOLDER}" \
-    --prompt-mode dataset \
-    --map-task "${MAP_TASK}" \
-    --patch-size 256 \
-    --coord-mode "${COORD_MODE}" \
-    --coord-range "${COORD_RANGE}" \
-    --conv-template conv_qwen_3_Dinov2_huawei \
-    --output-dir "${output_dir}" \
-    --sample-json-dir "${json_dir}" \
-    --output-json "${summary_json}" \
-    --temperature 0.0 \
-    --max-new-tokens "${MAX_NEW_TOKENS}" \
-    --eval-centerline \
-    --eval-output-json "${eval_json}"
-  if [ "${NODE_RANK}" -ne 0 ]; then
-    return 0
-  fi
-  python scripts/tools/visualize_centerline.py \
-    --input-dir "${output_dir}" \
-    --image-folder "${IMAGE_FOLDER}" \
-    --output-dir "${patch_viz_dir}" \
-    --eval-output-json "${eval_json}" \
-    --whole-map-viz-dir "${whole_map_viz_dir}"
-}
+BEST_INFER_VISION_TOWER="${VISION_TOWER}"
+if [[ "${MM_VISION_TOWER_TYPE}" == "multi_moe" || "${MM_VISION_TOWER_TYPE}" == "multi_concat" ]]; then
+  BEST_INFER_VISION_TOWER="${MULTI_VISION_TOWERS}"
+fi
 
-for index in "${!CHECKPOINT_ITEMS[@]}"; do
-  label="${CHECKPOINT_LABELS[$index]}"
-  checkpoint="${CHECKPOINT_ITEMS[$index]}"
-  if [ "${#CHECKPOINT_ITEMS[@]}" -gt 1 ]; then
-    output_dir="${LOCAL_OUTPUT_ROOT}/${index}_${label}"
-  else
-    output_dir="${LOCAL_OUTPUT_ROOT}"
-  fi
-  run_one_checkpoint "${checkpoint}" "${label}" "${output_dir}"
-done
+echo "============================================================"
+echo "Recipe:       ${DATASET_PHASE} | ${MAP_TASK} | ${VISION_RECIPE} | ${MODEL_FAMILY} | ${TRAIN_VARIANT}"
+echo "Init model:   ${INIT_MODEL_PATH}"
+echo "Vision tower: ${VISION_TOWER}"
+echo "Vision type:  ${MM_VISION_TOWER_TYPE} fusion=${MULTI_VISION_FUSION:-single}"
+echo "DeepStack disabled: ${DISABLE_DEEPSTACK}, indexes=${DEEPSTACK_VISUAL_INDEXES:-auto}"
+echo "Layer fusion: ${VISION_LAYER_FUSION_INDEXES:-off} (${VISION_LAYER_FUSION_TYPE})"
+echo "LoRA:         enable=${LORA_ENABLE}, scope=${LORA_TARGET_SCOPE}, r=${LORA_R}"
+echo "Train:        ${TRAIN_PATH}"
+echo "Eval:         ${EVAL_PATH}"
+echo "Output:       ${OUTPUT_PATH}"
+echo "Cloud output: ${CLOUD_OUTPUT_PATH}"
+echo "============================================================"
 
-if [ "${NODE_RANK}" -eq 0 ]; then
-  python -c "import moxing as mox; mox.file.copy_parallel('${LOCAL_OUTPUT_ROOT}', '${CLOUD_OUTPUT_DIR}')"
-  echo "Inference results uploaded to ${CLOUD_OUTPUT_DIR}"
+torchrun \
+  --nnodes="${NNODES}" \
+  --nproc_per_node="${NPROC_PER_NODE}" \
+  --node_rank="${NODE_RANK}" \
+  --master_addr="${MASTER_ADDR}" \
+  --master_port="${MASTER_PORT}" \
+  -m mllm.train.train_qwen \
+  --model_name_or_path "${INIT_MODEL_PATH}" \
+  --version conv_qwen_3_Dinov2_huawei \
+  "${VISION_ARGS[@]}" \
+  --mm_vision_select_layer -2 \
+  --mm_projector_type mlp2x_gelu \
+  --unfreeze_mm_vision_tower "${UNFREEZE_MM_VISION_TOWER}" \
+  --disable_deepstack "${DISABLE_DEEPSTACK}" \
+  --data_path "${TRAIN_PATH}" \
+  --image_folder "${IMAGE_FOLDER}" \
+  "${EVAL_ARGS[@]}" \
+  --sample_seed 42 \
+  --image_aspect_ratio pad \
+  --bf16 True \
+  --output_dir "${OUTPUT_PATH}" \
+  --lora_enable "${LORA_ENABLE}" \
+  --lora_target_scope "${LORA_TARGET_SCOPE}" \
+  --lora_r "${LORA_R}" \
+  --lora_alpha "${LORA_ALPHA}" \
+  --lora_dropout "${LORA_DROPOUT}" \
+  --lora_bias "${LORA_BIAS}" \
+  --num_train_epochs "${NUM_EPOCHS}" \
+  --per_device_train_batch_size "${PER_DEVICE_TRAIN_BATCH_SIZE}" \
+  --gradient_accumulation_steps "${GRADIENT_ACCUMULATION_STEPS}" \
+  --learning_rate "${LR}" \
+  --mm_projector_lr "${MM_PROJECTOR_LR}" \
+  --mm_vision_tower_lr "${MM_VISION_TOWER_LR}" \
+  --mm_vision_fusion_lr "${MM_VISION_FUSION_LR}" \
+  --weight_decay "${WEIGHT_DECAY}" \
+  --warmup_ratio "${WARMUP_RATIO}" \
+  --lr_scheduler_type cosine \
+  --model_max_length "${MODEL_MAX_LENGTH}" \
+  --gradient_checkpointing True \
+  --dataloader_num_workers 4 \
+  --remove_unused_columns false \
+  --save_strategy steps \
+  --save_steps "${SAVE_STEPS}" \
+  --save_total_limit "${SAVE_TOTAL_LIMIT}" \
+  --save_best_train_loss "${SAVE_BEST_TRAIN_LOSS}" \
+  --best_train_loss_start_step "${BEST_TRAIN_LOSS_START_STEP}" \
+  --best_train_loss_dir best \
+  --save_best_infer_index "${SAVE_BEST_INFER_INDEX}" \
+  --best_infer_index_dir infer_best \
+  --best_infer_index_metric "${BEST_INFER_INDEX_METRIC}" \
+  --best_infer_index_phase "${DATASET_PHASE}" \
+  --best_infer_index_eval_data_path "${EVAL_PATH}" \
+  --best_infer_index_image_folder "${IMAGE_FOLDER}" \
+  --best_infer_index_vision_tower "${BEST_INFER_VISION_TOWER}" \
+  --best_infer_index_input_image_size "${INPUT_IMAGE_SIZE}" \
+  --best_infer_index_conv_template conv_qwen_3_Dinov2_huawei \
+  --best_infer_index_map_task "${MAP_TASK}" \
+  --best_infer_index_num_samples "${BEST_INFER_INDEX_NUM_SAMPLES}" \
+  --best_infer_index_eval_steps "${SAVE_STEPS}" \
+  --best_infer_index_max_new_tokens 2048 \
+  --best_checkpoint_save_mode "${BEST_CHECKPOINT_SAVE_MODE}" \
+  --best_checkpoint_keep_limit "${BEST_CHECKPOINT_KEEP_LIMIT}" \
+  --use_hf_progress_bar True \
+  --logging_steps "${LOGGING_STEPS}" \
+  --report_to none \
+  --swanlab_enable "${SWANLAB_ENABLE}" \
+  --swanlab_project "${SWANLAB_PROJECT}" \
+  --swanlab_experiment_name "${SWANLAB_EXPERIMENT_NAME}" \
+  --swanlab_group "${SWANLAB_GROUP}" \
+  --swanlab_job_type sft \
+  --swanlab_tags "${SWANLAB_TAGS}" \
+  --swanlab_mode "${SWANLAB_MODE}" \
+  --swanlab_log_dir "${SWANLAB_LOG_DIR}" \
+  --swanlab_api_host "${SWANLAB_API_HOST}" \
+  --swanlab_web_host "${SWANLAB_WEB_HOST}" \
+  --ddp_find_unused_parameters False \
+  --ddp_backend hccl \
+  --deepspeed "${DEEPSPEED_CONFIG}"
+
+if [[ "${NODE_RANK}" == "0" ]]; then
+  if [ -e "${CLOUD_OUTPUT_PATH}" ]; then
+    echo "ERROR: cloud output path already exists, refusing to overwrite: ${CLOUD_OUTPUT_PATH}"
+    exit 1
+  fi
+  echo "Moving rank0 local output to cloud output: ${OUTPUT_PATH} -> ${CLOUD_OUTPUT_PATH}"
+  mv "${OUTPUT_PATH}" "${CLOUD_OUTPUT_PATH}"
+  echo "Final cloud output path: ${CLOUD_OUTPUT_PATH}"
+else
+  echo "Non-master node ${NODE_RANK}: skip cloud output move."
 fi

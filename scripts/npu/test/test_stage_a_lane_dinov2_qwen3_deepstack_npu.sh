@@ -3,7 +3,7 @@ set -euo pipefail
 
 # ============================================================
 # NPU inference
-# Fixed recipe: phase_a | lane-only centerline | DINOv2 + Qwen3 text LLM | main ViT stream, no DeepStack
+# Fixed recipe: phase_a | lane-only centerline | DINOv2 DeepStack + Qwen3 text LLM | DeepStack residual injection
 # This file is self-contained and does not call another project .sh file.
 # ============================================================
 
@@ -16,7 +16,7 @@ cd "${REPO_ROOT}"
 
 DATASET_PHASE=phase_a
 MAP_TASK=lane
-VISION_RECIPE=dinov2
+VISION_RECIPE=dinov2_deepstack
 MODEL_FAMILY=qwen3
 MODEL_LABEL=qwen3
 TRAIN_VARIANT=full

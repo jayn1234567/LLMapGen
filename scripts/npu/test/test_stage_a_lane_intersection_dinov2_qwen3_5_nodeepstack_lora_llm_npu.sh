@@ -3,7 +3,7 @@ set -euo pipefail
 
 # ============================================================
 # NPU inference
-# Fixed recipe: phase_a | lane-only centerline | DINOv2 + Qwen3 text LLM | main ViT stream, no DeepStack
+# Fixed recipe: phase_a | lane + intersection | DINOv2 + Qwen3.5 text LLM | main ViT stream, no DeepStack, LLM LoRA
 # This file is self-contained and does not call another project .sh file.
 # ============================================================
 
@@ -15,11 +15,11 @@ cd "${REPO_ROOT}"
 : "${OUTPUT_URL:?OUTPUT_URL is required on the training platform}"
 
 DATASET_PHASE=phase_a
-MAP_TASK=lane
+MAP_TASK=lane_intersection
 VISION_RECIPE=dinov2
-MODEL_FAMILY=qwen3
-MODEL_LABEL=qwen3
-TRAIN_VARIANT=full
+MODEL_FAMILY=qwen3_5
+MODEL_LABEL=qwen3_5
+TRAIN_VARIANT=lora_llm
 
 case "${MAP_TASK}" in lane|lane_intersection) ;; *) echo "ERROR: MAP_TASK must be lane or lane_intersection"; exit 1 ;; esac
 case "${MODEL_FAMILY}" in qwen3|qwen3_5) ;; *) echo "ERROR: MODEL_FAMILY must be qwen3 or qwen3_5"; exit 1 ;; esac

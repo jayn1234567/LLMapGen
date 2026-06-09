@@ -20,8 +20,11 @@ Per-folder script catalogs:
 The NPU catalog includes formal Qwen3/Qwen3.5 text-LLM scripts for the Stage-A
 and Stage-B lane/lane+intersection matrix: DINOv2 and DINOv3 no-DeepStack,
 DeepStack, direct ViT layer fusion, DINO+SigLIP concat, DINOv2+DINOv3
-multi-MoE, and LLM-LoRA variants. Existing Qwen3-VL scripts remain available
-for the earlier Qwen3-VL-derived LLM recipes.
+multi-MoE, and LLM-LoRA variants. These fixed recipe files only declare and
+download the assets they actually need. Stage-A train scripts download the base
+Qwen model and recipe vision assets; Stage-B train scripts continue from a
+Stage-A checkpoint and do not download the base Qwen model. Existing Qwen3-VL
+scripts remain available for the earlier Qwen3-VL-derived LLM recipes.
 
 NPU scripts are grouped by purpose:
 
@@ -158,7 +161,7 @@ Training mode in filenames:
 - `eval_best`: keep the best validation-loss checkpoint under `eval_best_candidates/`.
 - `phase_a`: supervised patch-recognition data without incoming state hints.
 - `phase_b`: supervised state-update data with left/top incoming lane and intersection hints.
-- `lora_llm`: train LLM LoRA adapters; NPU LoRA SFT scripts use torchrun DDP/HCCL and do not pass DeepSpeed.
+- `lora_llm`: train LLM LoRA adapters; NPU LoRA SFT scripts use torchrun DDP/HCCL and do not install or pass DeepSpeed.
 - `ckpt3200`: starts from the local/cloud checkpoint-3200 variant instead of the base Qwen3-VL checkpoint.
 
 DINO type, fusion recipe, and platform are explicit:

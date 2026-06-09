@@ -33,9 +33,20 @@ folders, `checkpoint-*`, and best-candidate roots such as `best`, `eval_best`,
 Stage-A checkpoint and then add LLM LoRA for the Stage-B run; adapter-only
 Stage-A LoRA continuation is intentionally rejected with a clear error.
 
+Each fixed recipe script only declares and downloads the assets required by
+that recipe. For example, a `dinov2_*` script downloads DINOv2 only; it does
+not declare or download DINOv3 or SigLIP. `dinov2_siglip_concat_*` downloads
+DINOv2 and SigLIP, `dinov3_siglip_concat_*` downloads DINOv3 and SigLIP, and
+`multi_moe_*` downloads DINOv2 and DINOv3.
+
+Stage-A train scripts download the base Qwen text model plus the recipe's
+vision tower assets. Stage-B train scripts do not download the base Qwen model;
+they download or use the Stage-A checkpoint through `STAGE_A_CHECKPOINT_*` and
+continue from that checkpoint.
+
 `*_lora_llm_npu.sh` scripts use plain torchrun DDP on HCCL by default and do
-not pass `--deepspeed`. Full-parameter SFT scripts still use the configured
-DeepSpeed/ZeRO path.
+not install or pass DeepSpeed. Full-parameter SFT scripts still use the
+configured DeepSpeed/ZeRO path.
 
 Qwen text LLM overrides:
 

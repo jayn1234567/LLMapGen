@@ -4,7 +4,7 @@ set -euo pipefail
 # ============================================================
 # NPU SFT training
 # Fixed recipe: phase_b | lane-only centerline | DINOv3+SigLIP concat fusion, no DeepStack | Qwen3 text LLM
-# This file is self-contained and does not call another project .sh file.
+# This file is self-contained and only downloads the model assets required by this recipe.
 # ============================================================
 
 SCRIPT_PATH=$(readlink -f "$0")
@@ -21,7 +21,6 @@ MODEL_FAMILY=qwen3
 MODEL_LABEL=qwen3
 TRAIN_VARIANT=full
 
-case "${DATASET_PHASE}" in phase_a|phase_b) ;; *) echo "ERROR: DATASET_PHASE must be phase_a or phase_b"; exit 1 ;; esac
 case "${MAP_TASK}" in lane|lane_intersection) ;; *) echo "ERROR: MAP_TASK must be lane or lane_intersection"; exit 1 ;; esac
 case "${MODEL_FAMILY}" in qwen3|qwen3_5) ;; *) echo "ERROR: MODEL_FAMILY must be qwen3 or qwen3_5"; exit 1 ;; esac
 case "${TRAIN_VARIANT}" in full|lora_llm) ;; *) echo "ERROR: TRAIN_VARIANT must be full or lora_llm"; exit 1 ;; esac
@@ -34,21 +33,24 @@ MODEL_OBS_PATH=${MODEL_OBS_PATH:-obs://yw-ads-training-gy1/data/external/persona
 DATASET_OBS_PATH=${DATASET_OBS_PATH:-obs://yw-ads-training-gy1/data/external/personal/h58801830/whu/jjh/data/data_line_samples_33w.zip}
 DATASET_DIR_NAME=${DATASET_DIR_NAME:-data_line_samples_33w}
 
-DINO_V2_TOWER_NAME=${DINO_V2_TOWER_NAME:-facebook_dinov2-large}
 DINO_V3_TOWER_NAME=${DINO_V3_TOWER_NAME:-facebook_dinov3-vitl16-pretrain-lvd1689m}
 SIGLIP_TOWER_NAME=${SIGLIP_TOWER_NAME:-google_siglip-large-patch16-384}
-DINO_V2_TOWER=${DINO_V2_TOWER:-${OBS_CACHE}/checkpoints/${DINO_V2_TOWER_NAME}}
 DINO_V3_TOWER=${DINO_V3_TOWER:-${OBS_CACHE}/checkpoints/${DINO_V3_TOWER_NAME}}
 SIGLIP_TOWER=${SIGLIP_TOWER:-${OBS_CACHE}/checkpoints/${SIGLIP_TOWER_NAME}}
+DINO_V3_TOWER_OBS_PATH=${DINO_V3_TOWER_OBS_PATH:-${MODEL_OBS_PATH}/${DINO_V3_TOWER_NAME}}
+SIGLIP_TOWER_OBS_PATH=${SIGLIP_TOWER_OBS_PATH:-${MODEL_OBS_PATH}/${SIGLIP_TOWER_NAME}}
+MULTI_VISION_TOWERS=${MULTI_VISION_TOWERS:-${DINO_V3_TOWER},${SIGLIP_TOWER}}
+MULTI_VISION_TOWER_TYPES=${MULTI_VISION_TOWER_TYPES:-dinov3,siglip}
+MULTI_VISION_INPUT_IMAGE_SIZES=${MULTI_VISION_INPUT_IMAGE_SIZES:-512,384}
+MULTI_VISION_PRIMARY_INDEX=${MULTI_VISION_PRIMARY_INDEX:-0}
+MULTI_VISION_HIDDEN_SIZE=${MULTI_VISION_HIDDEN_SIZE:-1024}
+MULTI_VISION_TARGET_GRID=${MULTI_VISION_TARGET_GRID:-32}
+MULTI_VISION_FUSION=${MULTI_VISION_FUSION:-concat_projector}
+VISION_TOWER=${VISION_TOWER:-${MULTI_VISION_TOWERS}}
+MM_VISION_TOWER_TYPE=multi_concat
+INPUT_IMAGE_SIZE=${INPUT_IMAGE_SIZE:-512}
+REQUIRED_VISION_TOWERS=("${DINO_V3_TOWER}" "${SIGLIP_TOWER}")
 
-if [ "${MODEL_FAMILY}" = "qwen3_5" ]; then
-  DEFAULT_QWEN_MODEL_NAME=Qwen3.5-4B-Instruct
-else
-  DEFAULT_QWEN_MODEL_NAME=Qwen3-8B
-fi
-QWEN_MODEL_NAME=${QWEN_MODEL_NAME:-${DEFAULT_QWEN_MODEL_NAME}}
-QWEN_MODEL_OBS_PATH=${QWEN_MODEL_OBS_PATH:-${MODEL_OBS_PATH}/${QWEN_MODEL_NAME}}
-QWEN_PATH=${QWEN_PATH:-${OBS_CACHE}/checkpoints/${QWEN_MODEL_NAME}}
 
 DATASET_ZIP_PATH=${DATASET_ZIP_PATH:-${OBS_CACHE}/dataset_${RUN_ID}.zip}
 DATASET_EXTRACT_ROOT=${DATASET_EXTRACT_ROOT:-${OBS_CACHE}/dataset_extract_${RUN_ID}}
@@ -61,84 +63,10 @@ STAGE_A_CHECKPOINT_OBS_PATH=${STAGE_A_CHECKPOINT_OBS_PATH:-}
 STAGE_A_CHECKPOINT_PATH=${STAGE_A_CHECKPOINT_PATH:-}
 STAGE_A_DOWNLOAD_DIR=${STAGE_A_DOWNLOAD_DIR:-${OBS_CACHE}/stage_a_checkpoint_${RUN_ID}}
 
-case "${VISION_RECIPE}" in
-  dinov2|dinov2_layer_fusion|dinov2_deepstack)
-    VISION_BACKBONE=dinov2
-    VISION_TOWER=${VISION_TOWER:-${DINO_V2_TOWER}}
-    MM_VISION_TOWER_TYPE=dinov2
-    INPUT_IMAGE_SIZE=${INPUT_IMAGE_SIZE:-518}
-    DOWNLOAD_TOWER_NAMES=("${DINO_V2_TOWER_NAME}")
-    REQUIRED_VISION_TOWERS=("${DINO_V2_TOWER}")
-    ;;
-  dinov3|dinov3_layer_fusion|dinov3_deepstack)
-    VISION_BACKBONE=dinov3
-    VISION_TOWER=${VISION_TOWER:-${DINO_V3_TOWER}}
-    MM_VISION_TOWER_TYPE=dinov3
-    INPUT_IMAGE_SIZE=${INPUT_IMAGE_SIZE:-512}
-    DOWNLOAD_TOWER_NAMES=("${DINO_V3_TOWER_NAME}")
-    REQUIRED_VISION_TOWERS=("${DINO_V3_TOWER}")
-    ;;
-  dinov2_siglip_concat)
-    VISION_BACKBONE=dinov2_siglip_concat
-    MULTI_VISION_TOWERS=${MULTI_VISION_TOWERS:-${DINO_V2_TOWER},${SIGLIP_TOWER}}
-    MULTI_VISION_TOWER_TYPES=${MULTI_VISION_TOWER_TYPES:-dinov2,siglip}
-    MULTI_VISION_INPUT_IMAGE_SIZES=${MULTI_VISION_INPUT_IMAGE_SIZES:-512,384}
-    MULTI_VISION_PRIMARY_INDEX=${MULTI_VISION_PRIMARY_INDEX:-0}
-    MULTI_VISION_HIDDEN_SIZE=${MULTI_VISION_HIDDEN_SIZE:-1024}
-    MULTI_VISION_TARGET_GRID=${MULTI_VISION_TARGET_GRID:-32}
-    MULTI_VISION_FUSION=${MULTI_VISION_FUSION:-concat_projector}
-    VISION_TOWER=${VISION_TOWER:-${MULTI_VISION_TOWERS}}
-    MM_VISION_TOWER_TYPE=multi_concat
-    INPUT_IMAGE_SIZE=${INPUT_IMAGE_SIZE:-512}
-    DOWNLOAD_TOWER_NAMES=("${DINO_V2_TOWER_NAME}" "${SIGLIP_TOWER_NAME}")
-    REQUIRED_VISION_TOWERS=("${DINO_V2_TOWER}" "${SIGLIP_TOWER}")
-    ;;
-  dinov3_siglip_concat)
-    VISION_BACKBONE=dinov3_siglip_concat
-    MULTI_VISION_TOWERS=${MULTI_VISION_TOWERS:-${DINO_V3_TOWER},${SIGLIP_TOWER}}
-    MULTI_VISION_TOWER_TYPES=${MULTI_VISION_TOWER_TYPES:-dinov3,siglip}
-    MULTI_VISION_INPUT_IMAGE_SIZES=${MULTI_VISION_INPUT_IMAGE_SIZES:-512,384}
-    MULTI_VISION_PRIMARY_INDEX=${MULTI_VISION_PRIMARY_INDEX:-0}
-    MULTI_VISION_HIDDEN_SIZE=${MULTI_VISION_HIDDEN_SIZE:-1024}
-    MULTI_VISION_TARGET_GRID=${MULTI_VISION_TARGET_GRID:-32}
-    MULTI_VISION_FUSION=${MULTI_VISION_FUSION:-concat_projector}
-    VISION_TOWER=${VISION_TOWER:-${MULTI_VISION_TOWERS}}
-    MM_VISION_TOWER_TYPE=multi_concat
-    INPUT_IMAGE_SIZE=${INPUT_IMAGE_SIZE:-512}
-    DOWNLOAD_TOWER_NAMES=("${DINO_V3_TOWER_NAME}" "${SIGLIP_TOWER_NAME}")
-    REQUIRED_VISION_TOWERS=("${DINO_V3_TOWER}" "${SIGLIP_TOWER}")
-    ;;
-  multi_moe)
-    VISION_BACKBONE=multi_moe
-    MULTI_VISION_TOWERS=${MULTI_VISION_TOWERS:-${DINO_V2_TOWER},${DINO_V3_TOWER}}
-    MULTI_VISION_TOWER_TYPES=${MULTI_VISION_TOWER_TYPES:-dinov2,dinov3}
-    MULTI_VISION_INPUT_IMAGE_SIZES=${MULTI_VISION_INPUT_IMAGE_SIZES:-512,512}
-    MULTI_VISION_PRIMARY_INDEX=${MULTI_VISION_PRIMARY_INDEX:-1}
-    MULTI_VISION_HIDDEN_SIZE=${MULTI_VISION_HIDDEN_SIZE:-1024}
-    MULTI_VISION_TARGET_GRID=${MULTI_VISION_TARGET_GRID:-32}
-    MULTI_VISION_FUSION=${MULTI_VISION_FUSION:-softmax_router}
-    VISION_TOWER=${VISION_TOWER:-${MULTI_VISION_TOWERS}}
-    MM_VISION_TOWER_TYPE=multi_moe
-    INPUT_IMAGE_SIZE=${INPUT_IMAGE_SIZE:-512}
-    DOWNLOAD_TOWER_NAMES=("${DINO_V2_TOWER_NAME}" "${DINO_V3_TOWER_NAME}")
-    REQUIRED_VISION_TOWERS=("${DINO_V2_TOWER}" "${DINO_V3_TOWER}")
-    ;;
-  *) echo "ERROR: unsupported VISION_RECIPE=${VISION_RECIPE}"; exit 1 ;;
-esac
-
 DISABLE_DEEPSTACK=${DISABLE_DEEPSTACK:-True}
 DEEPSTACK_VISUAL_INDEXES=${DEEPSTACK_VISUAL_INDEXES:-}
 VISION_LAYER_FUSION_INDEXES=${VISION_LAYER_FUSION_INDEXES:-}
 VISION_LAYER_FUSION_TYPE=${VISION_LAYER_FUSION_TYPE:-mean}
-case "${VISION_RECIPE}" in
-  dinov2_deepstack|dinov3_deepstack)
-    if [[ "${DISABLE_DEEPSTACK}" =~ ^(1|true|True|TRUE|yes|YES)$ ]]; then DISABLE_DEEPSTACK=False; fi
-    DEEPSTACK_VISUAL_INDEXES=${DEEPSTACK_VISUAL_INDEXES:-"6 12 18 23"}
-    ;;
-  dinov2_layer_fusion|dinov3_layer_fusion)
-    VISION_LAYER_FUSION_INDEXES=${VISION_LAYER_FUSION_INDEXES:-"6 12 18 23"}
-    ;;
-esac
 
 TARGET_GLOBAL_BATCH_SIZE=${TARGET_GLOBAL_BATCH_SIZE:-128}
 PER_DEVICE_TRAIN_BATCH_SIZE=${PER_DEVICE_TRAIN_BATCH_SIZE:-4}
@@ -289,34 +217,26 @@ mkdir -p "${LOCAL_MODEL_SAVE_PATH}"
 OUTPUT_PATH="${LOCAL_MODEL_SAVE_PATH}"
 SWANLAB_LOG_DIR=${SWANLAB_LOG_DIR:-${OUTPUT_PATH}/swanlab}
 
-for i in "${!DOWNLOAD_TOWER_NAMES[@]}"; do
-  python -c "import moxing as mox; mox.file.copy_parallel('${MODEL_OBS_PATH}/${DOWNLOAD_TOWER_NAMES[$i]}', '${REQUIRED_VISION_TOWERS[$i]}')"
-done
+if [ ! -e "${DINO_V3_TOWER}/config.json" ]; then
+  python -c "import moxing as mox; mox.file.copy_parallel('${DINO_V3_TOWER_OBS_PATH}', '${DINO_V3_TOWER}')"
+fi
+if [ ! -e "${SIGLIP_TOWER}/config.json" ]; then
+  python -c "import moxing as mox; mox.file.copy_parallel('${SIGLIP_TOWER_OBS_PATH}', '${SIGLIP_TOWER}')"
+fi
 python -c "import moxing as mox; mox.file.copy('${DATASET_OBS_PATH}', '${DATASET_ZIP_PATH}')"
 mkdir -p "${DATASET_EXTRACT_ROOT}"
 unzip -q "${DATASET_ZIP_PATH}" -d "${DATASET_EXTRACT_ROOT}"
 
-if [ "${DATASET_PHASE}" = "phase_b" ]; then
-  if [ -n "${STAGE_A_CHECKPOINT_OBS_PATH}" ]; then
-    python -c "import moxing as mox; mox.file.copy_parallel('${STAGE_A_CHECKPOINT_OBS_PATH}', '${STAGE_A_DOWNLOAD_DIR}')"
-    CHECKPOINT_INPUT_PATH="${STAGE_A_DOWNLOAD_DIR}"
-  elif [ -n "${STAGE_A_CHECKPOINT_PATH}" ]; then
-    CHECKPOINT_INPUT_PATH="${STAGE_A_CHECKPOINT_PATH}"
-  else
-    echo "ERROR: set STAGE_A_CHECKPOINT_OBS_PATH or STAGE_A_CHECKPOINT_PATH for Stage-B SFT."
-    exit 1
-  fi
-  INIT_MODEL_PATH=$(resolve_training_checkpoint "${CHECKPOINT_INPUT_PATH}")
-  if [ "${TRAIN_VARIANT}" = "lora_llm" ] && compgen -G "${INIT_MODEL_PATH}/adapter_model*" > /dev/null; then
-    echo "ERROR: Stage-B lora_llm expects a full Stage-A checkpoint. Adapter-only Stage-A LoRA continuation is not supported by this train entrypoint."
-    exit 1
-  fi
+if [ -n "${STAGE_A_CHECKPOINT_OBS_PATH}" ]; then
+  python -c "import moxing as mox; mox.file.copy_parallel('${STAGE_A_CHECKPOINT_OBS_PATH}', '${STAGE_A_DOWNLOAD_DIR}')"
+  CHECKPOINT_INPUT_PATH="${STAGE_A_DOWNLOAD_DIR}"
+elif [ -n "${STAGE_A_CHECKPOINT_PATH}" ]; then
+  CHECKPOINT_INPUT_PATH="${STAGE_A_CHECKPOINT_PATH}"
 else
-  if [ ! -e "${QWEN_PATH}/config.json" ]; then
-    python -c "import moxing as mox; mox.file.copy_parallel('${QWEN_MODEL_OBS_PATH}', '${QWEN_PATH}')"
-  fi
-  INIT_MODEL_PATH="${QWEN_PATH}"
+  echo "ERROR: set STAGE_A_CHECKPOINT_OBS_PATH or STAGE_A_CHECKPOINT_PATH for Stage-B SFT."
+  exit 1
 fi
+INIT_MODEL_PATH=$(resolve_training_checkpoint "${CHECKPOINT_INPUT_PATH}")
 
 TRAIN_PATH="${DATASET_PATH}/${DATASET_PHASE}/train.jsonl"
 EVAL_PATH="${DATASET_PATH}/${DATASET_PHASE}/eval.jsonl"
@@ -338,20 +258,14 @@ if [[ "${ENABLE_EVAL}" =~ ^(1|true|True|TRUE|yes|YES)$ ]]; then
   EVAL_ARGS=(--eval_data_path "${EVAL_PATH}" --eval_image_folder "${IMAGE_FOLDER}" "${EVAL_STRATEGY_ARG}" steps --eval_steps "${EVAL_STEPS}" --save_best_eval_loss "${SAVE_BEST_EVAL_LOSS}" --best_eval_loss_dir eval_best)
 fi
 VISION_ARGS=(--vision_tower "${VISION_TOWER}" --mm_vision_tower_type "${MM_VISION_TOWER_TYPE}" --input_image_size "${INPUT_IMAGE_SIZE}")
-if [[ "${MM_VISION_TOWER_TYPE}" == "multi_moe" || "${MM_VISION_TOWER_TYPE}" == "multi_concat" ]]; then
-  VISION_ARGS+=(--multi_vision_towers "${MULTI_VISION_TOWERS}" --multi_vision_tower_types "${MULTI_VISION_TOWER_TYPES}" --multi_vision_input_image_sizes "${MULTI_VISION_INPUT_IMAGE_SIZES}" --multi_vision_primary_index "${MULTI_VISION_PRIMARY_INDEX}" --multi_vision_hidden_size "${MULTI_VISION_HIDDEN_SIZE}" --multi_vision_target_grid "${MULTI_VISION_TARGET_GRID}" --multi_vision_fusion "${MULTI_VISION_FUSION}")
-fi
+VISION_ARGS+=(--multi_vision_towers "${MULTI_VISION_TOWERS}" --multi_vision_tower_types "${MULTI_VISION_TOWER_TYPES}" --multi_vision_input_image_sizes "${MULTI_VISION_INPUT_IMAGE_SIZES}" --multi_vision_primary_index "${MULTI_VISION_PRIMARY_INDEX}" --multi_vision_hidden_size "${MULTI_VISION_HIDDEN_SIZE}" --multi_vision_target_grid "${MULTI_VISION_TARGET_GRID}" --multi_vision_fusion "${MULTI_VISION_FUSION}")
 if [ -n "${VISION_LAYER_FUSION_INDEXES}" ]; then
   VISION_ARGS+=(--vision_layer_fusion_indexes ${VISION_LAYER_FUSION_INDEXES} --vision_layer_fusion_type "${VISION_LAYER_FUSION_TYPE}")
 fi
 if [[ ! "${DISABLE_DEEPSTACK}" =~ ^(1|true|True|TRUE|yes|YES)$ && -n "${DEEPSTACK_VISUAL_INDEXES}" ]]; then
   VISION_ARGS+=(--deepstack_visual_indexes ${DEEPSTACK_VISUAL_INDEXES})
 fi
-
-BEST_INFER_VISION_TOWER="${VISION_TOWER}"
-if [[ "${MM_VISION_TOWER_TYPE}" == "multi_moe" || "${MM_VISION_TOWER_TYPE}" == "multi_concat" ]]; then
-  BEST_INFER_VISION_TOWER="${MULTI_VISION_TOWERS}"
-fi
+BEST_INFER_VISION_TOWER="${MULTI_VISION_TOWERS}"
 
 echo "============================================================"
 echo "Recipe:       ${DATASET_PHASE} | ${MAP_TASK} | ${VISION_RECIPE} | ${MODEL_FAMILY} | ${TRAIN_VARIANT}"

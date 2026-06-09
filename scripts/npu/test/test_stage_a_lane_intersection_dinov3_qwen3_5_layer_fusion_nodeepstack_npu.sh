@@ -4,7 +4,7 @@ set -euo pipefail
 # ============================================================
 # NPU inference
 # Fixed recipe: phase_a | lane+intersection | DINOv3 direct ViT layer fusion, no DeepStack | Qwen3.5 text LLM
-# This file is self-contained and does not call another project .sh file.
+# This file is self-contained and only downloads the model assets required by this recipe.
 # ============================================================
 
 SCRIPT_PATH=$(readlink -f "$0")
@@ -21,7 +21,6 @@ MODEL_FAMILY=qwen3_5
 MODEL_LABEL=qwen3_5
 TRAIN_VARIANT=full
 
-case "${DATASET_PHASE}" in phase_a|phase_b) ;; *) echo "ERROR: DATASET_PHASE must be phase_a or phase_b"; exit 1 ;; esac
 case "${MAP_TASK}" in lane|lane_intersection) ;; *) echo "ERROR: MAP_TASK must be lane or lane_intersection"; exit 1 ;; esac
 case "${MODEL_FAMILY}" in qwen3|qwen3_5) ;; *) echo "ERROR: MODEL_FAMILY must be qwen3 or qwen3_5"; exit 1 ;; esac
 
@@ -35,12 +34,13 @@ DATASET_DIR_NAME=${DATASET_DIR_NAME:-data_line_samples_33w}
 CHECKPOINT_OBS_LIST=${CHECKPOINT_OBS_LIST:-}
 CHECKPOINT_DIRS=${CHECKPOINT_DIRS:-}
 
-DINO_V2_TOWER_NAME=${DINO_V2_TOWER_NAME:-facebook_dinov2-large}
 DINO_V3_TOWER_NAME=${DINO_V3_TOWER_NAME:-facebook_dinov3-vitl16-pretrain-lvd1689m}
-SIGLIP_TOWER_NAME=${SIGLIP_TOWER_NAME:-google_siglip-large-patch16-384}
-DINO_V2_TOWER=${DINO_V2_TOWER:-${OBS_CACHE}/checkpoints/${DINO_V2_TOWER_NAME}}
-DINO_V3_TOWER=${DINO_V3_TOWER:-${OBS_CACHE}/checkpoints/${DINO_V3_TOWER_NAME}}
-SIGLIP_TOWER=${SIGLIP_TOWER:-${OBS_CACHE}/checkpoints/${SIGLIP_TOWER_NAME}}
+VISION_TOWER=${VISION_TOWER:-${OBS_CACHE}/checkpoints/${DINO_V3_TOWER_NAME}}
+VISION_TOWER_OBS_PATH=${VISION_TOWER_OBS_PATH:-${MODEL_OBS_PATH}/${DINO_V3_TOWER_NAME}}
+MM_VISION_TOWER_TYPE=dinov3
+INPUT_IMAGE_SIZE=${INPUT_IMAGE_SIZE:-512}
+REQUIRED_VISION_TOWERS=("${VISION_TOWER}")
+
 
 DATASET_ZIP_PATH=${DATASET_ZIP_PATH:-${OBS_CACHE}/dataset_${RUN_ID}.zip}
 DATASET_EXTRACT_ROOT=${DATASET_EXTRACT_ROOT:-${OBS_CACHE}/dataset_extract_${RUN_ID}}
@@ -55,84 +55,10 @@ MAX_NEW_TOKENS=${MAX_NEW_TOKENS:-2048}
 COORD_MODE=${COORD_MODE:-auto}
 COORD_RANGE=${COORD_RANGE:-1000}
 
-case "${VISION_RECIPE}" in
-  dinov2|dinov2_layer_fusion|dinov2_deepstack)
-    VISION_BACKBONE=dinov2
-    VISION_TOWER=${VISION_TOWER:-${DINO_V2_TOWER}}
-    MM_VISION_TOWER_TYPE=dinov2
-    INPUT_IMAGE_SIZE=${INPUT_IMAGE_SIZE:-518}
-    DOWNLOAD_TOWER_NAMES=("${DINO_V2_TOWER_NAME}")
-    REQUIRED_VISION_TOWERS=("${DINO_V2_TOWER}")
-    ;;
-  dinov3|dinov3_layer_fusion|dinov3_deepstack)
-    VISION_BACKBONE=dinov3
-    VISION_TOWER=${VISION_TOWER:-${DINO_V3_TOWER}}
-    MM_VISION_TOWER_TYPE=dinov3
-    INPUT_IMAGE_SIZE=${INPUT_IMAGE_SIZE:-512}
-    DOWNLOAD_TOWER_NAMES=("${DINO_V3_TOWER_NAME}")
-    REQUIRED_VISION_TOWERS=("${DINO_V3_TOWER}")
-    ;;
-  dinov2_siglip_concat)
-    VISION_BACKBONE=dinov2_siglip_concat
-    MULTI_VISION_TOWERS=${MULTI_VISION_TOWERS:-${DINO_V2_TOWER},${SIGLIP_TOWER}}
-    MULTI_VISION_TOWER_TYPES=${MULTI_VISION_TOWER_TYPES:-dinov2,siglip}
-    MULTI_VISION_INPUT_IMAGE_SIZES=${MULTI_VISION_INPUT_IMAGE_SIZES:-512,384}
-    MULTI_VISION_PRIMARY_INDEX=${MULTI_VISION_PRIMARY_INDEX:-0}
-    MULTI_VISION_HIDDEN_SIZE=${MULTI_VISION_HIDDEN_SIZE:-1024}
-    MULTI_VISION_TARGET_GRID=${MULTI_VISION_TARGET_GRID:-32}
-    MULTI_VISION_FUSION=${MULTI_VISION_FUSION:-concat_projector}
-    VISION_TOWER=${VISION_TOWER:-${MULTI_VISION_TOWERS}}
-    MM_VISION_TOWER_TYPE=multi_concat
-    INPUT_IMAGE_SIZE=${INPUT_IMAGE_SIZE:-512}
-    DOWNLOAD_TOWER_NAMES=("${DINO_V2_TOWER_NAME}" "${SIGLIP_TOWER_NAME}")
-    REQUIRED_VISION_TOWERS=("${DINO_V2_TOWER}" "${SIGLIP_TOWER}")
-    ;;
-  dinov3_siglip_concat)
-    VISION_BACKBONE=dinov3_siglip_concat
-    MULTI_VISION_TOWERS=${MULTI_VISION_TOWERS:-${DINO_V3_TOWER},${SIGLIP_TOWER}}
-    MULTI_VISION_TOWER_TYPES=${MULTI_VISION_TOWER_TYPES:-dinov3,siglip}
-    MULTI_VISION_INPUT_IMAGE_SIZES=${MULTI_VISION_INPUT_IMAGE_SIZES:-512,384}
-    MULTI_VISION_PRIMARY_INDEX=${MULTI_VISION_PRIMARY_INDEX:-0}
-    MULTI_VISION_HIDDEN_SIZE=${MULTI_VISION_HIDDEN_SIZE:-1024}
-    MULTI_VISION_TARGET_GRID=${MULTI_VISION_TARGET_GRID:-32}
-    MULTI_VISION_FUSION=${MULTI_VISION_FUSION:-concat_projector}
-    VISION_TOWER=${VISION_TOWER:-${MULTI_VISION_TOWERS}}
-    MM_VISION_TOWER_TYPE=multi_concat
-    INPUT_IMAGE_SIZE=${INPUT_IMAGE_SIZE:-512}
-    DOWNLOAD_TOWER_NAMES=("${DINO_V3_TOWER_NAME}" "${SIGLIP_TOWER_NAME}")
-    REQUIRED_VISION_TOWERS=("${DINO_V3_TOWER}" "${SIGLIP_TOWER}")
-    ;;
-  multi_moe)
-    VISION_BACKBONE=multi_moe
-    MULTI_VISION_TOWERS=${MULTI_VISION_TOWERS:-${DINO_V2_TOWER},${DINO_V3_TOWER}}
-    MULTI_VISION_TOWER_TYPES=${MULTI_VISION_TOWER_TYPES:-dinov2,dinov3}
-    MULTI_VISION_INPUT_IMAGE_SIZES=${MULTI_VISION_INPUT_IMAGE_SIZES:-512,512}
-    MULTI_VISION_PRIMARY_INDEX=${MULTI_VISION_PRIMARY_INDEX:-1}
-    MULTI_VISION_HIDDEN_SIZE=${MULTI_VISION_HIDDEN_SIZE:-1024}
-    MULTI_VISION_TARGET_GRID=${MULTI_VISION_TARGET_GRID:-32}
-    MULTI_VISION_FUSION=${MULTI_VISION_FUSION:-softmax_router}
-    VISION_TOWER=${VISION_TOWER:-${MULTI_VISION_TOWERS}}
-    MM_VISION_TOWER_TYPE=multi_moe
-    INPUT_IMAGE_SIZE=${INPUT_IMAGE_SIZE:-512}
-    DOWNLOAD_TOWER_NAMES=("${DINO_V2_TOWER_NAME}" "${DINO_V3_TOWER_NAME}")
-    REQUIRED_VISION_TOWERS=("${DINO_V2_TOWER}" "${DINO_V3_TOWER}")
-    ;;
-  *) echo "ERROR: unsupported VISION_RECIPE=${VISION_RECIPE}"; exit 1 ;;
-esac
-
 DISABLE_DEEPSTACK=${DISABLE_DEEPSTACK:-True}
 DEEPSTACK_VISUAL_INDEXES=${DEEPSTACK_VISUAL_INDEXES:-}
-VISION_LAYER_FUSION_INDEXES=${VISION_LAYER_FUSION_INDEXES:-}
+VISION_LAYER_FUSION_INDEXES=${VISION_LAYER_FUSION_INDEXES:-"6 12 18 23"}
 VISION_LAYER_FUSION_TYPE=${VISION_LAYER_FUSION_TYPE:-mean}
-case "${VISION_RECIPE}" in
-  dinov2_deepstack|dinov3_deepstack)
-    if [[ "${DISABLE_DEEPSTACK}" =~ ^(1|true|True|TRUE|yes|YES)$ ]]; then DISABLE_DEEPSTACK=False; fi
-    DEEPSTACK_VISUAL_INDEXES=${DEEPSTACK_VISUAL_INDEXES:-"6 12 18 23"}
-    ;;
-  dinov2_layer_fusion|dinov3_layer_fusion)
-    VISION_LAYER_FUSION_INDEXES=${VISION_LAYER_FUSION_INDEXES:-"6 12 18 23"}
-    ;;
-esac
 
 export ASCEND_CUSTOM_PATH=${ASCEND_CUSTOM_PATH:-/usr/local/Ascend/ascend-toolkit/latest}
 export ASCEND_CUSTOM_OPP_PATH=${ASCEND_CUSTOM_OPP_PATH:-/usr/local/Ascend/ascend-toolkit/latest}
@@ -248,12 +174,13 @@ MASTER_PORT=${MASTER_PORT:-6060}
 export NNODES NODE_RANK NPROC_PER_NODE MASTER_ADDR MASTER_PORT
 export RDZV_ID=${RDZV_ID:-test_${DATASET_PHASE}_${MAP_TASK}_${VISION_RECIPE}_${MODEL_LABEL}_${TRAIN_VARIANT}_${RUN_ID}}
 
-for i in "${!DOWNLOAD_TOWER_NAMES[@]}"; do
-  python -c "import moxing as mox; mox.file.copy_parallel('${MODEL_OBS_PATH}/${DOWNLOAD_TOWER_NAMES[$i]}', '${REQUIRED_VISION_TOWERS[$i]}')"
-done
+if [ ! -e "${VISION_TOWER}/config.json" ]; then
+  python -c "import moxing as mox; mox.file.copy_parallel('${VISION_TOWER_OBS_PATH}', '${VISION_TOWER}')"
+fi
 python -c "import moxing as mox; mox.file.copy('${DATASET_OBS_PATH}', '${DATASET_ZIP_PATH}')"
 mkdir -p "${DATASET_EXTRACT_ROOT}" "${CHECKPOINT_DOWNLOAD_ROOT}" "${LOCAL_OUTPUT_ROOT}"
 unzip -q "${DATASET_ZIP_PATH}" -d "${DATASET_EXTRACT_ROOT}"
+
 
 CHECKPOINT_ITEMS=()
 CHECKPOINT_LABELS=()
@@ -288,9 +215,7 @@ VISION_ARGS=(--vision_tower "${VISION_TOWER}" --mm_vision_tower_type "${MM_VISIO
 if [[ "${DISABLE_DEEPSTACK}" =~ ^(1|true|True|TRUE|yes|YES)$ ]]; then
   VISION_ARGS+=(--disable_deepstack)
 fi
-if [[ "${MM_VISION_TOWER_TYPE}" == "multi_moe" || "${MM_VISION_TOWER_TYPE}" == "multi_concat" ]]; then
-  VISION_ARGS+=(--multi_vision_towers "${MULTI_VISION_TOWERS}" --multi_vision_tower_types "${MULTI_VISION_TOWER_TYPES}" --multi_vision_input_image_sizes "${MULTI_VISION_INPUT_IMAGE_SIZES}" --multi_vision_primary_index "${MULTI_VISION_PRIMARY_INDEX}" --multi_vision_hidden_size "${MULTI_VISION_HIDDEN_SIZE}" --multi_vision_target_grid "${MULTI_VISION_TARGET_GRID}" --multi_vision_fusion "${MULTI_VISION_FUSION}")
-fi
+
 if [ -n "${VISION_LAYER_FUSION_INDEXES}" ]; then
   VISION_ARGS+=(--vision_layer_fusion_indexes ${VISION_LAYER_FUSION_INDEXES} --vision_layer_fusion_type "${VISION_LAYER_FUSION_TYPE}")
 fi

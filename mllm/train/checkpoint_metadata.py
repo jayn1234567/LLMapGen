@@ -1,6 +1,8 @@
 import json
 import os
 
+from mllm.model.language_model.qwen_family import qwen_family_from_text
+
 
 def _unwrap_model(model):
     while hasattr(model, "module"):
@@ -97,11 +99,12 @@ def _infer_language_model_type(model, config):
         _cfg_get(config, "_name_or_path", ""),
         model.__class__.__name__,
     ]
-    joined = " ".join(str(value).lower() for value in raw_values if value is not None)
-    if "qwen3" in joined or "qwen-3" in joined:
-        return "qwen3"
-    if "qwen2" in joined or "qwen-2" in joined:
-        return "qwen2"
+    current_model_type = str(_cfg_get(config, "model_type", "") or "")
+    family = qwen_family_from_text(*raw_values)
+    if family is not None:
+        if "text" in current_model_type.lower():
+            return current_model_type
+        return family
     return _cfg_get(config, "model_type")
 
 

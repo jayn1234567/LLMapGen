@@ -12,3 +12,14 @@ from .language_model.llava_qwen3 import (
     Qwen3MultimodalConfig,
     Qwen3MultimodalForCausalLM,
 )
+from .language_model.llava_qwen3_5 import (
+    LlavaQwen3MoeForCausalLM,
+    LlavaQwen3_5ForCausalLM,
+    LlavaQwen3_5MoeForCausalLM,
+    Qwen3MoeMultimodalConfig,
+    Qwen3MoeMultimodalForCausalLM,
+    Qwen3_5MoeMultimodalConfig,
+    Qwen3_5MoeMultimodalForCausalLM,
+    Qwen3_5MultimodalConfig,
+    Qwen3_5MultimodalForCausalLM,
+)

@@ -1,9 +1,16 @@
 #!/usr/bin/env python3
 import argparse
 import json
+import sys
 from pathlib import Path
 
 from PIL import Image, ImageDraw
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from scripts.tools.map_visualization import sanitize_points
 
 
 def load_summary(path: Path):
@@ -20,7 +27,9 @@ def canvas_size(summary, explicit_size=None):
         max_x = max(max_x, x0 + int(result.get("patch_size", 256)))
         max_y = max(max_y, y0 + int(result.get("patch_size", 256)))
     for line in summary.get("merged_global", {}).get("lines", []):
-        for x, y in line.get("points", []):
+        if not isinstance(line, dict):
+            continue
+        for x, y in sanitize_points(line.get("points", [])):
             max_x = max(max_x, int(x) + 1)
             max_y = max(max_y, int(y) + 1)
     return max(max_x, 1), max(max_y, 1)
@@ -29,7 +38,9 @@ def canvas_size(summary, explicit_size=None):
 def draw_lines(image, lines, centerline_color, intersection_color, width):
     draw = ImageDraw.Draw(image)
     for line in lines:
-        points = [(int(x), int(y)) for x, y in line.get("points", [])]
+        if not isinstance(line, dict):
+            continue
+        points = sanitize_points(line.get("points", []))
         if len(points) < 2:
             continue
         category = str(line.get("category", "centerline")).lower()

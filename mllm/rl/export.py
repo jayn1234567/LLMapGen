@@ -8,6 +8,7 @@ from typing import Any
 
 import torch
 
+from mllm.model.language_model.qwen_family import qwen_family_from_text, qwen_text_architecture
 from mllm.model.qwen_token_utils import normalize_qwen_config_dict
 from mllm.train.checkpoint_metadata import (
     sync_qwen_multimodal_config,
@@ -127,15 +128,11 @@ def _is_text_decoder_key(key: str) -> bool:
 
 def _text_decoder_config(multimodal_config: dict[str, Any]) -> dict[str, Any]:
     config = dict(multimodal_config)
-    model_type = str(config.get("model_type") or "").lower()
-    if "qwen3" in model_type:
-        config["model_type"] = "qwen3"
-        config["architectures"] = ["Qwen3ForCausalLM"]
-    elif "qwen2" in model_type:
-        config["model_type"] = "qwen2"
-        config["architectures"] = ["Qwen2ForCausalLM"]
-    else:
-        raise ValueError(f"Cannot export vLLM text decoder for model_type={model_type!r}")
+    family = qwen_family_from_text(config.get("model_type"), *(config.get("architectures") or []))
+    if family is None:
+        raise ValueError(f"Cannot export vLLM text decoder for model_type={config.get('model_type')!r}")
+    config["model_type"] = family
+    config["architectures"] = [qwen_text_architecture(family)]
 
     for key in list(config):
         if key.startswith("mm_") or key in {

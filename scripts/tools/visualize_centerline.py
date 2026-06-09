@@ -11,7 +11,12 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from mllm.coord_utils import COORD_MODE_PIXEL, convert_payload_text, record_coord_config
-from scripts.tools.map_visualization import render_whole_map_visualizations, resolve_image_path as resolve_map_image_path
+from scripts.tools.map_visualization import (
+    count_invalid_geometry,
+    render_whole_map_visualizations,
+    resolve_image_path as resolve_map_image_path,
+    sanitize_points,
+)
 
 
 def load_json_maybe(text: str):
@@ -77,13 +82,28 @@ def record_has_ground_truth(record: dict) -> bool:
     return any(record.get(key) for key in ("ground_truth", "labels", "ground_truth_pixel", "labels_pixel"))
 
 
+def safe_output_name(value) -> str:
+    text = str(value or "record")
+    return "".join(ch if ch.isalnum() or ch in ("-", "_", ".") else "_" for ch in text) or "record"
+
+
+def warn_invalid_geometry(record_id: str, label: str, payload) -> None:
+    invalid_lines, invalid_points = count_invalid_geometry(payload)
+    if invalid_lines or invalid_points:
+        print(
+            f"[WARN] {record_id} {label}: skipped "
+            f"{invalid_lines} malformed lines and {invalid_points} malformed points"
+        )
+
+
 def draw_map_lines(image: Image.Image, payload, centerline_color: tuple, intersection_color: tuple, width: int = 3) -> Image.Image:
     draw = ImageDraw.Draw(image)
     for item in normalize_lines(payload):
-        points = item.get("points", [])
-        if not points:
+        if not isinstance(item, dict):
             continue
-        xy_points = [(int(pt[0]), int(pt[1])) for pt in points if isinstance(pt, list) and len(pt) == 2]
+        xy_points = sanitize_points(item.get("points", []))
+        if not xy_points:
+            continue
         category = str(item.get("category", "centerline")).lower()
         color = intersection_color if category == "intersection" else centerline_color
         for i in range(len(xy_points) - 1):
@@ -200,34 +220,43 @@ def main():
     pred_color = colors.get(args.color_pred, colors["red"])
 
     for result in results:
-        image_path = resolve_map_image_path(result.get("image", "") or result.get("image_path", ""), image_folder, result)
-        if not image_path.exists():
-            print(f"[WARN] Image not found: {image_path}")
+        record_id = str(result.get("record_id") or result.get("id") or result.get("image") or "record")
+        try:
+            image_path = resolve_map_image_path(result.get("image", "") or result.get("image_path", ""), image_folder, result)
+            if not image_path.exists():
+                print(f"[WARN] Image not found for {record_id}: {image_path}")
+                continue
+
+            base_image = Image.open(image_path).convert("RGB")
+            gt_payload = payload_for_draw(result, ["ground_truth_pixel", "labels_pixel"], ["ground_truth", "labels"])
+            pred_payload = payload_for_draw(result, ["prediction_json_pixel", "response_pixel", "prediction_pixel"], ["prediction_json", "response", "prediction"])
+            warn_invalid_geometry(record_id, "ground_truth", gt_payload)
+            warn_invalid_geometry(record_id, "prediction", pred_payload)
+            gt_image = draw_map_lines(base_image.copy(), gt_payload, gt_color, colors["yellow"])
+            pred_image = draw_map_lines(base_image.copy(), pred_payload, pred_color, colors["blue"])
+
+            gt_panel = add_title(gt_image, "Ground Truth")
+            pred_panel = add_title(pred_image, "Prediction")
+
+            merged = Image.new("RGB", (gt_panel.width + pred_panel.width + 10, gt_panel.height), "black")
+            merged.paste(gt_panel, (0, 0))
+            merged.paste(pred_panel, (gt_panel.width + 10, 0))
+
+            out_path = output_dir / f"{safe_output_name(record_id or image_path.stem)}_compare.png"
+            merged.save(out_path)
+            print(f"Saved: {out_path}")
+        except Exception as exc:
+            print(f"[WARN] Visualization failed for {record_id}: {type(exc).__name__}: {exc}")
             continue
-
-        base_image = Image.open(image_path).convert("RGB")
-        gt_payload = payload_for_draw(result, ["ground_truth_pixel", "labels_pixel"], ["ground_truth", "labels"])
-        pred_payload = payload_for_draw(result, ["prediction_json_pixel", "response_pixel", "prediction_pixel"], ["prediction_json", "response", "prediction"])
-        gt_image = draw_map_lines(base_image.copy(), gt_payload, gt_color, colors["yellow"])
-        pred_image = draw_map_lines(base_image.copy(), pred_payload, pred_color, colors["blue"])
-
-        gt_panel = add_title(gt_image, "Ground Truth")
-        pred_panel = add_title(pred_image, "Prediction")
-
-        merged = Image.new("RGB", (gt_panel.width + pred_panel.width + 10, gt_panel.height), "black")
-        merged.paste(gt_panel, (0, 0))
-        merged.paste(pred_panel, (gt_panel.width + 10, 0))
-
-        record_id = result.get("record_id", image_path.stem)
-        out_path = output_dir / f"{record_id}_compare.png"
-        merged.save(out_path)
-        print(f"Saved: {out_path}")
 
     print(f"Done. Visualizations saved to {output_dir}")
     if not args.skip_whole_map_viz:
         whole_map_viz_dir = Path(args.whole_map_viz_dir) if args.whole_map_viz_dir else input_dir / "whole_map_viz"
-        rendered = render_whole_map_visualizations(results, image_folder, whole_map_viz_dir)
-        print(json.dumps({"whole_map_viz_dir": str(whole_map_viz_dir), "whole_map_visualizations": rendered}, ensure_ascii=False))
+        try:
+            rendered = render_whole_map_visualizations(results, image_folder, whole_map_viz_dir)
+            print(json.dumps({"whole_map_viz_dir": str(whole_map_viz_dir), "whole_map_visualizations": rendered}, ensure_ascii=False))
+        except Exception as exc:
+            print(f"[WARN] Whole-map visualization failed: {type(exc).__name__}: {exc}")
     if not args.no_eval_centerline and any(record_has_ground_truth(result) for result in results):
         from infer_index.line_eval import (
             evaluate_records,

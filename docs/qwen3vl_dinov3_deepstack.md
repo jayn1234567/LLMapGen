@@ -6,7 +6,7 @@ This document records the current behavior of branch `unimapgen`.
 
 The framework is generic MLLM code; this branch uses it for BEV road centerline reconstruction with:
 
-- Qwen2.5 or Qwen3-VL as the language model.
+- Qwen2.5, Qwen3, Qwen3.5, or Qwen3-VL as the language model.
 - DINOv2 or DINOv3 as the main vision tower, with optional SigLIP in multi-vision recipes.
 - Optional DeepStack visual injection.
 - Optional single-DINO layer fusion and multi-vision MoE/concat fusion.
@@ -102,9 +102,23 @@ Training and inference derive the DINO type from checkpoint metadata, `mm_vision
 
 The project currently has these vision-side recipes:
 
+LLM family routing is handled from checkpoint `model_type`: `qwen3`,
+`qwen3_moe`, `qwen3_5`/`qwen3_5_text`, and
+`qwen3_5_moe`/`qwen3_5_moe_text` map to matching multimodal wrappers instead
+of being collapsed into one generic Qwen3 class. Qwen3.5 needs a Transformers
+build with `Qwen3_5*` classes; use the `fastvlm` environment.
+
+Qwen3-VL checkpoints are converted to a text-only LLM cache before training or
+inference. The cache path is now stable by default:
+`<Qwen3-VL-dir>_llm_extracted`. For cluster/shared-cache runs, set
+`QWEN3VL_EXTRACTED_LLM_PATH` to one exact output directory, or
+`QWEN3VL_EXTRACTED_LLM_ROOT` to a shared root. Older
+`.qwen3_llm_extracted_<hash>` caches remain readable and are symlinked to the
+stable name when possible.
+
 | Recipe | Data flow | Main scripts |
 |---|---|---|
-| Single DINO, no fusion | one selected ViT layer -> `mm_projector` -> Qwen image token | GPU: `scripts/gpu/train_sft_qwen3vl_nodeepstack_smoke_gpu.sh`; NPU: `scripts/npu/train/train_sft_stage_*_dinov2_qwen3vl_nodeepstack_npu.sh`, `...dinov3...`, with matching `scripts/npu/test/test_stage_*` files. |
+| Single DINO, no fusion | one selected ViT layer -> `mm_projector` -> Qwen image token | GPU train+infer smoke: `scripts/gpu/train_sft_qwen3vl_nodeepstack_smoke_gpu.sh`, plus pure LLM wrappers `scripts/gpu/train_sft_qwen3_nodeepstack_smoke_gpu.sh` and `scripts/gpu/train_sft_qwen3_5_nodeepstack_smoke_gpu.sh`; standalone GPU infer: `scripts/gpu/infer_qwen_family_centerline_gpu.sh`; NPU: `scripts/npu/train/train_sft_stage_*_dinov2_qwen3vl_nodeepstack_npu.sh`, `...dinov3...`, with matching `scripts/npu/test/test_stage_*` files. |
 | Qwen-style DeepStack | main ViT layer -> `mm_projector`; selected intermediate ViT layers -> independent mergers -> residual injection into early Qwen decoder layers | GPU: `scripts/gpu/train_sft_qwen3vl_deepstack_smoke_gpu.sh`; inference recovers DeepStack from checkpoint metadata or accepts `--deepstack_visual_indexes`. Current formal NPU pure-DeepStack files are legacy under `scripts/npu/tmp/`; the current formal DeepStack recipe is DINOv2 DeepStack + layer fusion. |
 | Single-DINO layer fusion | selected ViT layers -> per-layer LayerNorm -> `mean`/`sum`/`learned_weighted` -> one main visual stream -> `mm_projector` | GPU: `scripts/gpu/train_sft_qwen3vl_nodeepstack_dinov2_layer_fusion_smoke_gpu.sh`, `...dinov3_layer_fusion...`; NPU: set `VISION_LAYER_FUSION_INDEXES` and `VISION_LAYER_FUSION_TYPE` inside the target single-DINO SFT script. |
 | DeepStack + layer fusion | layer-fused main visual stream plus DeepStack residual stream | GPU: `scripts/gpu/train_sft_qwen3vl_deepstack_layer_fusion_smoke_gpu.sh`; NPU: `scripts/npu/train/train_sft_stage_a_lane_dinov2_qwen3vl_deepstack_layer_fusion_npu.sh` and `scripts/npu/test/test_stage_a_lane_dinov2_qwen3vl_deepstack_layer_fusion_npu.sh`. |

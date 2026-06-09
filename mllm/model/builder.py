@@ -25,6 +25,15 @@ from mllm.model import *
 from mllm.constants import DEFAULT_IMAGE_PATCH_TOKEN, DEFAULT_IM_START_TOKEN, DEFAULT_IM_END_TOKEN
 from mllm.model.qwen3vl_extractor import is_qwen3vl_checkpoint, is_llava_checkpoint, ensure_extracted_llm_from_qwen3vl
 from mllm.model.qwen_token_utils import qwen_tokenizer_kwargs, sync_qwen_token_config
+from mllm.model.language_model.qwen_family import (
+    as_qwen_multimodal_config,
+    qwen_family_architecture,
+    qwen_family_from_config,
+    qwen_family_from_config_dict,
+    qwen_family_from_text,
+    qwen_multimodal_config_class,
+    qwen_multimodal_model_class,
+)
 
 try:
     from safetensors.torch import load_file as safe_load_file
@@ -354,27 +363,10 @@ def _load_auto_config(model_path, **kwargs):
             except Exception:
                 metadata = {}
 
-        raw_model_type = (
-            config_dict.get("model_type")
-            or metadata.get("model_type")
-            or ("qwen3" if "qwen3" in str(model_path).lower() else None)
-            or ("qwen2" if "qwen2" in str(model_path).lower() else None)
+        model_type = (
+            qwen_family_from_config_dict(config_dict, metadata)
+            or qwen_family_from_text(str(model_path))
         )
-        if raw_model_type is None:
-            architectures = config_dict.get("architectures") or metadata.get("architectures") or []
-            joined_architectures = " ".join(str(item).lower() for item in architectures)
-            if "qwen3" in joined_architectures:
-                raw_model_type = "qwen3"
-            elif "qwen2" in joined_architectures:
-                raw_model_type = "qwen2"
-
-        model_type_text = str(raw_model_type or "").lower()
-        if "qwen3" in model_type_text:
-            model_type = "qwen3"
-        elif "qwen2" in model_type_text:
-            model_type = "qwen2"
-        else:
-            model_type = None
 
         if model_type is None:
             raise ValueError(
@@ -383,14 +375,8 @@ def _load_auto_config(model_path, **kwargs):
             ) from exc
 
         config_dict["model_type"] = model_type
-        if model_type == "qwen3":
-            config_dict.setdefault("architectures", ["Qwen3MultimodalForCausalLM"])
-            config_class = Qwen3MultimodalConfig
-        elif model_type == "qwen2":
-            config_dict.setdefault("architectures", ["Qwen2MultimodalForCausalLM"])
-            config_class = Qwen2MultimodalConfig
-        else:
-            raise ValueError(f"Unsupported inferred model_type for {model_path}: {model_type}") from exc
+        config_dict.setdefault("architectures", [qwen_family_architecture(model_type)])
+        config_class = qwen_multimodal_config_class(model_type)
 
         for key in (
             "mm_vision_tower",
@@ -530,11 +516,9 @@ def load_pretrained_model(model_path, model_base, model_name, load_8bit=False, l
                     use_fast=False,
                     **qwen_tokenizer_kwargs(model_base, config=cfg_pretrained),
                 )
-                model_type = getattr(cfg_pretrained, 'model_type', '')
-                if 'qwen3' in model_type.lower():
-                    model = LlavaQwen3ForCausalLM.from_pretrained(model_base, low_cpu_mem_usage=True, config=cfg_pretrained, **kwargs)
-                else:
-                    model = LlavaQwen2ForCausalLM.from_pretrained(model_base, low_cpu_mem_usage=True, config=cfg_pretrained, **kwargs)
+                qwen_family = qwen_family_from_config(cfg_pretrained) or "qwen2"
+                model_cls = qwen_multimodal_model_class(qwen_family)
+                model = model_cls.from_pretrained(model_base, low_cpu_mem_usage=True, config=cfg_pretrained, **kwargs)
 
             mm_projector_weights = torch.load(os.path.join(model_path, 'mm_projector.bin'), map_location='cpu')
             mm_projector_weights = {k: v.to(torch.float16) for k, v in mm_projector_weights.items()}
@@ -577,21 +561,14 @@ def load_pretrained_model(model_path, model_base, model_name, load_8bit=False, l
                     use_fast=_resolve_tokenizer_use_fast(False, tokenizer_use_fast),
                     **qwen_tokenizer_kwargs(model_path, config=cfg),
                 )
-                model_type = getattr(cfg, 'model_type', '')
-                if 'qwen3' in model_type.lower():
-                    model = LlavaQwen3ForCausalLM.from_pretrained(
-                        model_path,
-                        config=cfg,
-                        low_cpu_mem_usage=True,
-                        **kwargs
-                    )
-                else:
-                    model = LlavaQwen2ForCausalLM.from_pretrained(
-                        model_path,
-                        config=cfg,
-                        low_cpu_mem_usage=True,
-                        **kwargs
-                    )
+                qwen_family = qwen_family_from_config(cfg) or "qwen2"
+                model_cls = qwen_multimodal_model_class(qwen_family)
+                model = model_cls.from_pretrained(
+                    model_path,
+                    config=cfg,
+                    low_cpu_mem_usage=True,
+                    **kwargs
+                )
     else:
         # Load language model
         if model_base is not None:

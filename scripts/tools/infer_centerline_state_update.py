@@ -41,6 +41,7 @@ from scripts.tools.infer_centerline_checkpoint import (
 from scripts.tools.map_visualization import (
     record_tile_id,
     render_whole_map_visualizations as render_common_whole_map_visualizations,
+    sanitize_points,
 )
 
 
@@ -267,15 +268,17 @@ def endpoint_trace(points, endpoint_index, max_points):
 
 
 def transform_trace_points(points, dx, dy):
-    return [[int(round(x + dx)), int(round(y + dy))] for x, y in points]
+    return [[int(round(x + dx)), int(round(y + dy))] for x, y in sanitize_points(points)]
 
 
 def extract_neighbor_traces(neighbor_lines, side, patch_size, boundary_tol, max_points):
     traces = []
     for line in neighbor_lines:
+        if not isinstance(line, dict):
+            continue
         if line.get("category") != "centerline":
             continue
-        points = line.get("points") or []
+        points = sanitize_points(line.get("points") or [])
         if not points:
             continue
 
@@ -356,9 +359,11 @@ def sample_points(points, max_points):
 def extract_neighbor_intersections(neighbor_lines, side, patch_size, boundary_tol, max_points):
     hints = []
     for line in neighbor_lines:
+        if not isinstance(line, dict):
+            continue
         if line.get("category") != "intersection" or not line.get("is_cut"):
             continue
-        points = line.get("points") or []
+        points = sanitize_points(line.get("points") or [])
         if side == "left":
             boundary_points = [point for point in points if near(point[0], patch_size - 1, boundary_tol)]
             dx, dy = -patch_size, 0
@@ -387,8 +392,13 @@ def build_incoming_intersections(state_by_pos, tile_id, row, col, patch_size, bo
 def local_to_global_lines(lines, x0, y0):
     global_lines = []
     for line in lines:
+        if not isinstance(line, dict):
+            continue
+        xy_points = sanitize_points(line.get("points", []))
+        if not xy_points:
+            continue
         converted = dict(line)
-        converted["points"] = [[int(x + x0), int(y + y0)] for x, y in line.get("points", [])]
+        converted["points"] = [[int(x + x0), int(y + y0)] for x, y in xy_points]
         global_lines.append(converted)
     return global_lines
 
@@ -410,9 +420,14 @@ def normalize_lines(payload):
 
 def offset_lines(lines, dx, dy):
     shifted = []
-    for line in lines:
+    for line in normalize_lines(lines):
+        if not isinstance(line, dict):
+            continue
+        xy_points = sanitize_points(line.get("points") or [])
+        if not xy_points:
+            continue
         out = dict(line)
-        out["points"] = [[int(round(x + dx)), int(round(y + dy))] for x, y in line.get("points", [])]
+        out["points"] = [[int(round(x + dx)), int(round(y + dy))] for x, y in xy_points]
         shifted.append(out)
     return shifted
 
@@ -420,8 +435,9 @@ def offset_lines(lines, dx, dy):
 def draw_map_lines(image: Image.Image, payload, centerline_color: tuple, intersection_color: tuple, width: int = 3) -> Image.Image:
     draw = ImageDraw.Draw(image)
     for item in normalize_lines(payload):
-        points = item.get("points") or []
-        xy_points = [(int(pt[0]), int(pt[1])) for pt in points if isinstance(pt, list) and len(pt) >= 2]
+        if not isinstance(item, dict):
+            continue
+        xy_points = sanitize_points(item.get("points") or [])
         if not xy_points:
             continue
         category = str(item.get("category", "centerline")).lower()

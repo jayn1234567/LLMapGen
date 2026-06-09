@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import json
+import math
 import re
 from pathlib import Path
 
@@ -21,11 +22,57 @@ def normalize_lines(payload):
     return []
 
 
+def coerce_xy_point(point):
+    if not isinstance(point, (list, tuple)) or len(point) < 2:
+        return None
+    try:
+        x = float(point[0])
+        y = float(point[1])
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(x) or not math.isfinite(y):
+        return None
+    return int(round(x)), int(round(y))
+
+
+def sanitize_points(points):
+    if not isinstance(points, (list, tuple)):
+        return []
+    xy_points = []
+    for point in points:
+        xy = coerce_xy_point(point)
+        if xy is not None:
+            xy_points.append(xy)
+    return xy_points
+
+
+def count_invalid_geometry(payload):
+    invalid_lines = 0
+    invalid_points = 0
+    for item in normalize_lines(payload):
+        if not isinstance(item, dict):
+            invalid_lines += 1
+            continue
+        points = item.get("points")
+        if points in (None, []):
+            continue
+        if not isinstance(points, (list, tuple)):
+            invalid_lines += 1
+            continue
+        invalid_points += sum(1 for point in points if coerce_xy_point(point) is None)
+    return invalid_lines, invalid_points
+
+
 def offset_lines(lines, dx, dy):
     shifted = []
-    for line in lines:
+    for line in normalize_lines(lines):
+        if not isinstance(line, dict):
+            continue
+        xy_points = sanitize_points(line.get("points") or [])
+        if not xy_points:
+            continue
         out = dict(line)
-        out["points"] = [[int(round(x + dx)), int(round(y + dy))] for x, y in line.get("points", [])]
+        out["points"] = [[int(round(x + dx)), int(round(y + dy))] for x, y in xy_points]
         shifted.append(out)
     return shifted
 
@@ -33,8 +80,9 @@ def offset_lines(lines, dx, dy):
 def draw_map_lines(image: Image.Image, payload, centerline_color: tuple, intersection_color: tuple, width: int = 3) -> Image.Image:
     draw = ImageDraw.Draw(image)
     for item in normalize_lines(payload):
-        points = item.get("points") or []
-        xy_points = [(int(pt[0]), int(pt[1])) for pt in points if isinstance(pt, list) and len(pt) >= 2]
+        if not isinstance(item, dict):
+            continue
+        xy_points = sanitize_points(item.get("points") or [])
         if not xy_points:
             continue
         category = str(item.get("category", "centerline")).lower()

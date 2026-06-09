@@ -69,6 +69,13 @@ from mllm.mm_utils import tokenizer_image_token, process_anyres_image
 from mllm.model.builder import _load_multimodal_weights_if_present, _load_tokenizer_with_fast_fallback
 from mllm.model.qwen3vl_extractor import is_qwen3vl_checkpoint, is_llava_checkpoint, ensure_extracted_llm_from_qwen3vl
 from mllm.model.qwen_token_utils import qwen_tokenizer_kwargs, sync_qwen_token_config
+from mllm.model.language_model.qwen_family import (
+    as_qwen_multimodal_config,
+    is_qwen3_or_newer_family,
+    qwen_family_from_config,
+    qwen_family_from_text,
+    qwen_multimodal_model_class,
+)
 
 from PIL import Image
 
@@ -116,22 +123,22 @@ def rank0_print(*args):
 
 
 def _config_declares_qwen3(config) -> bool:
-    model_type = str(getattr(config, "model_type", "") or "").lower()
-    if "qwen3" in model_type or "qwen-3" in model_type:
-        return True
-    architectures = getattr(config, "architectures", None) or []
-    return any("qwen3" in str(arch).lower() or "qwen-3" in str(arch).lower() for arch in architectures)
+    return is_qwen3_or_newer_family(qwen_family_from_config(config))
 
 
-def _path_declares_qwen3(model_path: str) -> bool:
-    path = str(model_path or "").lower()
-    if any(kw in path for kw in ("qwen3", "qwen-3", "qwen_3")):
-        return True
+def _path_qwen_family(model_path: str) -> str | None:
+    family = qwen_family_from_text(model_path)
+    if family is not None:
+        return family
     try:
         config = transformers.AutoConfig.from_pretrained(model_path, trust_remote_code=True)
     except Exception:
-        return False
-    return _config_declares_qwen3(config)
+        return None
+    return qwen_family_from_config(config)
+
+
+def _path_declares_qwen3(model_path: str) -> bool:
+    return is_qwen3_or_newer_family(_path_qwen_family(model_path))
 
 
 class JsonlMetricLoggerCallback(TrainerCallback):
@@ -2389,13 +2396,15 @@ def train(attn_implementation=None):
             )
         ))
 
-    _is_qwen3 = _path_declares_qwen3(model_args.model_name_or_path)
+    _qwen_family = _path_qwen_family(model_args.model_name_or_path)
+    _is_qwen3 = is_qwen3_or_newer_family(_qwen_family)
 
     if is_qwen3vl_checkpoint(model_args.model_name_or_path):
         rank0_print(f"Ensuring extracted LLM cache for Qwen3-VL checkpoint: {model_args.model_name_or_path}")
         cache_path = ensure_extracted_llm_from_qwen3vl(model_args.model_name_or_path)
         rank0_print(f"Using extracted LLM cache: {cache_path}")
         model_args.model_name_or_path = cache_path
+        _qwen_family = "qwen3"
         _is_qwen3 = True
 
     load_multimodal_checkpoint_weights = False
@@ -2411,7 +2420,8 @@ def train(attn_implementation=None):
             )
         else:
             config = transformers.AutoConfig.from_pretrained(model_args.model_name_or_path)
-            _is_qwen3 = _is_qwen3 or _config_declares_qwen3(config)
+            _qwen_family = _qwen_family or qwen_family_from_config(config)
+            _is_qwen3 = is_qwen3_or_newer_family(_qwen_family)
             _original_vt = getattr(config, 'mm_vision_tower', None)
             _requested_vt = model_args.multi_vision_towers or model_args.vision_tower
             if _original_vt and _original_vt != _requested_vt:
@@ -2420,12 +2430,9 @@ def train(attn_implementation=None):
             elif _original_vt:
                 load_multimodal_checkpoint_weights = True
             if _is_qwen3:
-                from mllm.model.language_model.llava_qwen3 import LlavaQwen3ConfigWrapper
-                if not isinstance(config, LlavaQwen3ConfigWrapper):
-                    d = config.to_dict()
-                    d.pop("model_type",None)
-                    config = LlavaQwen3ConfigWrapper(**d)
-                model = LlavaQwen3ForCausalLM.from_pretrained(
+                config = as_qwen_multimodal_config(config, _qwen_family)
+                model_cls = qwen_multimodal_model_class(_qwen_family)
+                model = model_cls.from_pretrained(
                     model_args.model_name_or_path,
                     config=config,
                     cache_dir=training_args.cache_dir,

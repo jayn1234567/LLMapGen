@@ -192,7 +192,7 @@ def deepstack_decoder_forward(
     modeling_module = _get_qwen_modeling_module(model)
     DynamicCache = getattr(modeling_module, "DynamicCache")
     create_causal_mask = getattr(modeling_module, "create_causal_mask")
-    create_sliding_window_causal_mask = getattr(modeling_module, "create_sliding_window_causal_mask")
+    create_sliding_window_causal_mask = getattr(modeling_module, "create_sliding_window_causal_mask", None)
 
     use_cache = getattr(model.config, "use_cache", False) if use_cache is None else use_cache
     output_hidden_states = (
@@ -230,7 +230,7 @@ def deepstack_decoder_forward(
         causal_mask_mapping = {
             "full_attention": create_causal_mask(**mask_kwargs),
         }
-        if getattr(model, "has_sliding_layers", False):
+        if getattr(model, "has_sliding_layers", False) and create_sliding_window_causal_mask is not None:
             causal_mask_mapping["sliding_attention"] = create_sliding_window_causal_mask(**mask_kwargs)
 
     hidden_states = inputs_embeds
@@ -246,7 +246,7 @@ def deepstack_decoder_forward(
         if output_hidden_states:
             all_hidden_states += (hidden_states,)
         layer_kwargs = {
-            "attention_mask": causal_mask_mapping[layer_types[layer_idx]] if layer_types else causal_mask_mapping["full_attention"],
+            "attention_mask": causal_mask_mapping.get(layer_types[layer_idx], causal_mask_mapping["full_attention"]) if layer_types else causal_mask_mapping["full_attention"],
             "position_embeddings": position_embeddings,
             "position_ids": position_ids,
             "past_key_values": past_key_values,

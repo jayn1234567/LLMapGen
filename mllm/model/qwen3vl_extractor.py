@@ -11,6 +11,8 @@ from mllm.model.qwen_token_utils import normalize_qwen_config_dict
 EXTRACT_DONE_FILE = ".extract_complete"
 EXTRACT_LOCK_FILE = ".extract_lock"
 EXTRACT_VERSION = "2"
+EXTRACT_PATH_ENV = "QWEN3VL_EXTRACTED_LLM_PATH"
+EXTRACT_ROOT_ENV = "QWEN3VL_EXTRACTED_LLM_ROOT"
 
 
 def is_qwen3vl_checkpoint(path):
@@ -32,9 +34,26 @@ def is_llava_checkpoint(path):
         return False
 
 
-def get_extracted_path(vl_path):
+def _safe_path_name(value):
+    text = os.path.basename(os.path.normpath(str(value)))
+    return "".join(ch if ch.isalnum() or ch in ("-", "_", ".") else "_" for ch in text) or "qwen3vl"
+
+
+def get_legacy_extracted_path(vl_path):
     h = hashlib.md5(os.path.abspath(vl_path).encode()).hexdigest()[:8]
     return os.path.join(os.path.dirname(vl_path), f'.qwen3_llm_extracted_{h}')
+
+
+def get_extracted_path(vl_path):
+    explicit_path = os.environ.get(EXTRACT_PATH_ENV)
+    if explicit_path:
+        return os.path.abspath(explicit_path)
+
+    root = os.environ.get(EXTRACT_ROOT_ENV)
+    if root:
+        return os.path.abspath(os.path.join(root, f"{_safe_path_name(vl_path)}_llm_extracted"))
+
+    return os.path.join(os.path.dirname(vl_path), f"{_safe_path_name(vl_path)}_llm_extracted")
 
 
 def is_extracted_llm_ready(output_path):
@@ -54,9 +73,24 @@ def is_extracted_llm_ready(output_path):
     )
 
 
+def _try_link_legacy_extraction(legacy_path, output_path):
+    if not is_extracted_llm_ready(legacy_path) or os.path.lexists(output_path):
+        return False
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    try:
+        rel_target = os.path.relpath(legacy_path, os.path.dirname(output_path))
+        os.symlink(rel_target, output_path)
+        return True
+    except OSError:
+        return False
+
+
 def ensure_extracted_llm_from_qwen3vl(vl_path, timeout=7200, poll_interval=2):
     output_path = get_extracted_path(vl_path)
     if is_extracted_llm_ready(output_path):
+        return output_path
+    legacy_path = get_legacy_extracted_path(vl_path)
+    if _try_link_legacy_extraction(legacy_path, output_path) and is_extracted_llm_ready(output_path):
         return output_path
 
     os.makedirs(output_path, exist_ok=True)

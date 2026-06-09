@@ -42,8 +42,12 @@ from mllm.coord_utils import (
 )
 from mllm.mm_utils import process_images, tokenizer_image_token
 from mllm.model.builder import load_pretrained_model
-from mllm.model.language_model.llava_qwen import Qwen2MultimodalConfig as LlavaQwen2Config, Qwen2MultimodalForCausalLM
-from mllm.model.language_model.llava_qwen3 import Qwen3MultimodalForCausalLM
+from mllm.model.language_model.qwen_family import (
+    is_qwen3_or_newer_family,
+    qwen_family_from_config,
+    qwen_family_from_text,
+    qwen_multimodal_model_class,
+)
 from mllm.model.qwen_token_utils import qwen_tokenizer_kwargs, sync_qwen_token_config
 from mllm.reward.map_schema import parse_map_json as parse_map_schema_json
 from scripts.tools.map_visualization import offset_lines, record_origin
@@ -273,8 +277,19 @@ def _load_checkpoint_shard(shard_path: Path):
 
 
 def _resolve_base_model_path(base_model_path: str, checkpoint_dir: Path) -> Path:
+    override = os.environ.get("QWEN_BASE_MODEL_PATH") or os.environ.get("MODEL_BASE") or os.environ.get("QWEN3VL_EXTRACTED_LLM_PATH")
+    if override:
+        override_path = Path(override).expanduser()
+        if override_path.exists():
+            return override_path
+
     candidate = Path(base_model_path)
     if candidate.is_absolute():
+        if candidate.exists():
+            return candidate
+        repaired = _repair_missing_extracted_base_path(candidate, checkpoint_dir)
+        if repaired is not None:
+            return repaired
         return candidate
 
     rel_to_ckpt = (checkpoint_dir / candidate).resolve()
@@ -286,6 +301,50 @@ def _resolve_base_model_path(base_model_path: str, checkpoint_dir: Path) -> Path
         return rel_to_repo
 
     return candidate
+
+
+def _repair_missing_extracted_base_path(candidate: Path, checkpoint_dir: Path) -> Path | None:
+    name = candidate.name
+    is_legacy_extracted = name.startswith(".qwen3_llm_extracted_")
+    is_stable_extracted = name.endswith("_llm_extracted")
+    if not (is_legacy_extracted or is_stable_extracted):
+        return None
+
+    roots = []
+    for root_env in ("QWEN3VL_EXTRACTED_LLM_ROOT",):
+        root = os.environ.get(root_env)
+        if root:
+            roots.append(Path(root).expanduser())
+    roots.append(candidate.parent)
+    roots.extend([checkpoint_dir, *list(checkpoint_dir.parents)[:5]])
+    roots.extend([REPO_ROOT, REPO_ROOT / "checkpoints", REPO_ROOT / "outputs"])
+
+    seen = set()
+    deduped_roots = []
+    for root in roots:
+        key = str(root)
+        if key not in seen:
+            seen.add(key)
+            deduped_roots.append(root)
+
+    if is_stable_extracted:
+        for root in deduped_roots:
+            repaired = root / name
+            if repaired.exists():
+                print(f"[WARN] Repaired missing base_model_name_or_path to {repaired}")
+                return repaired
+
+    for root in deduped_roots:
+        if not root.exists() or not root.is_dir():
+            continue
+        matches = sorted(root.glob("*_llm_extracted"))
+        if not matches and is_legacy_extracted:
+            matches = sorted(root.glob(".qwen3_llm_extracted_*"))
+        for repaired in matches:
+            if repaired.exists():
+                print(f"[WARN] Repaired missing extracted LLM base path {candidate} -> {repaired}")
+                return repaired
+    return None
 
 
 def _read_checkpoint_metadata(checkpoint_dir: Path) -> dict:
@@ -468,14 +527,11 @@ def _load_full_finetune_model(checkpoint_dir: Path, device: str, config_override
     )
     config.unfreeze_mm_vision_tower = False
     config.tune_vision_tower = False
-    model_type = getattr(config, 'model_type', '')
     config.fastvit_pretrained = False
     config.fastvit_pretrained_path = None
 
-    if 'qwen3' in model_type.lower():
-        model = Qwen3MultimodalForCausalLM(config)
-    else:
-        model = Qwen2MultimodalForCausalLM(config)
+    qwen_family = qwen_family_from_config(config) or "qwen2"
+    model = qwen_multimodal_model_class(qwen_family)(config)
     model.resize_token_embeddings(len(tokenizer))
     sync_qwen_token_config(
         tokenizer=tokenizer,
@@ -640,11 +696,8 @@ def _load_lora_finetune_model(checkpoint_dir: Path, device: str, config_override
     _add_multimodal_tokens(tokenizer, config)
 
     dtype = _runtime_dtype(config, device)
-    model_type = getattr(config, "model_type", "")
-    if "qwen3" in model_type.lower():
-        model = Qwen3MultimodalForCausalLM(config)
-    else:
-        model = Qwen2MultimodalForCausalLM(config)
+    qwen_family = qwen_family_from_config(config) or "qwen2"
+    model = qwen_multimodal_model_class(qwen_family)(config)
     model.resize_token_embeddings(len(tokenizer))
     sync_qwen_token_config(
         tokenizer=tokenizer,
@@ -922,8 +975,11 @@ def main():
 
     conv_template = args.conv_template or manifest.get("version") or ""
     if not conv_template or conv_template not in conversation_lib.conv_templates:
-        model_type = getattr(manifest, 'model_type', '') or ''
-        if 'qwen3' in str(manifest).lower():
+        qwen_family = qwen_family_from_text(
+            manifest.get("model_type"),
+            json.dumps(manifest, ensure_ascii=False),
+        )
+        if is_qwen3_or_newer_family(qwen_family):
             conv_template = "conv_qwen_3_Dinov2_huawei"
         else:
             conv_template = "conv_qwen_2_Dinov2_huawei"

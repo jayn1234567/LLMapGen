@@ -209,15 +209,25 @@ python -m mllm.train.train_sft
 
 `config.json` keeps the base language model identity in `model_type`; for
 example Qwen3 checkpoints save `model_type: "qwen3"`, not a project-specific
-name. Multimodal framework details are stored in `qwen_multimodal_checkpoint.json`
-and normal config fields such as `mm_vision_tower`, `mm_vision_tower_type`,
+name. The loader also preserves newer Qwen families: `qwen3_moe`, `qwen3_5`,
+`qwen3_5_text`, `qwen3_5_moe`, and `qwen3_5_moe_text`. Qwen3.5 requires a Transformers build that exports
+`Qwen3_5*` classes; the project `fastvlm` environment provides this. Multimodal
+framework details are stored in `qwen_multimodal_checkpoint.json` and normal
+config fields such as `mm_vision_tower`, `mm_vision_tower_type`,
 `deepstack_visual_indexes`, and `input_image_size`.
+
+When a Qwen3-VL checkpoint is used as `--model_name_or_path`, the text LLM is
+extracted once to a stable sibling directory named
+`<Qwen3-VL-dir>_llm_extracted`. Set `QWEN3VL_EXTRACTED_LLM_PATH` for one exact
+fixed output path, or `QWEN3VL_EXTRACTED_LLM_ROOT` to place all extracted LLMs
+under a shared root. Legacy `.qwen3_llm_extracted_<hash>` directories are still
+recognized and symlinked to the stable name when possible.
 
 Core model/data parameters:
 
 | Parameter | Purpose |
 |---|---|
-| `--model_name_or_path` | Qwen/Qwen3-VL base model or an existing checkpoint. |
+| `--model_name_or_path` | Qwen2/Qwen3/Qwen3.5/Qwen3-VL base model or an existing checkpoint. |
 | `--vision_tower` | Single vision tower path, or comma-separated paths for multi-vision recipes. |
 | `--mm_vision_tower_type` | Optional explicit type: `dinov2`, `dinov3`, `siglip`, `multi_moe`, or `multi_concat`. Usually inferred from metadata/path for single towers. |
 | `--data_path` | Train json/jsonl path. |

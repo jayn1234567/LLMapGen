@@ -11,6 +11,12 @@ scripts live under platform/purpose folders:
 - `scripts/rl/`: RL data/export helper scripts.
 - `scripts/tmp/` and `scripts/npu/tmp/`: old root-level wrappers or legacy NPU scripts kept for reference.
 
+Per-folder script catalogs:
+
+- `scripts/gpu/README.md`: every GPU formal/smoke/debug/inference script and the supported Qwen-family/fusion recipes.
+- `scripts/npu/train/README.md`: every current NPU training script and the stage/task/vision recipe naming rules.
+- `scripts/npu/test/README.md`: every current NPU inference/eval script and checkpoint input variables.
+
 NPU scripts are grouped by purpose:
 
 - `scripts/npu/train/`: explicit NPU training entrypoints for SFT/GRPO, stage A/B, lane-only/lane+intersection, and DINOv2/DINOv3.
@@ -157,6 +163,13 @@ DINO type, fusion recipe, and platform are explicit:
 - `_npu` or `_gpu` identifies the target platform.
 
 Common DINOv3 scripts infer DINO type from checkpoint metadata, `mm_vision_tower_type`, or the `vision_tower` path. For this BEV task they set `INPUT_IMAGE_SIZE=512` inside the scripts: 256x256 patches are resized to 512x512, and DINOv3 patch16 produces 32x32 = 1024 visual tokens.
+
+Qwen-family LLM smoke wrappers:
+
+- `scripts/gpu/train_sft_qwen3_nodeepstack_smoke_gpu.sh` uses a pure Qwen3 checkpoint with the shared DINO/Qwen multimodal path.
+- `scripts/gpu/train_sft_qwen3_5_nodeepstack_smoke_gpu.sh` uses a pure Qwen3.5 checkpoint and defaults to the `fastvlm` environment because Qwen3.5 needs Transformers with `Qwen3_5*` classes.
+- Both wrappers reuse `scripts/gpu/train_sft_qwen3vl_nodeepstack_smoke_gpu.sh`; override `MODEL_NAME_OR_PATH`, `VISION_BACKBONE`, `FLOW_PHASE`, and `DISABLE_DEEPSTACK` as usual.
+- `scripts/gpu/infer_qwen_family_centerline_gpu.sh` is the matching standalone GPU inference wrapper for Qwen-family checkpoints; set `CHECKPOINT_DIR`, `TEST_JSON`, `IMAGE_FOLDER`, and optional vision overrides.
 
 Script coverage by fusion recipe:
 

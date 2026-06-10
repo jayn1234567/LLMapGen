@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import argparse
 import json
+import math
 import os
 import sys
 import time
@@ -267,11 +268,77 @@ def endpoint_trace(points, endpoint_index, max_points):
     return points[-max_points:]
 
 
+def point_distance(a, b):
+    return math.hypot(float(a[0]) - float(b[0]), float(a[1]) - float(b[1]))
+
+
+def dedupe_consecutive_points(points):
+    result = []
+    for point in points:
+        if not result or point != result[-1]:
+            result.append(point)
+    return result
+
+
+def resample_polyline_by_distance(points, sample_distance_px):
+    points = dedupe_consecutive_points(sanitize_points(points))
+    if sample_distance_px <= 0 or len(points) < 2:
+        return points
+
+    cumulative = [0.0]
+    for prev, cur in zip(points, points[1:]):
+        cumulative.append(cumulative[-1] + point_distance(prev, cur))
+    total_length = cumulative[-1]
+    if total_length <= 0:
+        return points
+
+    targets = []
+    distance = 0.0
+    while distance < total_length:
+        targets.append(distance)
+        distance += sample_distance_px
+    if not targets or not math.isclose(targets[-1], total_length):
+        targets.append(total_length)
+
+    sampled = []
+    seg_idx = 0
+    for target in targets:
+        while seg_idx < len(cumulative) - 2 and cumulative[seg_idx + 1] < target:
+            seg_idx += 1
+        start = points[seg_idx]
+        end = points[seg_idx + 1]
+        seg_len = cumulative[seg_idx + 1] - cumulative[seg_idx]
+        ratio = 0.0 if seg_len <= 0 else (target - cumulative[seg_idx]) / seg_len
+        sampled.append([
+            start[0] + (end[0] - start[0]) * ratio,
+            start[1] + (end[1] - start[1]) * ratio,
+        ])
+    return sampled
+
+
+def sampled_endpoint_trace(points, endpoint_index, max_points, sample_distance_px):
+    if sample_distance_px <= 0:
+        return endpoint_trace(points, endpoint_index, max_points)
+
+    sampled = resample_polyline_by_distance(points, sample_distance_px)
+    if not sampled:
+        return []
+
+    boundary_point = points[0] if endpoint_index == 0 else points[-1]
+    nearest_idx = min(range(len(sampled)), key=lambda idx: point_distance(sampled[idx], boundary_point))
+    if endpoint_index == 0:
+        end_idx = min(len(sampled), nearest_idx + max_points)
+        return list(reversed(sampled[nearest_idx:end_idx]))
+
+    start_idx = max(0, nearest_idx - max_points + 1)
+    return sampled[start_idx:nearest_idx + 1]
+
+
 def transform_trace_points(points, dx, dy):
     return [[int(round(x + dx)), int(round(y + dy))] for x, y in sanitize_points(points)]
 
 
-def extract_neighbor_traces(neighbor_lines, side, patch_size, boundary_tol, max_points):
+def extract_neighbor_traces(neighbor_lines, side, patch_size, boundary_tol, max_points, sample_distance_px):
     traces = []
     for line in neighbor_lines:
         if not isinstance(line, dict):
@@ -285,16 +352,16 @@ def extract_neighbor_traces(neighbor_lines, side, patch_size, boundary_tol, max_
         candidates = []
         if side == "left":
             if line.get("end_type") == "cut" and near(points[-1][0], patch_size - 1, boundary_tol):
-                candidates.append(endpoint_trace(points, -1, max_points))
+                candidates.append(sampled_endpoint_trace(points, -1, max_points, sample_distance_px))
             if line.get("start_type") == "cut" and near(points[0][0], patch_size - 1, boundary_tol):
-                candidates.append(endpoint_trace(points, 0, max_points))
+                candidates.append(sampled_endpoint_trace(points, 0, max_points, sample_distance_px))
             dx, dy = -patch_size, 0
             trace_side = "left"
         else:
             if line.get("end_type") == "cut" and near(points[-1][1], patch_size - 1, boundary_tol):
-                candidates.append(endpoint_trace(points, -1, max_points))
+                candidates.append(sampled_endpoint_trace(points, -1, max_points, sample_distance_px))
             if line.get("start_type") == "cut" and near(points[0][1], patch_size - 1, boundary_tol):
-                candidates.append(endpoint_trace(points, 0, max_points))
+                candidates.append(sampled_endpoint_trace(points, 0, max_points, sample_distance_px))
             dx, dy = 0, -patch_size
             trace_side = "top"
 
@@ -337,12 +404,12 @@ def assign_intersection_ids(hints):
     return result
 
 
-def build_incoming_traces(state_by_pos, tile_id, row, col, patch_size, boundary_tol, max_points):
+def build_incoming_traces(state_by_pos, tile_id, row, col, patch_size, boundary_tol, max_points, sample_distance_px):
     traces = []
     left_lines = state_by_pos.get((tile_id, row, col - 1), [])
     top_lines = state_by_pos.get((tile_id, row - 1, col), [])
-    traces.extend(extract_neighbor_traces(left_lines, "left", patch_size, boundary_tol, max_points))
-    traces.extend(extract_neighbor_traces(top_lines, "top", patch_size, boundary_tol, max_points))
+    traces.extend(extract_neighbor_traces(left_lines, "left", patch_size, boundary_tol, max_points, sample_distance_px))
+    traces.extend(extract_neighbor_traces(top_lines, "top", patch_size, boundary_tol, max_points, sample_distance_px))
     return assign_trace_ids(traces)
 
 
@@ -611,6 +678,12 @@ def main():
     parser.add_argument("--coord-range", type=int, default=DEFAULT_COORD_RANGE)
     parser.add_argument("--boundary-tol", type=float, default=2.0)
     parser.add_argument("--trace-points", type=int, default=3)
+    parser.add_argument(
+        "--trace-sample-distance-px",
+        type=float,
+        default=5.0,
+        help="Stage-B incoming trace resampling stride in patch pixels. Set 0 to keep the original endpoint vertices.",
+    )
     parser.add_argument("--intersection-hint-points", type=int, default=3)
     parser.add_argument("--max-new-tokens", type=int, default=2048)
     parser.add_argument("--temperature", type=float, default=0.0)
@@ -668,6 +741,7 @@ def main():
         "num_rank_records": len(records),
         "num_rank_tiles": len(assigned_tile_ids),
         "rank_tile_preview": assigned_tile_ids[:10],
+        "trace_sample_distance_px": args.trace_sample_distance_px,
     }, ensure_ascii=False))
 
     tokenizer = model = image_processor = None
@@ -705,6 +779,7 @@ def main():
             patch_size_px,
             args.boundary_tol,
             args.trace_points,
+            args.trace_sample_distance_px,
         )
         incoming_intersections_pixel = []
         if args.include_intersections:
@@ -817,6 +892,7 @@ def main():
             "meta": meta,
             "incoming_traces": incoming_traces,
             "incoming_traces_pixel": incoming_traces_pixel,
+            "incoming_trace_sample_distance_px": args.trace_sample_distance_px,
             "incoming_intersections": incoming_intersections,
             "incoming_intersections_pixel": incoming_intersections_pixel,
             "prompt": prompt,
@@ -876,6 +952,7 @@ def main():
         "conv_template": args.conv_template,
         "dry_run_prompts": args.dry_run_prompts,
         "include_intersections": args.include_intersections,
+        "trace_sample_distance_px": args.trace_sample_distance_px,
         "distributed_by_tile": distributed,
         "rank": rank,
         "local_rank": local_rank,

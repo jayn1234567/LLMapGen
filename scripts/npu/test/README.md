@@ -48,6 +48,23 @@ Stage A calls `scripts/tools/infer_centerline_checkpoint.py` and passes
 `scripts/tools/infer_centerline_state_update.py`; `lane_intersection` scripts
 pass `--include-intersections`, while lane-only scripts do not.
 
+## Native Qwen3-VL Baseline
+
+The native Qwen3-VL test scripts evaluate checkpoints trained by
+`mllm.native_qwen3vl.train_sft`. They do not download or use DINO/DINOv3/SigLIP
+vision assets. The inference entrypoint writes the same result fields used by
+the existing visualization and evaluation tools: `prediction_json`,
+`prediction_json_pixel`, `ground_truth_pixel`, `parse_ok`, `lines_local`, and
+aggregate `centerline_eval`, `intersection_eval`, and
+`lane_intersection_eval` summaries for `lane_intersection`.
+
+Native inference/eval scripts:
+
+| Script | Purpose |
+|---|---|
+| `test_stage_a_lane_intersection_qwen3vl_native_npu.sh` | inference/eval: Stage A, lane+intersection, native Qwen3-VL full architecture; writes eval and visualization outputs. |
+| `test_stage_b_lane_intersection_qwen3vl_native_npu.sh` | inference/eval: Stage B, lane+intersection, native Qwen3-VL full architecture with sequential state-update incoming hints; writes eval and visualization outputs. |
+
 ## Script Catalog
 
 | Script | Purpose |

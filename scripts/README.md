@@ -25,6 +25,12 @@ declare and download the assets they actually need. Stage-A train scripts
 download the base Qwen/Qwen3-VL model and recipe vision assets; Stage-B train
 scripts continue from a Stage-A checkpoint and do not download the base model.
 
+There is also a separate native Qwen3-VL architecture baseline. These scripts
+use Qwen3-VL's original visual encoder, VL projector, processor, and language
+model instead of the project's DINO/DeepStack/fusion path. They keep the same
+UniMapGen JSONL data format and write the same inference result fields used by
+the existing visualization and lane/intersection evaluation tools.
+
 NPU scripts are grouped by purpose:
 
 - `scripts/npu/train/`: explicit NPU training entrypoints for SFT/GRPO, stage A/B, lane-only/lane+intersection, and DINOv2/DINOv3.
@@ -49,6 +55,8 @@ NPU train entrypoints:
   - `scripts/npu/train/train_sft_stage_b_lane_intersection_dinov2_qwen3vl_nodeepstack_npu.sh`
   - `scripts/npu/train/train_sft_stage_a_lane_intersection_dinov3_qwen3vl_nodeepstack_npu.sh`
   - `scripts/npu/train/train_sft_stage_b_lane_intersection_dinov3_qwen3vl_nodeepstack_npu.sh`
+  - `scripts/npu/train/train_sft_stage_a_lane_intersection_qwen3vl_native_npu.sh`
+  - `scripts/npu/train/train_sft_stage_b_lane_intersection_qwen3vl_native_npu.sh`
 - SFT multi-vision formal scripts:
   - MoE scripts use names like `train_sft_stage_a_lane_multi_moe_qwen3vl_nodeepstack_npu.sh`
   - DINOv2+SigLIP concat scripts use names like `train_sft_stage_a_lane_dinov2_siglip_concat_qwen3vl_nodeepstack_npu.sh`
@@ -73,6 +81,8 @@ NPU test entrypoints mirror the same matrix under `scripts/npu/test/`, for examp
 - `scripts/npu/test/test_stage_a_lane_multi_moe_qwen3vl_nodeepstack_npu.sh`
 - `scripts/npu/test/test_stage_a_lane_dinov2_siglip_concat_qwen3vl_nodeepstack_npu.sh`
 - `scripts/npu/test/test_stage_a_lane_dinov3_siglip_concat_qwen3vl_nodeepstack_npu.sh`
+- `scripts/npu/test/test_stage_a_lane_intersection_qwen3vl_native_npu.sh`
+- `scripts/npu/test/test_stage_b_lane_intersection_qwen3vl_native_npu.sh`
 
 Concrete train/test scripts are standalone, including the formal multi-vision
 files. For example,

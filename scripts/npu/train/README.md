@@ -53,6 +53,28 @@ vision tower assets. Stage-B train scripts do not download the base model;
 they download or use the Stage-A checkpoint through `STAGE_A_CHECKPOINT_*` and
 continue from that checkpoint.
 
+## Native Qwen3-VL Baseline
+
+The native Qwen3-VL scripts are a separate architecture baseline. They keep the
+original Qwen3-VL vision encoder, VL projector, processor, and language model,
+and do not use project `vision_tower`, DINOv2/DINOv3, SigLIP, DeepStack,
+direct ViT layer fusion, or `mm_projector` arguments.
+
+They still consume the same UniMapGen `conversations` JSONL format and use the
+same phase/task split. Stage A starts from the native Qwen3-VL base checkpoint;
+Stage B starts from a Stage-A native checkpoint via
+`STAGE_A_CHECKPOINT_OBS_PATH` or `STAGE_A_CHECKPOINT_DIR`.
+
+Native full-SFT scripts:
+
+| Script | Purpose |
+|---|---|
+| `train_sft_stage_a_lane_intersection_qwen3vl_native_npu.sh` | SFT training: Stage A, lane+intersection, native Qwen3-VL full architecture. |
+| `train_sft_stage_b_lane_intersection_qwen3vl_native_npu.sh` | SFT training: Stage B, lane+intersection, native Qwen3-VL full architecture, continued from Stage A. |
+
+Native Qwen3-VL training defaults to `SWANLAB_ENABLE=False`; override it in the
+launcher environment only when SwanLab logging is explicitly needed.
+
 `*_lora_llm_npu.sh` scripts use plain torchrun DDP on HCCL by default and do
 not install or pass DeepSpeed. Full-parameter SFT scripts still use the
 configured DeepSpeed/ZeRO path.

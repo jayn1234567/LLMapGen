@@ -29,7 +29,6 @@ DATASET_DIR_NAME=${DATASET_DIR_NAME:-data_lane_intersection_samples_norm_33w_emp
 QWEN3VL_MODEL_NAME=${QWEN3VL_MODEL_NAME:-Qwen3-VL-8B-Instruct}                    # Base model name, used only when ALLOW_BASE_FOR_STAGE_B=True.
 QWEN3VL_OBS_PATH=${QWEN3VL_OBS_PATH:-${MODEL_OBS_PATH}/${QWEN3VL_MODEL_NAME}}     # Base model OBS path.
 QWEN3VL_PATH=${QWEN3VL_PATH:-${OBS_CACHE}/checkpoints/${QWEN3VL_MODEL_NAME}}      # Local base model path.
-REPLACE_PATCH_EMBED_CONV3D_WITH_LINEAR=${REPLACE_PATCH_EMBED_CONV3D_WITH_LINEAR:-True}  # Run native Qwen3-VL patch_embed Conv3d through an equivalent Linear path to avoid NPU Conv3D backward format errors.
 STAGE_A_CHECKPOINT_OBS_PATH=${STAGE_A_CHECKPOINT_OBS_PATH:-}                      # OBS Stage-A checkpoint/output root to continue from.
 STAGE_A_CHECKPOINT_DIR=${STAGE_A_CHECKPOINT_DIR:-}                                # Local Stage-A checkpoint/output root to continue from.
 ALLOW_BASE_FOR_STAGE_B=${ALLOW_BASE_FOR_STAGE_B:-False}                           # True allows Stage-B to start from base Qwen3-VL for debugging only.
@@ -199,7 +198,6 @@ fi
 echo "============================================================"
 echo "Recipe:       ${DATASET_PHASE} | ${MAP_TASK} | ${MODEL_RECIPE}"
 echo "Init model:   ${INIT_MODEL_PATH}"
-echo "Patch embed:  linearized_conv3d=${REPLACE_PATCH_EMBED_CONV3D_WITH_LINEAR}"
 echo "Train:        ${TRAIN_PATH}"
 echo "Eval:         ${EVAL_PATH}"
 echo "Output:       ${OUTPUT_PATH}"
@@ -214,7 +212,6 @@ torchrun \
   --master_port="${MASTER_PORT}" \
   -m mllm.native_qwen3vl.train_sft \
   --model_name_or_path "${INIT_MODEL_PATH}" \
-  --replace_patch_embed_conv3d_with_linear "${REPLACE_PATCH_EMBED_CONV3D_WITH_LINEAR}" \
   --data_path "${TRAIN_PATH}" \
   --image_folder "${IMAGE_FOLDER}" \
   "${EVAL_ARGS[@]}" \

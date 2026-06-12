@@ -37,7 +37,6 @@ CLOUD_OUTPUT_DIR=${TEST_RESULT_OBS:-${OSB_SHARE_PATH%/}/test_results_${RUN_ID}} 
 
 NUM_TEST_SAMPLES=${NUM_TEST_SAMPLES:-0}                                           # 0 means full test split.
 MAX_NEW_TOKENS=${MAX_NEW_TOKENS:-2048}                                            # Generation limit.
-REPLACE_PATCH_EMBED_CONV3D_WITH_LINEAR=${REPLACE_PATCH_EMBED_CONV3D_WITH_LINEAR:-True}  # Run native Qwen3-VL patch_embed Conv3d through an equivalent Linear path for NPU compatibility.
 COORD_MODE=${COORD_MODE:-auto}                                                    # auto, pixel, or norm1000.
 COORD_RANGE=${COORD_RANGE:-1000}                                                  # Normalized coord range.
 DEFAULT_PATCH_SIZE=${DEFAULT_PATCH_SIZE:-512}                                     # Fallback patch size.
@@ -171,12 +170,10 @@ for idx in "${!CHECKPOINT_ITEMS[@]}"; do
   label="${CHECKPOINT_LABELS[$idx]}"
   out_dir="${LOCAL_OUTPUT_ROOT}/${label}"
   extra_args=()
-  if [[ "${REPLACE_PATCH_EMBED_CONV3D_WITH_LINEAR}" =~ ^(1|true|True|TRUE|yes|YES)$ ]]; then extra_args+=(--replace-patch-embed-conv3d-with-linear); fi
   if [[ "${SKIP_VISUALIZE}" =~ ^(1|true|True|TRUE|yes|YES)$ ]]; then extra_args+=(--skip-visualize); fi
   if [[ "${SKIP_WHOLE_MAP_VIZ}" =~ ^(1|true|True|TRUE|yes|YES)$ ]]; then extra_args+=(--skip-whole-map-viz); fi
   echo "============================================================"
   echo "Native Qwen3-VL checkpoint: ${ckpt}"
-  echo "Patch embed: ${REPLACE_PATCH_EMBED_CONV3D_WITH_LINEAR}"
   echo "Output: ${out_dir}"
   echo "============================================================"
   python -m mllm.native_qwen3vl.infer \

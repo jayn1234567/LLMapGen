@@ -58,7 +58,7 @@ NPU train entrypoints:
 - Native Qwen3-VL baseline scripts live separately under `scripts/qwen3vl_native/`:
   - `scripts/qwen3vl_native/train/train_sft_stage_a_lane_intersection_qwen3vl_native_npu.sh`
   - `scripts/qwen3vl_native/train/train_sft_stage_b_lane_intersection_qwen3vl_native_npu.sh`
-  - These scripts keep the original Qwen3-VL architecture and default to `REPLACE_PATCH_EMBED_CONV3D_WITH_LINEAR=True`, which runs the Qwen3-VL patch-embedding Conv3d through an equivalent Linear path for NPU compatibility.
+  - These scripts keep the original Qwen3-VL architecture, including the native Qwen3-VL patch-embedding Conv3d.
 - SFT multi-vision formal scripts:
   - MoE scripts use names like `train_sft_stage_a_lane_multi_moe_qwen3vl_nodeepstack_npu.sh`
   - DINOv2+SigLIP concat scripts use names like `train_sft_stage_a_lane_dinov2_siglip_concat_qwen3vl_nodeepstack_npu.sh`

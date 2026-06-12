@@ -14,13 +14,7 @@ Qwen3-VL base checkpoint. Stage B starts from a Stage-A native checkpoint via
 NPU launchers default to:
 
 - `SWANLAB_ENABLE=False`.
-- `REPLACE_PATCH_EMBED_CONV3D_WITH_LINEAR=True`.
-
-`REPLACE_PATCH_EMBED_CONV3D_WITH_LINEAR=True` keeps the Qwen3-VL
-`visual.patch_embed.proj.weight` parameter in its original Conv3d shape, but
-runs the patch embedding through an equivalent Linear calculation. This avoids
-NPU `Conv3DBackpropFilter` format errors while keeping saved checkpoint weights
-compatible with native Qwen3-VL loading.
+- The original Qwen3-VL patch-embedding Conv3d path.
 
 ## Train Scripts
 

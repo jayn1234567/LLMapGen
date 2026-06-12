@@ -45,7 +45,6 @@ class NativeModelArguments:
     model_name_or_path: str = field(default="Qwen/Qwen3-VL-8B-Instruct")
     trust_remote_code: bool = field(default=True)
     attn_implementation: Optional[str] = field(default=None)
-    replace_patch_embed_conv3d_with_linear: bool = field(default=False)
 
 
 @dataclass

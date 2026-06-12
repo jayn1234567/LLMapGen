@@ -2,8 +2,8 @@
 
 # ============================================================
 # NPU inference/eval
-# Fixed recipe: phase_b | lane+intersection | native Qwen3-VL full architecture
-# Runs sequential state-update inference and writes eval/viz outputs.
+# Fixed recipe: phase_a | lane+intersection | native Qwen3-VL full architecture
+# Produces result JSON, aggregate eval summaries, and visualization images.
 # ============================================================
 
 SCRIPT_PATH=$(readlink -f "$0")                                                   # Absolute path of this launcher.
@@ -13,7 +13,7 @@ cd "${REPO_ROOT}"
 
 : "${OUTPUT_URL:?OUTPUT_URL is required on the training platform}"                # Required cloud output root provided by ModelArts.
 
-DATASET_PHASE=phase_b                                                             # Dataset stage.
+DATASET_PHASE=phase_a                                                             # Dataset stage.
 MAP_TASK=lane_intersection                                                        # Task type.
 MODEL_RECIPE=qwen3vl_native                                                       # Native Qwen3-VL architecture.
 
@@ -23,8 +23,8 @@ RUN_ID=${RUN_ID:-$(date -u +%Y%m%d_%H%M%S)}                                     
 OBS_CACHE=${OBS_CACHE:-/cache}                                                    # Local cache root.
 DATASET_OBS_PATH=${DATASET_OBS_PATH:-obs://yw-ads-training-gy1/data/external/personal/h58801830/whu/jjh/data/data_lane_intersection_samples_norm_33w_empty_patch.zip}  # Dataset zip.
 DATASET_DIR_NAME=${DATASET_DIR_NAME:-data_lane_intersection_samples_norm_33w_empty_patch}  # Extracted dataset directory.
-CHECKPOINT_OBS_LIST=${CHECKPOINT_OBS_LIST:-}                                      # OBS checkpoint roots.
-CHECKPOINT_DIRS=${CHECKPOINT_DIRS:-}                                              # Local checkpoint roots.
+CHECKPOINT_OBS_LIST=${CHECKPOINT_OBS_LIST:-}                                      # OBS checkpoint roots, separated by comma/semicolon/newline.
+CHECKPOINT_DIRS=${CHECKPOINT_DIRS:-}                                              # Local checkpoint roots, separated by comma/semicolon/newline.
 CHECKPOINT_DOWNLOAD_ROOT=${CHECKPOINT_DOWNLOAD_ROOT:-${OBS_CACHE}/native_qwen3vl_ckpts_${RUN_ID}}  # Local checkpoint download root.
 
 DATASET_ZIP_PATH=${DATASET_ZIP_PATH:-${OBS_CACHE}/dataset_${RUN_ID}.zip}          # Local dataset zip.
@@ -37,13 +37,10 @@ CLOUD_OUTPUT_DIR=${TEST_RESULT_OBS:-${OSB_SHARE_PATH%/}/test_results_${RUN_ID}} 
 
 NUM_TEST_SAMPLES=${NUM_TEST_SAMPLES:-0}                                           # 0 means full test split.
 MAX_NEW_TOKENS=${MAX_NEW_TOKENS:-2048}                                            # Generation limit.
+REPLACE_PATCH_EMBED_CONV3D_WITH_LINEAR=${REPLACE_PATCH_EMBED_CONV3D_WITH_LINEAR:-True}  # Run native Qwen3-VL patch_embed Conv3d through an equivalent Linear path for NPU compatibility.
 COORD_MODE=${COORD_MODE:-auto}                                                    # auto, pixel, or norm1000.
 COORD_RANGE=${COORD_RANGE:-1000}                                                  # Normalized coord range.
 DEFAULT_PATCH_SIZE=${DEFAULT_PATCH_SIZE:-512}                                     # Fallback patch size.
-TRACE_POINTS=${TRACE_POINTS:-3}                                                   # Number of incoming trace points.
-TRACE_SAMPLE_DISTANCE_PX=${TRACE_SAMPLE_DISTANCE_PX:-5.0}                         # Equal-distance resampling interval for incoming traces; 0 disables.
-INTERSECTION_POINTS=${INTERSECTION_POINTS:-3}                                     # Number of incoming intersection boundary points.
-BOUNDARY_TOL=${BOUNDARY_TOL:-3.0}                                                 # Boundary matching tolerance in pixels.
 EVAL_METER_PER_PIXEL=${EVAL_METER_PER_PIXEL:-0.2}                                 # Metric conversion.
 EVAL_BUFFER_SIZE=${EVAL_BUFFER_SIZE:-1.0}                                         # Line matching buffer.
 EVAL_MATCH_THRESHOLD=${EVAL_MATCH_THRESHOLD:-0.33}                                # Matching threshold.
@@ -174,10 +171,12 @@ for idx in "${!CHECKPOINT_ITEMS[@]}"; do
   label="${CHECKPOINT_LABELS[$idx]}"
   out_dir="${LOCAL_OUTPUT_ROOT}/${label}"
   extra_args=()
+  if [[ "${REPLACE_PATCH_EMBED_CONV3D_WITH_LINEAR}" =~ ^(1|true|True|TRUE|yes|YES)$ ]]; then extra_args+=(--replace-patch-embed-conv3d-with-linear); fi
   if [[ "${SKIP_VISUALIZE}" =~ ^(1|true|True|TRUE|yes|YES)$ ]]; then extra_args+=(--skip-visualize); fi
   if [[ "${SKIP_WHOLE_MAP_VIZ}" =~ ^(1|true|True|TRUE|yes|YES)$ ]]; then extra_args+=(--skip-whole-map-viz); fi
   echo "============================================================"
   echo "Native Qwen3-VL checkpoint: ${ckpt}"
+  echo "Patch embed: ${REPLACE_PATCH_EMBED_CONV3D_WITH_LINEAR}"
   echo "Output: ${out_dir}"
   echo "============================================================"
   python -m mllm.native_qwen3vl.infer \
@@ -192,10 +191,6 @@ for idx in "${!CHECKPOINT_ITEMS[@]}"; do
     --coord-mode "${COORD_MODE}" \
     --coord-range "${COORD_RANGE}" \
     --default-patch-size "${DEFAULT_PATCH_SIZE}" \
-    --trace-points "${TRACE_POINTS}" \
-    --trace-sample-distance-px "${TRACE_SAMPLE_DISTANCE_PX}" \
-    --intersection-points "${INTERSECTION_POINTS}" \
-    --boundary-tol "${BOUNDARY_TOL}" \
     --eval-meter-per-pixel "${EVAL_METER_PER_PIXEL}" \
     --eval-buffer-size "${EVAL_BUFFER_SIZE}" \
     --eval-match-threshold "${EVAL_MATCH_THRESHOLD}" \
@@ -206,4 +201,3 @@ done
 
 python -c "import moxing as mox; mox.file.copy_parallel('${LOCAL_OUTPUT_ROOT}', '${CLOUD_OUTPUT_DIR}')"
 echo "Final native Qwen3-VL inference output: ${CLOUD_OUTPUT_DIR}"
-

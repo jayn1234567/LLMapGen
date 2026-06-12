@@ -580,6 +580,7 @@ def parse_args():
     parser.add_argument("--default-patch-size", type=int, default=512)
     parser.add_argument("--device", default="auto")
     parser.add_argument("--bf16", action="store_true")
+    parser.add_argument("--replace-patch-embed-conv3d-with-linear", action="store_true")
     parser.add_argument("--include-intersections", action="store_true")
     parser.add_argument("--trace-points", type=int, default=3)
     parser.add_argument("--trace-sample-distance-px", type=float, default=5.0)
@@ -600,6 +601,7 @@ class _InferenceModelArgs:
         self.model_name_or_path = args.model_name_or_path
         self.trust_remote_code = args.trust_remote_code
         self.attn_implementation = None
+        self.replace_patch_embed_conv3d_with_linear = args.replace_patch_embed_conv3d_with_linear
 
 
 class _InferenceTrainingArgs:

@@ -55,6 +55,32 @@ meta_val.jsonl
 
 如果启用 `--prepare-trainroot`，会生成一个新的 prepared trainroot，不会覆盖原数据。
 
+## Tiny Smoke 数据
+
+仓库内提供了一个很小的合成 RC-style trainroot，用于验证这条路线可以独立读取数据并启动训练流程：
+
+[data_samples/dinov2_centerline_tiny_trainroot](../data_samples/dinov2_centerline_tiny_trainroot)
+
+内容：
+
+1. `train.jsonl`：6 条训练样本。
+2. `meta_train.jsonl`：训练样本中心线真值。
+3. `val.jsonl`：2 条验证样本。
+4. `meta_val.jsonl`：验证样本中心线真值。
+5. `images/`：8 张 `512x512` 合成 RC 风格 PNG。
+
+已验证：
+
+1. `--prepare-trainroot` 可以成功把 tiny 数据重写成 Douglas + merge trainroot。
+2. DINOv2 centerline model 相关 Python 模块可以成功导入。
+3. 新增入口脚本和依赖模块通过 `py_compile`。
+
+注意：
+
+1. tiny 数据不包含模型权重。
+2. 真实 `max_steps=1` 训练需要传入完整 Hugging Face CausalLM 权重和 DINOv2 权重。
+3. 当前超算上可见的 `Qwen3-8B` / `Qwen3-VL-*` 目录不是完整 HF 权重目录，因此本次只能验证到数据准备和模型导入层；有完整 Qwen CausalLM 后可直接运行下面训练命令。
+
 ## 训练示例
 
 ```bash

@@ -1,0 +1,29 @@
+{
+  "name": "dinov2_centerline_tiny_trainroot",
+  "purpose": "Tiny synthetic RC centerline trainroot for smoke-testing scripts/train_dinov2_centerline.py.",
+  "patch_size": 512,
+  "rows": {
+    "train": 6,
+    "val": 2
+  },
+  "image_dir": "images",
+  "format": "ShareGPT-style JSONL with relative image paths and centerline JSON assistant targets.",
+  "target_sampling_mode": "already_compact_synthetic; train script can still run --prepare-trainroot.",
+  "colors_rgb": {
+    "background": [
+      10,
+      12,
+      18
+    ],
+    "lane_boundary": [
+      112,
+      255,
+      148
+    ],
+    "lane_divider": [
+      74,
+      227,
+      255
+    ]
+  }
+}

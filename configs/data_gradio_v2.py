@@ -1,9 +1,9 @@
 """
-Road Map Annotation Platform v3.1
-- Fixed: JS bridge button click issue (DOM removal due to visible=False)
+Road Map Annotation Platform v3
 - Fixed: share=True for remote servers
-- Added: table inline "Enter" button with auto-redirect
-- Added: separate images directory logic
+- Fixed: backslash in f-string
+- Added: startup loading progress bar
+- Added: loading spinners on image/batch operations
 """
 
 import gradio as gr
@@ -13,17 +13,14 @@ from PIL import Image, ImageDraw
 
 # ─────────────────────────── Config ───────────────────────────
 DATA_DIR        = Path("data")
-IMAGE_DIR       = Path("images")
 OUTPUT_DIR      = Path("output")
 STATE_DIR       = Path("state")
-BATCH_SIZE      = 10000   
+BATCH_SIZE      = 10000   # ← 生产环境用 10000；demo 用小值
 
 CATEGORIES = ["简单", "中等", "困难", "空白", "丢弃"]
 CAT_COLORS = {"简单":"#22c55e","中等":"#f59e0b","困难":"#ef4444","空白":"#94a3b8","丢弃":"#6b7280"}
 CAT_ICONS  = {"简单":"✅","中等":"⚡","困难":"🔥","空白":"⬜","丢弃":"🗑️"}
 
-DATA_DIR.mkdir(exist_ok=True)
-IMAGE_DIR.mkdir(exist_ok=True)
 OUTPUT_DIR.mkdir(exist_ok=True)
 STATE_DIR.mkdir(exist_ok=True)
 
@@ -66,6 +63,7 @@ def _set_progress(pct: int, msg: str):
     global _load_progress, _load_status_msg
     _load_progress   = pct
     _load_status_msg = msg
+    # print to terminal so operator can see too
     bar = "█" * (pct // 5) + "░" * (20 - pct // 5)
     print(f"\r[{bar}] {pct:3d}%  {msg}", end="", flush=True)
 
@@ -92,6 +90,7 @@ def load_all_data_with_progress():
                     records.append(json.loads(line))
                 except Exception:
                     pass
+            # inner progress update every 5000 lines
             if total_lines > 5000 and li % 5000 == 0:
                 inner = int((fi + li / total_lines) / total_files * 60)
                 _set_progress(inner,
@@ -118,41 +117,19 @@ def load_all_data_with_progress():
     _load_state()
 
     _set_progress(100, f"✅ 就绪！共 {len(records)} 条 / {len(batches)} 批次")
-    print()  
+    print()  # newline after progress bar
     return len(records)
 
 # ─────────────────────────── Rendering ───────────────────────
-def resolve_image_path(img_path):
-    if not img_path:
-        return None
-    p = Path(img_path)
-    if p.exists():
-        return p
-    p2 = IMAGE_DIR / img_path
-    if p2.exists():
-        return p2
-    p3 = IMAGE_DIR / p.name
-    if p3.exists():
-        return p3
-    return None
-
 def render_sample(record) -> str:
     SIZE = 256
     img = None
-    real_path = resolve_image_path(
-        record.get("image", "")
-    )
-
-    if real_path:
+    img_path = record.get("image", "")
+    if img_path and os.path.exists(img_path):
         try:
-            img = (
-                Image.open(real_path)
-                .resize((SIZE, SIZE))
-                .convert("RGB")
-            )
-        except Exception as e:
-            print("图片加载失败:", real_path, e)
-
+            img = Image.open(img_path).resize((SIZE, SIZE)).convert("RGB")
+        except Exception:
+            pass
     if img is None:
         img = Image.new("RGB", (SIZE, SIZE), (30, 40, 52))
 
@@ -220,7 +197,6 @@ def batch_table_html():
         bls = list(batches)
     if not bls:
         return '<p style="color:#475569;padding:12px">暂无批次数据，请确认 data/ 目录下有 .jsonl 文件</p>'
-    
     rows = "".join(
         f'<tr style="border-bottom:1px solid #1e293b">'
         f'<td style="padding:7px 14px;color:#e2e8f0">{bid}</td>'
@@ -233,10 +209,6 @@ def batch_table_html():
         f'  <span style="color:#94a3b8;font-size:12px;margin-left:6px">{_pct(ann.get(bid,0),e-s)}%</span>'
         f'</td>'
         f'<td style="padding:7px 14px">{_status_cell(blk, bid)}</td>'
-        f'<td style="padding:7px 14px">'
-        f'  <button onclick="setBatchAndEnter(\'{bid}\')" '
-        f'   style="background:#6366f1;color:#fff;border:none;padding:5px 12px;border-radius:4px;cursor:pointer;font-weight:600;font-size:12px;transition:0.2s">进入 →</button>'
-        f'</td>'
         f'</tr>'
         for bid, s, e in bls
     )
@@ -248,7 +220,6 @@ def batch_table_html():
         '<th style="padding:8px 14px;text-align:left;color:#64748b">已标注</th>'
         '<th style="padding:8px 14px;text-align:left;color:#64748b">进度</th>'
         '<th style="padding:8px 14px;text-align:left;color:#64748b">状态</th>'
-        '<th style="padding:8px 14px;text-align:left;color:#64748b">操作</th>'
         '</thead><tbody>' + rows + '</tbody></table>'
     )
 
@@ -361,37 +332,7 @@ def _startup():
 threading.Thread(target=_startup, daemon=True).start()
 
 # ─────────────────────────── Build Gradio app ─────────────────
-
-# 【修复处】：修改了JS逻辑，确保兼容Gradio的DOM渲染机制
-JS_HEAD = """
-<script>
-function setBatchAndEnter(bid) {
-    var container = document.getElementById('hidden_bid');
-    if(!container) return;
-    
-    // 获取真实的输入框
-    var el = container.querySelector('textarea') || container.querySelector('input');
-    if (el) {
-        // 1. 设置值并触发事件
-        el.value = bid;
-        el.dispatchEvent(new Event('input', { bubbles: true }));
-        
-        // 2. 延迟等待 Gradio 状态同步后，点击隐藏按钮
-        setTimeout(function(){
-            var btnWrap = document.getElementById('hidden_btn');
-            if(btnWrap) {
-                // 有时候 id 挂在外层 div 上，需要往下找真实的 button
-                var btn = btnWrap.tagName === 'BUTTON' ? btnWrap : btnWrap.querySelector('button');
-                if(btn) btn.click();
-            }
-        }, 150);
-    }
-}
-</script>
-"""
-
 def build():
-    # 【修复处】：增加 .hidden-bridge 类，用于在前端隐藏组件但不将其从 DOM 删除
     CSS = """
     .gradio-container{background:#0f172a !important;color:#e2e8f0 !important}
     footer{display:none!important}
@@ -399,10 +340,9 @@ def build():
              border-radius:8px!important;min-height:46px!important}
     label{color:#94a3b8!important}
     .progress-wrap{background:#1e293b;border-radius:10px;padding:16px;margin-bottom:12px}
-    .hidden-bridge{display:none !important;}
     """
 
-    with gr.Blocks(title="道路地图标注平台", css=CSS, head=JS_HEAD) as demo:
+    with gr.Blocks(title="道路地图标注平台") as demo:
         s_user  = gr.State("")
         s_batch = gr.State("")
         s_idx   = gr.State(0)
@@ -418,12 +358,9 @@ def build():
           </p>
         </div>""")
 
+        # ── Startup loading banner (visible until data ready) ──
         loading_banner = gr.HTML(value=_startup_progress_html(), visible=True)
         main_content   = gr.Column(visible=False)
-
-        # 【修复处】：去除了 visible=False，改用 css 隐藏，保证 JS 桥接能找到 DOM
-        hidden_bid = gr.Textbox(elem_id="hidden_bid", elem_classes=["hidden-bridge"])
-        hidden_btn = gr.Button(elem_id="hidden_btn", elem_classes=["hidden-bridge"])
 
         with main_content:
             with gr.Tabs() as tabs:
@@ -434,14 +371,21 @@ def build():
                         with gr.Column(scale=1):
                             gr.Markdown("### 👤 登录")
                             inp_user  = gr.Textbox(label="用户名", placeholder="输入用户名…")
-                            btn_login = gr.Button("登录平台 →", variant="primary")
+                            btn_login = gr.Button("进入平台 →", variant="primary")
                             login_msg = gr.HTML("")
 
                         with gr.Column(scale=2):
                             gr.Markdown("### 📦 批次状态")
                             btn_ref = gr.Button("🔄 刷新状态", size="sm")
                             tbl     = gr.HTML("")
-                            
+
+                    gr.Markdown("---")
+                    gr.Markdown("### 🎯 进入批次标注")
+                    with gr.Row():
+                        dd_batch  = gr.Dropdown(label="选择批次", choices=[], value=None)
+                        btn_enter = gr.Button("开始标注 →", variant="primary", scale=0)
+                    enter_msg = gr.HTML("")
+
                 # ════ Tab 2: Annotate ════
                 with gr.Tab("✏️ 标注工作台", id="annotate"):
                     with gr.Row():
@@ -454,7 +398,7 @@ def build():
                                 '<div style="width:256px;height:256px;background:#1e293b;'
                                 'border:2px solid #334155;border-radius:8px;display:flex;'
                                 'align-items:center;justify-content:center;color:#475569;font-size:13px">'
-                                '请先在主页选择批次进入</div>')
+                                '请先在主页选择批次</div>')
                             meta_json = gr.JSON(label="样本元数据")
 
                         with gr.Column(scale=2):
@@ -491,19 +435,25 @@ def build():
                     btn_ref_s = gr.Button("🔄 刷新统计")
                     stats_out = gr.HTML("")
 
+        # ─── Polling timer: check startup every 1 s ───
         timer = gr.Timer(value=1.0, active=True)
 
         # ─────────────── Callbacks ───────────────────
 
         def poll_startup():
+            """Called every second until data is loaded."""
             html = _startup_progress_html()
             if _startup_done.is_set():
+                # Data ready → hide banner, show main, populate dropdowns
+                choices = [b[0] for b in batches]
+                val     = choices[0] if choices else None
                 return (
-                    gr.update(value=html, visible=False),
-                    gr.update(visible=True),
-                    gr.update(active=False),
-                    batch_table_html(),
-                    _stats_html(),
+                    gr.update(value=html, visible=False),     # loading_banner
+                    gr.update(visible=True),                   # main_content
+                    gr.update(active=False),                   # timer off
+                    gr.update(choices=choices, value=val),     # dd_batch
+                    batch_table_html(),                        # tbl
+                    _stats_html(),                             # stats_out
                 )
             return (
                 gr.update(value=html, visible=True),
@@ -511,11 +461,13 @@ def build():
                 gr.update(active=True),
                 gr.update(),
                 gr.update(),
+                gr.update(),
             )
 
         timer.tick(
             poll_startup,
-            outputs=[loading_banner, main_content, timer, tbl, stats_out],
+            outputs=[loading_banner, main_content, timer,
+                     dd_batch, tbl, stats_out],
         )
 
         def cb_login(user):
@@ -526,7 +478,7 @@ def build():
             hint = (f"<br><span style='color:#64748b;font-size:12px'>"
                     f"上次：{prog['batch_id']} 第 {prog['index']} 个</span>"
                     if prog else "")
-            return user, f"<span style='color:#22c55e'>✅ 欢迎，{user}！请在右侧点击批次的“进入”</span>{hint}"
+            return user, f"<span style='color:#22c55e'>✅ 欢迎，{user}！</span>{hint}"
 
         def cb_refresh():
             return batch_table_html()
@@ -534,8 +486,9 @@ def build():
         def cb_enter(user, bid):
             if not user:
                 return (gr.update(), 0,
-                        "<span style='color:#ef4444'>⚠️ 请先在主页左侧登录用户名</span>",
-                        LOADING_SPINNER, {}, "", gr.update(selected="annotate"))
+                        "<span style='color:#ef4444'>请先登录</span>",
+                        LOADING_SPINNER, {}, "", gr.update())
+            # show spinner while acquiring
             ok = _acquire(bid, user)
             if not ok:
                 with _lock:
@@ -547,7 +500,7 @@ def build():
                     '<div style="width:256px;height:256px;background:#1e293b;border-radius:8px;'
                     'display:flex;align-items:center;justify-content:center;color:#ef4444">'
                     '批次已锁定</div>',
-                    {}, "", gr.update(selected="annotate"),
+                    {}, "", gr.update(),
                 )
             with _lock:
                 prog = user_progress.get(user, {})
@@ -557,13 +510,12 @@ def build():
             _save()
             ih, m, pg = render_at(bid, idx)
             status = (f'<span style="color:#6366f1;font-weight:600">👤 {user}</span>'
-                      f' &nbsp;|&nbsp; <span style="color:#e2e8f0">📦 {bid}</span>'
-                      f' &nbsp;|&nbsp; <span style="color:#22c55e">✅ 已锁定并开始</span>')
+                      f' &nbsp;|&nbsp; <span style="color:#e2e8f0">📦 {bid}</span>')
             return (
                 bid, idx,
-                status,
+                f"<span style='color:#22c55e'>✅ 已锁定 {bid}，开始标注！</span>",
                 ih, m, pg,
-                gr.update(selected="annotate"),  # 【修复处】使用 update 来安全跳转 Tab
+                gr.Tabs(selected="annotate"),
             )
 
         def cb_annotate(user, bid, idx, cat):
@@ -648,9 +600,9 @@ def build():
         btn_ref.click(cb_refresh, outputs=[tbl])
         btn_ref_s.click(_stats_html, outputs=[stats_out])
 
-        hidden_btn.click(
-            cb_enter, [s_user, hidden_bid],
-            [s_batch, s_idx, lbl_status, img_disp, meta_json, lbl_progress, tabs],
+        btn_enter.click(
+            cb_enter, [s_user, dd_batch],
+            [s_batch, s_idx, enter_msg, img_disp, meta_json, lbl_progress, tabs],
         )
 
         for cat, btn in cat_btns.items():
@@ -709,7 +661,7 @@ if __name__ == "__main__":
     app.launch(
         server_name="0.0.0.0",
         server_port=7860,
-        share=True,
+        share=True,          # ← 修复远程服务器无法访问 localhost 的问题
         show_error=True,
         css=css,
     )

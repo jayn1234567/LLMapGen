@@ -1,9 +1,7 @@
 """
-Road Map Annotation Platform v3
+Road Map Annotation Platform v3.1
+- Fixed: JS bridge button click issue (DOM removal due to visible=False)
 - Fixed: share=True for remote servers
-- Fixed: backslash in f-string
-- Added: startup loading progress bar
-- Added: loading spinners on image/batch operations
 - Added: table inline "Enter" button with auto-redirect
 - Added: separate images directory logic
 """
@@ -15,10 +13,10 @@ from PIL import Image, ImageDraw
 
 # ─────────────────────────── Config ───────────────────────────
 DATA_DIR        = Path("data")
-IMAGE_DIR       = Path("images")   # ← 新增：独立的图片存放路径
+IMAGE_DIR       = Path("images")
 OUTPUT_DIR      = Path("output")
 STATE_DIR       = Path("state")
-BATCH_SIZE      = 10000   # ← 生产环境用 10000；demo 用小值
+BATCH_SIZE      = 10000   
 
 CATEGORIES = ["简单", "中等", "困难", "空白", "丢弃"]
 CAT_COLORS = {"简单":"#22c55e","中等":"#f59e0b","困难":"#ef4444","空白":"#94a3b8","丢弃":"#6b7280"}
@@ -68,7 +66,6 @@ def _set_progress(pct: int, msg: str):
     global _load_progress, _load_status_msg
     _load_progress   = pct
     _load_status_msg = msg
-    # print to terminal so operator can see too
     bar = "█" * (pct // 5) + "░" * (20 - pct // 5)
     print(f"\r[{bar}] {pct:3d}%  {msg}", end="", flush=True)
 
@@ -95,7 +92,6 @@ def load_all_data_with_progress():
                     records.append(json.loads(line))
                 except Exception:
                     pass
-            # inner progress update every 5000 lines
             if total_lines > 5000 and li % 5000 == 0:
                 inner = int((fi + li / total_lines) / total_files * 60)
                 _set_progress(inner,
@@ -122,31 +118,22 @@ def load_all_data_with_progress():
     _load_state()
 
     _set_progress(100, f"✅ 就绪！共 {len(records)} 条 / {len(batches)} 批次")
-    print()  # newline after progress bar
+    print()  
     return len(records)
 
 # ─────────────────────────── Rendering ───────────────────────
 def resolve_image_path(img_path):
-
     if not img_path:
         return None
-
     p = Path(img_path)
-
-    # jsonl里已经是绝对路径
     if p.exists():
         return p
-
-    # images/xxx.jpg
     p2 = IMAGE_DIR / img_path
     if p2.exists():
         return p2
-
-    # images/只保留文件名
     p3 = IMAGE_DIR / p.name
     if p3.exists():
         return p3
-
     return None
 
 def render_sample(record) -> str:
@@ -234,7 +221,6 @@ def batch_table_html():
     if not bls:
         return '<p style="color:#475569;padding:12px">暂无批次数据，请确认 data/ 目录下有 .jsonl 文件</p>'
     
-    # 构造表格行数据，增加 "进入" 按钮
     rows = "".join(
         f'<tr style="border-bottom:1px solid #1e293b">'
         f'<td style="padding:7px 14px;color:#e2e8f0">{bid}</td>'
@@ -376,29 +362,36 @@ threading.Thread(target=_startup, daemon=True).start()
 
 # ─────────────────────────── Build Gradio app ─────────────────
 
-# 注入 JS 脚本实现 HTML 按钮与 Gradio 后台函数的通信并跳转
+# 【修复处】：修改了JS逻辑，确保兼容Gradio的DOM渲染机制
 JS_HEAD = """
 <script>
 function setBatchAndEnter(bid) {
-    // 找到隐藏的文本框并赋值
     var container = document.getElementById('hidden_bid');
     if(!container) return;
+    
+    // 获取真实的输入框
     var el = container.querySelector('textarea') || container.querySelector('input');
     if (el) {
+        // 1. 设置值并触发事件
         el.value = bid;
-        // 派发事件让 Gradio 的 Svelte 前端捕获
         el.dispatchEvent(new Event('input', { bubbles: true }));
-        // 延迟一点触发隐藏的“进入”按钮，确保状态已更新
+        
+        // 2. 延迟等待 Gradio 状态同步后，点击隐藏按钮
         setTimeout(function(){
-            var btn = document.getElementById('hidden_btn');
-            if(btn) btn.click();
-        }, 100);
+            var btnWrap = document.getElementById('hidden_btn');
+            if(btnWrap) {
+                // 有时候 id 挂在外层 div 上，需要往下找真实的 button
+                var btn = btnWrap.tagName === 'BUTTON' ? btnWrap : btnWrap.querySelector('button');
+                if(btn) btn.click();
+            }
+        }, 150);
     }
 }
 </script>
 """
 
 def build():
+    # 【修复处】：增加 .hidden-bridge 类，用于在前端隐藏组件但不将其从 DOM 删除
     CSS = """
     .gradio-container{background:#0f172a !important;color:#e2e8f0 !important}
     footer{display:none!important}
@@ -406,6 +399,7 @@ def build():
              border-radius:8px!important;min-height:46px!important}
     label{color:#94a3b8!important}
     .progress-wrap{background:#1e293b;border-radius:10px;padding:16px;margin-bottom:12px}
+    .hidden-bridge{display:none !important;}
     """
 
     with gr.Blocks(title="道路地图标注平台", css=CSS, head=JS_HEAD) as demo:
@@ -424,13 +418,12 @@ def build():
           </p>
         </div>""")
 
-        # ── Startup loading banner (visible until data ready) ──
         loading_banner = gr.HTML(value=_startup_progress_html(), visible=True)
         main_content   = gr.Column(visible=False)
 
-        # 隐藏组件用于桥接表格点击与后台交互
-        hidden_bid = gr.Textbox(elem_id="hidden_bid", visible=False)
-        hidden_btn = gr.Button(elem_id="hidden_btn", visible=False)
+        # 【修复处】：去除了 visible=False，改用 css 隐藏，保证 JS 桥接能找到 DOM
+        hidden_bid = gr.Textbox(elem_id="hidden_bid", elem_classes=["hidden-bridge"])
+        hidden_btn = gr.Button(elem_id="hidden_btn", elem_classes=["hidden-bridge"])
 
         with main_content:
             with gr.Tabs() as tabs:
@@ -498,22 +491,19 @@ def build():
                     btn_ref_s = gr.Button("🔄 刷新统计")
                     stats_out = gr.HTML("")
 
-        # ─── Polling timer: check startup every 1 s ───
         timer = gr.Timer(value=1.0, active=True)
 
         # ─────────────── Callbacks ───────────────────
 
         def poll_startup():
-            """Called every second until data is loaded."""
             html = _startup_progress_html()
             if _startup_done.is_set():
-                # Data ready → hide banner, show main
                 return (
-                    gr.update(value=html, visible=False),     # loading_banner
-                    gr.update(visible=True),                   # main_content
-                    gr.update(active=False),                   # timer off
-                    batch_table_html(),                        # tbl
-                    _stats_html(),                             # stats_out
+                    gr.update(value=html, visible=False),
+                    gr.update(visible=True),
+                    gr.update(active=False),
+                    batch_table_html(),
+                    _stats_html(),
                 )
             return (
                 gr.update(value=html, visible=True),
@@ -546,7 +536,6 @@ def build():
                 return (gr.update(), 0,
                         "<span style='color:#ef4444'>⚠️ 请先在主页左侧登录用户名</span>",
                         LOADING_SPINNER, {}, "", gr.update(selected="annotate"))
-            # show spinner while acquiring
             ok = _acquire(bid, user)
             if not ok:
                 with _lock:
@@ -574,7 +563,7 @@ def build():
                 bid, idx,
                 status,
                 ih, m, pg,
-                gr.Tabs(selected="annotate"),
+                gr.update(selected="annotate"),  # 【修复处】使用 update 来安全跳转 Tab
             )
 
         def cb_annotate(user, bid, idx, cat):
@@ -659,7 +648,6 @@ def build():
         btn_ref.click(cb_refresh, outputs=[tbl])
         btn_ref_s.click(_stats_html, outputs=[stats_out])
 
-        # 修改了入口，使用隐藏组件响应表格 HTML 中点击事件的派发
         hidden_btn.click(
             cb_enter, [s_user, hidden_bid],
             [s_batch, s_idx, lbl_status, img_disp, meta_json, lbl_progress, tabs],

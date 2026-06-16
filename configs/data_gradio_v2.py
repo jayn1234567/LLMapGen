@@ -20,17 +20,20 @@ from PIL import Image, ImageDraw
 #   DATA_FILE = Path("/home/user/data/train.jsonl")
 #   IMAGE_DIR = Path("/home/user/data")
 # 留空则自动使用项目根目录（scripts/ 的上一级）下的默认路径：
-DATA_FILE   = Path("")   # jsonl 路径
-IMAGE_DIR   = Path("")   # 图片根目录
+DATA_FILE   = Path("data/debug_phase_a_lane_intersection20/train.jsonl")   # jsonl 路径
+IMAGE_DIR   = Path("data/av2_patch_256_fullimage_cutflag_test_v2")   # 图片根目录
 
-if not DATA_FILE or not str(DATA_FILE):
-    _ROOT = Path(__file__).resolve().parent.parent
-    DATA_FILE = _ROOT / "data/debug_phase_a_lane_intersection20/train.jsonl"
-if not IMAGE_DIR or not str(IMAGE_DIR):
-    _ROOT = Path(__file__).resolve().parent.parent
-    IMAGE_DIR = _ROOT / "data/av2_patch_256_fullimage_cutflag_test_v2"
-OUTPUT_DIR  = Path("output")
-STATE_DIR   = Path("state")
+# _ROOT = Path(__file__).resolve().parent.parent
+# if not DATA_FILE or not str(DATA_FILE):
+#     DATA_FILE = _ROOT / "data/debug_phase_a_lane_intersection20/train.jsonl"
+# if not IMAGE_DIR or not str(IMAGE_DIR):
+#     IMAGE_DIR = _ROOT / "data/av2_patch_256_fullimage_cutflag_test_v2"
+
+# OUTPUT_DIR  = _ROOT / "output"
+# STATE_DIR   = _ROOT / "state"
+OUTPUT_DIR  = Path("data/debug_phase_a_lane_intersection20/output")
+STATE_DIR   = Path("data/debug_phase_a_lane_intersection20/state")
+
 BATCH_SIZE  = 20                               # demo 用小值；生产用 10000
 PORT        = 7863
 
@@ -688,6 +691,19 @@ def build():
                 gr.Tabs(selected="annotate"),
             )
 
+        def _append_to_category(bid, rid, record, cat):
+            """立即将标注样本追加到对应分类的 JSONL 文件（支持多用户并发追加）"""
+            if cat not in CATEGORIES:
+                return
+            p = OUTPUT_DIR / f"{bid}_{cat}.jsonl"
+            try:
+                with open(p, "a", encoding="utf-8") as f:
+                    f.write(json.dumps(record, ensure_ascii=False) + "\n")
+                    f.flush()
+                debug(f"  → 追加到 {p.name}")
+            except Exception as e:
+                debug(f"  ⚠ 写入失败 {p}: {e}")
+
         def cb_annotate(user, bid, idx, cat):
             if not bid:
                 return idx, LOADING_SPINNER, {}, ""
@@ -707,6 +723,7 @@ def build():
                 annotations.setdefault(bid, {})[rid] = cat
                 ni = min(idx + 1, len(recs) - 1)
                 user_progress[user] = {"batch_id": bid, "index": ni}
+                _append_to_category(bid, rid, recs[idx], cat)
             _save()
             debug(f"  已标注 {rid}={cat}, 前进到 {ni}")
             ih, m, pg = render_at(bid, ni)
@@ -760,7 +777,7 @@ def build():
                     p = OUTPUT_DIR / f"{bid}_{cat}.jsonl"
                     p.write_text(
                         "\n".join(json.dumps(r, ensure_ascii=False) for r in lst))
-                    out.append(f"{cat}: {len(lst)} 条 → {p.name}")
+                    out.append(f"{cat}: {len(lst)} 条 → {p}")
             debug(f"导出 {bid}: {out}")
             return ("导出完成：\n" + "\n".join(out)) if out else "暂无已标注数据"
 

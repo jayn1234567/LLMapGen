@@ -16,10 +16,19 @@ from PIL import Image, ImageDraw
 # ============================================================
 # 路径配置 - 直接修改这里
 # ============================================================
-# 自动定位到项目根目录（scripts/ 的上一级）
-_PROJECT_ROOT = Path(__file__).resolve().parent.parent
-DATA_FILE   = _PROJECT_ROOT / "data/debug_phase_a_lane_intersection20/train.jsonl"  # jsonl 路径
-IMAGE_DIR   = _PROJECT_ROOT / "data/av2_patch_256_fullimage_cutflag_test_v2"       # 图片根目录
+# 填入绝对路径，例如：
+#   DATA_FILE = Path("/home/user/data/train.jsonl")
+#   IMAGE_DIR = Path("/home/user/data")
+# 留空则自动使用项目根目录（scripts/ 的上一级）下的默认路径：
+DATA_FILE   = Path("")   # jsonl 路径
+IMAGE_DIR   = Path("")   # 图片根目录
+
+if not DATA_FILE or not str(DATA_FILE):
+    _ROOT = Path(__file__).resolve().parent.parent
+    DATA_FILE = _ROOT / "data/debug_phase_a_lane_intersection20/train.jsonl"
+if not IMAGE_DIR or not str(IMAGE_DIR):
+    _ROOT = Path(__file__).resolve().parent.parent
+    IMAGE_DIR = _ROOT / "data/av2_patch_256_fullimage_cutflag_test_v2"
 OUTPUT_DIR  = Path("output")
 STATE_DIR   = Path("state")
 BATCH_SIZE  = 20                               # demo 用小值；生产用 10000

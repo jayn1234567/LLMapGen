@@ -123,6 +123,13 @@ def release(bid, user):
         if lk and lk.get("user")==user:
             batch_locks[bid]=None; _save()
 
+def _status_cell(blk, bid):
+    lk = blk.get(bid)
+    if lk:
+        user = lk["user"]
+        return f'<span style="color:#ef4444;font-weight:600">🔴 {user}</span>'
+    return '<span style="color:#22c55e;font-weight:600">🟢 空闲</span>'
+
 def batch_table_html():
     with _lock:
         blk  = dict(batch_locks)
@@ -136,9 +143,8 @@ def batch_table_html():
         f'<td style="padding:7px 14px"><div style="background:#0f172a;border-radius:4px;height:12px;width:120px;display:inline-block">'
         f'<div style="background:#6366f1;height:12px;border-radius:4px;width:{int(ann.get(bid,0)/(e-s)*100) if e>s else 0}%"></div></div>'
         f' <span style="color:#94a3b8;font-size:12px">{int(ann.get(bid,0)/(e-s)*100) if e>s else 0}%</span></td>'
-        f'<td style="padding:7px 14px">'
-        f'{"<span style=\\'color:#ef4444;font-weight:600\\'>🔴 "+blk[bid]["user"]+"</span>" if blk.get(bid) else "<span style=\\'color:#22c55e;font-weight:600\\'>🟢 空闲</span>"}'
-        f'</td></tr>'
+        f'<td style="padding:7px 14px">{_status_cell(blk, bid)}</td>'
+        f'</tr>'
         for bid,s,e in bls
     )
     return (

@@ -1,13 +1,26 @@
 #!/usr/bin/env python3
 """Convert DI QA data into the DINOv2 centerline JSON trainroot format.
 
-Input layout:
+Supported input layouts:
 
+    # Flat private QA layout.
     dataset/
       img/<group_id>/*.png
       img/<group_id>/output.json
       train.jsonl
       test.jsonl
+
+    # data_line_samples_33w style layout.
+    data_line_samples_33w/
+      images/train/*.png
+      images/eval/*.png
+      images/test/*.png
+      phase_a/train.jsonl
+      phase_a/eval.jsonl
+      phase_a/test.jsonl
+      phase_a/meta_train.jsonl
+      phase_a/meta_eval.jsonl
+      phase_a/meta_test.jsonl
 
 Input rows are expected to use:
 
@@ -27,7 +40,7 @@ Output layout:
       val.jsonl
       meta_train.jsonl
       meta_val.jsonl
-      img -> ../dataset/img   # symlink by default
+      images -> ../dataset/images   # symlink by default when --image-root images
       dataset_info.json
 """
 
@@ -55,10 +68,23 @@ def parse_args() -> argparse.Namespace:
         help="Optional dataset directory name under --input-root after OBS zip extraction.",
     )
     parser.add_argument("--output-root", required=True, help="Output trainroot directory.")
-    parser.add_argument("--train-file", default="train.jsonl")
-    parser.add_argument("--eval-file", default="test.jsonl", help="Usually test.jsonl in the private dataset.")
+    parser.add_argument(
+        "--phase",
+        default="",
+        help="Optional phase subdirectory such as phase_a. When set, defaults are phase/train.jsonl and phase/eval.jsonl.",
+    )
+    parser.add_argument("--train-file", default="", help="Training json/jsonl path relative to the resolved dataset root.")
+    parser.add_argument(
+        "--eval-file",
+        default="",
+        help="Eval json/jsonl path relative to the resolved dataset root. Defaults to phase/eval.jsonl or test.jsonl.",
+    )
+    parser.add_argument("--train-meta-file", default="", help="Optional source meta json/jsonl for training rows.")
+    parser.add_argument("--eval-meta-file", default="", help="Optional source meta json/jsonl for eval rows.")
     parser.add_argument("--eval-output-name", default="val.jsonl")
-    parser.add_argument("--image-root", default="img")
+    parser.add_argument("--image-root", default="img", help="Image directory under dataset root, e.g. img or images.")
+    parser.add_argument("--train-image-split", default="train", help="Subdirectory under --image-root for train images.")
+    parser.add_argument("--eval-image-split", default="eval", help="Subdirectory under --image-root for eval images.")
     parser.add_argument("--patch-size", type=int, default=512)
     parser.add_argument("--coord-max", type=int, default=512)
     parser.add_argument("--media-mode", choices=["symlink", "copy", "none"], default="symlink")
@@ -75,7 +101,7 @@ def load_records(path: Path, max_samples: int = 0) -> List[Dict[str, Any]]:
         raise FileNotFoundError(f"Input split not found: {path}")
     records: List[Dict[str, Any]] = []
     if path.suffix.lower() == ".jsonl":
-        with path.open("r", encoding="utf-8") as f:
+        with path.open("r", encoding="utf-8-sig") as f:
             for line_no, line in enumerate(f, start=1):
                 text = line.strip()
                 if not text:
@@ -88,7 +114,7 @@ def load_records(path: Path, max_samples: int = 0) -> List[Dict[str, Any]]:
                     break
         return records
 
-    with path.open("r", encoding="utf-8") as f:
+    with path.open("r", encoding="utf-8-sig") as f:
         payload = json.load(f)
     if isinstance(payload, list):
         records = [item for item in payload if isinstance(item, dict)]
@@ -103,6 +129,21 @@ def load_records(path: Path, max_samples: int = 0) -> List[Dict[str, Any]]:
     else:
         raise TypeError(f"Expected list or dict JSON at {path}, got {type(payload)!r}")
     return records[:max_samples] if max_samples > 0 else records
+
+
+def index_records_by_id(records: Sequence[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
+    indexed: Dict[str, Dict[str, Any]] = {}
+    for item in records:
+        sample_id = str(item.get("id", item.get("sample_id", ""))).strip()
+        if sample_id:
+            indexed[sample_id] = item
+    return indexed
+
+
+def load_meta_by_id(path: Path | None) -> Dict[str, Dict[str, Any]]:
+    if path is None or not path.is_file():
+        return {}
+    return index_records_by_id(load_records(path))
 
 
 def write_jsonl(path: Path, rows: Iterable[Dict[str, Any]]) -> int:
@@ -223,7 +264,17 @@ def extract_lines(payload: Any, *, coord_max: int, default_category: str = "cent
                 lines.extend(lines_from_points_payload(raw_line, category, coord_max))
         return lines
 
-    for key in ("points", "point", "polyline", "polylines", "centerline", "centerlines"):
+    for key in (
+        "points",
+        "point",
+        "polyline",
+        "polylines",
+        "centerline",
+        "centerlines",
+        "target_lines",
+        "gt_lines",
+        "lines_gt",
+    ):
         if key in payload:
             return lines_from_points_payload(payload.get(key), category, coord_max)
     return []
@@ -235,8 +286,9 @@ def normalize_assistant_payload(value: Any, *, coord_max: int) -> Tuple[str, Lis
     return json.dumps(payload, ensure_ascii=False, separators=(",", ":")), lines
 
 
-def get_images(record: Dict[str, Any]) -> List[str]:
-    raw = record.get("images", record.get("image", record.get("Image", [])))
+def get_images(record: Dict[str, Any], meta: Dict[str, Any] | None = None) -> List[str]:
+    meta = meta or {}
+    raw = record.get("images", record.get("image", record.get("Image", meta.get("images", meta.get("image", [])))))
     if isinstance(raw, str):
         images = [raw]
     elif isinstance(raw, list):
@@ -244,6 +296,50 @@ def get_images(record: Dict[str, Any]) -> List[str]:
     else:
         images = []
     return [item.replace("\\", "/").lstrip("/") for item in images if item.strip()]
+
+
+def resolve_image_relpath(
+    image: str,
+    *,
+    input_root: Path,
+    image_root: str,
+    image_split: str,
+) -> Tuple[str, Path]:
+    normalized = str(image).replace("\\", "/").strip()
+    if not normalized:
+        return "", input_root
+    raw_path = Path(normalized)
+    if raw_path.is_absolute():
+        try:
+            rel = raw_path.resolve().relative_to(input_root)
+            normalized = rel.as_posix()
+        except Exception:
+            return normalized.lstrip("/"), raw_path
+    normalized = normalized.lstrip("/")
+
+    candidates: List[str] = [normalized]
+    root = str(image_root).strip().strip("/\\")
+    split = str(image_split).strip().strip("/\\")
+    if root:
+        candidates.append(f"{root}/{normalized}")
+        if split:
+            candidates.append(f"{root}/{split}/{normalized}")
+            if normalized.startswith(f"{split}/"):
+                candidates.append(f"{root}/{normalized}")
+            candidates.append(f"{root}/{split}/{Path(normalized).name}")
+
+    seen = set()
+    for rel in candidates:
+        rel = rel.replace("\\", "/").lstrip("/")
+        if not rel or rel in seen:
+            continue
+        seen.add(rel)
+        path = input_root / rel
+        if path.is_file():
+            return rel, path
+
+    fallback = candidates[0].replace("\\", "/").lstrip("/")
+    return fallback, input_root / fallback
 
 
 def get_conversations(record: Dict[str, Any]) -> List[Dict[str, Any]]:
@@ -269,15 +365,31 @@ def convert_record(
     input_root: Path,
     coord_max: int,
     patch_size: int,
+    meta: Dict[str, Any] | None,
+    image_root: str,
+    image_split: str,
     allow_missing_images: bool,
     allow_empty_lines: bool,
 ) -> Tuple[Dict[str, Any], Dict[str, Any], Dict[str, int]]:
     sample_id = str(record.get("id", record.get("sample_id", index))).strip() or str(index)
-    images = get_images(record)
+    meta = meta or {}
+    images = get_images(record, meta)
     stats = {"missing_image": 0, "empty_lines": 0, "missing_assistant": 0}
     if not images:
         raise ValueError(f"sample={sample_id} has no images field.")
-    image_path = input_root / images[0]
+    resolved_images: List[str] = []
+    image_path = input_root
+    for image in images:
+        rel_image, candidate_path = resolve_image_relpath(
+            image,
+            input_root=input_root,
+            image_root=image_root,
+            image_split=image_split,
+        )
+        resolved_images.append(rel_image)
+        if image == images[0]:
+            image_path = candidate_path
+    images = resolved_images
     if not image_path.is_file():
         stats["missing_image"] = 1
         if not allow_missing_images:
@@ -300,10 +412,20 @@ def convert_record(
 
     if assistant_value is None:
         stats["missing_assistant"] = 1
-        assistant_json, lines = normalize_assistant_payload(record, coord_max=coord_max)
+        fallback_payload: Any = meta if meta else record
+        assistant_json, lines = normalize_assistant_payload(fallback_payload, coord_max=coord_max)
         messages.append({"role": "assistant", "content": assistant_json})
     else:
         _, lines = normalize_assistant_payload(assistant_value, coord_max=coord_max)
+    if not lines and meta:
+        meta_lines = extract_lines(meta, coord_max=coord_max)
+        if meta_lines:
+            lines = meta_lines
+            assistant_json = json.dumps({"lines": lines}, ensure_ascii=False, separators=(",", ":"))
+            for item in messages:
+                if item.get("role") == "assistant":
+                    item["content"] = assistant_json
+                    break
 
     if not lines:
         stats["empty_lines"] = 1
@@ -361,6 +483,9 @@ def convert_split(
     allow_missing_images: bool,
     allow_empty_lines: bool,
     max_samples: int,
+    source_meta_by_id: Dict[str, Dict[str, Any]],
+    image_root: str,
+    image_split: str,
     dry_run: bool,
 ) -> Dict[str, Any]:
     records = load_records(input_path, max_samples=max_samples)
@@ -368,12 +493,17 @@ def convert_split(
     metas: List[Dict[str, Any]] = []
     totals = {"missing_image": 0, "empty_lines": 0, "missing_assistant": 0}
     for index, record in enumerate(records):
+        sample_id = str(record.get("id", record.get("sample_id", index))).strip() or str(index)
+        source_meta = source_meta_by_id.get(sample_id, {})
         out_record, meta, stats = convert_record(
             record,
             index=index,
             input_root=input_root,
             coord_max=coord_max,
             patch_size=patch_size,
+            meta=source_meta,
+            image_root=image_root,
+            image_split=image_split,
             allow_missing_images=allow_missing_images,
             allow_empty_lines=allow_empty_lines,
         )
@@ -409,8 +539,18 @@ def main() -> None:
     if not input_root.is_dir():
         raise FileNotFoundError(f"Input root not found: {input_root}")
 
-    train_input = input_root / str(args.train_file)
-    eval_input = input_root / str(args.eval_file)
+    phase = str(args.phase).strip().strip("/\\")
+    train_file = str(args.train_file).strip() or (f"{phase}/train.jsonl" if phase else "train.jsonl")
+    eval_file = str(args.eval_file).strip() or (f"{phase}/eval.jsonl" if phase else "test.jsonl")
+    train_meta_file = str(args.train_meta_file).strip() or (f"{phase}/meta_train.jsonl" if phase else "")
+    eval_stem = Path(eval_file).stem
+    eval_meta_default = f"{phase}/meta_{eval_stem}.jsonl" if phase else ""
+    eval_meta_file = str(args.eval_meta_file).strip() or eval_meta_default
+
+    train_input = input_root / train_file
+    eval_input = input_root / eval_file
+    train_source_meta = input_root / train_meta_file if train_meta_file else None
+    eval_source_meta = input_root / eval_meta_file if eval_meta_file else None
     train_output = output_root / "train.jsonl"
     eval_output = output_root / str(args.eval_output_name)
     if eval_output.name != "val.jsonl":
@@ -421,8 +561,13 @@ def main() -> None:
     summary: Dict[str, Any] = {
         "input_root": str(input_root),
         "dataset_dir_name": dataset_dir_name,
+        "phase": phase,
         "output_root": str(output_root),
         "image_root": str(args.image_root),
+        "train_file": train_file,
+        "eval_file": eval_file,
+        "train_meta_file": train_meta_file,
+        "eval_meta_file": eval_meta_file,
         "patch_size": int(args.patch_size),
         "coord_max": int(args.coord_max),
         "dry_run": bool(args.dry_run),
@@ -443,6 +588,9 @@ def main() -> None:
         allow_missing_images=bool(args.allow_missing_images),
         allow_empty_lines=bool(args.allow_empty_lines),
         max_samples=int(args.max_train_samples),
+        source_meta_by_id=load_meta_by_id(train_source_meta),
+        image_root=str(args.image_root),
+        image_split=str(args.train_image_split),
         dry_run=bool(args.dry_run),
     )
     summary["eval"] = convert_split(
@@ -455,6 +603,9 @@ def main() -> None:
         allow_missing_images=bool(args.allow_missing_images),
         allow_empty_lines=bool(args.allow_empty_lines),
         max_samples=int(args.max_eval_samples),
+        source_meta_by_id=load_meta_by_id(eval_source_meta),
+        image_root=str(args.image_root),
+        image_split=str(args.eval_image_split),
         dry_run=bool(args.dry_run),
     )
 

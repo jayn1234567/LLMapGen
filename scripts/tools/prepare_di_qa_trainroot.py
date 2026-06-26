@@ -11,7 +11,7 @@ Supported input layouts:
       test.jsonl
 
     # data_line_samples_33w style layout.
-    data_line_samples_33w/
+    data_line_samples_33w/ or datalinesamples33w/
       images/train/*.png
       images/eval/*.png
       images/test/*.png
@@ -21,6 +21,13 @@ Supported input layouts:
       phase_a/meta_train.jsonl
       phase_a/meta_eval.jsonl
       phase_a/meta_test.jsonl
+
+    The no-underscore server naming is also supported:
+
+      phasea/train.jsonl
+      phasea/eval.jsonl
+      phasea/metatrain.jsonl
+      phasea/metaeval.jsonl
 
 Input rows are expected to use:
 
@@ -144,6 +151,49 @@ def load_meta_by_id(path: Path | None) -> Dict[str, Dict[str, Any]]:
     if path is None or not path.is_file():
         return {}
     return index_records_by_id(load_records(path))
+
+
+def resolve_dataset_root(input_root: str, dataset_dir_name: str) -> Tuple[Path, str]:
+    root = Path(input_root).expanduser().resolve()
+    name = dataset_dir_name.strip().strip("/\\")
+    if not name:
+        return root, ""
+
+    candidates = [name]
+    collapsed = name.replace("_", "")
+    if collapsed and collapsed not in candidates:
+        candidates.append(collapsed)
+    for candidate in candidates:
+        path = (root / candidate).resolve()
+        if path.is_dir():
+            return path, candidate
+    return (root / name).resolve(), name
+
+
+def resolve_phase_dir(input_root: Path, phase: str) -> str:
+    phase = phase.strip().strip("/\\")
+    if not phase:
+        return ""
+    candidates = [phase]
+    collapsed = phase.replace("_", "")
+    if collapsed and collapsed not in candidates:
+        candidates.append(collapsed)
+    if phase == "phasea":
+        candidates.append("phase_a")
+    elif phase == "phaseb":
+        candidates.append("phase_b")
+    for candidate in candidates:
+        if (input_root / candidate).is_dir():
+            return candidate
+    return phase
+
+
+def first_existing_file(input_root: Path, candidates: Sequence[str], fallback: str = "") -> str:
+    for rel in candidates:
+        rel = str(rel).strip().strip("/\\")
+        if rel and (input_root / rel).is_file():
+            return rel
+    return fallback or (candidates[0] if candidates else "")
 
 
 def write_jsonl(path: Path, rows: Iterable[Dict[str, Any]]) -> int:
@@ -529,23 +579,36 @@ def convert_split(
 
 def main() -> None:
     args = parse_args()
-    input_root = Path(args.input_root).expanduser().resolve()
-    dataset_dir_name = str(args.dataset_dir_name).strip().strip("/\\")
-    if dataset_dir_name:
-        input_root = (input_root / dataset_dir_name).resolve()
+    input_root, dataset_dir_name = resolve_dataset_root(str(args.input_root), str(args.dataset_dir_name))
     output_root = Path(args.output_root).expanduser().resolve()
     if input_root == output_root:
         raise ValueError("--input-root and --output-root must be different.")
     if not input_root.is_dir():
         raise FileNotFoundError(f"Input root not found: {input_root}")
 
-    phase = str(args.phase).strip().strip("/\\")
-    train_file = str(args.train_file).strip() or (f"{phase}/train.jsonl" if phase else "train.jsonl")
-    eval_file = str(args.eval_file).strip() or (f"{phase}/eval.jsonl" if phase else "test.jsonl")
-    train_meta_file = str(args.train_meta_file).strip() or (f"{phase}/meta_train.jsonl" if phase else "")
+    phase = resolve_phase_dir(input_root, str(args.phase))
+    train_file = str(args.train_file).strip() or first_existing_file(
+        input_root,
+        [f"{phase}/train.jsonl"] if phase else ["train.jsonl"],
+        fallback=f"{phase}/train.jsonl" if phase else "train.jsonl",
+    )
+    eval_file = str(args.eval_file).strip() or first_existing_file(
+        input_root,
+        [f"{phase}/eval.jsonl", f"{phase}/val.jsonl", f"{phase}/test.jsonl"] if phase else ["test.jsonl", "val.jsonl"],
+        fallback=f"{phase}/eval.jsonl" if phase else "test.jsonl",
+    )
+    train_meta_file = str(args.train_meta_file).strip() or first_existing_file(
+        input_root,
+        [f"{phase}/meta_train.jsonl", f"{phase}/metatrain.jsonl"] if phase else ["meta_train.jsonl", "metatrain.jsonl"],
+        fallback="",
+    )
     eval_stem = Path(eval_file).stem
-    eval_meta_default = f"{phase}/meta_{eval_stem}.jsonl" if phase else ""
-    eval_meta_file = str(args.eval_meta_file).strip() or eval_meta_default
+    eval_meta_candidates = (
+        [f"{phase}/meta_{eval_stem}.jsonl", f"{phase}/meta{eval_stem}.jsonl"]
+        if phase
+        else [f"meta_{eval_stem}.jsonl", f"meta{eval_stem}.jsonl"]
+    )
+    eval_meta_file = str(args.eval_meta_file).strip() or first_existing_file(input_root, eval_meta_candidates, fallback="")
 
     train_input = input_root / train_file
     eval_input = input_root / eval_file

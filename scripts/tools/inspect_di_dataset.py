@@ -52,10 +52,50 @@ def resolve_root(input_root: str, dataset_dir_name: str) -> Path:
     root = Path(input_root).expanduser().resolve()
     name = dataset_dir_name.strip().strip("/\\")
     if name:
+        candidates = [name]
+        collapsed = name.replace("_", "")
+        if collapsed and collapsed not in candidates:
+            candidates.append(collapsed)
+        for candidate in candidates:
+            path = (root / candidate).resolve()
+            if path.is_dir():
+                return path
         root = (root / name).resolve()
     if not root.is_dir():
         raise FileNotFoundError(f"Dataset root not found: {root}")
     return root
+
+
+def resolve_phase_dir(root: Path, phase: str) -> str:
+    phase = phase.strip().strip("/\\")
+    if not phase:
+        return ""
+    candidates = [phase]
+    collapsed = phase.replace("_", "")
+    if collapsed and collapsed not in candidates:
+        candidates.append(collapsed)
+    if phase == "phasea":
+        candidates.append("phase_a")
+    elif phase == "phaseb":
+        candidates.append("phase_b")
+    for candidate in candidates:
+        if (root / candidate).is_dir():
+            return candidate
+    return phase
+
+
+def maybe_descend_to_dataset_root(root: Path, *, phase: str, image_root: str) -> Tuple[Path, str]:
+    if (root / image_root).is_dir() or (root / phase).is_dir():
+        return root, ""
+    try:
+        children = [item for item in root.iterdir() if item.is_dir()]
+    except OSError:
+        return root, ""
+    for child in children:
+        child_phase = resolve_phase_dir(child, phase)
+        if (child / image_root).is_dir() and (child / child_phase).is_dir():
+            return child, f"auto-descended into {child.name}"
+    return root, ""
 
 
 def human_size(num_bytes: int) -> str:
@@ -454,12 +494,18 @@ def count_images(path: Path) -> Dict[str, Any]:
 def main() -> None:
     args = parse_args()
     root = resolve_root(args.input_root, args.dataset_dir_name)
-    phase = args.phase.strip().strip("/\\")
     image_root = args.image_root.strip().strip("/\\")
+    requested_phase = args.phase.strip().strip("/\\")
+    phase = resolve_phase_dir(root, requested_phase)
+    root, root_note = maybe_descend_to_dataset_root(root, phase=phase, image_root=image_root)
+    phase = resolve_phase_dir(root, requested_phase)
 
     print_header("DATASET INSPECTION REPORT")
     print(f"resolved_root: {root}")
     print(f"dataset_dir_name: {args.dataset_dir_name!r}")
+    if root_note:
+        print(f"root_note: {root_note}")
+    print(f"requested_phase: {requested_phase!r}")
     print(f"phase: {phase!r}")
     print(f"image_root: {image_root!r}")
     print(f"samples_per_jsonl: {args.samples}")
@@ -471,13 +517,18 @@ def main() -> None:
     print_header("KNOWN PATHS")
     known_paths = [
         "dataset_info.json",
+        "datasetinfo.json",
         "split_manifest.json",
+        "splitmanifest.json",
         f"{phase}/train.jsonl" if phase else "train.jsonl",
         f"{phase}/eval.jsonl" if phase else "eval.jsonl",
         f"{phase}/test.jsonl" if phase else "test.jsonl",
         f"{phase}/meta_train.jsonl" if phase else "meta_train.jsonl",
+        f"{phase}/metatrain.jsonl" if phase else "metatrain.jsonl",
         f"{phase}/meta_eval.jsonl" if phase else "meta_eval.jsonl",
+        f"{phase}/metaeval.jsonl" if phase else "metaeval.jsonl",
         f"{phase}/meta_test.jsonl" if phase else "meta_test.jsonl",
+        f"{phase}/metatest.jsonl" if phase else "metatest.jsonl",
         image_root,
         f"{image_root}/train",
         f"{image_root}/eval",
@@ -498,7 +549,7 @@ def main() -> None:
             path = root / image_root / split
             print(f"{image_root}/{split}: {json.dumps(count_images(path), ensure_ascii=False)}")
 
-    for rel in ("dataset_info.json", "split_manifest.json"):
+    for rel in ("dataset_info.json", "datasetinfo.json", "split_manifest.json", "splitmanifest.json"):
         inspect_json_file(root / rel, root, args.string_preview)
 
     jsonl_targets = [
@@ -506,8 +557,11 @@ def main() -> None:
         (f"{phase}/eval.jsonl" if phase else "eval.jsonl", "eval"),
         (f"{phase}/test.jsonl" if phase else "test.jsonl", "test"),
         (f"{phase}/meta_train.jsonl" if phase else "meta_train.jsonl", "train"),
+        (f"{phase}/metatrain.jsonl" if phase else "metatrain.jsonl", "train"),
         (f"{phase}/meta_eval.jsonl" if phase else "meta_eval.jsonl", "eval"),
+        (f"{phase}/metaeval.jsonl" if phase else "metaeval.jsonl", "eval"),
         (f"{phase}/meta_test.jsonl" if phase else "meta_test.jsonl", "test"),
+        (f"{phase}/metatest.jsonl" if phase else "metatest.jsonl", "test"),
     ]
     for rel, split in jsonl_targets:
         inspect_jsonl_file(

@@ -81,6 +81,8 @@ directory depending on `--media-mode`. For datasets whose `dataset_info.json`
 declares `coord_mode=norm1000`, `coord_range=1000`, and `patch_size=256`, the
 converter automatically scales assistant labels from `0..1000` to the training
 coordinate range `0..512`; metadata fallback labels are scaled from `0..255`.
+Patches with no valid centerline are kept as `{"lines":[]}` because this is a
+valid target for empty road-centerline patches.
 
 ```bash
 bash scripts/npu/train/train_dinov2_centerline_qwen_lora_npu.sh

@@ -108,7 +108,17 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--media-mode", choices=["symlink", "copy", "none"], default="symlink")
     parser.add_argument("--allow-missing-images", action="store_true")
-    parser.add_argument("--allow-empty-lines", action="store_true")
+    parser.add_argument(
+        "--allow-empty-lines",
+        action="store_true",
+        default=True,
+        help="Allow samples whose target is an empty centerline set. Enabled by default.",
+    )
+    parser.add_argument(
+        "--drop-empty-lines",
+        action="store_true",
+        help="Strict mode: raise an error when a sample has no valid centerline with at least two points.",
+    )
     parser.add_argument("--max-train-samples", type=int, default=0)
     parser.add_argument("--max-eval-samples", type=int, default=0)
     parser.add_argument("--dry-run", action="store_true")
@@ -755,6 +765,7 @@ def main() -> None:
         "source_dataset_patch_size": dataset_info.get("patch_size", ""),
         "assistant_coord_source_max": float(assistant_coord_source_max),
         "meta_coord_source_max": float(meta_coord_source_max),
+        "allow_empty_lines": not bool(args.drop_empty_lines),
         "dry_run": bool(args.dry_run),
     }
     if not args.dry_run:
@@ -771,7 +782,7 @@ def main() -> None:
         coord_max=int(args.coord_max),
         patch_size=int(args.patch_size),
         allow_missing_images=bool(args.allow_missing_images),
-        allow_empty_lines=bool(args.allow_empty_lines),
+        allow_empty_lines=not bool(args.drop_empty_lines),
         max_samples=int(args.max_train_samples),
         source_meta_by_id=load_meta_by_id(train_source_meta),
         image_root=str(args.image_root),
@@ -788,7 +799,7 @@ def main() -> None:
         coord_max=int(args.coord_max),
         patch_size=int(args.patch_size),
         allow_missing_images=bool(args.allow_missing_images),
-        allow_empty_lines=bool(args.allow_empty_lines),
+        allow_empty_lines=not bool(args.drop_empty_lines),
         max_samples=int(args.max_eval_samples),
         source_meta_by_id=load_meta_by_id(eval_source_meta),
         image_root=str(args.image_root),

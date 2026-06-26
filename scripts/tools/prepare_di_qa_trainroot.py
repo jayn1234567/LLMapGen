@@ -92,8 +92,20 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--image-root", default="img", help="Image directory under dataset root, e.g. img or images.")
     parser.add_argument("--train-image-split", default="train", help="Subdirectory under --image-root for train images.")
     parser.add_argument("--eval-image-split", default="eval", help="Subdirectory under --image-root for eval images.")
-    parser.add_argument("--patch-size", type=int, default=512)
-    parser.add_argument("--coord-max", type=int, default=512)
+    parser.add_argument("--patch-size", type=int, default=512, help="Output patch/label size used by the trainroot.")
+    parser.add_argument("--coord-max", type=int, default=512, help="Output coordinate upper bound.")
+    parser.add_argument(
+        "--assistant-coord-source-max",
+        type=float,
+        default=0.0,
+        help="Source coordinate upper bound for assistant labels. 0 means auto from dataset_info.json.",
+    )
+    parser.add_argument(
+        "--meta-coord-source-max",
+        type=float,
+        default=0.0,
+        help="Source coordinate upper bound for meta target_lines. 0 means auto from dataset_info.json.",
+    )
     parser.add_argument("--media-mode", choices=["symlink", "copy", "none"], default="symlink")
     parser.add_argument("--allow-missing-images", action="store_true")
     parser.add_argument("--allow-empty-lines", action="store_true")
@@ -153,6 +165,24 @@ def load_meta_by_id(path: Path | None) -> Dict[str, Dict[str, Any]]:
     return index_records_by_id(load_records(path))
 
 
+def load_optional_json(path: Path) -> Dict[str, Any]:
+    if not path.is_file():
+        return {}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8-sig"))
+    except Exception:
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def load_dataset_info(input_root: Path) -> Dict[str, Any]:
+    for name in ("dataset_info.json", "datasetinfo.json"):
+        info = load_optional_json(input_root / name)
+        if info:
+            return info
+    return {}
+
+
 def resolve_dataset_root(input_root: str, dataset_dir_name: str) -> Tuple[Path, str]:
     root = Path(input_root).expanduser().resolve()
     name = dataset_dir_name.strip().strip("/\\")
@@ -196,6 +226,29 @@ def first_existing_file(input_root: Path, candidates: Sequence[str], fallback: s
     return fallback or (candidates[0] if candidates else "")
 
 
+def infer_coord_source_max(
+    *,
+    dataset_info: Dict[str, Any],
+    payload_kind: str,
+    fallback_output_max: int,
+    explicit_value: float = 0.0,
+) -> float:
+    if float(explicit_value) > 0:
+        return float(explicit_value)
+
+    coord_mode = str(dataset_info.get("coord_mode", dataset_info.get("coord_system", ""))).lower()
+    coord_range = dataset_info.get("coord_range")
+    patch_size = dataset_info.get("patch_size")
+
+    if payload_kind == "assistant" and "norm" in coord_mode and is_number(coord_range):
+        return float(coord_range)
+    if payload_kind == "meta" and is_number(patch_size) and float(patch_size) > 1:
+        return float(patch_size) - 1.0
+    if is_number(coord_range) and float(coord_range) > 0:
+        return float(coord_range)
+    return float(fallback_output_max)
+
+
 def write_jsonl(path: Path, rows: Iterable[Dict[str, Any]]) -> int:
     count = 0
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -218,11 +271,22 @@ def is_xy(value: Any) -> bool:
     return isinstance(value, (list, tuple)) and len(value) >= 2 and is_number(value[0]) and is_number(value[1])
 
 
-def normalize_xy(value: Sequence[Any], coord_max: int) -> List[int]:
-    x = int(round(float(value[0])))
-    y = int(round(float(value[1])))
+def normalize_coord_value(value: Any, *, coord_max: int, coord_source_max: float) -> int:
+    numeric = float(value)
+    source_max = float(coord_source_max)
+    target_max = float(coord_max)
+    if source_max > 0 and abs(source_max - target_max) > 1e-6:
+        numeric = numeric / source_max * target_max
+    rounded = int(round(numeric))
+    return max(0, min(int(coord_max), rounded))
+
+
+def normalize_xy(value: Sequence[Any], coord_max: int, coord_source_max: float) -> List[int]:
     upper = int(coord_max)
-    return [max(0, min(upper, x)), max(0, min(upper, y))]
+    return [
+        max(0, min(upper, normalize_coord_value(value[0], coord_max=coord_max, coord_source_max=coord_source_max))),
+        max(0, min(upper, normalize_coord_value(value[1], coord_max=coord_max, coord_source_max=coord_source_max))),
+    ]
 
 
 def normalize_category(value: Any) -> str:
@@ -247,19 +311,19 @@ def parse_json_like(value: Any) -> Any:
         return text
 
 
-def points_from_sequence(raw: Any, coord_max: int) -> List[List[int]]:
+def points_from_sequence(raw: Any, coord_max: int, coord_source_max: float) -> List[List[int]]:
     if not isinstance(raw, (list, tuple)):
         return []
     points: List[List[int]] = []
     for item in raw:
         if is_xy(item):
-            xy = normalize_xy(item, coord_max)
+            xy = normalize_xy(item, coord_max, coord_source_max)
             if not points or points[-1] != xy:
                 points.append(xy)
     return points
 
 
-def lines_from_points_payload(raw: Any, category: str, coord_max: int) -> List[Dict[str, Any]]:
+def lines_from_points_payload(raw: Any, category: str, coord_max: int, coord_source_max: float) -> List[Dict[str, Any]]:
     if raw is None:
         return []
     if is_xy(raw):
@@ -270,26 +334,39 @@ def lines_from_points_payload(raw: Any, category: str, coord_max: int) -> List[D
         return []
 
     if all(is_xy(item) for item in raw):
-        points = points_from_sequence(raw, coord_max)
+        points = points_from_sequence(raw, coord_max, coord_source_max)
         return [{"category": category, "points": points}] if len(points) >= 2 else []
 
     lines: List[Dict[str, Any]] = []
     for item in raw:
         if isinstance(item, dict):
-            lines.extend(extract_lines(item, coord_max=coord_max, default_category=category))
+            lines.extend(
+                extract_lines(
+                    item,
+                    coord_max=coord_max,
+                    coord_source_max=coord_source_max,
+                    default_category=category,
+                )
+            )
             continue
-        points = points_from_sequence(item, coord_max)
+        points = points_from_sequence(item, coord_max, coord_source_max)
         if len(points) >= 2:
             lines.append({"category": category, "points": points})
     return lines
 
 
-def extract_lines(payload: Any, *, coord_max: int, default_category: str = "centerline") -> List[Dict[str, Any]]:
+def extract_lines(
+    payload: Any,
+    *,
+    coord_max: int,
+    coord_source_max: float,
+    default_category: str = "centerline",
+) -> List[Dict[str, Any]]:
     payload = parse_json_like(payload)
     category = normalize_category(default_category)
 
     if isinstance(payload, list):
-        return lines_from_points_payload(payload, category, coord_max)
+        return lines_from_points_payload(payload, category, coord_max, coord_source_max)
 
     if not isinstance(payload, dict):
         return []
@@ -302,7 +379,7 @@ def extract_lines(payload: Any, *, coord_max: int, default_category: str = "cent
             if isinstance(raw_line, dict):
                 line_category = normalize_category(raw_line.get("category", category))
                 raw_points = raw_line.get("points", raw_line.get("point"))
-                points = points_from_sequence(raw_points, coord_max)
+                points = points_from_sequence(raw_points, coord_max, coord_source_max)
                 if len(points) >= 2:
                     out: Dict[str, Any] = {"category": line_category, "points": points}
                     for key in ("start_type", "end_type"):
@@ -311,7 +388,7 @@ def extract_lines(payload: Any, *, coord_max: int, default_category: str = "cent
                             out[key] = value
                     lines.append(out)
             else:
-                lines.extend(lines_from_points_payload(raw_line, category, coord_max))
+                lines.extend(lines_from_points_payload(raw_line, category, coord_max, coord_source_max))
         return lines
 
     for key in (
@@ -326,12 +403,17 @@ def extract_lines(payload: Any, *, coord_max: int, default_category: str = "cent
         "lines_gt",
     ):
         if key in payload:
-            return lines_from_points_payload(payload.get(key), category, coord_max)
+            return lines_from_points_payload(payload.get(key), category, coord_max, coord_source_max)
     return []
 
 
-def normalize_assistant_payload(value: Any, *, coord_max: int) -> Tuple[str, List[Dict[str, Any]]]:
-    lines = extract_lines(value, coord_max=coord_max)
+def normalize_assistant_payload(
+    value: Any,
+    *,
+    coord_max: int,
+    coord_source_max: float,
+) -> Tuple[str, List[Dict[str, Any]]]:
+    lines = extract_lines(value, coord_max=coord_max, coord_source_max=coord_source_max)
     payload = {"lines": lines}
     return json.dumps(payload, ensure_ascii=False, separators=(",", ":")), lines
 
@@ -418,6 +500,8 @@ def convert_record(
     meta: Dict[str, Any] | None,
     image_root: str,
     image_split: str,
+    assistant_coord_source_max: float,
+    meta_coord_source_max: float,
     allow_missing_images: bool,
     allow_empty_lines: bool,
 ) -> Tuple[Dict[str, Any], Dict[str, Any], Dict[str, int]]:
@@ -454,7 +538,11 @@ def convert_record(
         value = turn.get("value", turn.get("content", ""))
         if role == "assistant":
             assistant_value = value
-            assistant_json, lines = normalize_assistant_payload(value, coord_max=coord_max)
+            assistant_json, lines = normalize_assistant_payload(
+                value,
+                coord_max=coord_max,
+                coord_source_max=assistant_coord_source_max,
+            )
             messages.append({"role": "assistant", "content": assistant_json})
         elif role in {"system", "user"}:
             content = value if isinstance(value, str) else json.dumps(value, ensure_ascii=False)
@@ -463,12 +551,21 @@ def convert_record(
     if assistant_value is None:
         stats["missing_assistant"] = 1
         fallback_payload: Any = meta if meta else record
-        assistant_json, lines = normalize_assistant_payload(fallback_payload, coord_max=coord_max)
+        fallback_source_max = meta_coord_source_max if meta else assistant_coord_source_max
+        assistant_json, lines = normalize_assistant_payload(
+            fallback_payload,
+            coord_max=coord_max,
+            coord_source_max=fallback_source_max,
+        )
         messages.append({"role": "assistant", "content": assistant_json})
     else:
-        _, lines = normalize_assistant_payload(assistant_value, coord_max=coord_max)
+        _, lines = normalize_assistant_payload(
+            assistant_value,
+            coord_max=coord_max,
+            coord_source_max=assistant_coord_source_max,
+        )
     if not lines and meta:
-        meta_lines = extract_lines(meta, coord_max=coord_max)
+        meta_lines = extract_lines(meta, coord_max=coord_max, coord_source_max=meta_coord_source_max)
         if meta_lines:
             lines = meta_lines
             assistant_json = json.dumps({"lines": lines}, ensure_ascii=False, separators=(",", ":"))
@@ -496,6 +593,9 @@ def convert_record(
         "target_lines": lines,
         "num_target_lines": len(lines),
         "patch_size": int(patch_size),
+        "coord_max": int(coord_max),
+        "assistant_coord_source_max": float(assistant_coord_source_max),
+        "meta_coord_source_max": float(meta_coord_source_max),
         "source_format": "di_qa",
     }
     return out_record, meta, stats
@@ -536,6 +636,8 @@ def convert_split(
     source_meta_by_id: Dict[str, Dict[str, Any]],
     image_root: str,
     image_split: str,
+    assistant_coord_source_max: float,
+    meta_coord_source_max: float,
     dry_run: bool,
 ) -> Dict[str, Any]:
     records = load_records(input_path, max_samples=max_samples)
@@ -554,6 +656,8 @@ def convert_split(
             meta=source_meta,
             image_root=image_root,
             image_split=image_split,
+            assistant_coord_source_max=assistant_coord_source_max,
+            meta_coord_source_max=meta_coord_source_max,
             allow_missing_images=allow_missing_images,
             allow_empty_lines=allow_empty_lines,
         )
@@ -585,6 +689,19 @@ def main() -> None:
         raise ValueError("--input-root and --output-root must be different.")
     if not input_root.is_dir():
         raise FileNotFoundError(f"Input root not found: {input_root}")
+    dataset_info = load_dataset_info(input_root)
+    assistant_coord_source_max = infer_coord_source_max(
+        dataset_info=dataset_info,
+        payload_kind="assistant",
+        fallback_output_max=int(args.coord_max),
+        explicit_value=float(args.assistant_coord_source_max),
+    )
+    meta_coord_source_max = infer_coord_source_max(
+        dataset_info=dataset_info,
+        payload_kind="meta",
+        fallback_output_max=int(args.coord_max),
+        explicit_value=float(args.meta_coord_source_max),
+    )
 
     phase = resolve_phase_dir(input_root, str(args.phase))
     train_file = str(args.train_file).strip() or first_existing_file(
@@ -633,6 +750,11 @@ def main() -> None:
         "eval_meta_file": eval_meta_file,
         "patch_size": int(args.patch_size),
         "coord_max": int(args.coord_max),
+        "source_dataset_coord_mode": dataset_info.get("coord_mode", dataset_info.get("coord_system", "")),
+        "source_dataset_coord_range": dataset_info.get("coord_range", ""),
+        "source_dataset_patch_size": dataset_info.get("patch_size", ""),
+        "assistant_coord_source_max": float(assistant_coord_source_max),
+        "meta_coord_source_max": float(meta_coord_source_max),
         "dry_run": bool(args.dry_run),
     }
     if not args.dry_run:
@@ -654,6 +776,8 @@ def main() -> None:
         source_meta_by_id=load_meta_by_id(train_source_meta),
         image_root=str(args.image_root),
         image_split=str(args.train_image_split),
+        assistant_coord_source_max=assistant_coord_source_max,
+        meta_coord_source_max=meta_coord_source_max,
         dry_run=bool(args.dry_run),
     )
     summary["eval"] = convert_split(
@@ -669,6 +793,8 @@ def main() -> None:
         source_meta_by_id=load_meta_by_id(eval_source_meta),
         image_root=str(args.image_root),
         image_split=str(args.eval_image_split),
+        assistant_coord_source_max=assistant_coord_source_max,
+        meta_coord_source_max=meta_coord_source_max,
         dry_run=bool(args.dry_run),
     )
 

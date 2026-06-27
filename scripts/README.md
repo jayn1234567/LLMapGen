@@ -7,6 +7,7 @@ the maintained centerline JSON route is:
 - `train_dinov2_centerline.py`
 - `predict_dinov2_centerline.py`
 - `tools/prepare_di_qa_trainroot.py`
+- `tools/validate_di_trainroot.py`
 - `npu/train/train_dinov2_centerline_qwen_lora_npu.sh`
 - `npu/test/test_dinov2_centerline_qwen_lora_npu.sh`
 
@@ -37,3 +38,13 @@ directory under the extract root. The default Phase A eval split is written as
 `val.jsonl`, which is what the maintained DINOv2 training entry expects. When
 `dataset_info.json` says the source labels are `norm1000`, the converter scales
 them into the training coordinate range instead of clipping large coordinates.
+
+After conversion, validate the generated trainroot before launching a DI/NPU
+job:
+
+```bash
+python scripts/tools/validate_di_trainroot.py \
+  --trainroot /cache/prepared_trainroot \
+  --expect-train-count 335506 \
+  --expect-val-count 19084
+```

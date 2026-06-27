@@ -84,6 +84,19 @@ coordinate range `0..512`; metadata fallback labels are scaled from `0..255`.
 Patches with no valid centerline are kept as `{"lines":[]}` because this is a
 valid target for empty road-centerline patches.
 
+Validate the prepared trainroot before launching training:
+
+```bash
+python scripts/tools/validate_di_trainroot.py \
+  --trainroot /cache/prepared_trainroot \
+  --expect-train-count 335506 \
+  --expect-val-count 19084
+```
+
+The validator exits with a non-zero status if required files are missing, JSONL
+rows are malformed, images cannot be resolved in checked samples, record/meta
+ids do not align, or coordinates fall outside `0..512`.
+
 ```bash
 bash scripts/npu/train/train_dinov2_centerline_qwen_lora_npu.sh
 ```

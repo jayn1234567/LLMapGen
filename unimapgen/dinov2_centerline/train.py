@@ -31,6 +31,7 @@ from unimapgen.rc_llm_runtime import (
     save_run_args,
     set_random_seed,
 )
+from unimapgen.runtime.device import maybe_enable_npu_runtime, resolve_ddp_backend
 
 
 def parse_args() -> argparse.Namespace:
@@ -94,6 +95,19 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--bf16", action="store_true")
     parser.add_argument("--gradient-checkpointing", action="store_true")
     parser.add_argument("--ddp-find-unused-parameters", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument(
+        "--device-backend",
+        type=str,
+        default="auto",
+        choices=["auto", "cuda", "npu", "cpu"],
+        help="Runtime backend. Use npu on Ascend/DI training jobs; auto picks npu, cuda, then cpu.",
+    )
+    parser.add_argument(
+        "--ddp-backend",
+        type=str,
+        default="",
+        help="Distributed backend override. Defaults to hccl on NPU, nccl on CUDA.",
+    )
 
     # Model architecture knobs kept because checkpoints depend on them.
     parser.add_argument("--cutoff-len", type=int, default=7168)
@@ -190,6 +204,9 @@ def resolve_dataset_paths(args: argparse.Namespace, output_dir: Path) -> Tuple[P
 
 def main() -> None:
     args = parse_args()
+    resolved_backend = maybe_enable_npu_runtime(str(args.device_backend))
+    args.resolved_device_backend = str(resolved_backend)
+    args.ddp_backend = resolve_ddp_backend(str(resolved_backend), str(args.ddp_backend)) or ""
     set_random_seed(int(args.seed))
 
     output_dir = Path(args.output_dir).expanduser().resolve()
@@ -251,6 +268,8 @@ def main() -> None:
                 "num_visual_tokens": int(num_visual_tokens),
                 "use_lora": not bool(args.no_lora),
                 "freeze_vision_encoder": bool(args.freeze_vision_encoder),
+                "device_backend": str(args.resolved_device_backend),
+                "ddp_backend": str(args.ddp_backend),
             },
             ensure_ascii=False,
             indent=2,
@@ -365,6 +384,7 @@ def main() -> None:
             "bf16": bool(args.bf16),
             "gradient_checkpointing": bool(args.gradient_checkpointing),
             "ddp_find_unused_parameters": bool(args.ddp_find_unused_parameters),
+            "ddp_backend": (str(args.ddp_backend).strip() or None),
             "remove_unused_columns": False,
             "report_to": [],
             "label_names": ["labels"],

@@ -10,6 +10,8 @@ import numpy as np
 import torch
 from transformers import TrainingArguments
 
+from unimapgen.runtime.device import seed_npu_if_available
+
 
 def set_random_seed(seed: int) -> None:
     random.seed(seed)
@@ -17,6 +19,7 @@ def set_random_seed(seed: int) -> None:
     torch.manual_seed(seed)
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(seed)
+    seed_npu_if_available(seed)
 
 
 def resolve_meta_jsonl(dataset_jsonl: Path, explicit_meta_jsonl: str) -> Path | None:

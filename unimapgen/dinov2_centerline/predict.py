@@ -23,6 +23,7 @@ from unimapgen.data.rc_centerline_json_sft_dataset import (
 )
 from unimapgen.dinov2_centerline.model import Qwen3RCDinoCenterlineJSONSFTModel
 from unimapgen.rc_llm_runtime import infer_visual_layout, load_json_dict, resolve_meta_jsonl, set_random_seed
+from unimapgen.runtime.device import is_accelerator_device, resolve_torch_device
 
 
 def parse_args() -> argparse.Namespace:
@@ -41,7 +42,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-new-tokens", type=int, default=3072)
     parser.add_argument("--temperature", type=float, default=0.0)
     parser.add_argument("--top-k", type=int, default=1)
-    parser.add_argument("--device", type=str, default=("cuda" if torch.cuda.is_available() else "cpu"))
+    parser.add_argument("--device", type=str, default="auto", help="auto, cpu, cuda[:id], or npu[:id].")
     parser.add_argument("--local-files-only", action="store_true")
     return parser.parse_args()
 
@@ -372,6 +373,7 @@ def modules_state_for(checkpoint_dir: Path, saved_args: Dict[str, Any]) -> str:
 
 def main() -> None:
     args = parse_args()
+    args.device = resolve_torch_device(str(args.device))
     set_random_seed(int(args.seed))
 
     checkpoint_dir, run_root = resolve_checkpoint_dir(str(args.checkpoint_dir))
@@ -449,7 +451,7 @@ def main() -> None:
 
     device = str(args.device)
     model.eval()
-    if device.startswith("cuda") and torch.cuda.is_available():
+    if is_accelerator_device(device):
         if bool(saved_args.get("bf16", False)):
             model = model.to(device=device, dtype=torch.bfloat16)
         else:

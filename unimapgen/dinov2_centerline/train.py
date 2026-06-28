@@ -121,6 +121,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--model-dtype", type=str, default="auto")
     parser.add_argument("--freeze-language-model", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--freeze-vision-encoder", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument(
+        "--vision-train-last-n-layers",
+        type=int,
+        default=0,
+        help="When --freeze-vision-encoder is true, unfreeze only the last N DINOv2 transformer layers.",
+    )
     parser.add_argument("--no-lora", action="store_true")
     parser.add_argument("--lora-rank", type=int, default=32)
     parser.add_argument("--lora-alpha", type=int, default=64)
@@ -268,6 +274,7 @@ def main() -> None:
                 "num_visual_tokens": int(num_visual_tokens),
                 "use_lora": not bool(args.no_lora),
                 "freeze_vision_encoder": bool(args.freeze_vision_encoder),
+                "vision_train_last_n_layers": int(args.vision_train_last_n_layers),
                 "device_backend": str(args.resolved_device_backend),
                 "ddp_backend": str(args.ddp_backend),
             },
@@ -347,6 +354,7 @@ def main() -> None:
         local_files_only=bool(args.local_files_only),
         freeze_language_model=bool(args.freeze_language_model),
         freeze_vision_encoder=bool(args.freeze_vision_encoder),
+        vision_train_last_n_layers=int(args.vision_train_last_n_layers),
         encoder_input_pad_size=int(encoder_input_pad_size),
         use_lora=not bool(args.no_lora),
         lora_rank=int(args.lora_rank),

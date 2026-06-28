@@ -42,9 +42,25 @@ except Exception as exc:  # pragma: no cover
     AutoModelForCausalLM = None
     _TRANSFORMERS_IMPORT_ERROR = exc
 
+try:
+    from safetensors.torch import load_file as load_safetensors_file
+
+    _SAFETENSORS_IMPORT_ERROR = None
+except Exception as exc:  # pragma: no cover
+    load_safetensors_file = None
+    _SAFETENSORS_IMPORT_ERROR = exc
+
 
 VISUAL_SPECIAL_TOKENS = ("<vis_start>", "<vis_patch>", "<vis_end>")
 TRAINABLE_VISUAL_SPECIAL_TOKENS = ("<vis_start>", "<vis_end>")
+MODULE_STATE_NAMES = (
+    "vision_encoder",
+    "visual_norm",
+    "visual_projector",
+    "geometric_position_mlp",
+    "token_alignment",
+    "special_token_adapter",
+)
 
 
 def load_visual_projector_with_bridge_v2_fallback(
@@ -87,6 +103,175 @@ def load_visual_projector_with_bridge_v2_fallback(
     load_optional_state_dict(module, state_dict, name)
 
 
+def _resolve_modules_state_path(path_candidate: Path) -> Path | None:
+    if path_candidate.is_file():
+        return path_candidate
+    if not path_candidate.is_dir():
+        return None
+    for filename in (
+        "rc_dinov2_centerline_json_modules.pt",
+        "rc_dinov2_caption_modules.pt",
+        "pytorch_model.bin",
+        "model.safetensors",
+    ):
+        candidate = path_candidate / filename
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+def _load_modules_state_file(path: Path) -> Dict[str, Any]:
+    if path.suffix == ".safetensors":
+        if load_safetensors_file is None:
+            raise RuntimeError(
+                f"modules_state requires safetensors but import failed: {_SAFETENSORS_IMPORT_ERROR!r}"
+            )
+        return dict(load_safetensors_file(str(path)))
+    state = torch.load(str(path), map_location="cpu", weights_only=False)
+    if not isinstance(state, dict):
+        raise TypeError(f"Unexpected modules_state type: {type(state)!r}")
+    return state
+
+
+def _unwrap_checkpoint_state(raw_state: Dict[str, Any]) -> Dict[str, Any]:
+    if any(name in raw_state for name in MODULE_STATE_NAMES):
+        return raw_state
+    for wrapper_key in ("state_dict", "model", "module"):
+        wrapped = raw_state.get(wrapper_key)
+        if isinstance(wrapped, dict):
+            return wrapped
+    return raw_state
+
+
+def _extract_prefixed_state_dict(state: Dict[str, Any], module_name: str) -> Dict[str, torch.Tensor]:
+    direct = state.get(module_name)
+    if isinstance(direct, dict):
+        return {str(key): value for key, value in direct.items() if torch.is_tensor(value)}
+
+    prefixes = (
+        f"{module_name}.",
+        f"module.{module_name}.",
+        f"model.{module_name}.",
+        f"module.model.{module_name}.",
+        f"base_model.{module_name}.",
+        f"base_model.model.{module_name}.",
+        f"_fsdp_wrapped_module.{module_name}.",
+        f"module._fsdp_wrapped_module.{module_name}.",
+    )
+    extracted: Dict[str, torch.Tensor] = {}
+    for key, value in state.items():
+        if not torch.is_tensor(value):
+            continue
+        key_str = str(key)
+        for prefix in prefixes:
+            if key_str.startswith(prefix):
+                extracted[key_str[len(prefix) :]] = value
+                break
+    return extracted
+
+
+def _normalize_modules_state(raw_state: Dict[str, Any]) -> tuple[Dict[str, Dict[str, torch.Tensor]], Dict[str, Any]]:
+    state = _unwrap_checkpoint_state(raw_state)
+    modules_state = {
+        module_name: _extract_prefixed_state_dict(state, module_name)
+        for module_name in MODULE_STATE_NAMES
+    }
+    summary = {
+        module_name: len(module_state)
+        for module_name, module_state in modules_state.items()
+        if module_state
+    }
+    return modules_state, {"loaded_module_key_counts": summary}
+
+
+def _module_at_path(root: nn.Module, path: str) -> nn.Module | None:
+    module: Any = root
+    for part in path.split("."):
+        if not hasattr(module, part):
+            return None
+        module = getattr(module, part)
+    return module if isinstance(module, nn.Module) else None
+
+
+def _find_transformer_layers(root: nn.Module) -> tuple[str, Sequence[nn.Module]]:
+    for path in (
+        "model.encoder.layer",
+        "model.encoder.layers",
+        "model.encoder.blocks",
+        "model.blocks",
+        "model.layers",
+        "encoder.layer",
+        "encoder.layers",
+        "encoder.blocks",
+        "blocks",
+        "layers",
+    ):
+        module = _module_at_path(root, path)
+        if isinstance(module, (nn.ModuleList, nn.Sequential)) and len(module) > 0:
+            return path, list(module)
+    return "", []
+
+
+def _set_module_trainable(module: nn.Module, enabled: bool) -> int:
+    count = 0
+    for param in module.parameters():
+        param.requires_grad = bool(enabled)
+        count += int(param.numel())
+    return count
+
+
+def _set_vision_encoder_trainability(
+    vision_encoder: nn.Module,
+    *,
+    freeze_vision_encoder: bool,
+    train_last_n_layers: int,
+) -> Dict[str, Any]:
+    if bool(freeze_vision_encoder):
+        for param in vision_encoder.parameters():
+            param.requires_grad = False
+    else:
+        for param in vision_encoder.parameters():
+            param.requires_grad = True
+
+    info: Dict[str, Any] = {
+        "freeze_vision_encoder": bool(freeze_vision_encoder),
+        "requested_last_n_layers": int(train_last_n_layers),
+        "layer_path": "",
+        "total_layers": 0,
+        "unfrozen_layers": 0,
+        "trainable_params": sum(int(p.numel()) for p in vision_encoder.parameters() if p.requires_grad),
+    }
+    if not bool(freeze_vision_encoder) or int(train_last_n_layers) <= 0:
+        return info
+
+    layer_path, layers = _find_transformer_layers(vision_encoder)
+    info["layer_path"] = layer_path
+    info["total_layers"] = len(layers)
+    if not layers:
+        return info
+
+    n_layers = min(int(train_last_n_layers), len(layers))
+    for layer in layers[-n_layers:]:
+        _set_module_trainable(layer, True)
+    info["unfrozen_layers"] = n_layers
+
+    # Keep the final ViT norm trainable with the last blocks when it exists.
+    for norm_path in (
+        "model.layernorm",
+        "model.norm",
+        "model.fc_norm",
+        "model.encoder.layernorm",
+        "model.encoder.norm",
+    ):
+        norm_module = _module_at_path(vision_encoder, norm_path)
+        if norm_module is not None:
+            _set_module_trainable(norm_module, True)
+            info.setdefault("unfrozen_extra_modules", []).append(norm_path)
+
+    info["trainable_params"] = sum(int(p.numel()) for p in vision_encoder.parameters() if p.requires_grad)
+    return info
+
+
 class Qwen3RCDinoCenterlineJSONSFTModel(nn.Module):
     supports_gradient_checkpointing = True
 
@@ -107,6 +292,7 @@ class Qwen3RCDinoCenterlineJSONSFTModel(nn.Module):
         local_files_only: bool = True,
         freeze_language_model: bool = False,
         freeze_vision_encoder: bool = True,
+        vision_train_last_n_layers: int = 0,
         encoder_input_pad_size: int = 0,
         encoder_input_pad_fill_rgb: Sequence[float] = (10.0 / 255.0, 12.0 / 255.0, 18.0 / 255.0),
         visual_encoder_checkpoint_path: str = "",
@@ -206,7 +392,8 @@ class Qwen3RCDinoCenterlineJSONSFTModel(nn.Module):
             drop_cls_token=True,
             normalize_input=True,
         )
-        if str(visual_encoder_checkpoint_path).strip():
+        has_visual_encoder_checkpoint = bool(str(visual_encoder_checkpoint_path).strip())
+        if has_visual_encoder_checkpoint:
             load_visual_encoder_checkpoint(
                 self.vision_encoder,
                 checkpoint_path=str(visual_encoder_checkpoint_path).strip(),
@@ -239,11 +426,23 @@ class Qwen3RCDinoCenterlineJSONSFTModel(nn.Module):
             if str(modules_state_path).strip()
             else default_modules_state_path
         )
-        if modules_path_candidate.is_file():
-            modules_state = torch.load(str(modules_path_candidate), map_location="cpu", weights_only=False)
-            if not isinstance(modules_state, dict):
-                raise TypeError(f"Unexpected modules_state type: {type(modules_state)!r}")
-            load_optional_state_dict(self.vision_encoder, modules_state.get("vision_encoder"), "vision_encoder")
+        modules_state_file = _resolve_modules_state_path(modules_path_candidate)
+        if modules_state_file is not None:
+            modules_state_raw = _load_modules_state_file(modules_state_file)
+            modules_state, modules_state_summary = _normalize_modules_state(modules_state_raw)
+            modules_state_summary["path"] = str(modules_state_file)
+            print(
+                f"[qwen3-rc-json] modules_state={json.dumps(modules_state_summary, ensure_ascii=False)}",
+                flush=True,
+            )
+            if has_visual_encoder_checkpoint:
+                if modules_state.get("vision_encoder"):
+                    print(
+                        "[qwen3-rc-json] skip modules_state vision_encoder because visual_encoder_checkpoint_path is set",
+                        flush=True,
+                    )
+            else:
+                load_optional_state_dict(self.vision_encoder, modules_state.get("vision_encoder"), "vision_encoder")
             load_optional_state_dict(self.visual_norm, modules_state.get("visual_norm"), "visual_norm")
             load_visual_projector_with_bridge_v2_fallback(
                 self.visual_projector,
@@ -304,9 +503,12 @@ class Qwen3RCDinoCenterlineJSONSFTModel(nn.Module):
                 param.requires_grad = False
             self._set_selective_token_trainable(True)
 
-        if bool(freeze_vision_encoder):
-            for param in self.vision_encoder.parameters():
-                param.requires_grad = False
+        vision_trainability = _set_vision_encoder_trainability(
+            self.vision_encoder,
+            freeze_vision_encoder=bool(freeze_vision_encoder),
+            train_last_n_layers=int(vision_train_last_n_layers),
+        )
+        print(f"[qwen3-rc-json] vision_trainability={json.dumps(vision_trainability, ensure_ascii=False)}", flush=True)
 
         if bool(gradient_checkpointing) and hasattr(self.language_model, "gradient_checkpointing_enable"):
             try:

@@ -52,6 +52,9 @@ export SAVE_TOTAL_LIMIT="${SAVE_TOTAL_LIMIT:-1}"
 export LOGGING_STEPS="${LOGGING_STEPS:-1}"
 export BF16="${BF16:-true}"
 export GRADIENT_CHECKPOINTING="${GRADIENT_CHECKPOINTING:-true}"
+export FREEZE_LANGUAGE_MODEL="${FREEZE_LANGUAGE_MODEL:-false}"
+export FREEZE_VISION_ENCODER="${FREEZE_VISION_ENCODER:-true}"
+export VISION_TRAIN_LAST_N_LAYERS="${VISION_TRAIN_LAST_N_LAYERS:-0}"
 
 echo "=== LLMapGen DINOv2 centerline GPU smoke ==="
 echo "date=$(date)"
@@ -64,6 +67,11 @@ echo "trainroot=${TRAINROOT}"
 echo "output_dir=${OUTPUT_DIR}"
 echo "model=${MODEL_NAME_OR_PATH}"
 echo "dinov2=${DINOV2_MODEL_NAME_OR_PATH}"
+echo "visual_encoder_checkpoint=${VISUAL_ENCODER_CHECKPOINT_PATH:-}"
+echo "bridge_modules_state=${BRIDGE_MODULES_STATE_PATH:-}"
+echo "freeze_language_model=${FREEZE_LANGUAGE_MODEL}"
+echo "freeze_vision_encoder=${FREEZE_VISION_ENCODER}"
+echo "vision_train_last_n_layers=${VISION_TRAIN_LAST_N_LAYERS}"
 nvidia-smi || true
 
 sh scripts/gpu/train/train_dinov2_centerline_qwen_lora_gpu.sh

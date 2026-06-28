@@ -36,6 +36,9 @@ BF16="${BF16:-true}"
 GRADIENT_CHECKPOINTING="${GRADIENT_CHECKPOINTING:-true}"
 PREPARE_TRAINROOT="${PREPARE_TRAINROOT:-false}"
 LOCAL_FILES_ONLY="${LOCAL_FILES_ONLY:-false}"
+FREEZE_LANGUAGE_MODEL="${FREEZE_LANGUAGE_MODEL:-false}"
+FREEZE_VISION_ENCODER="${FREEZE_VISION_ENCODER:-true}"
+VISION_TRAIN_LAST_N_LAYERS="${VISION_TRAIN_LAST_N_LAYERS:-0}"
 
 set -- \
   scripts/train_dinov2_centerline.py \
@@ -70,6 +73,19 @@ if [ -n "${PREPARED_TRAINROOT:-}" ]; then
 fi
 if [ "${LOCAL_FILES_ONLY}" = "true" ]; then
   set -- "$@" --local-files-only
+fi
+if [ "${FREEZE_LANGUAGE_MODEL}" = "true" ]; then
+  set -- "$@" --freeze-language-model
+else
+  set -- "$@" --no-freeze-language-model
+fi
+if [ "${FREEZE_VISION_ENCODER}" = "true" ]; then
+  set -- "$@" --freeze-vision-encoder
+else
+  set -- "$@" --no-freeze-vision-encoder
+fi
+if [ "${VISION_TRAIN_LAST_N_LAYERS}" != "0" ]; then
+  set -- "$@" --vision-train-last-n-layers "${VISION_TRAIN_LAST_N_LAYERS}"
 fi
 if [ -n "${TOKENIZER_NAME_OR_PATH:-}" ]; then
   set -- "$@" --tokenizer-name-or-path "${TOKENIZER_NAME_OR_PATH}"

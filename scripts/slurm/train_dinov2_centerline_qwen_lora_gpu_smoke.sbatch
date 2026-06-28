@@ -17,14 +17,14 @@ if [ -f /persist_data/apps/miniconda3/etc/profile.d/conda.sh ]; then
 else
   eval "$(/persist_data/apps/miniconda3/bin/conda shell.bash hook)"
 fi
-conda activate "${CONDA_ENV_NAME:-autovla_codeclean}"
+conda activate "${CONDA_ENV_NAME:-unimapgen}"
 
 REPO_ROOT="${REPO_ROOT:-/file_storage01/home/mingli/project/jn/UniMapGen_douglas_dino_sft_worktree}"
 cd "${REPO_ROOT}"
 mkdir -p slurm-logs
 
 export TRAINROOT="${TRAINROOT:-${REPO_ROOT}/data_samples/dinov2_centerline_tiny_trainroot}"
-export MODEL_NAME_OR_PATH="${MODEL_NAME_OR_PATH:-/file_storage01/home/mingli/data/ckpts/Qwen3-8B}"
+export MODEL_NAME_OR_PATH="${MODEL_NAME_OR_PATH:-/mingli01/data/ckpts/Qwen3-8B}"
 export DINOV2_MODEL_NAME_OR_PATH="${DINOV2_MODEL_NAME_OR_PATH:-/file_storage01/home/mingli/data/ckpts/dinov2-large}"
 export OUTPUT_DIR="${OUTPUT_DIR:-${REPO_ROOT}/outputs/dinov2_qwen3_8b_gpu_smoke}"
 export LOCAL_FILES_ONLY="${LOCAL_FILES_ONLY:-true}"

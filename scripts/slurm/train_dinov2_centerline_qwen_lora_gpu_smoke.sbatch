@@ -31,7 +31,15 @@ export OUTPUT_DIR="${OUTPUT_DIR:-${REPO_ROOT}/outputs/dinov2_qwen3_8b_gpu_smoke}
 export LOCAL_FILES_ONLY="${LOCAL_FILES_ONLY:-true}"
 export NPROC_PER_NODE="${NPROC_PER_NODE:-1}"
 export USE_TORCHRUN="${USE_TORCHRUN:-true}"
-export MASTER_PORT="${MASTER_PORT:-29501}"
+if [ -z "${MASTER_PORT:-}" ]; then
+    if [ -n "${SLURM_JOB_ID:-}" ]; then
+        export MASTER_PORT=$((20000 + SLURM_JOB_ID % 20000))
+    else
+        export MASTER_PORT=29501
+    fi
+else
+    export MASTER_PORT
+fi
 export MAX_SAMPLES="${MAX_SAMPLES:-2}"
 export MAX_EVAL_SAMPLES="${MAX_EVAL_SAMPLES:-1}"
 export MAX_STEPS="${MAX_STEPS:-1}"
@@ -51,6 +59,7 @@ echo "host=$(hostname)"
 echo "repo=${REPO_ROOT}"
 echo "env_prefix=${ENV_PREFIX}"
 echo "python_bin=${PYTHON_BIN}"
+echo "master_port=${MASTER_PORT}"
 echo "trainroot=${TRAINROOT}"
 echo "output_dir=${OUTPUT_DIR}"
 echo "model=${MODEL_NAME_OR_PATH}"

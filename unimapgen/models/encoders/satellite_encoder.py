@@ -98,9 +98,13 @@ class SatelliteEncoder(nn.Module):
             )
             print("[SatelliteEncoder] use fallback CNN backbone")
 
-    def forward(self, image: torch.Tensor) -> torch.Tensor:
+    def forward_features(self, image: torch.Tensor) -> dict[str, torch.Tensor]:
         if self.use_fallback:
-            return self.model(image)
+            tokens = self.model(image)
+            return {
+                "tokens": tokens,
+                "dense_features": self._tokens_to_dense_features(tokens, self.out_hw),
+            }
         x = image
         if self.normalize_input:
             x = (x - self.pixel_mean.to(dtype=x.dtype, device=x.device)) / self.pixel_std.to(dtype=x.dtype, device=x.device).clamp_min(1e-6)
@@ -110,7 +114,41 @@ class SatelliteEncoder(nn.Module):
             tok = tok[:, 1:, :]
         if self.out_hw is not None:
             tok = self._pool_patch_tokens(tok, h=int(image.shape[-2]), w=int(image.shape[-1]))
-        return tok
+            token_hw = self.out_hw
+        else:
+            token_hw = self._infer_patch_grid_hw(tok, h=int(image.shape[-2]), w=int(image.shape[-1]))
+        return {
+            "tokens": tok,
+            "dense_features": self._tokens_to_dense_features(tok, token_hw),
+        }
+
+    def forward(self, image: torch.Tensor) -> torch.Tensor:
+        return self.forward_features(image)["tokens"]
+
+    def _infer_patch_grid_hw(self, tokens: torch.Tensor, h: int, w: int) -> Tuple[int, int]:
+        token_count = int(tokens.shape[1])
+        gh = max(1, int(h) // self.patch_size)
+        gw = max(1, int(w) // self.patch_size)
+        if gh * gw == token_count:
+            return gh, gw
+        side = max(1, int(round(math.sqrt(float(token_count)))))
+        if side * side == token_count:
+            return side, side
+        return 1, token_count
+
+    def _tokens_to_dense_features(self, tokens: torch.Tensor, hw: Tuple[int, int] | None) -> torch.Tensor:
+        if hw is None:
+            hw = self._infer_patch_grid_hw(tokens, h=1, w=int(tokens.shape[1]) * self.patch_size)
+        h, w = int(hw[0]), int(hw[1])
+        b, t, d = tokens.shape
+        n = h * w
+        if n != t:
+            if n < t:
+                tokens = tokens[:, :n, :]
+            else:
+                pad = tokens.new_zeros((b, n - t, d))
+                tokens = torch.cat([tokens, pad], dim=1)
+        return tokens.transpose(1, 2).reshape(b, d, h, w).contiguous()
 
     def _pool_patch_tokens(self, tokens: torch.Tensor, h: int, w: int) -> torch.Tensor:
         b, t, d = tokens.shape

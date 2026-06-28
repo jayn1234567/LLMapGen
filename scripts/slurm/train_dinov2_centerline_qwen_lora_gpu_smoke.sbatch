@@ -12,10 +12,11 @@
 
 set -euo pipefail
 
-module load conda/3
-module load cuda/13.0
-
-eval "$(conda shell.bash hook)"
+if [ -f /persist_data/apps/miniconda3/etc/profile.d/conda.sh ]; then
+  source /persist_data/apps/miniconda3/etc/profile.d/conda.sh
+else
+  eval "$(/persist_data/apps/miniconda3/bin/conda shell.bash hook)"
+fi
 conda activate "${CONDA_ENV_NAME:-autovla_codeclean}"
 
 REPO_ROOT="${REPO_ROOT:-/file_storage01/home/mingli/project/jn/UniMapGen_douglas_dino_sft_worktree}"

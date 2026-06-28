@@ -7,8 +7,7 @@ cd "${REPO_ROOT}"
 
 export PYTHONPATH="${REPO_ROOT}:${PYTHONPATH:-}"
 export TOKENIZERS_PARALLELISM="${TOKENIZERS_PARALLELISM:-false}"
-export HCCL_CONNECT_TIMEOUT="${HCCL_CONNECT_TIMEOUT:-1800}"
-export ASCEND_RT_VISIBLE_DEVICES="${ASCEND_RT_VISIBLE_DEVICES:-${NPU_VISIBLE_DEVICES:-0}}"
+export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}"
 
 TRAINROOT="${TRAINROOT:-${DATA_ROOT:-}}"
 MODEL_NAME_OR_PATH="${MODEL_NAME_OR_PATH:-${MODEL_PATH:-}}"
@@ -18,18 +17,19 @@ DINOV2_MODEL_NAME_OR_PATH="${DINOV2_MODEL_NAME_OR_PATH:-${DINOV2_PATH:-}}"
 : "${MODEL_NAME_OR_PATH:?Set MODEL_NAME_OR_PATH to the Qwen/Qwen3 checkpoint.}"
 : "${DINOV2_MODEL_NAME_OR_PATH:?Set DINOV2_MODEL_NAME_OR_PATH to the DINOv2 checkpoint.}"
 
-OUTPUT_DIR="${OUTPUT_DIR:-${OUTPUT_PATH:-outputs/dinov2_centerline_qwen_lora_npu}}"
+OUTPUT_DIR="${OUTPUT_DIR:-${OUTPUT_PATH:-outputs/dinov2_centerline_qwen_lora_gpu}}"
 NPROC_PER_NODE="${NPROC_PER_NODE:-1}"
 MASTER_PORT="${MASTER_PORT:-29501}"
 
-NUM_TRAIN_EPOCHS="${NUM_TRAIN_EPOCHS:-3}"
+NUM_TRAIN_EPOCHS="${NUM_TRAIN_EPOCHS:-1}"
+MAX_STEPS="${MAX_STEPS:--1}"
 PER_DEVICE_TRAIN_BATCH_SIZE="${PER_DEVICE_TRAIN_BATCH_SIZE:-1}"
-GRADIENT_ACCUMULATION_STEPS="${GRADIENT_ACCUMULATION_STEPS:-4}"
+GRADIENT_ACCUMULATION_STEPS="${GRADIENT_ACCUMULATION_STEPS:-1}"
 LEARNING_RATE="${LEARNING_RATE:-1e-4}"
 SAVE_STEPS="${SAVE_STEPS:-1000}"
 SAVE_TOTAL_LIMIT="${SAVE_TOTAL_LIMIT:-3}"
-LOGGING_STEPS="${LOGGING_STEPS:-10}"
-DATALOADER_NUM_WORKERS="${DATALOADER_NUM_WORKERS:-2}"
+LOGGING_STEPS="${LOGGING_STEPS:-1}"
+DATALOADER_NUM_WORKERS="${DATALOADER_NUM_WORKERS:-0}"
 MAX_SAMPLES="${MAX_SAMPLES:-0}"
 MAX_EVAL_SAMPLES="${MAX_EVAL_SAMPLES:-0}"
 BF16="${BF16:-true}"
@@ -44,6 +44,7 @@ set -- \
   --dinov2-model-name-or-path "${DINOV2_MODEL_NAME_OR_PATH}" \
   --output-dir "${OUTPUT_DIR}" \
   --num-train-epochs "${NUM_TRAIN_EPOCHS}" \
+  --max-steps "${MAX_STEPS}" \
   --per-device-train-batch-size "${PER_DEVICE_TRAIN_BATCH_SIZE}" \
   --gradient-accumulation-steps "${GRADIENT_ACCUMULATION_STEPS}" \
   --learning-rate "${LEARNING_RATE}" \
@@ -53,8 +54,8 @@ set -- \
   --dataloader-num-workers "${DATALOADER_NUM_WORKERS}" \
   --max-samples "${MAX_SAMPLES}" \
   --max-eval-samples "${MAX_EVAL_SAMPLES}" \
-  --device-backend npu \
-  --ddp-backend hccl
+  --device-backend cuda \
+  --ddp-backend nccl
 
 if [ "${BF16}" = "true" ]; then
   set -- "$@" --bf16

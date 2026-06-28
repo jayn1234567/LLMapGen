@@ -1,11 +1,8 @@
-#!/usr/bin/env bash
-if [ -z "${BASH_VERSION:-}" ]; then
-  exec bash "$0" "$@"
-fi
-set -euo pipefail
+#!/usr/bin/env sh
+set -eu
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd "${SCRIPT_DIR}/../../.." && pwd)"
+SCRIPT_DIR=$(CDPATH= cd "$(dirname "$0")" && pwd)
+REPO_ROOT=$(CDPATH= cd "${SCRIPT_DIR}/../../.." && pwd)
 cd "${REPO_ROOT}"
 
 export PYTHONPATH="${REPO_ROOT}:${PYTHONPATH:-}"
@@ -25,22 +22,21 @@ MAX_SAMPLES="${MAX_SAMPLES:-0}"
 MAX_NEW_TOKENS="${MAX_NEW_TOKENS:-3072}"
 LOCAL_FILES_ONLY="${LOCAL_FILES_ONLY:-false}"
 
-ARGS=(
-  scripts/predict_dinov2_centerline.py
-  --checkpoint-dir "${CHECKPOINT_DIR}"
-  --trainroot "${TRAINROOT}"
-  --split "${SPLIT}"
-  --output-jsonl "${OUTPUT_JSONL}"
-  --max-samples "${MAX_SAMPLES}"
-  --max-new-tokens "${MAX_NEW_TOKENS}"
+set -- \
+  scripts/predict_dinov2_centerline.py \
+  --checkpoint-dir "${CHECKPOINT_DIR}" \
+  --trainroot "${TRAINROOT}" \
+  --split "${SPLIT}" \
+  --output-jsonl "${OUTPUT_JSONL}" \
+  --max-samples "${MAX_SAMPLES}" \
+  --max-new-tokens "${MAX_NEW_TOKENS}" \
   --device npu
-)
 
-if [[ -n "${SUMMARY_JSON:-}" ]]; then
-  ARGS+=(--summary-json "${SUMMARY_JSON}")
+if [ -n "${SUMMARY_JSON:-}" ]; then
+  set -- "$@" --summary-json "${SUMMARY_JSON}"
 fi
-if [[ "${LOCAL_FILES_ONLY}" == "true" ]]; then
-  ARGS+=(--local-files-only)
+if [ "${LOCAL_FILES_ONLY}" = "true" ]; then
+  set -- "$@" --local-files-only
 fi
 
-python "${ARGS[@]}"
+python "$@"

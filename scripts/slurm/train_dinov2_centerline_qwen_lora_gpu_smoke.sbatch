@@ -12,12 +12,13 @@
 
 set -euo pipefail
 
-if [ -f /persist_data/apps/miniconda3/etc/profile.d/conda.sh ]; then
-  source /persist_data/apps/miniconda3/etc/profile.d/conda.sh
-else
-  eval "$(/persist_data/apps/miniconda3/bin/conda shell.bash hook)"
-fi
-conda activate "${CONDA_ENV_NAME:-qwen}"
+ENV_PREFIX="${ENV_PREFIX:-/file_storage01/home/mingli/project/jn/UniMapGen/.condaenvs/llamafactory-cu128-dtok-resume-20260326}"
+export PYTHON_BIN="${PYTHON_BIN:-${ENV_PREFIX}/bin/python3}"
+export PATH="${ENV_PREFIX}/bin:${PATH}"
+export PYTHONNOUSERSITE=1
+export PYTHONUNBUFFERED=1
+unset PYTHONUSERBASE || true
+unset PYTHONHOME || true
 
 REPO_ROOT="${REPO_ROOT:-/mingli01/project/jn/LLMapGen}"
 cd "${REPO_ROOT}"
@@ -29,6 +30,8 @@ export DINOV2_MODEL_NAME_OR_PATH="${DINOV2_MODEL_NAME_OR_PATH:-/mingli01/data/ck
 export OUTPUT_DIR="${OUTPUT_DIR:-${REPO_ROOT}/outputs/dinov2_qwen3_8b_gpu_smoke}"
 export LOCAL_FILES_ONLY="${LOCAL_FILES_ONLY:-true}"
 export NPROC_PER_NODE="${NPROC_PER_NODE:-1}"
+export USE_TORCHRUN="${USE_TORCHRUN:-true}"
+export MASTER_PORT="${MASTER_PORT:-29501}"
 export MAX_SAMPLES="${MAX_SAMPLES:-2}"
 export MAX_EVAL_SAMPLES="${MAX_EVAL_SAMPLES:-1}"
 export MAX_STEPS="${MAX_STEPS:-1}"
@@ -46,6 +49,8 @@ echo "=== LLMapGen DINOv2 centerline GPU smoke ==="
 echo "date=$(date)"
 echo "host=$(hostname)"
 echo "repo=${REPO_ROOT}"
+echo "env_prefix=${ENV_PREFIX}"
+echo "python_bin=${PYTHON_BIN}"
 echo "trainroot=${TRAINROOT}"
 echo "output_dir=${OUTPUT_DIR}"
 echo "model=${MODEL_NAME_OR_PATH}"

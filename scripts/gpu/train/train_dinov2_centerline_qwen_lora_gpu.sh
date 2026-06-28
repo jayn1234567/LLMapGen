@@ -9,6 +9,7 @@ export PYTHONPATH="${REPO_ROOT}:${PYTHONPATH:-}"
 export TOKENIZERS_PARALLELISM="${TOKENIZERS_PARALLELISM:-false}"
 export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}"
 
+PYTHON_BIN="${PYTHON_BIN:-python}"
 TRAINROOT="${TRAINROOT:-${DATA_ROOT:-}}"
 MODEL_NAME_OR_PATH="${MODEL_NAME_OR_PATH:-${MODEL_PATH:-}}"
 DINOV2_MODEL_NAME_OR_PATH="${DINOV2_MODEL_NAME_OR_PATH:-${DINOV2_PATH:-}}"
@@ -20,6 +21,7 @@ DINOV2_MODEL_NAME_OR_PATH="${DINOV2_MODEL_NAME_OR_PATH:-${DINOV2_PATH:-}}"
 OUTPUT_DIR="${OUTPUT_DIR:-${OUTPUT_PATH:-outputs/dinov2_centerline_qwen_lora_gpu}}"
 NPROC_PER_NODE="${NPROC_PER_NODE:-1}"
 MASTER_PORT="${MASTER_PORT:-29501}"
+USE_TORCHRUN="${USE_TORCHRUN:-true}"
 
 NUM_TRAIN_EPOCHS="${NUM_TRAIN_EPOCHS:-1}"
 MAX_STEPS="${MAX_STEPS:--1}"
@@ -85,11 +87,11 @@ if [ -n "${RESUME_FROM_CHECKPOINT:-}" ]; then
   set -- "$@" --resume-from-checkpoint "${RESUME_FROM_CHECKPOINT}"
 fi
 
-if [ "${NPROC_PER_NODE}" -gt 1 ]; then
-  python -m torch.distributed.run \
+if [ "${USE_TORCHRUN}" = "true" ]; then
+  "${PYTHON_BIN}" -m torch.distributed.run \
     --nproc_per_node "${NPROC_PER_NODE}" \
     --master_port "${MASTER_PORT}" \
     "$@"
 else
-  python "$@"
+  "${PYTHON_BIN}" "$@"
 fi

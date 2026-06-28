@@ -29,11 +29,77 @@ PREPARED_TRAINROOT=/path/to/prepared_trainroot
 VISUAL_ENCODER_CHECKPOINT_PATH=/path/to/latest.pt
 BRIDGE_MODULES_STATE_PATH=/path/to/rc_dinov2_centerline_json_modules.pt
 TOKENIZER_NAME_OR_PATH=/path/to/tokenizer
+FREEZE_VISION_ENCODER=true
+VISION_TRAIN_LAST_N_LAYERS=2
 NPROC_PER_NODE=8
 NNODES=1
 NODE_RANK=0
 MASTER_ADDR=127.0.0.1
 MASTER_PORT=29501
+```
+
+## Package Portable DINOv2 Assets
+
+For the current private-data SFT route, copy only the visual side from the
+public-data experiments to the Ascend server:
+
+- segmentation-tuned DINOv2 checkpoint
+- Qwen3-8B-aligned bridge/projector modules
+
+On the GPU server, create a portable asset directory:
+
+```bash
+python scripts/tools/package_dinov2_centerline_assets.py \
+  --visual-encoder-checkpoint /mingli01/data/outputs/rc_centerline_seg_dinov2_heatmap_pad518_4gpu_20260422/best.pt \
+  --bridge-modules-state /mingli01/data/outputs/stage2_rc_dinov2_caption_grid16_bridgev2_stage1init_qwen3_8b_4gpu_retryfix_20260423 \
+  --output-dir /mingli01/project/jn/dinov2_centerline_assets_qwen3_8b \
+  --dinov2-model-name-or-path /path/on/ascend/dinov2-large \
+  --qwen-model-name-or-path /path/on/ascend/Qwen3-8B \
+  --vision-train-last-n-layers 2
+```
+
+Copy the output directory to OBS or directly to the Ascend server. It contains:
+
+```text
+asset_manifest.json
+train_env_template.sh
+visual_encoder_checkpoint.pt
+bridge_modules_state.pt
+```
+
+On the Ascend server:
+
+```bash
+source /path/to/dinov2_centerline_assets_qwen3_8b/train_env_template.sh
+export DINOV2_MODEL_NAME_OR_PATH=/path/to/dinov2-large
+export MODEL_NAME_OR_PATH=/path/to/Qwen3-8B
+```
+
+When `VISUAL_ENCODER_CHECKPOINT_PATH` is set, bridge modules do not overwrite
+the DINOv2 weights. The bridge file is still used for `visual_norm`,
+`visual_projector`, `geometric_position_mlp`, token alignment, and special-token
+adapter weights.
+
+## Prepare NPU Python Environment
+
+The NPU image must already contain Ascend driver/CANN. Create a repo-local
+Python environment with:
+
+```bash
+bash scripts/npu/setup/create_llmapgen_npu_env.sh
+source .venv-llmapgen-npu/activate_llmapgen_npu.sh
+```
+
+If the DI image requires a different torch/torch-npu/CANN compatibility pair,
+override the package specs:
+
+```bash
+TORCH_SPEC='torch==2.6.0' \
+TORCHVISION_SPEC='torchvision==0.21.0' \
+TORCHAUDIO_SPEC='torchaudio==2.6.0' \
+TORCH_NPU_SPEC='torch-npu==2.6.0' \
+PIP_INDEX_URL='https://your.internal.pypi/simple' \
+bash scripts/npu/setup/create_llmapgen_npu_env.sh
 ```
 
 ## Training Command
@@ -98,6 +164,30 @@ rows are malformed, images cannot be resolved in checked samples, record/meta
 ids do not align, or coordinates fall outside `0..512`.
 
 ```bash
+bash scripts/npu/train/train_dinov2_centerline_qwen_lora_npu.sh
+```
+
+For the intended route on DI/NPU, the minimal startup command is:
+
+```bash
+source /path/to/.venv-llmapgen-npu/activate_llmapgen_npu.sh
+source /path/to/dinov2_centerline_assets_qwen3_8b/train_env_template.sh
+
+export TRAINROOT=/path/to/prepared_trainroot
+export OUTPUT_DIR=/path/to/output
+export MODEL_NAME_OR_PATH=/path/to/Qwen3-8B
+export DINOV2_MODEL_NAME_OR_PATH=/path/to/dinov2-large
+export ASCEND_RT_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
+export NPROC_PER_NODE=8
+export PER_DEVICE_TRAIN_BATCH_SIZE=1
+export GRADIENT_ACCUMULATION_STEPS=4
+export LEARNING_RATE=2e-5
+export NUM_TRAIN_EPOCHS=3
+export MAX_STEPS=-1
+export SAVE_STEPS=1000
+export LOGGING_STEPS=10
+export BF16=true
+
 bash scripts/npu/train/train_dinov2_centerline_qwen_lora_npu.sh
 ```
 

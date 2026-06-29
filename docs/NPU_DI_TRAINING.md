@@ -82,11 +82,40 @@ adapter weights.
 
 ## Prepare NPU Python Environment
 
-The NPU image must already contain Ascend driver/CANN. Create a repo-local
-Python environment with:
+The NPU image must already contain Ascend driver/CANN. Prefer a conda
+environment on DI/Ascend servers:
 
 ```bash
-bash scripts/npu/setup/create_llmapgen_npu_env.sh
+bash scripts/npu/setup/create_llmapgen_npu_conda_env.sh
+source "$(conda info --base)/etc/profile.d/conda.sh"
+conda activate llmapgen-npu
+source "$(python - <<'PY'
+from pathlib import Path
+import sys
+print(Path(sys.prefix) / "activate_llmapgen_npu.sh")
+PY
+)"
+```
+
+To use a custom conda environment name:
+
+```bash
+CONDA_ENV_NAME=llmapgen-npu-qwen3 bash scripts/npu/setup/create_llmapgen_npu_conda_env.sh
+source "$(conda info --base)/etc/profile.d/conda.sh"
+conda activate llmapgen-npu-qwen3
+```
+
+The lower-level script also supports a conda prefix instead of a conda name:
+
+```bash
+USE_CONDA=true ENV_DIR=/cache/jn/conda_envs/llmapgen-npu bash scripts/npu/setup/create_llmapgen_npu_env.sh
+source /cache/jn/conda_envs/llmapgen-npu/activate_llmapgen_npu.sh
+```
+
+If conda is unavailable, create a repo-local venv instead:
+
+```bash
+USE_CONDA=false bash scripts/npu/setup/create_llmapgen_npu_env.sh
 source .venv-llmapgen-npu/activate_llmapgen_npu.sh
 ```
 
@@ -99,7 +128,7 @@ TORCHVISION_SPEC='torchvision==0.21.0' \
 TORCHAUDIO_SPEC='torchaudio==2.6.0' \
 TORCH_NPU_SPEC='torch-npu==2.6.0' \
 PIP_INDEX_URL='https://your.internal.pypi/simple' \
-bash scripts/npu/setup/create_llmapgen_npu_env.sh
+bash scripts/npu/setup/create_llmapgen_npu_conda_env.sh
 ```
 
 ## Training Command

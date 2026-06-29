@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Convert DI QA data into the DINOv2 centerline JSON trainroot format.
+"""Convert DI QA data into the DINOv2 road-map JSON trainroot format.
 
 Supported input layouts:
 
@@ -49,6 +49,15 @@ Output layout:
       meta_val.jsonl
       images -> ../dataset/images   # symlink by default when --image-root images
       dataset_info.json
+
+For lane_intersection datasets, intersection regions are kept in the same
+``lines`` list as centerlines with ``category="intersection"``. This matches
+the current private DI data schema and keeps the training target compact:
+
+    {"lines":[
+      {"category":"centerline","start_type":"cut","end_type":"inside","points":[...]},
+      {"category":"intersection","is_cut":true,"points":[...]}
+    ]}
 """
 
 from __future__ import annotations
@@ -89,6 +98,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--train-meta-file", default="", help="Optional source meta json/jsonl for training rows.")
     parser.add_argument("--eval-meta-file", default="", help="Optional source meta json/jsonl for eval rows.")
     parser.add_argument("--eval-output-name", default="val.jsonl")
+    parser.add_argument(
+        "--task",
+        choices=["auto", "lane", "lane_intersection"],
+        default="auto",
+        help="Target task schema. auto uses dataset_info.json task when present.",
+    )
     parser.add_argument("--image-root", default="img", help="Image directory under dataset root, e.g. img or images.")
     parser.add_argument("--train-image-split", default="train", help="Subdirectory under --image-root for train images.")
     parser.add_argument("--eval-image-split", default="eval", help="Subdirectory under --image-root for eval images.")
@@ -306,7 +321,39 @@ def normalize_category(value: Any) -> str:
         return "centerline"
     if category in {"centerlane", "center_lane"}:
         return "centerline"
+    if category in {"intersection", "junction", "road_intersection", "crossing_region"}:
+        return "intersection"
     return category or "centerline"
+
+
+def normalize_task(value: Any) -> str:
+    task = str(value or "lane").strip().lower().replace("-", "_").replace(" ", "_")
+    if task in {"lane_intersection", "centerline_intersection", "road_map", "state_update_centerline_intersection"}:
+        return "lane_intersection"
+    return "lane"
+
+
+def user_prompt_for_task(task: str) -> str:
+    if normalize_task(task) == "lane_intersection":
+        return "Predict the road centerlines and intersection regions for this patch."
+    return "Predict the road centerlines for this patch."
+
+
+def min_points_for_category(category: str) -> int:
+    return 3 if normalize_category(category) == "intersection" else 2
+
+
+def normalize_bool(value: Any) -> bool | None:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    text = str(value).strip().lower()
+    if text in {"true", "1", "yes", "y"}:
+        return True
+    if text in {"false", "0", "no", "n"}:
+        return False
+    return None
 
 
 def parse_json_like(value: Any) -> Any:
@@ -345,7 +392,11 @@ def lines_from_points_payload(raw: Any, category: str, coord_max: int, coord_sou
 
     if all(is_xy(item) for item in raw):
         points = points_from_sequence(raw, coord_max, coord_source_max)
-        return [{"category": category, "points": points}] if len(points) >= 2 else []
+        if len(points) < min_points_for_category(category):
+            return []
+        if normalize_category(category) == "intersection" and points[0] != points[-1]:
+            points.append(list(points[0]))
+        return [{"category": category, "points": points}]
 
     lines: List[Dict[str, Any]] = []
     for item in raw:
@@ -360,9 +411,40 @@ def lines_from_points_payload(raw: Any, category: str, coord_max: int, coord_sou
             )
             continue
         points = points_from_sequence(item, coord_max, coord_source_max)
-        if len(points) >= 2:
+        if len(points) >= min_points_for_category(category):
+            if normalize_category(category) == "intersection" and points[0] != points[-1]:
+                points.append(list(points[0]))
             lines.append({"category": category, "points": points})
     return lines
+
+
+def normalized_line_from_dict(
+    raw_line: Dict[str, Any],
+    *,
+    coord_max: int,
+    coord_source_max: float,
+    default_category: str,
+) -> Dict[str, Any] | None:
+    category = normalize_category(raw_line.get("category", raw_line.get("type", default_category)))
+    raw_points = raw_line.get("points", raw_line.get("point"))
+    points = points_from_sequence(raw_points, coord_max, coord_source_max)
+    if len(points) < min_points_for_category(category):
+        return None
+    if category == "intersection" and points[0] != points[-1]:
+        points.append(list(points[0]))
+
+    out: Dict[str, Any] = {"category": category}
+    if category == "centerline":
+        for key in ("start_type", "end_type"):
+            value = str(raw_line.get(key, "")).strip()
+            if value:
+                out[key] = value
+    if category == "intersection":
+        is_cut = normalize_bool(raw_line.get("is_cut"))
+        if is_cut is not None:
+            out["is_cut"] = is_cut
+    out["points"] = points
+    return out
 
 
 def extract_lines(
@@ -383,22 +465,59 @@ def extract_lines(
 
     category = normalize_category(payload.get("category", payload.get("type", default_category)))
     raw_lines = payload.get("lines")
+    raw_intersections = payload.get("intersections")
+    if "points" in payload or "point" in payload:
+        out = normalized_line_from_dict(
+            payload,
+            coord_max=coord_max,
+            coord_source_max=coord_source_max,
+            default_category=category,
+        )
+        return [out] if out is not None else []
+
     if isinstance(raw_lines, list):
         lines: List[Dict[str, Any]] = []
         for raw_line in raw_lines:
             if isinstance(raw_line, dict):
-                line_category = normalize_category(raw_line.get("category", category))
-                raw_points = raw_line.get("points", raw_line.get("point"))
-                points = points_from_sequence(raw_points, coord_max, coord_source_max)
-                if len(points) >= 2:
-                    out: Dict[str, Any] = {"category": line_category, "points": points}
-                    for key in ("start_type", "end_type"):
-                        value = str(raw_line.get(key, "")).strip()
-                        if value:
-                            out[key] = value
+                out = normalized_line_from_dict(
+                    raw_line,
+                    coord_max=coord_max,
+                    coord_source_max=coord_source_max,
+                    default_category=category,
+                )
+                if out is not None:
                     lines.append(out)
             else:
                 lines.extend(lines_from_points_payload(raw_line, category, coord_max, coord_source_max))
+        if isinstance(raw_intersections, list):
+            for raw_item in raw_intersections:
+                if isinstance(raw_item, dict):
+                    item = dict(raw_item)
+                    item["category"] = "intersection"
+                    out = normalized_line_from_dict(
+                        item,
+                        coord_max=coord_max,
+                        coord_source_max=coord_source_max,
+                        default_category="intersection",
+                    )
+                    if out is not None:
+                        lines.append(out)
+        return lines
+
+    if isinstance(raw_intersections, list):
+        lines = []
+        for raw_item in raw_intersections:
+            if isinstance(raw_item, dict):
+                item = dict(raw_item)
+                item["category"] = "intersection"
+                out = normalized_line_from_dict(
+                    item,
+                    coord_max=coord_max,
+                    coord_source_max=coord_source_max,
+                    default_category="intersection",
+                )
+                if out is not None:
+                    lines.append(out)
         return lines
 
     for key in (
@@ -512,13 +631,14 @@ def convert_record(
     image_split: str,
     assistant_coord_source_max: float,
     meta_coord_source_max: float,
+    task: str,
     allow_missing_images: bool,
     allow_empty_lines: bool,
 ) -> Tuple[Dict[str, Any], Dict[str, Any], Dict[str, int]]:
     sample_id = str(record.get("id", record.get("sample_id", index))).strip() or str(index)
     meta = meta or {}
     images = get_images(record, meta)
-    stats = {"missing_image": 0, "empty_lines": 0, "missing_assistant": 0}
+    stats = {"missing_image": 0, "empty_lines": 0, "missing_assistant": 0, "centerline_lines": 0, "intersection_lines": 0}
     if not images:
         raise ValueError(f"sample={sample_id} has no images field.")
     resolved_images: List[str] = []
@@ -556,7 +676,10 @@ def convert_record(
             messages.append({"role": "assistant", "content": assistant_json})
         elif role in {"system", "user"}:
             content = value if isinstance(value, str) else json.dumps(value, ensure_ascii=False)
-            messages.append({"role": role, "content": str(content)})
+            if role == "user":
+                messages.append({"role": role, "content": user_prompt_for_task(task)})
+            else:
+                messages.append({"role": role, "content": str(content)})
 
     if assistant_value is None:
         stats["missing_assistant"] = 1
@@ -574,6 +697,19 @@ def convert_record(
             coord_max=coord_max,
             coord_source_max=assistant_coord_source_max,
         )
+    meta_lines: List[Dict[str, Any]] = []
+    if meta:
+        meta_lines = extract_lines(meta, coord_max=coord_max, coord_source_max=meta_coord_source_max)
+    if meta_lines and (not lines or normalize_task(task) == "lane_intersection"):
+        lines = meta_lines
+        assistant_json = json.dumps({"lines": lines}, ensure_ascii=False, separators=(",", ":"))
+        for item in messages:
+            if item.get("role") == "assistant":
+                item["content"] = assistant_json
+                break
+        else:
+            messages.append({"role": "assistant", "content": assistant_json})
+
     if not lines and meta:
         meta_lines = extract_lines(meta, coord_max=coord_max, coord_source_max=meta_coord_source_max)
         if meta_lines:
@@ -590,7 +726,14 @@ def convert_record(
             raise ValueError(f"sample={sample_id} has no valid centerline with at least two points.")
 
     if not any(item.get("role") == "user" for item in messages):
-        messages.insert(0, {"role": "user", "content": "Predict the road centerlines for this patch."})
+        messages.insert(0, {"role": "user", "content": user_prompt_for_task(task)})
+
+    category_counts: Dict[str, int] = {}
+    for line in lines:
+        category = normalize_category(line.get("category", "centerline"))
+        category_counts[category] = int(category_counts.get(category, 0)) + 1
+    stats["centerline_lines"] = int(category_counts.get("centerline", 0))
+    stats["intersection_lines"] = int(category_counts.get("intersection", 0))
 
     out_record = {
         "id": sample_id,
@@ -602,6 +745,8 @@ def convert_record(
         "image": images[0],
         "target_lines": lines,
         "num_target_lines": len(lines),
+        "target_category_counts": category_counts,
+        "task": normalize_task(task),
         "patch_size": int(patch_size),
         "coord_max": int(coord_max),
         "assistant_coord_source_max": float(assistant_coord_source_max),
@@ -648,6 +793,7 @@ def convert_split(
     image_split: str,
     assistant_coord_source_max: float,
     meta_coord_source_max: float,
+    task: str,
     dry_run: bool,
 ) -> Dict[str, Any]:
     records = load_records(input_path, max_samples=max_samples)
@@ -668,6 +814,7 @@ def convert_split(
             image_split=image_split,
             assistant_coord_source_max=assistant_coord_source_max,
             meta_coord_source_max=meta_coord_source_max,
+            task=task,
             allow_missing_images=allow_missing_images,
             allow_empty_lines=allow_empty_lines,
         )
@@ -700,6 +847,7 @@ def main() -> None:
     if not input_root.is_dir():
         raise FileNotFoundError(f"Input root not found: {input_root}")
     dataset_info = load_dataset_info(input_root)
+    task = normalize_task(dataset_info.get("task", "")) if str(args.task) == "auto" else normalize_task(args.task)
     assistant_coord_source_max = infer_coord_source_max(
         dataset_info=dataset_info,
         payload_kind="assistant",
@@ -753,6 +901,7 @@ def main() -> None:
         "dataset_dir_name": dataset_dir_name,
         "phase": phase,
         "output_root": str(output_root),
+        "task": task,
         "image_root": str(args.image_root),
         "train_file": train_file,
         "eval_file": eval_file,
@@ -789,6 +938,7 @@ def main() -> None:
         image_split=str(args.train_image_split),
         assistant_coord_source_max=assistant_coord_source_max,
         meta_coord_source_max=meta_coord_source_max,
+        task=task,
         dry_run=bool(args.dry_run),
     )
     summary["eval"] = convert_split(
@@ -806,6 +956,7 @@ def main() -> None:
         image_split=str(args.eval_image_split),
         assistant_coord_source_max=assistant_coord_source_max,
         meta_coord_source_max=meta_coord_source_max,
+        task=task,
         dry_run=bool(args.dry_run),
     )
 

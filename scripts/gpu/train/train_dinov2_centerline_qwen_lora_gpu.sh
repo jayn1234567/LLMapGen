@@ -41,6 +41,7 @@ LOCAL_FILES_ONLY="${LOCAL_FILES_ONLY:-false}"
 FREEZE_LANGUAGE_MODEL="${FREEZE_LANGUAGE_MODEL:-false}"
 FREEZE_VISION_ENCODER="${FREEZE_VISION_ENCODER:-true}"
 VISION_TRAIN_LAST_N_LAYERS="${VISION_TRAIN_LAST_N_LAYERS:-0}"
+MAP_TASK="${MAP_TASK:-lane}"
 
 set -- \
   scripts/train_dinov2_centerline.py \
@@ -59,6 +60,7 @@ set -- \
   --dataloader-num-workers "${DATALOADER_NUM_WORKERS}" \
   --max-samples "${MAX_SAMPLES}" \
   --max-eval-samples "${MAX_EVAL_SAMPLES}" \
+  --map-task "${MAP_TASK}" \
   --device-backend cuda \
   --ddp-backend nccl
 
@@ -101,6 +103,12 @@ if [ -n "${BRIDGE_MODULES_STATE_PATH:-}" ]; then
 fi
 if [ -n "${RESUME_FROM_CHECKPOINT:-}" ]; then
   set -- "$@" --resume-from-checkpoint "${RESUME_FROM_CHECKPOINT}"
+fi
+if [ -n "${SYSTEM_PROMPT:-}" ]; then
+  set -- "$@" --system-prompt "${SYSTEM_PROMPT}"
+fi
+if [ -n "${USER_PROMPT:-}" ]; then
+  set -- "$@" --user-prompt "${USER_PROMPT}"
 fi
 
 if [ "${USE_TORCHRUN}" = "true" ]; then

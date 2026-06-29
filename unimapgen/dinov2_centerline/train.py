@@ -11,12 +11,13 @@ import torch
 from transformers import AutoTokenizer, Trainer
 
 from unimapgen.data.rc_centerline_json_sft_dataset import (
-    DEFAULT_SYSTEM_PROMPT,
-    DEFAULT_USER_PROMPT,
     RCCenterlineJSONSFTCollator,
     RCCenterlineJSONSFTDataset,
     RCCenterlineJSONSFTFormatter,
+    default_system_prompt_for_task,
+    default_user_prompt_for_task,
     load_jsonl,
+    normalize_map_task,
 )
 from unimapgen.dinov2_centerline.data import prepare_trainroot
 from unimapgen.dinov2_centerline.model import (
@@ -133,9 +134,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--lora-dropout", type=float, default=0.05)
 
     # Prompt contract.
-    parser.add_argument("--system-prompt", type=str, default=DEFAULT_SYSTEM_PROMPT)
-    parser.add_argument("--user-prompt", type=str, default=DEFAULT_USER_PROMPT)
+    parser.add_argument("--map-task", type=str, default="lane", choices=["lane", "lane_intersection"])
+    parser.add_argument("--system-prompt", type=str, default="")
+    parser.add_argument("--user-prompt", type=str, default="")
     return parser.parse_args()
+
+
+def resolve_prompt_contract(args: argparse.Namespace) -> None:
+    args.map_task = normalize_map_task(args.map_task)
+    if not str(args.system_prompt).strip():
+        args.system_prompt = default_system_prompt_for_task(args.map_task)
+    if not str(args.user_prompt).strip():
+        args.user_prompt = default_user_prompt_for_task(args.map_task)
 
 
 def resolve_dataset_paths(args: argparse.Namespace, output_dir: Path) -> Tuple[Path, Path | None, Path | None, Path | None, Path]:
@@ -210,6 +220,7 @@ def resolve_dataset_paths(args: argparse.Namespace, output_dir: Path) -> Tuple[P
 
 def main() -> None:
     args = parse_args()
+    resolve_prompt_contract(args)
     resolved_backend = maybe_enable_npu_runtime(str(args.device_backend))
     args.resolved_device_backend = str(resolved_backend)
     args.ddp_backend = resolve_ddp_backend(str(resolved_backend), str(args.ddp_backend)) or ""
@@ -272,6 +283,7 @@ def main() -> None:
                 "encoder_input_pad_size": int(encoder_input_pad_size),
                 "visual_grid_size": int(visual_grid_size),
                 "num_visual_tokens": int(num_visual_tokens),
+                "map_task": str(args.map_task),
                 "use_lora": not bool(args.no_lora),
                 "freeze_vision_encoder": bool(args.freeze_vision_encoder),
                 "vision_train_last_n_layers": int(args.vision_train_last_n_layers),

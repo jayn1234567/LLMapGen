@@ -14,10 +14,10 @@ from tqdm import tqdm
 from transformers import AutoTokenizer
 
 from unimapgen.data.rc_centerline_json_sft_dataset import (
-    DEFAULT_SYSTEM_PROMPT,
-    DEFAULT_USER_PROMPT,
     RCCenterlineJSONSFTDataset,
     RCCenterlineJSONSFTFormatter,
+    default_system_prompt_for_task,
+    default_user_prompt_for_task,
     load_jsonl,
     normalize_centerline_json_text,
 )
@@ -401,8 +401,8 @@ def main() -> None:
     formatter = RCCenterlineJSONSFTFormatter(
         image_size=image_size,
         num_visual_tokens=num_visual_tokens,
-        system_prompt=str(saved_args.get("system_prompt") or DEFAULT_SYSTEM_PROMPT),
-        user_prompt=str(saved_args.get("user_prompt") or DEFAULT_USER_PROMPT),
+        system_prompt=str(saved_args.get("system_prompt") or default_system_prompt_for_task(saved_args.get("map_task", "lane"))),
+        user_prompt=str(saved_args.get("user_prompt") or default_user_prompt_for_task(saved_args.get("map_task", "lane"))),
     )
     formatter.register_tokens(tokenizer)
 

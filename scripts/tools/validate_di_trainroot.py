@@ -130,6 +130,8 @@ def validate_lines(lines: Any, *, coord_max: int, context: str, issues: Issues) 
         "point_count": 0,
         "invalid_lines": 0,
         "coord_out_of_range": 0,
+        "centerline_count": 0,
+        "intersection_count": 0,
     }
     if lines is None:
         stats["empty_samples"] = 1
@@ -147,12 +149,21 @@ def validate_lines(lines: Any, *, coord_max: int, context: str, issues: Issues) 
             issues.error(f"{context}: line[{line_idx}] must be dict, got {type(line).__name__}")
             stats["invalid_lines"] += 1
             continue
+        category = str(line.get("category", "centerline")).strip().lower().replace("-", "_").replace(" ", "_")
         points = line.get("points", line.get("point", []))
         if not isinstance(points, list) or len(points) < 2:
             issues.error(f"{context}: line[{line_idx}] has fewer than 2 points")
             stats["invalid_lines"] += 1
             continue
+        if category == "intersection" and len(points) < 3:
+            issues.error(f"{context}: intersection line[{line_idx}] has fewer than 3 points")
+            stats["invalid_lines"] += 1
+            continue
         stats["line_count"] += 1
+        if category == "intersection":
+            stats["intersection_count"] += 1
+        else:
+            stats["centerline_count"] += 1
         for point_idx, point in enumerate(points):
             if not isinstance(point, (list, tuple)) or len(point) < 2 or not is_number(point[0]) or not is_number(point[1]):
                 issues.error(f"{context}: line[{line_idx}].points[{point_idx}] is not numeric xy")

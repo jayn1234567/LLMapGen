@@ -39,6 +39,22 @@ directory under the extract root. The default Phase A eval split is written as
 `dataset_info.json` says the source labels are `norm1000`, the converter scales
 them into the training coordinate range instead of clipping large coordinates.
 
+For the 512 patch `lane_intersection` dataset, keep the same trainroot layout
+and let the converter preserve both centerlines and intersection polygons:
+
+```bash
+python scripts/tools/prepare_di_qa_trainroot.py \
+  --input-root /cache/jjh/data/data_lane_intersection_norm_sample_512_33w \
+  --phase phase_a \
+  --image-root images \
+  --task lane_intersection \
+  --output-root /cache/jn/prepared_lane_intersection_trainroot
+```
+
+The prepared assistant target remains a single JSON object with a `lines` list.
+Centerline entries use `category="centerline"` and intersection polygons use
+`category="intersection"` with optional `is_cut`.
+
 After conversion, validate the generated trainroot before launching a DI/NPU
 job:
 
@@ -47,4 +63,12 @@ python scripts/tools/validate_di_trainroot.py \
   --trainroot /cache/prepared_trainroot \
   --expect-train-count 335506 \
   --expect-val-count 19084
+```
+
+When training the joint centerline plus intersection task, set `MAP_TASK` so
+the launcher selects the matching prompt contract:
+
+```bash
+export MAP_TASK=lane_intersection
+bash scripts/npu/train/train_dinov2_centerline_qwen_lora_npu.sh
 ```

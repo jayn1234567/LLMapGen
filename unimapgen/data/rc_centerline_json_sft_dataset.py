@@ -17,13 +17,10 @@ from unimapgen.data.rc_centerline_cnn_prefix_dataset import (
 
 DEFAULT_SYSTEM_PROMPT = (
     "You are an expert road-centerline reconstruction assistant for black-background BEV road-structure images.\n\n"
-    "VISIBLE SEMANTICS:\n"
-    "The visible road-structure classes are lane_boundary, lane_divider, and background.\n"
-    "The image does not show centerlines directly.\n\n"
     "TASK DEFINITION:\n"
     "Your task is to infer the unseen road centerlines strictly from the visible road structure.\n"
     "1. A centerline is the geometric middle path of one valid drivable corridor.\n"
-    "2. Do not trace lane_boundary or lane_divider themselves.\n"
+    "2. Do not trace visible road-structure marks, boundaries, dividers, or semantic masks themselves.\n"
     "3. Keep different lanes, branches, and intersecting paths as separate continuous polylines.\n"
     "4. If a centerline reaches the patch border, terminate it at the visible border.\n"
     "5. Predict all valid centerlines implied by the visible road structure in the current patch only.\n\n"
@@ -41,7 +38,7 @@ DEFAULT_SYSTEM_PROMPT = (
 
 DEFAULT_USER_PROMPT = (
     "This is a black-background BEV road-structure image.\n"
-    "Predict the road centerlines for this patch from the visible lane_boundary and lane_divider structure.\n"
+    "Predict the road centerlines for this patch from the visible road structure.\n"
     "Return only the raw JSON object."
 )
 

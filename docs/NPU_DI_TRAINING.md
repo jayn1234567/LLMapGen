@@ -169,6 +169,16 @@ PIP_INDEX_URL='https://your.internal.pypi/simple' \
 bash scripts/npu/setup/create_llmapgen_npu_conda_env.sh
 ```
 
+The default Hugging Face stack is intentionally capped to avoid
+`transformers`/`accelerate` major-version behavior changes on NPU:
+
+```bash
+TRANSFORMERS_SPEC='transformers>=4.51.0,<5.0.0'
+ACCELERATE_SPEC='accelerate>=0.33.0,<1.0.0'
+HUGGINGFACE_HUB_SPEC='huggingface-hub<1.0.0'
+TOKENIZERS_SPEC='tokenizers<0.22.0'
+```
+
 ## Training Command
 
 If the private dataset uses `train.jsonl`, `test.jsonl`, and `img/<group_id>`,
@@ -274,6 +284,39 @@ bash scripts/npu/train/smoke_dinov2_centerline_qwen_random_align_npu.sh
 
 That verifies NPU backward through the last DINOv2 blocks before switching to
 the packaged segmentation-DINO + Qwen3-8B bridge assets.
+
+If a single-card NPU smoke fails with:
+
+```text
+ValueError: Default process group has not been initialized
+```
+
+the DI shell probably exported distributed variables such as `RANK`,
+`WORLD_SIZE`, or `LOCAL_RANK` while the script is running in direct single
+process mode. The launcher now clears those variables by default for
+`NPROC_PER_NODE=1`. For an already checked-out old script, run:
+
+```bash
+unset RANK WORLD_SIZE LOCAL_RANK LOCAL_WORLD_SIZE GROUP_RANK ROLE_RANK ROLE_WORLD_SIZE MASTER_ADDR MASTER_PORT
+export NPROC_PER_NODE=1
+bash scripts/npu/train/smoke_dinov2_centerline_qwen_random_align_npu.sh
+```
+
+Or force torchrun even for one process:
+
+```bash
+export USE_TORCHRUN=true
+export NPROC_PER_NODE=1
+bash scripts/npu/train/smoke_dinov2_centerline_qwen_random_align_npu.sh
+```
+
+If the environment installed `transformers>=5` and `accelerate>=1`, downgrade
+to the tested range:
+
+```bash
+pip install -U 'transformers>=4.51.0,<5.0.0' 'accelerate>=0.33.0,<1.0.0' \
+  'huggingface-hub<1.0.0' 'tokenizers<0.22.0'
+```
 
 For the intended route on DI/NPU, the minimal startup command is:
 

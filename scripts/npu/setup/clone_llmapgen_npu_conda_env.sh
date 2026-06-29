@@ -25,6 +25,11 @@ PIP_INDEX_URL="${PIP_INDEX_URL:-}"
 PIP_EXTRA_INDEX_URL="${PIP_EXTRA_INDEX_URL:-}"
 PIP_TRUSTED_HOST="${PIP_TRUSTED_HOST:-}"
 EXTRA_PIP_PACKAGES="${EXTRA_PIP_PACKAGES:-}"
+TRANSFORMERS_SPEC="${TRANSFORMERS_SPEC:-transformers>=4.51.0,<5.0.0}"
+ACCELERATE_SPEC="${ACCELERATE_SPEC:-accelerate>=0.33.0,<1.0.0}"
+HUGGINGFACE_HUB_SPEC="${HUGGINGFACE_HUB_SPEC:-huggingface-hub<1.0.0}"
+TOKENIZERS_SPEC="${TOKENIZERS_SPEC:-tokenizers<0.22.0}"
+PEFT_SPEC="${PEFT_SPEC:-peft>=0.12.0,<0.20.0}"
 
 source_if_exists() {
   if [ -f "$1" ]; then
@@ -147,9 +152,11 @@ if [ "${INSTALL_PROJECT_DEPS}" = "true" ]; then
     "pillow>=10.0.0" \
     "opencv-python-headless>=4.8.0" \
     "tqdm>=4.66.0" \
-    "transformers>=4.51.0" \
-    "accelerate>=0.33.0" \
-    "peft>=0.12.0" \
+    "${TRANSFORMERS_SPEC}" \
+    "${ACCELERATE_SPEC}" \
+    "${HUGGINGFACE_HUB_SPEC}" \
+    "${TOKENIZERS_SPEC}" \
+    "${PEFT_SPEC}" \
     "safetensors>=0.4.3" \
     "sentencepiece>=0.2.0" \
     "protobuf>=4.25.0" \

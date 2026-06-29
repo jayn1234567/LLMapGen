@@ -22,6 +22,8 @@ DINOV2_MODEL_NAME_OR_PATH="${DINOV2_MODEL_NAME_OR_PATH:-${DINOV2_PATH:-}}"
 OUTPUT_DIR="${OUTPUT_DIR:-${OUTPUT_PATH:-outputs/dinov2_centerline_qwen_lora_npu}}"
 NPROC_PER_NODE="${NPROC_PER_NODE:-1}"
 MASTER_PORT="${MASTER_PORT:-29501}"
+USE_TORCHRUN="${USE_TORCHRUN:-false}"
+KEEP_DISTRIBUTED_ENV="${KEEP_DISTRIBUTED_ENV:-false}"
 
 NUM_TRAIN_EPOCHS="${NUM_TRAIN_EPOCHS:-3}"
 MAX_STEPS="${MAX_STEPS:--1}"
@@ -103,11 +105,22 @@ if [ -n "${RESUME_FROM_CHECKPOINT:-}" ]; then
   set -- "$@" --resume-from-checkpoint "${RESUME_FROM_CHECKPOINT}"
 fi
 
-if [ "${NPROC_PER_NODE}" -gt 1 ]; then
+if [ "${NPROC_PER_NODE}" -gt 1 ] || [ "${USE_TORCHRUN}" = "true" ]; then
   "${PYTHON_BIN}" -m torch.distributed.run \
     --nproc_per_node "${NPROC_PER_NODE}" \
     --master_port "${MASTER_PORT}" \
     "$@"
 else
+  if [ "${KEEP_DISTRIBUTED_ENV}" != "true" ]; then
+    unset RANK || true
+    unset WORLD_SIZE || true
+    unset LOCAL_RANK || true
+    unset LOCAL_WORLD_SIZE || true
+    unset GROUP_RANK || true
+    unset ROLE_RANK || true
+    unset ROLE_WORLD_SIZE || true
+    unset MASTER_ADDR || true
+    unset MASTER_PORT || true
+  fi
   "${PYTHON_BIN}" "$@"
 fi

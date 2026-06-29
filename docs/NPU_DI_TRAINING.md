@@ -310,6 +310,24 @@ export NPROC_PER_NODE=1
 bash scripts/npu/train/smoke_dinov2_centerline_qwen_random_align_npu.sh
 ```
 
+For multi-card NPU training, use torchrun/HCCL by setting more than one process
+and exposing the matching Ascend devices:
+
+```bash
+export ASCEND_RT_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
+export NPROC_PER_NODE=8
+export USE_TORCHRUN=true
+export KEEP_DISTRIBUTED_ENV=true
+export PER_DEVICE_TRAIN_BATCH_SIZE=1
+export GRADIENT_ACCUMULATION_STEPS=4
+
+bash scripts/npu/train/smoke_dinov2_centerline_qwen_random_align_npu.sh
+```
+
+In multi-card mode the launcher keeps the distributed environment and uses
+`torch.distributed.run`; the single-process cleanup path is only for
+`NPROC_PER_NODE=1` direct execution.
+
 If the environment installed `transformers>=5` and `accelerate>=1`, downgrade
 to the tested range:
 

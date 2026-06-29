@@ -10,7 +10,7 @@ import numpy as np
 import torch
 from transformers import TrainingArguments
 
-from unimapgen.runtime.device import seed_npu_if_available
+from unimapgen.runtime.device import sanitize_distributed_env_for_single_process, seed_npu_if_available
 
 
 def set_random_seed(seed: int) -> None:
@@ -69,6 +69,7 @@ def infer_visual_layout(image_size: int, encoder_input_pad_size: int, patch_size
 
 
 def create_training_arguments(*, base_kwargs: Dict[str, Any], evaluation_strategy: str) -> TrainingArguments:
+    sanitize_distributed_env_for_single_process()
     supported_args = set(inspect.signature(TrainingArguments.__init__).parameters.keys())
     training_kwargs = dict(base_kwargs)
     if "overwrite_output_dir" in supported_args:

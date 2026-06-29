@@ -106,11 +106,13 @@ if [ -n "${RESUME_FROM_CHECKPOINT:-}" ]; then
 fi
 
 if [ "${NPROC_PER_NODE}" -gt 1 ] || [ "${USE_TORCHRUN}" = "true" ]; then
+  export LLMAPGEN_FORCE_SINGLE_PROCESS_NPU="${LLMAPGEN_FORCE_SINGLE_PROCESS_NPU:-false}"
   "${PYTHON_BIN}" -m torch.distributed.run \
     --nproc_per_node "${NPROC_PER_NODE}" \
     --master_port "${MASTER_PORT}" \
     "$@"
 else
+  export LLMAPGEN_FORCE_SINGLE_PROCESS_NPU="${LLMAPGEN_FORCE_SINGLE_PROCESS_NPU:-true}"
   if [ "${KEEP_DISTRIBUTED_ENV}" != "true" ]; then
     unset RANK || true
     unset WORLD_SIZE || true

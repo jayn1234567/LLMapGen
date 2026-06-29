@@ -26,6 +26,50 @@ def configure_npu_environment() -> None:
     os.environ.setdefault("HCCL_CONNECT_TIMEOUT", "1800")
 
 
+def _env_flag(name: str, default: bool = False) -> bool:
+    value = str(os.environ.get(name, "")).strip().lower()
+    if not value:
+        return bool(default)
+    return value in {"1", "true", "yes", "y", "on"}
+
+
+def sanitize_distributed_env_for_single_process(*, force: bool = False) -> list[str]:
+    if _env_flag("LLMAPGEN_KEEP_DISTRIBUTED_ENV", default=False):
+        return []
+    if torch.distributed.is_available() and torch.distributed.is_initialized():
+        return []
+
+    force = bool(force) or _env_flag("LLMAPGEN_FORCE_SINGLE_PROCESS_NPU", default=False)
+    if not force:
+        try:
+            world_size = int(str(os.environ.get("WORLD_SIZE", "1")).strip() or "1")
+        except ValueError:
+            world_size = 1
+        local_rank = str(os.environ.get("LOCAL_RANK", "")).strip()
+        if world_size > 1 or local_rank not in {"", "-1"}:
+            return []
+
+    keys = (
+        "RANK",
+        "WORLD_SIZE",
+        "LOCAL_RANK",
+        "LOCAL_WORLD_SIZE",
+        "GROUP_RANK",
+        "ROLE_RANK",
+        "ROLE_WORLD_SIZE",
+        "MASTER_ADDR",
+        "MASTER_PORT",
+    )
+    removed: list[str] = []
+    for key in keys:
+        if key in os.environ:
+            os.environ.pop(key, None)
+            removed.append(key)
+    if removed:
+        print(f"[device] sanitized single-process distributed env: {','.join(removed)}", flush=True)
+    return removed
+
+
 def has_npu() -> bool:
     if not _import_torch_npu():
         return False

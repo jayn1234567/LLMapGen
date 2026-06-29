@@ -167,6 +167,47 @@ ids do not align, or coordinates fall outside `0..512`.
 bash scripts/npu/train/train_dinov2_centerline_qwen_lora_npu.sh
 ```
 
+## Smoke Without Packaged Visual Assets
+
+If the Ascend server already has `dinov2-large` and `Qwen3-8B`, first run a
+minimal NPU smoke without the public-data segmentation/alignment assets. This
+only verifies the code, data loader, NPU runtime, DINOv2 forward path, Qwen LoRA,
+and randomly initialized MLP alignment layers.
+
+```bash
+source /path/to/.venv-llmapgen-npu/activate_llmapgen_npu.sh
+
+export TRAINROOT=/path/to/prepared_trainroot
+export OUTPUT_DIR=/path/to/output_random_align_smoke
+export MODEL_NAME_OR_PATH=/path/to/Qwen3-8B
+export DINOV2_MODEL_NAME_OR_PATH=/path/to/dinov2-large
+export ASCEND_RT_VISIBLE_DEVICES=0
+export NPROC_PER_NODE=1
+export MAX_STEPS=10
+export MAX_SAMPLES=16
+export MAX_EVAL_SAMPLES=4
+
+bash scripts/npu/train/smoke_dinov2_centerline_qwen_random_align_npu.sh
+```
+
+The smoke intentionally clears:
+
+```bash
+VISUAL_ENCODER_CHECKPOINT_PATH=
+BRIDGE_MODULES_STATE_PATH=
+```
+
+Default behavior freezes DINOv2 and trains only the random alignment modules,
+special visual tokens, and Qwen LoRA. After this passes, run a second smoke with:
+
+```bash
+export VISION_TRAIN_LAST_N_LAYERS=2
+bash scripts/npu/train/smoke_dinov2_centerline_qwen_random_align_npu.sh
+```
+
+That verifies NPU backward through the last DINOv2 blocks before switching to
+the packaged segmentation-DINO + Qwen3-8B bridge assets.
+
 For the intended route on DI/NPU, the minimal startup command is:
 
 ```bash

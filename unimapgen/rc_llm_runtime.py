@@ -68,36 +68,8 @@ def infer_visual_layout(image_size: int, encoder_input_pad_size: int, patch_size
     return visual_grid_size, visual_grid_size * visual_grid_size
 
 
-def patch_accelerate_unwrap_model_compat() -> None:
-    try:
-        from accelerate import Accelerator
-    except Exception:
-        return
-
-    unwrap_model = getattr(Accelerator, "unwrap_model", None)
-    if unwrap_model is None or getattr(unwrap_model, "_llmapgen_keep_torch_compile_compat", False):
-        return
-    try:
-        signature = inspect.signature(unwrap_model)
-    except (TypeError, ValueError):
-        return
-    if "keep_torch_compile" in signature.parameters:
-        return
-
-    def unwrap_model_compat(self, model, *args, keep_torch_compile: bool = False, **kwargs):  # noqa: ARG001
-        return unwrap_model(self, model, *args, **kwargs)
-
-    unwrap_model_compat._llmapgen_keep_torch_compile_compat = True  # type: ignore[attr-defined]
-    Accelerator.unwrap_model = unwrap_model_compat
-    print(
-        "[rc-llm-runtime] patched accelerate.Accelerator.unwrap_model for keep_torch_compile compatibility",
-        flush=True,
-    )
-
-
 def create_training_arguments(*, base_kwargs: Dict[str, Any], evaluation_strategy: str) -> TrainingArguments:
     sanitize_distributed_env_for_single_process()
-    patch_accelerate_unwrap_model_compat()
     supported_args = set(inspect.signature(TrainingArguments.__init__).parameters.keys())
     training_kwargs = dict(base_kwargs)
     if "overwrite_output_dir" in supported_args:

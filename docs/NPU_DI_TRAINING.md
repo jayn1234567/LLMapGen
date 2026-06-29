@@ -105,6 +105,44 @@ source "$(conda info --base)/etc/profile.d/conda.sh"
 conda activate llmapgen-npu-qwen3
 ```
 
+If the Ascend server cannot download Python packages through conda, clone an
+existing working environment instead. First list available environments:
+
+```bash
+conda env list
+```
+
+Then clone by environment name:
+
+```bash
+SOURCE_CONDA_ENV_NAME=existing-npu-env \
+CONDA_ENV_NAME=llmapgen-npu \
+bash scripts/npu/setup/clone_llmapgen_npu_conda_env.sh
+```
+
+Or clone by environment path:
+
+```bash
+SOURCE_ENV_DIR=/path/to/existing/conda/env \
+ENV_DIR=/cache/jn/conda_envs/llmapgen-npu \
+bash scripts/npu/setup/clone_llmapgen_npu_conda_env.sh
+```
+
+The clone script does not reinstall `torch` / `torch-npu` by default, because
+the source environment often already contains the platform-matched NPU stack.
+Set `INSTALL_TORCH_STACK=true` only when you intentionally want to replace it.
+If the server also cannot access pip, run:
+
+```bash
+INSTALL_PROJECT_DEPS=false \
+SOURCE_CONDA_ENV_NAME=existing-npu-env \
+CONDA_ENV_NAME=llmapgen-npu \
+bash scripts/npu/setup/clone_llmapgen_npu_conda_env.sh
+```
+
+Then install any missing Python packages manually from the platform's wheel
+cache or internal package mirror.
+
 The lower-level script also supports a conda prefix instead of a conda name:
 
 ```bash

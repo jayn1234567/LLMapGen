@@ -9,6 +9,11 @@ CONDA_ENV_NAME="${CONDA_ENV_NAME:-}"
 PYTHON_BOOTSTRAP="${PYTHON_BOOTSTRAP:-python3}"
 USE_CONDA="${USE_CONDA:-false}"
 PYTHON_VERSION="${PYTHON_VERSION:-3.10}"
+PYTHON_VERSION="${PYTHON_VERSION#python=}"
+PYTHON_VERSION="${PYTHON_VERSION#python}"
+if [ -z "${PYTHON_VERSION}" ]; then
+  PYTHON_VERSION="3.10"
+fi
 
 # torch/torch-npu must match the CANN stack installed on the Ascend image.
 # Override these in DI when the platform provides a different compatibility matrix.

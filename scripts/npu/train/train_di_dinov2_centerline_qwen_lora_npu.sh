@@ -2,34 +2,37 @@
 set -euo pipefail
 
 # DI/ModelArts style launcher for LLMapGen DINOv2 + Qwen3-8B LoRA SFT.
-# Defaults follow the current Ascend debug machine paths. In DI jobs, keep the
-# same command and override the OBS variables below from the platform UI.
+# Defaults follow the DI platform flow: download OBS inputs into /cache, train
+# from local cache paths, then upload rank-0 outputs back to OUTPUT_URL.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../../.." && pwd)"
 cd "${REPO_ROOT}"
 
 RUN_ID="${RUN_ID:-$(date -u +%Y%m%d_%H%M%S)}"
-WORK_ROOT="${WORK_ROOT:-/cache/jn}"
+WORK_ROOT="${WORK_ROOT:-/cache/llmapgen}"
 OBS_CACHE="${OBS_CACHE:-/cache}"
 
-# Current user paths on the Ascend server.
+# Local cache paths inside the DI training node.
 TRAINROOT="${TRAINROOT:-${WORK_ROOT}/prepared_lane_intersection_trainroot}"
 MODEL_NAME_OR_PATH="${MODEL_NAME_OR_PATH:-${WORK_ROOT}/model/Qwen3-8B}"
 DINOV2_MODEL_NAME_OR_PATH="${DINOV2_MODEL_NAME_OR_PATH:-${WORK_ROOT}/model/dinov2-large}"
-ASSET_DIR="${ASSET_DIR:-${WORK_ROOT}/dinov2seg_bridge/dinov2_centerline_assets_qwen3_8b}"
+ASSET_DIR="${ASSET_DIR:-${WORK_ROOT}/model/dinov2_centerline_assets_qwen3_8b}"
 VISUAL_ENCODER_CHECKPOINT_PATH="${VISUAL_ENCODER_CHECKPOINT_PATH:-${ASSET_DIR}/visual_encoder_checkpoint.pt}"
 BRIDGE_MODULES_STATE_PATH="${BRIDGE_MODULES_STATE_PATH:-${ASSET_DIR}/bridge_modules_state.pt}"
 
-# OBS inputs for DI. Leave empty for local/debug runs when the paths above exist.
-DATASET_OBS_PATH="${DATASET_OBS_PATH:-}"
-QWEN_MODEL_OBS_PATH="${QWEN_MODEL_OBS_PATH:-}"
-DINOV2_MODEL_OBS_PATH="${DINOV2_MODEL_OBS_PATH:-}"
-ASSET_OBS_PATH="${ASSET_OBS_PATH:-}"
+# OBS inputs for DI. OUTPUT_URL is usually injected by the platform; set it
+# manually only when the platform does not provide it.
+DATASET_OBS_PATH="${DATASET_OBS_PATH:-obs://yw-ads-training-gy1/data/external/personal/h58801830/whu/jn/data/prepared_lane_intersection_trainroot.tar}"
+QWEN_MODEL_OBS_PATH="${QWEN_MODEL_OBS_PATH:-obs://yw-ads-training-gy1/data/external/personal/h58801830/whu/jn/checkpoint/Qwen3-8B}"
+DINOV2_MODEL_OBS_PATH="${DINOV2_MODEL_OBS_PATH:-obs://yw-ads-training-gy1/data/external/personal/h58801830/whu/jjh/checkpoints/facebook_dinov2-large}"
+ASSET_OBS_PATH="${ASSET_OBS_PATH:-obs://yw-ads-training-gy1/data/external/personal/h58801830/whu/jn/model/dinov2_centerline_assets_qwen3_8b}"
 
-# Raw private dataset layout. Used only when TRAINROOT does not already exist.
+# Dataset handling. The default OBS input is already a prepared trainroot tar.
+# If a raw private dataset is supplied instead, set DATASET_KIND=raw.
+DATASET_KIND="${DATASET_KIND:-auto}"
 DATASET_PHASE="${DATASET_PHASE:-phase_a}"
-DATASET_DIR_NAME="${DATASET_DIR_NAME:-data_lane_intersection_norm_sample_512_33w}"
+DATASET_DIR_NAME="${DATASET_DIR_NAME:-prepared_lane_intersection_trainroot}"
 DATASET_IMAGE_ROOT="${DATASET_IMAGE_ROOT:-images}"
 DATASET_EXTRACT_ROOT="${DATASET_EXTRACT_ROOT:-${OBS_CACHE}/dataset_extract_${RUN_ID}}"
 DATASET_INPUT_ROOT="${DATASET_INPUT_ROOT:-}"
@@ -245,11 +248,49 @@ resolve_dataset_input_root() {
   exit 2
 }
 
+resolve_prepared_trainroot_root() {
+  for candidate in \
+    "${TRAINROOT}" \
+    "${DATASET_INPUT_ROOT:-/nonexistent}" \
+    "${DATASET_EXTRACT_ROOT}" \
+    "${DATASET_EXTRACT_ROOT}/${DATASET_DIR_NAME}" \
+    "${PREPARED_TRAINROOT}"; do
+    if [ -f "${candidate}/train.jsonl" ]; then
+      printf '%s\n' "${candidate}"
+      return 0
+    fi
+  done
+
+  for train_json in "${DATASET_EXTRACT_ROOT}"/*/train.jsonl; do
+    if [ ! -f "${train_json}" ]; then
+      continue
+    fi
+    candidate="$(dirname "${train_json}")"
+    case "$(basename "${candidate}")" in
+      phase_a|phase_b|phasea|phaseb)
+        continue
+        ;;
+    esac
+    printf '%s\n' "${candidate}"
+    return 0
+  done
+  return 1
+}
+
 prepare_trainroot_if_needed() {
   if [ -f "${TRAINROOT}/train.jsonl" ]; then
     return 0
   fi
   extract_dataset_if_needed
+  if prepared_root="$(resolve_prepared_trainroot_root)"; then
+    TRAINROOT="${prepared_root}"
+    echo "[di-train] using prepared trainroot: ${TRAINROOT}"
+    return 0
+  fi
+  if [ "${DATASET_KIND}" = "prepared" ]; then
+    echo "[di-train] ERROR: DATASET_KIND=prepared but no train.jsonl was found after extraction." >&2
+    exit 2
+  fi
   DATASET_INPUT_ROOT="$(resolve_dataset_input_root)"
   echo "[di-train] preparing trainroot from ${DATASET_INPUT_ROOT} -> ${PREPARED_TRAINROOT}"
   "${PYTHON_BIN}" scripts/tools/prepare_di_qa_trainroot.py \

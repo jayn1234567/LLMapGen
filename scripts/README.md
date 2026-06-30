@@ -84,20 +84,25 @@ bash scripts/npu/train/train_di_dinov2_centerline_qwen_lora_npu.sh
 Known local defaults:
 
 ```bash
-MODEL_NAME_OR_PATH=/cache/jn/model/Qwen3-8B
-DINOV2_MODEL_NAME_OR_PATH=/cache/jn/model/dinov2-large
-ASSET_DIR=/cache/jn/dinov2seg_bridge/dinov2_centerline_assets_qwen3_8b
-TRAINROOT=/cache/jn/prepared_lane_intersection_trainroot
+WORK_ROOT=/cache/llmapgen
+MODEL_NAME_OR_PATH=/cache/llmapgen/model/Qwen3-8B
+DINOV2_MODEL_NAME_OR_PATH=/cache/llmapgen/model/dinov2-large
+ASSET_DIR=/cache/llmapgen/model/dinov2_centerline_assets_qwen3_8b
+TRAINROOT=/cache/llmapgen/prepared_lane_intersection_trainroot
 MAP_TASK=lane_intersection
 ```
 
-In a real DI job, configure these from the platform if the local paths are not
-pre-populated:
+The current DI defaults are:
 
 ```bash
 OUTPUT_URL=obs://bucket/path/to/output
-DATASET_OBS_PATH=obs://bucket/path/to/data_lane_intersection_norm_sample_512_33w.zip
-QWEN_MODEL_OBS_PATH=obs://bucket/path/to/Qwen3-8B
-DINOV2_MODEL_OBS_PATH=obs://bucket/path/to/dinov2-large
-ASSET_OBS_PATH=obs://bucket/path/to/dinov2_centerline_assets_qwen3_8b.tar
+DATASET_OBS_PATH=obs://yw-ads-training-gy1/data/external/personal/h58801830/whu/jn/data/prepared_lane_intersection_trainroot.tar
+QWEN_MODEL_OBS_PATH=obs://yw-ads-training-gy1/data/external/personal/h58801830/whu/jn/checkpoint/Qwen3-8B
+DINOV2_MODEL_OBS_PATH=obs://yw-ads-training-gy1/data/external/personal/h58801830/whu/jjh/checkpoints/facebook_dinov2-large
+ASSET_OBS_PATH=obs://yw-ads-training-gy1/data/external/personal/h58801830/whu/jn/model/dinov2_centerline_assets_qwen3_8b
 ```
+
+`DATASET_OBS_PATH` currently points to a prepared trainroot tar, so the launcher
+will use the extracted `train.jsonl` directly instead of running the raw dataset
+converter again. If you pass a raw private dataset archive, set
+`DATASET_KIND=raw` and adjust `DATASET_DIR_NAME` when needed.

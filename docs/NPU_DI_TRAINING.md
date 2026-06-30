@@ -1,6 +1,6 @@
 # NPU / DI 训练适配说明
 
-本文档整理当前 LLMapGen DINOv2 + Qwen3 路线在 Ascend NPU 和 DI 训练平台上的适配状态，并说明后续如何参考 jiangjihua 项目的方式，把训练流程整理成“代码仓 + OBS 数据/模型 + 一条 shell 命令”即可启动的 DI 作业。
+整理当前 LLMapGen DINOv2 + Qwen3 路线在 Ascend NPU 和 DI 训练平台上的适配状态，把训练流程整理成“代码仓 + OBS 数据/模型 + 一条 shell 命令”即可启动的 DI 作业。
 
 ## 目标
 
@@ -129,17 +129,8 @@ scripts/npu/setup/clone_llmapgen_npu_conda_env.sh
 - source Ascend toolkit 环境。
 - 创建 conda/venv 环境。
 - 安装适配版本的 HF 依赖。
-- 支持复制已有 Ascend conda 环境，避免服务器上 conda 无法下载 Python。
 
-推荐复制已有 NPU 环境：
 
-```bash
-SOURCE_CONDA_ENV_NAME=existing-npu-env \
-CONDA_ENV_NAME=llmapgen-npu \
-bash scripts/npu/setup/clone_llmapgen_npu_conda_env.sh
-```
-
-如果使用当前已经建好的环境：
 
 ```bash
 source /home/ma-user/.conda/envs/llmapgen-npu/activate_llmapgen_npu.sh
@@ -253,8 +244,6 @@ bash merge_parts_linux.sh
 
 已经验证过：
 
-- GPU 超算上 mock 私有数据结构读取正常。
-- GPU 超算上正式资产包 smoke 跑通。
 - NPU 上随机对齐层 smoke 跑通。
 - NPU 多卡 torchrun/HCCL 跑通。
 - NPU 上 DINOv2 forward + Qwen3-8B LoRA + dataset loader 跑通。
@@ -263,8 +252,8 @@ bash merge_parts_linux.sh
 
 还需要正式验证：
 
-- 512 私有 `lane_intersection` 数据的完整 trainroot 转换和 validate。
-- 正式资产包 + 512 私有数据 + 多卡 NPU 的长时间训练。
+- 512 `lane_intersection` 数据的完整 trainroot 转换和 validate。
+- 正式资产包 + 512 数据 + 多卡 NPU 的长时间训练。
 - DI 平台上从 OBS 自动下载数据/模型并上传输出的自包含脚本。
 
 ## 当前手动训练流程
@@ -357,17 +346,15 @@ export VISION_TRAIN_LAST_N_LAYERS=2
 bash scripts/npu/train/train_dinov2_centerline_qwen_lora_npu.sh
 ```
 
-## jiangjihua 项目的 DI 脚本做法
+## DI 脚本做法
 
-jiangjihua 项目里的 `scripts/npu/train` 是更完整的 DI 生产化写法。典型脚本如：
+项目里的 `scripts/npu/train` 是更完整的 DI 生产化写法。典型脚本如：
 
 ```text
 train_sft_stage_a_lane_dinov2_qwen3vl_nodeepstack_npu.sh
 train_sft_stage_a_lane_intersection_dinov2_qwen3vl_nodeepstack_npu.sh
 train_sft_stage_b_lane_dinov2_qwen3vl_nodeepstack_npu.sh
 ```
-
-它的特点：
 
 1. 每个脚本是一个固定 recipe。
 
@@ -458,31 +445,15 @@ if [[ "${NODE_RANK}" == "0" ]]; then
 fi
 ```
 
-## 我们和 jiangjihua 当前差距
+## DI 脚本
 
-当前我们的路线已经能在 NPU 上跑，但还不是完整 DI 生产化脚本。
-
-| 项目 | 我们当前 | jiangjihua |
-|---|---|---|
-| NPU 训练 | 已跑通 | 已跑通 |
-| 多卡 HCCL | 已跑通 | 已集成 |
-| 数据转换 | 已支持 trainroot | 直接使用原始阶段数据 |
-| OBS 下载 | 还没有自包含进训练脚本 | 脚本内 moxing 下载 |
-| OUTPUT_URL | 还没作为主输出约定 | 脚本强依赖 |
-| 环境安装 | 单独 setup 脚本 | 每个正式脚本可安装依赖 |
-| 模型资产 | 手动放到服务器/本地 source | 脚本从 OBS 拉 |
-| 输出上传 | 当前写本地 OUTPUT_DIR | rank0 移动/上传到云输出 |
-| recipe 脚本矩阵 | 目前一个通用 NPU 脚本 | 多个固定 recipe 自包含脚本 |
-
-## 后续建议实现的 DI 自包含脚本
-
-建议新增：
+已经新增：
 
 ```text
 scripts/npu/train/train_di_dinov2_centerline_qwen_lora_npu.sh
 ```
 
-这个脚本参考 jiangjihua，但服务我们自己的模型结构。
+参考 jiangjihua，但服务我们自己的模型结构。
 
 ### 需要支持的输入变量
 
@@ -490,24 +461,29 @@ DI 平台配置：
 
 ```bash
 OUTPUT_URL=obs://bucket/path/to/output
-DATASET_OBS_PATH=obs://bucket/path/to/data_lane_intersection_norm_sample_512_33w.zip
-ASSET_OBS_PATH=obs://bucket/path/to/dinov2_centerline_assets_qwen3_8b
-QWEN_MODEL_OBS_PATH=obs://bucket/path/to/Qwen3-8B
-DINOV2_MODEL_OBS_PATH=obs://bucket/path/to/dinov2-large
+DATASET_OBS_PATH=obs://yw-ads-training-gy1/data/external/personal/h58801830/whu/jn/data/prepared_lane_intersection_trainroot.tar
+QWEN_MODEL_OBS_PATH=obs://yw-ads-training-gy1/data/external/personal/h58801830/whu/jn/checkpoint/Qwen3-8B
+DINOV2_MODEL_OBS_PATH=obs://yw-ads-training-gy1/data/external/personal/h58801830/whu/jjh/checkpoints/facebook_dinov2-large
+ASSET_OBS_PATH=obs://yw-ads-training-gy1/data/external/personal/h58801830/whu/jn/model/dinov2_centerline_assets_qwen3_8b
 ```
 
 可选训练参数：
 
 ```bash
-DATASET_DIR_NAME=data_lane_intersection_norm_sample_512_33w
+DATASET_KIND=auto
+DATASET_DIR_NAME=prepared_lane_intersection_trainroot
 DATASET_PHASE=phase_a
 MAP_TASK=lane_intersection
 NUM_TRAIN_EPOCHS=6
 TARGET_GLOBAL_BATCH_SIZE=32
 PER_DEVICE_TRAIN_BATCH_SIZE=1
-LEARNING_RATE=2e-5
-VISION_TRAIN_LAST_N_LAYERS=2
+LEARNING_RATE=1e-4
+VISION_TRAIN_LAST_N_LAYERS=4
 ```
+
+当前 `DATASET_OBS_PATH` 指向已经转换好的 trainroot tar，脚本解压后会直接
+查找 `train.jsonl` 并用于训练，不会再调用 `prepare_di_qa_trainroot.py`。如果后续
+传入的是原始私有数据集 zip/tar，再设置 `DATASET_KIND=raw`，脚本会走转换流程。
 
 ### 脚本内部流程
 
@@ -515,11 +491,11 @@ VISION_TRAIN_LAST_N_LAYERS=2
 1. 定义 RUN_ID、/cache 路径、输出路径
 2. source Ascend 环境
 3. 可选安装/激活 conda 环境
-4. 用 moxing 下载数据 zip
-5. unzip 到 /cache/dataset_extract_${RUN_ID}
-6. 用 moxing 下载 Qwen3-8B、DINOv2-large、资产包
-7. source asset/train_env_template.sh
-8. 调用 prepare_di_qa_trainroot.py 转成 trainroot
+4. 用 moxing 下载数据 tar/zip/目录
+5. 解压或复制到 /cache/dataset_extract_${RUN_ID}
+6. 如果发现 train.jsonl，直接作为 prepared trainroot 使用
+7. 否则按 raw dataset 调用 prepare_di_qa_trainroot.py 转成 trainroot
+8. 用 moxing 下载 Qwen3-8B、DINOv2-large、资产包
 9. 调用 validate_di_trainroot.py 做快速校验
 10. 自动识别 DI 单机/多机变量
 11. 按 TARGET_GLOBAL_BATCH_SIZE 计算梯度累积
@@ -586,9 +562,9 @@ bash scripts/npu/train/train_dinov2_centerline_qwen_lora_npu.sh
 python -c "import moxing as mox; mox.file.copy_parallel('${LOCAL_OUTPUT_DIR}', '${CLOUD_OUTPUT_DIR}')"
 ```
 
-## DI 平台推荐启动方式
+## DI 平台启动方式
 
-当前阶段可以先用“半自动”方式：
+
 
 ```bash
 cd /cache/jn/LLMapGen
@@ -614,29 +590,3 @@ bash scripts/npu/train/train_dinov2_centerline_qwen_lora_npu.sh
 ```bash
 bash scripts/npu/train/train_di_dinov2_centerline_qwen_lora_npu.sh
 ```
-
-## 风险和注意事项
-
-- NPU 环境里的 `torch` 和 `torch_npu` 必须与 CANN 版本匹配。
-- 如果平台已有稳定环境，优先复制环境，不要每次覆盖安装 `torch_npu`。
-- Qwen3-8B 路线显存压力大，建议先 8 卡、小样本 smoke，再跑全量。
-- `MAX_STEPS`、`MAX_SAMPLES`、`MAX_EVAL_SAMPLES` 做 smoke 后正式训练必须清零或设为 `-1/0`。
-- `MAP_TASK=lane_intersection` 时，必须使用新转换脚本生成的 trainroot。
-- `VISUAL_ENCODER_CHECKPOINT_PATH` 和 `BRIDGE_MODULES_STATE_PATH` 都要来自同一套资产包，避免视觉侧和桥接层不匹配。
-- 如果使用分卷资产包，先合并并校验 sha256，再 source `train_env_template.sh`。
-
-## 当前结论
-
-当前代码已经完成“能在 NPU 上跑”的核心适配：
-
-```text
-数据转换 -> trainroot 验证 -> NPU 环境 -> HCCL 多卡 -> DINOv2/Qwen3 LoRA 训练
-```
-
-下一步要完成的是“DI 平台生产化”：
-
-```text
-OBS 下载数据/模型/资产 -> 自动转换 trainroot -> 自动启动训练 -> 自动上传输出
-```
-
-这一步建议直接参考 jiangjihua 的脚本风格，为我们的 DINOv2 + Qwen3 + LoRA 路线新增一个自包含 DI launcher。

@@ -21,6 +21,9 @@ DINOV2_MODEL_NAME_OR_PATH="${DINOV2_MODEL_NAME_OR_PATH:-${DINOV2_PATH:-}}"
 
 OUTPUT_DIR="${OUTPUT_DIR:-${OUTPUT_PATH:-outputs/dinov2_centerline_qwen_lora_npu}}"
 NPROC_PER_NODE="${NPROC_PER_NODE:-1}"
+NNODES="${NNODES:-1}"
+NODE_RANK="${NODE_RANK:-0}"
+MASTER_ADDR="${MASTER_ADDR:-127.0.0.1}"
 MASTER_PORT="${MASTER_PORT:-29501}"
 USE_TORCHRUN="${USE_TORCHRUN:-false}"
 KEEP_DISTRIBUTED_ENV="${KEEP_DISTRIBUTED_ENV:-false}"
@@ -116,7 +119,10 @@ fi
 if [ "${NPROC_PER_NODE}" -gt 1 ] || [ "${USE_TORCHRUN}" = "true" ]; then
   export LLMAPGEN_FORCE_SINGLE_PROCESS_NPU="${LLMAPGEN_FORCE_SINGLE_PROCESS_NPU:-false}"
   "${PYTHON_BIN}" -m torch.distributed.run \
+    --nnodes "${NNODES}" \
     --nproc_per_node "${NPROC_PER_NODE}" \
+    --node_rank "${NODE_RANK}" \
+    --master_addr "${MASTER_ADDR}" \
     --master_port "${MASTER_PORT}" \
     "$@"
 else

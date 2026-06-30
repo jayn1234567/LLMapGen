@@ -72,3 +72,32 @@ the launcher selects the matching prompt contract:
 export MAP_TASK=lane_intersection
 bash scripts/npu/train/train_dinov2_centerline_qwen_lora_npu.sh
 ```
+
+For DI/ModelArts jobs, use the outer self-contained launcher. It keeps the
+current Ascend debug paths as defaults and downloads missing inputs from OBS
+when the matching `*_OBS_PATH` variables are provided:
+
+```bash
+bash scripts/npu/train/train_di_dinov2_centerline_qwen_lora_npu.sh
+```
+
+Known local defaults:
+
+```bash
+MODEL_NAME_OR_PATH=/cache/jn/model/Qwen3-8B
+DINOV2_MODEL_NAME_OR_PATH=/cache/jn/model/dinov2-large
+ASSET_DIR=/cache/jn/dinov2seg_bridge/dinov2_centerline_assets_qwen3_8b
+TRAINROOT=/cache/jn/prepared_lane_intersection_trainroot
+MAP_TASK=lane_intersection
+```
+
+In a real DI job, configure these from the platform if the local paths are not
+pre-populated:
+
+```bash
+OUTPUT_URL=obs://bucket/path/to/output
+DATASET_OBS_PATH=obs://bucket/path/to/data_lane_intersection_norm_sample_512_33w.zip
+QWEN_MODEL_OBS_PATH=obs://bucket/path/to/Qwen3-8B
+DINOV2_MODEL_OBS_PATH=obs://bucket/path/to/dinov2-large
+ASSET_OBS_PATH=obs://bucket/path/to/dinov2_centerline_assets_qwen3_8b.tar
+```

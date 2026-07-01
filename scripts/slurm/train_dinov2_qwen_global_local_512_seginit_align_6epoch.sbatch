@@ -33,6 +33,7 @@ VISUAL_ENCODER_CKPT="${VISUAL_ENCODER_CKPT:-/mingli01/data/outputs/rc_structure_
 BRIDGE_MODULES="${BRIDGE_MODULES:-/mingli01/data/outputs/stage3_rc_nonqwen_modules_from21176_ckpt21000_20260427/rc_dinov2_centerline_json_modules.pt}"
 
 TRAINROOT="${TRAINROOT:-/mingli01/data/outputs/rc_clean_dataset_xiuzheng_joint512_trainroot_douglas_merge6h22_nolinefix_20260506}"
+MEDIA_DIR="${MEDIA_DIR:-/mingli01/data/outputs/rc_clean_dataset_xiuzheng_joint512_patch_root_nolinefix_20260506}"
 CONTEXT_IMAGE_KEY="${CONTEXT_IMAGE_KEY:-context_image}"
 GLOBAL_LOCAL_TRAINROOT="${GLOBAL_LOCAL_TRAINROOT:-/mingli01/data/outputs/rc_clean_dataset_xiuzheng_joint512_global_local1024_resize512_trainroot}"
 SMOKE_GLOBAL_LOCAL_TRAINROOT="${SMOKE_GLOBAL_LOCAL_TRAINROOT:-/mingli01/data/outputs/llmapgen_global_local_smoke_${SLURM_JOB_ID:-manual}}"
@@ -81,6 +82,7 @@ echo "[global-local] dinov2=${DINOV2_MODEL_NAME_OR_PATH}"
 echo "[global-local] seg_dinov2_ckpt=${VISUAL_ENCODER_CKPT}"
 echo "[global-local] bridge_modules=${BRIDGE_MODULES}"
 echo "[global-local] trainroot=${TRAINROOT}"
+echo "[global-local] media_dir=${MEDIA_DIR}"
 echo "[global-local] global_local_trainroot=${GLOBAL_LOCAL_TRAINROOT}"
 echo "[global-local] output_dir=${OUTPUT_DIR}"
 echo "[global-local] run_mode=${RUN_MODE}"
@@ -93,6 +95,7 @@ test -f "${TRAINROOT}/train.jsonl"
 test -f "${TRAINROOT}/meta_train.jsonl"
 test -f "${TRAINROOT}/val.jsonl"
 test -f "${TRAINROOT}/meta_val.jsonl"
+test -d "${MEDIA_DIR}"
 
 PYTHONNOUSERSITE=1 "${PYTHON_BIN}" -m py_compile \
   unimapgen/data/rc_centerline_json_sft_dataset.py \
@@ -109,6 +112,7 @@ prepare_context_trainroot() {
   shift
   PYTHONNOUSERSITE=1 "${PYTHON_BIN}" scripts/tools/add_global_local_context.py \
     --trainroot "${TRAINROOT}" \
+    --media-dir "${MEDIA_DIR}" \
     --output-trainroot "${output_trainroot}" \
     --context-image-key "${CONTEXT_IMAGE_KEY}" \
     --context-size 1024 \

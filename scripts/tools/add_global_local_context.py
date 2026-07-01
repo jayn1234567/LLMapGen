@@ -297,6 +297,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-samples", type=int, default=0)
     parser.add_argument("--max-train-samples", type=int, default=0)
     parser.add_argument("--max-eval-samples", type=int, default=0)
+    parser.add_argument("--allow-missing-images", action="store_true")
     return parser.parse_args()
 
 
@@ -308,6 +309,9 @@ def main() -> None:
     info_path = output_root / "global_local_context_info.json"
     info_path.write_text(json.dumps({"summaries": summaries}, ensure_ascii=False, indent=2), encoding="utf-8")
     print(json.dumps({"output_trainroot": str(output_root), "summaries": summaries}, ensure_ascii=False), flush=True)
+    missing = sum(int(item.get("missing_images", 0)) for item in summaries)
+    if missing and not bool(args.allow_missing_images):
+        raise SystemExit(f"Missing {missing} source images while building global-local context trainroot.")
 
 
 if __name__ == "__main__":

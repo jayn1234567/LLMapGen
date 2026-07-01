@@ -68,7 +68,7 @@ ASSET_OBS_PATH="${ASSET_OBS_PATH:-obs://yw-ads-training-gy1/data/external/person
 
 # Dataset handling. The default OBS input is already a prepared trainroot archive.
 # If a raw private dataset is supplied instead, set DATASET_KIND=raw.
-DATASET_KIND="${DATASET_KIND:-auto}"
+DATASET_KIND="${DATASET_KIND:-prepared}"
 DATASET_PHASE="${DATASET_PHASE:-phase_a}"
 DATASET_DIR_NAME="${DATASET_DIR_NAME:-prepared_lane_intersection_trainroot}"
 DATASET_IMAGE_ROOT="${DATASET_IMAGE_ROOT:-images}"
@@ -309,21 +309,41 @@ resolve_dataset_input_root() {
     printf '%s\n' "${DATASET_INPUT_ROOT}"
     return 0
   fi
-  if [ -d "${DATASET_EXTRACT_ROOT}/${DATASET_DIR_NAME}" ]; then
-    printf '%s\n' "${DATASET_EXTRACT_ROOT}/${DATASET_DIR_NAME}"
-    return 0
-  fi
-  if [ -f "${DATASET_EXTRACT_ROOT}/dataset_info.json" ] || [ -d "${DATASET_EXTRACT_ROOT}/${DATASET_PHASE}" ]; then
+
+  for candidate in \
+    "${DATASET_EXTRACT_ROOT}" \
+    "${DATASET_EXTRACT_ROOT}/${DATASET_DIR_NAME}" \
+    "$(find "${DATASET_EXTRACT_ROOT}" -mindepth 1 -maxdepth 1 -type d | head -n 1 || true)"; do
+    if [ -z "${candidate}" ] || [ ! -d "${candidate}" ]; then
+      continue
+    fi
+    if [ -d "${candidate}/${DATASET_IMAGE_ROOT}" ] && \
+      { [ -d "${candidate}/${DATASET_PHASE}" ] || [ -d "${candidate}/phase_a" ] || [ -d "${candidate}/phasea" ] || [ -d "${candidate}/phase_b" ] || [ -d "${candidate}/phaseb" ]; }; then
+      printf '%s\n' "${candidate}"
+      return 0
+    fi
+  done
+
+  if [ -f "${DATASET_EXTRACT_ROOT}/dataset_info.json" ] && [ -d "${DATASET_EXTRACT_ROOT}/${DATASET_IMAGE_ROOT}" ]; then
     printf '%s\n' "${DATASET_EXTRACT_ROOT}"
     return 0
   fi
-  first_dir="$(find "${DATASET_EXTRACT_ROOT}" -mindepth 1 -maxdepth 1 -type d | head -n 1 || true)"
-  if [ -n "${first_dir}" ]; then
-    printf '%s\n' "${first_dir}"
-    return 0
-  fi
+
   echo "[di-train] ERROR: cannot resolve dataset root under ${DATASET_EXTRACT_ROOT}" >&2
   exit 2
+}
+
+print_dataset_extract_summary() {
+  echo "[di-train] extracted dataset summary under ${DATASET_EXTRACT_ROOT}:" >&2
+  if [ ! -d "${DATASET_EXTRACT_ROOT}" ]; then
+    echo "[di-train]   missing extract root" >&2
+    return 0
+  fi
+  find "${DATASET_EXTRACT_ROOT}" -maxdepth 3 -mindepth 1 \
+    -printf '[di-train]   %P\n' 2>/dev/null | head -n 80 >&2 || true
+  echo "[di-train] train.jsonl candidates:" >&2
+  find "${DATASET_EXTRACT_ROOT}" -maxdepth 6 -type f -name train.jsonl \
+    -printf '[di-train]   %p\n' 2>/dev/null | head -n 20 >&2 || true
 }
 
 resolve_prepared_trainroot_root() {
@@ -339,10 +359,7 @@ resolve_prepared_trainroot_root() {
     fi
   done
 
-  for train_json in "${DATASET_EXTRACT_ROOT}"/*/train.jsonl; do
-    if [ ! -f "${train_json}" ]; then
-      continue
-    fi
+  while IFS= read -r train_json; do
     candidate="$(dirname "${train_json}")"
     case "$(basename "${candidate}")" in
       phase_a|phase_b|phasea|phaseb)
@@ -351,7 +368,7 @@ resolve_prepared_trainroot_root() {
     esac
     printf '%s\n' "${candidate}"
     return 0
-  done
+  done < <(find "${DATASET_EXTRACT_ROOT}" -maxdepth 6 -type f -name train.jsonl 2>/dev/null | sort)
   return 1
 }
 
@@ -365,10 +382,14 @@ prepare_trainroot_if_needed() {
     echo "[di-train] using prepared trainroot: ${TRAINROOT}"
     return 0
   fi
-  if [ "${DATASET_KIND}" = "prepared" ]; then
-    echo "[di-train] ERROR: DATASET_KIND=prepared but no train.jsonl was found after extraction." >&2
+
+  if [ "${DATASET_KIND}" != "raw" ]; then
+    echo "[di-train] ERROR: DATASET_KIND=${DATASET_KIND} but no prepared trainroot train.jsonl was found after extraction." >&2
+    echo "[di-train] ERROR: this DI job expects a prepared trainroot zip; set DATASET_KIND=raw only for raw private datasets." >&2
+    print_dataset_extract_summary
     exit 2
   fi
+
   DATASET_INPUT_ROOT="$(resolve_dataset_input_root)"
   echo "[di-train] preparing trainroot from ${DATASET_INPUT_ROOT} -> ${PREPARED_TRAINROOT}"
   "${PYTHON_BIN}" scripts/tools/prepare_di_qa_trainroot.py \

@@ -112,4 +112,5 @@ will use the extracted `train.jsonl` directly instead of running the raw dataset
 converter again. If you pass a raw private dataset archive, set
 `DATASET_KIND=raw` and adjust `DATASET_DIR_NAME` when needed. Rar extraction
 requires `unrar`, `7z`/`7za`, `bsdtar`, or `unar` in the DI image; prefer zip
-or tar for DI jobs.
+or tar for DI jobs. The DI launcher defaults to `DATASET_KIND=prepared`; it will
+not run the raw converter unless `DATASET_KIND=raw` is set explicitly.

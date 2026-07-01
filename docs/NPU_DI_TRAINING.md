@@ -470,7 +470,7 @@ ASSET_OBS_PATH=obs://yw-ads-training-gy1/data/external/personal/h58801830/whu/jn
 可选训练参数：
 
 ```bash
-DATASET_KIND=auto
+DATASET_KIND=prepared
 DATASET_DIR_NAME=prepared_lane_intersection_trainroot
 DATASET_PHASE=phase_a
 MAP_TASK=lane_intersection
@@ -495,13 +495,14 @@ VISION_TRAIN_LAST_N_LAYERS=4
 4. 用 moxing 下载数据 rar/tar/zip/目录
 5. 解压或复制到 /cache/dataset_extract_${RUN_ID}
 6. 如果发现 train.jsonl，直接作为 prepared trainroot 使用
-7. 否则按 raw dataset 调用 prepare_di_qa_trainroot.py 转成 trainroot
-8. 用 moxing 下载 Qwen3-8B、DINOv2-large、资产包
-9. 调用 validate_di_trainroot.py 做快速校验
-10. 自动识别 DI 单机/多机变量
-11. 按 TARGET_GLOBAL_BATCH_SIZE 计算梯度累积
-12. torchrun 启动 train_dinov2_centerline.py
-13. rank0 把输出移动或上传到 OUTPUT_URL/RUN_ID
+7. 默认 `DATASET_KIND=prepared`；找不到 train.jsonl 就打印解压目录并退出
+8. 只有显式 `DATASET_KIND=raw` 时才调用 prepare_di_qa_trainroot.py 转成 trainroot
+9. 用 moxing 下载 Qwen3-8B、DINOv2-large、资产包
+10. 调用 validate_di_trainroot.py 做快速校验
+11. 自动识别 DI 单机/多机变量
+12. 按 TARGET_GLOBAL_BATCH_SIZE 计算梯度累积
+13. torchrun 启动 train_dinov2_centerline.py
+14. rank0 把输出移动或上传到 OUTPUT_URL/RUN_ID
 ```
 
 ### 伪代码骨架

@@ -42,6 +42,14 @@ FREEZE_LANGUAGE_MODEL="${FREEZE_LANGUAGE_MODEL:-false}"
 FREEZE_VISION_ENCODER="${FREEZE_VISION_ENCODER:-true}"
 VISION_TRAIN_LAST_N_LAYERS="${VISION_TRAIN_LAST_N_LAYERS:-0}"
 MAP_TASK="${MAP_TASK:-lane}"
+USE_GLOBAL_LOCAL_VIEWS="${USE_GLOBAL_LOCAL_VIEWS:-false}"
+GLOBAL_LOCAL_VIEW_COUNT="${GLOBAL_LOCAL_VIEW_COUNT:-2}"
+CONTEXT_IMAGE_KEY="${CONTEXT_IMAGE_KEY:-context_image}"
+REQUIRE_CONTEXT_IMAGE="${REQUIRE_CONTEXT_IMAGE:-false}"
+GLOBAL_LOCAL_PROMPT="${GLOBAL_LOCAL_PROMPT:-true}"
+USE_VIEW_TYPE_EMBEDDING="${USE_VIEW_TYPE_EMBEDDING:-auto}"
+VIEW_TYPE_EMBEDDING_COUNT="${VIEW_TYPE_EMBEDDING_COUNT:-2}"
+VIEW_TYPE_EMBEDDING_INIT_STD="${VIEW_TYPE_EMBEDDING_INIT_STD:-0.02}"
 
 set -- \
   scripts/train_dinov2_centerline.py \
@@ -73,6 +81,26 @@ fi
 if [ "${PREPARE_TRAINROOT}" = "true" ]; then
   set -- "$@" --prepare-trainroot
 fi
+if [ "${USE_GLOBAL_LOCAL_VIEWS}" = "true" ]; then
+  set -- "$@" \
+    --use-global-local-views \
+    --global-local-view-count "${GLOBAL_LOCAL_VIEW_COUNT}" \
+    --context-image-key "${CONTEXT_IMAGE_KEY}"
+fi
+if [ "${REQUIRE_CONTEXT_IMAGE}" = "true" ]; then
+  set -- "$@" --require-context-image
+fi
+if [ "${GLOBAL_LOCAL_PROMPT}" = "false" ]; then
+  set -- "$@" --no-global-local-prompt
+fi
+if [ "${USE_VIEW_TYPE_EMBEDDING}" = "true" ]; then
+  set -- "$@" --use-view-type-embedding
+elif [ "${USE_VIEW_TYPE_EMBEDDING}" = "false" ]; then
+  set -- "$@" --no-use-view-type-embedding
+fi
+set -- "$@" \
+  --view-type-embedding-count "${VIEW_TYPE_EMBEDDING_COUNT}" \
+  --view-type-embedding-init-std "${VIEW_TYPE_EMBEDDING_INIT_STD}"
 if [ -n "${PREPARED_TRAINROOT:-}" ]; then
   set -- "$@" --prepared-trainroot "${PREPARED_TRAINROOT}"
 fi

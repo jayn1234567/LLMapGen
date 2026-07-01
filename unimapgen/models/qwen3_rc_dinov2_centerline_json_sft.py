@@ -59,6 +59,7 @@ MODULE_STATE_NAMES = (
     "visual_projector",
     "geometric_position_mlp",
     "token_alignment",
+    "view_type_embeddings",
     "special_token_adapter",
 )
 
@@ -283,11 +284,15 @@ class Qwen3RCDinoCenterlineJSONSFTModel(nn.Module):
         dinov2_model_name_or_path: str,
         num_visual_tokens: int,
         visual_grid_size: int,
+        num_visual_views: int = 1,
         visual_projector_hidden_dim: int = 4096,
         geometric_mlp_hidden_dim: int = 512,
         token_alignment_hidden_dim: int = 4096,
         token_alignment_num_layers: int = 2,
         token_alignment_dropout: float = 0.0,
+        use_view_type_embedding: bool = False,
+        view_type_embedding_count: int = 2,
+        view_type_embedding_init_std: float = 0.02,
         language_model_dtype: str = "auto",
         local_files_only: bool = True,
         freeze_language_model: bool = False,
@@ -331,15 +336,20 @@ class Qwen3RCDinoCenterlineJSONSFTModel(nn.Module):
 
         self.num_visual_tokens = int(num_visual_tokens)
         self.visual_grid_size = int(visual_grid_size)
+        self.num_visual_views = max(1, int(num_visual_views))
+        self.tokens_per_view = int(self.visual_grid_size) * int(self.visual_grid_size)
+        self.use_view_type_embedding = bool(use_view_type_embedding)
         self.encoder_input_pad_size = max(0, int(encoder_input_pad_size))
         self.register_buffer(
             "encoder_input_pad_fill",
             torch.tensor(list(encoder_input_pad_fill_rgb), dtype=torch.float32).view(1, 3, 1, 1),
             persistent=False,
         )
-        if int(self.visual_grid_size) * int(self.visual_grid_size) != int(self.num_visual_tokens):
+        expected_visual_tokens = int(self.tokens_per_view) * int(self.num_visual_views)
+        if expected_visual_tokens != int(self.num_visual_tokens):
             raise ValueError(
-                f"visual_grid_size={self.visual_grid_size} does not match num_visual_tokens={self.num_visual_tokens}"
+                f"visual_grid_size={self.visual_grid_size} and num_visual_views={self.num_visual_views} "
+                f"produce {expected_visual_tokens} tokens, but num_visual_tokens={self.num_visual_tokens}"
             )
         self.register_buffer(
             "grid_centers",
@@ -420,6 +430,11 @@ class Qwen3RCDinoCenterlineJSONSFTModel(nn.Module):
                 for _ in range(max(1, int(token_alignment_num_layers)))
             ]
         )
+        self.view_type_embeddings: nn.Embedding | None = None
+        if self.use_view_type_embedding:
+            embedding_count = max(int(view_type_embedding_count), int(self.num_visual_views))
+            self.view_type_embeddings = nn.Embedding(embedding_count, int(self.hidden_size))
+            nn.init.normal_(self.view_type_embeddings.weight, mean=0.0, std=float(view_type_embedding_init_std))
 
         modules_path_candidate = (
             Path(str(modules_state_path).strip()).expanduser()
@@ -455,6 +470,12 @@ class Qwen3RCDinoCenterlineJSONSFTModel(nn.Module):
                 "geometric_position_mlp",
             )
             load_optional_state_dict(self.token_alignment, modules_state.get("token_alignment"), "token_alignment")
+            if self.view_type_embeddings is not None:
+                load_optional_state_dict(
+                    self.view_type_embeddings,
+                    modules_state.get("view_type_embeddings"),
+                    "view_type_embeddings",
+                )
             if self.special_token_adapter is not None:
                 load_optional_state_dict(
                     self.special_token_adapter,
@@ -572,20 +593,48 @@ class Qwen3RCDinoCenterlineJSONSFTModel(nn.Module):
         return padded
 
     def build_visual_embeddings(self, pixel_values: torch.Tensor) -> torch.Tensor:
+        if pixel_values.ndim == 5:
+            batch, views, channels, height, width = pixel_values.shape
+            if int(views) != int(self.num_visual_views):
+                raise ValueError(
+                    f"Expected {self.num_visual_views} visual views, got pixel_values shape={tuple(pixel_values.shape)}"
+                )
+            flat_pixels = pixel_values.reshape(int(batch) * int(views), int(channels), int(height), int(width))
+            projected = self._build_single_view_visual_embeddings(flat_pixels)
+            projected = projected.reshape(int(batch), int(views), int(self.tokens_per_view), int(projected.shape[-1]))
+            if self.view_type_embeddings is not None:
+                view_ids = torch.arange(int(views), device=projected.device, dtype=torch.long)
+                max_id = int(self.view_type_embeddings.num_embeddings) - 1
+                view_ids = view_ids.clamp(max=max_id)
+                view_bias = self.view_type_embeddings(view_ids).to(dtype=projected.dtype).view(1, int(views), 1, -1)
+                projected = projected + view_bias
+            projected = projected.reshape(int(batch), int(views) * int(self.tokens_per_view), int(projected.shape[-1]))
+            for block in self.token_alignment:
+                projected = block(projected)
+            return projected
+        if pixel_values.ndim != 4:
+            raise ValueError(f"Expected pixel_values to be 4D or 5D, got shape={tuple(pixel_values.shape)}")
+        projected = self._build_single_view_visual_embeddings(pixel_values)
+        if self.view_type_embeddings is not None:
+            view_ids = torch.zeros((1,), device=projected.device, dtype=torch.long)
+            projected = projected + self.view_type_embeddings(view_ids).to(dtype=projected.dtype).view(1, 1, -1)
+        for block in self.token_alignment:
+            projected = block(projected)
+        return projected
+
+    def _build_single_view_visual_embeddings(self, pixel_values: torch.Tensor) -> torch.Tensor:
         encoder_input = self._maybe_center_pad_image(pixel_values)
         vision_outputs = self.vision_encoder.forward_features(encoder_input)
         visual_tokens = vision_outputs["tokens"]
         if visual_tokens.ndim != 3:
             raise ValueError(f"Expected visual tokens to be 3D, got shape={tuple(visual_tokens.shape)}")
-        if int(visual_tokens.shape[1]) != self.num_visual_tokens:
+        if int(visual_tokens.shape[1]) != self.tokens_per_view:
             raise ValueError(
-                f"Visual encoder produced {int(visual_tokens.shape[1])} tokens, expected {self.num_visual_tokens}"
+                f"Visual encoder produced {int(visual_tokens.shape[1])} tokens, expected {self.tokens_per_view}"
             )
         projected = self.visual_projector(self.visual_norm(visual_tokens))
         pos = self.grid_centers.to(device=projected.device, dtype=projected.dtype)
         projected = projected + self.geometric_position_mlp(pos.expand(int(projected.shape[0]), -1, -1))
-        for block in self.token_alignment:
-            projected = block(projected)
         return projected
 
     def inject_visual_embeddings(
@@ -662,6 +711,11 @@ def save_qwen3_rc_dinov2_centerline_json_modules(
             "visual_projector": model_for_save.visual_projector.state_dict(),
             "geometric_position_mlp": model_for_save.geometric_position_mlp.state_dict(),
             "token_alignment": model_for_save.token_alignment.state_dict(),
+            "view_type_embeddings": (
+                model_for_save.view_type_embeddings.state_dict()
+                if getattr(model_for_save, "view_type_embeddings", None) is not None
+                else None
+            ),
             "special_token_adapter": (
                 model_for_save.special_token_adapter.state_dict()
                 if model_for_save.special_token_adapter is not None
@@ -670,6 +724,9 @@ def save_qwen3_rc_dinov2_centerline_json_modules(
             "encoder_input_pad_size": int(model_for_save.encoder_input_pad_size),
             "visual_grid_size": int(model_for_save.visual_grid_size),
             "num_visual_tokens": int(model_for_save.num_visual_tokens),
+            "tokens_per_view": int(getattr(model_for_save, "tokens_per_view", model_for_save.num_visual_tokens)),
+            "num_visual_views": int(getattr(model_for_save, "num_visual_views", 1)),
+            "use_view_type_embedding": bool(getattr(model_for_save, "use_view_type_embedding", False)),
         },
         str(output_path / "rc_dinov2_centerline_json_modules.pt"),
     )

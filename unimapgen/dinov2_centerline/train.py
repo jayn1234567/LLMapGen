@@ -35,6 +35,14 @@ from unimapgen.rc_llm_runtime import (
 from unimapgen.runtime.device import maybe_enable_npu_runtime, resolve_ddp_backend
 
 
+GLOBAL_LOCAL_VIEW_PROMPT = (
+    "Two visual views are provided in order. View 1 is a wider surrounding context crop "
+    "resized to the model input size. View 2 is the target local patch. Use View 1 only "
+    "as spatial context. Predict only the road geometry inside View 2, and output all "
+    "coordinates in the View 2 patch-local coordinate system."
+)
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
@@ -61,6 +69,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--media-dir", type=str, default="", help="Defaults to trainroot/prepared trainroot when possible.")
     parser.add_argument("--max-samples", type=int, default=0)
     parser.add_argument("--max-eval-samples", type=int, default=0)
+    parser.add_argument("--use-global-local-views", action="store_true")
+    parser.add_argument("--global-local-view-count", type=int, default=2)
+    parser.add_argument("--context-image-key", type=str, default="context_image")
+    parser.add_argument("--require-context-image", action="store_true")
+    parser.add_argument("--global-local-prompt", action=argparse.BooleanOptionalAction, default=True)
 
     # Optional built-in target preparation.
     parser.add_argument("--prepare-trainroot", action="store_true")
@@ -119,6 +132,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--token-alignment-hidden-dim", type=int, default=4096)
     parser.add_argument("--token-alignment-num-layers", type=int, default=2)
     parser.add_argument("--token-alignment-dropout", type=float, default=0.0)
+    parser.add_argument("--use-view-type-embedding", action=argparse.BooleanOptionalAction, default=None)
+    parser.add_argument("--view-type-embedding-count", type=int, default=2)
+    parser.add_argument("--view-type-embedding-init-std", type=float, default=0.02)
     parser.add_argument("--model-dtype", type=str, default="auto")
     parser.add_argument("--freeze-language-model", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--freeze-vision-encoder", action=argparse.BooleanOptionalAction, default=True)
@@ -146,6 +162,9 @@ def resolve_prompt_contract(args: argparse.Namespace) -> None:
         args.system_prompt = default_system_prompt_for_task(args.map_task)
     if not str(args.user_prompt).strip():
         args.user_prompt = default_user_prompt_for_task(args.map_task)
+    if bool(args.use_global_local_views) and bool(args.global_local_prompt):
+        if GLOBAL_LOCAL_VIEW_PROMPT not in str(args.user_prompt):
+            args.user_prompt = f"{GLOBAL_LOCAL_VIEW_PROMPT}\n\n{args.user_prompt}"
 
 
 def resolve_dataset_paths(args: argparse.Namespace, output_dir: Path) -> Tuple[Path, Path | None, Path | None, Path | None, Path]:
@@ -220,6 +239,10 @@ def resolve_dataset_paths(args: argparse.Namespace, output_dir: Path) -> Tuple[P
 
 def main() -> None:
     args = parse_args()
+    if bool(args.use_global_local_views):
+        args.require_context_image = True
+    if args.use_view_type_embedding is None:
+        args.use_view_type_embedding = bool(args.use_global_local_views)
     resolve_prompt_contract(args)
     resolved_backend = maybe_enable_npu_runtime(str(args.device_backend))
     args.resolved_device_backend = str(resolved_backend)
@@ -255,16 +278,23 @@ def main() -> None:
     if encoder_input_pad_size <= 0:
         encoder_input_pad_size = int(inferred_ckpt_args.get("encoder_input_pad_size", 0))
     args.encoder_input_pad_size = int(encoder_input_pad_size)
-    visual_grid_size, num_visual_tokens = infer_visual_layout(
+    visual_grid_size, tokens_per_view = infer_visual_layout(
         image_size=int(args.image_size),
         encoder_input_pad_size=int(encoder_input_pad_size),
         patch_size=14,
     )
+    num_visual_views = int(args.global_local_view_count) if bool(args.use_global_local_views) else 1
+    if num_visual_views <= 0:
+        raise ValueError("--global-local-view-count must be positive.")
+    num_visual_tokens = int(tokens_per_view) * int(num_visual_views)
     args.effective_dataset_jsonl = str(dataset_path)
     args.effective_dataset_meta_jsonl = str(dataset_meta_path or "")
     args.effective_eval_dataset_jsonl = str(eval_dataset_path or "")
     args.effective_eval_dataset_meta_jsonl = str(eval_meta_path or "")
     args.effective_media_dir = str(media_dir)
+    args.tokens_per_view = int(tokens_per_view)
+    args.num_visual_views = int(num_visual_views)
+    args.num_visual_tokens = int(num_visual_tokens)
     save_run_args(output_dir, args)
 
     print(
@@ -282,7 +312,12 @@ def main() -> None:
                 "image_size": int(args.image_size),
                 "encoder_input_pad_size": int(encoder_input_pad_size),
                 "visual_grid_size": int(visual_grid_size),
+                "tokens_per_view": int(tokens_per_view),
+                "num_visual_views": int(num_visual_views),
                 "num_visual_tokens": int(num_visual_tokens),
+                "use_global_local_views": bool(args.use_global_local_views),
+                "context_image_key": str(args.context_image_key),
+                "use_view_type_embedding": bool(args.use_view_type_embedding),
                 "map_task": str(args.map_task),
                 "use_lora": not bool(args.no_lora),
                 "freeze_vision_encoder": bool(args.freeze_vision_encoder),
@@ -330,6 +365,8 @@ def main() -> None:
         tokenizer=tokenizer,
         formatter=formatter,
         image_size=int(args.image_size),
+        context_image_key=str(args.context_image_key),
+        require_context_image=bool(args.require_context_image),
     )
     eval_dataset = (
         RCCenterlineJSONSFTDataset(
@@ -339,6 +376,8 @@ def main() -> None:
             tokenizer=tokenizer,
             formatter=formatter,
             image_size=int(args.image_size),
+            context_image_key=str(args.context_image_key),
+            require_context_image=bool(args.require_context_image),
         )
         if eval_rows
         else None
@@ -357,11 +396,15 @@ def main() -> None:
         modules_state_path=str(args.bridge_modules_state_path).strip(),
         num_visual_tokens=int(num_visual_tokens),
         visual_grid_size=int(visual_grid_size),
+        num_visual_views=int(num_visual_views),
         visual_projector_hidden_dim=int(args.visual_projector_hidden_dim),
         geometric_mlp_hidden_dim=int(args.geometric_mlp_hidden_dim),
         token_alignment_hidden_dim=int(args.token_alignment_hidden_dim),
         token_alignment_num_layers=int(args.token_alignment_num_layers),
         token_alignment_dropout=float(args.token_alignment_dropout),
+        use_view_type_embedding=bool(args.use_view_type_embedding),
+        view_type_embedding_count=int(args.view_type_embedding_count),
+        view_type_embedding_init_std=float(args.view_type_embedding_init_std),
         language_model_dtype=str(args.model_dtype),
         local_files_only=bool(args.local_files_only),
         freeze_language_model=bool(args.freeze_language_model),

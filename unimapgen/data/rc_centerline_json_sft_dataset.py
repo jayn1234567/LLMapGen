@@ -288,6 +288,7 @@ class RCCenterlineJSONSFTFormatter:
 class RawRCCenterlineJSONSFTSample:
     sample_id: str
     image_path: Path
+    context_image_path: Path | None
     pixel_values: torch.Tensor
     prompt_text: str
     full_text: str
@@ -304,6 +305,8 @@ class RCCenterlineJSONSFTDataset(torch.utils.data.Dataset):
         tokenizer: Any,
         formatter: RCCenterlineJSONSFTFormatter,
         image_size: int,
+        context_image_key: str = "context_image",
+        require_context_image: bool = False,
     ) -> None:
         self.rows = list(rows)
         self.meta_by_id = index_rows_by_id(meta_rows)
@@ -311,21 +314,40 @@ class RCCenterlineJSONSFTDataset(torch.utils.data.Dataset):
         self.tokenizer = tokenizer
         self.formatter = formatter
         self.image_size = int(image_size)
+        self.context_image_key = str(context_image_key or "context_image")
+        self.require_context_image = bool(require_context_image)
 
     def __len__(self) -> int:
         return len(self.rows)
+
+    def _resolve_media_path(self, rel_path: str, *, sample_id: str, label: str) -> Path:
+        path = (self.media_dir / str(rel_path).strip()).resolve()
+        if not path.is_file():
+            raise FileNotFoundError(f"{label} image not found for sample {sample_id}: {path}")
+        return path
+
+    def _load_image_tensor(self, path: Path) -> torch.Tensor:
+        with Image.open(path) as img:
+            return pil_to_tensor(img, image_size=self.image_size)
 
     def __getitem__(self, index: int) -> RawRCCenterlineJSONSFTSample:
         sample = self.rows[index]
         sample_id = str(sample.get("id", index))
         meta = self.meta_by_id.get(sample_id, {})
         rel_image = str(sample.get("images", [""])[0] if sample.get("images") else meta.get("image", "")).strip()
-        image_path = (self.media_dir / rel_image).resolve()
-        if not image_path.is_file():
-            raise FileNotFoundError(f"Image not found for sample {sample_id}: {image_path}")
+        image_path = self._resolve_media_path(rel_image, sample_id=sample_id, label="Local")
 
-        with Image.open(image_path) as img:
-            pixel_values = pil_to_tensor(img, image_size=self.image_size)
+        pixel_values = self._load_image_tensor(image_path)
+        context_image_path: Path | None = None
+        rel_context = str(sample.get(self.context_image_key, meta.get(self.context_image_key, ""))).strip()
+        if rel_context:
+            context_image_path = self._resolve_media_path(rel_context, sample_id=sample_id, label="Context")
+            context_values = self._load_image_tensor(context_image_path)
+            pixel_values = torch.stack([context_values, pixel_values], dim=0)
+        elif self.require_context_image:
+            raise FileNotFoundError(
+                f"Missing required context image field '{self.context_image_key}' for sample {sample_id}"
+            )
 
         assistant_raw = extract_message_content(sample, "assistant")
         if not assistant_raw:
@@ -351,6 +373,7 @@ class RCCenterlineJSONSFTDataset(torch.utils.data.Dataset):
         return RawRCCenterlineJSONSFTSample(
             sample_id=sample_id,
             image_path=image_path,
+            context_image_path=context_image_path,
             pixel_values=pixel_values,
             prompt_text=str(prompt_text),
             full_text=str(full_text),

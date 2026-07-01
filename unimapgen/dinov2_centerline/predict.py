@@ -44,6 +44,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--top-k", type=int, default=1)
     parser.add_argument("--device", type=str, default="auto", help="auto, cpu, cuda[:id], or npu[:id].")
     parser.add_argument("--local-files-only", action="store_true")
+    parser.add_argument("--context-image-key", type=str, default="")
+    parser.add_argument("--require-context-image", action=argparse.BooleanOptionalAction, default=None)
     return parser.parse_args()
 
 
@@ -386,10 +388,18 @@ def main() -> None:
 
     image_size = int(saved_args.get("image_size", 512))
     encoder_input_pad_size = int(saved_args.get("encoder_input_pad_size", 518))
-    visual_grid_size, num_visual_tokens = infer_visual_layout(
+    visual_grid_size, tokens_per_view = infer_visual_layout(
         image_size=image_size,
         encoder_input_pad_size=encoder_input_pad_size,
         patch_size=14,
+    )
+    num_visual_views = int(saved_args.get("num_visual_views") or (2 if saved_args.get("use_global_local_views") else 1))
+    num_visual_tokens = int(tokens_per_view) * int(num_visual_views)
+    context_image_key = str(args.context_image_key).strip() or str(saved_args.get("context_image_key", "context_image"))
+    require_context_image = (
+        bool(args.require_context_image)
+        if args.require_context_image is not None
+        else bool(saved_args.get("require_context_image", num_visual_views > 1))
     )
 
     tokenizer = AutoTokenizer.from_pretrained(
@@ -421,6 +431,8 @@ def main() -> None:
         tokenizer=tokenizer,
         formatter=formatter,
         image_size=image_size,
+        context_image_key=context_image_key,
+        require_context_image=bool(require_context_image),
     )
 
     model = Qwen3RCDinoCenterlineJSONSFTModel(
@@ -431,11 +443,15 @@ def main() -> None:
         modules_state_path=modules_state_for(checkpoint_dir, saved_args),
         num_visual_tokens=int(num_visual_tokens),
         visual_grid_size=int(visual_grid_size),
+        num_visual_views=int(num_visual_views),
         visual_projector_hidden_dim=int(saved_args.get("visual_projector_hidden_dim", 4096)),
         geometric_mlp_hidden_dim=int(saved_args.get("geometric_mlp_hidden_dim", 512)),
         token_alignment_hidden_dim=int(saved_args.get("token_alignment_hidden_dim", 4096)),
         token_alignment_num_layers=int(saved_args.get("token_alignment_num_layers", 2)),
         token_alignment_dropout=float(saved_args.get("token_alignment_dropout", 0.0)),
+        use_view_type_embedding=bool(saved_args.get("use_view_type_embedding", False)),
+        view_type_embedding_count=int(saved_args.get("view_type_embedding_count", max(2, num_visual_views))),
+        view_type_embedding_init_std=float(saved_args.get("view_type_embedding_init_std", 0.02)),
         language_model_dtype=str(saved_args.get("model_dtype", "auto")),
         local_files_only=bool(args.local_files_only),
         freeze_language_model=bool(saved_args.get("freeze_language_model", False)),

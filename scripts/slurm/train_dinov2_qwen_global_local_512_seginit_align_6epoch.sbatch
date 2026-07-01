@@ -26,9 +26,9 @@ REPO_ROOT="${REPO_ROOT:-/mingli01/project/jn/LLMapGen}"
 ENV_PREFIX="${ENV_PREFIX:-/file_storage01/home/mingli/project/jn/UniMapGen/.condaenvs/llamafactory-cu128-dtok-resume-20260326}"
 PYTHON_BIN="${PYTHON_BIN:-${ENV_PREFIX}/bin/python3}"
 
-MODEL_NAME_OR_PATH="${MODEL_NAME_OR_PATH:-/file_storage01/home/mingli/data/ckpts/Qwen3-8B}"
+MODEL_NAME_OR_PATH="${MODEL_NAME_OR_PATH:-/mingli01/models/Qwen3-8B}"
 TOKENIZER_NAME_OR_PATH="${TOKENIZER_NAME_OR_PATH:-${MODEL_NAME_OR_PATH}}"
-DINOV2_MODEL_NAME_OR_PATH="${DINOV2_MODEL_NAME_OR_PATH:-/file_storage01/home/mingli/data/ckpts/dinov2-large}"
+DINOV2_MODEL_NAME_OR_PATH="${DINOV2_MODEL_NAME_OR_PATH:-/mingli01/data/ckpts/dinov2-large}"
 VISUAL_ENCODER_CKPT="${VISUAL_ENCODER_CKPT:-/mingli01/data/outputs/rc_structure_seg_dinov2_structure_multiclass3_thinmask_pad518_4gpu_20260411/latest.pt}"
 BRIDGE_MODULES="${BRIDGE_MODULES:-/mingli01/data/outputs/stage3_rc_nonqwen_modules_from21176_ckpt21000_20260427/rc_dinov2_centerline_json_modules.pt}"
 

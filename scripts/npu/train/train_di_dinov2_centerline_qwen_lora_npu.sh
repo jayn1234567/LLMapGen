@@ -1,4 +1,23 @@
 #!/usr/bin/env bash
+
+printf '[di-entry] reached LLMapGen DI launcher at %s\n' "$(date -Iseconds 2>/dev/null || date)"
+printf '[di-entry] argv0=%s argc=%s\n' "$0" "$#"
+printf '[di-entry] user=%s uid=%s gid=%s host=%s pwd=%s\n' \
+  "$(id -un 2>/dev/null || true)" \
+  "$(id -u 2>/dev/null || true)" \
+  "$(id -g 2>/dev/null || true)" \
+  "$(hostname 2>/dev/null || true)" \
+  "$(pwd)"
+printf '[di-entry] bash_version=%s shell=%s\n' "${BASH_VERSION:-}" "${SHELL:-}"
+for name in OUTPUT_URL MA_VJ_NAME MA_NUM_HOSTS VC_TASK_INDEX MA_NUM_GPUS VC_WORKER_HOSTS RANK WORLD_SIZE LOCAL_RANK MASTER_ADDR MASTER_PORT; do
+  eval "value=\${${name}:-}"
+  if [ -n "${value}" ]; then
+    printf '[di-entry] env %s=%s\n' "${name}" "${value}"
+  else
+    printf '[di-entry] env %s=<empty>\n' "${name}"
+  fi
+done
+
 set -euo pipefail
 
 # DI/ModelArts style launcher for LLMapGen DINOv2 + Qwen3-8B LoRA SFT.
@@ -12,6 +31,25 @@ cd "${REPO_ROOT}"
 RUN_ID="${RUN_ID:-$(date -u +%Y%m%d_%H%M%S)}"
 WORK_ROOT="${WORK_ROOT:-/cache/llmapgen}"
 OBS_CACHE="${OBS_CACHE:-/cache}"
+mkdir -p "${WORK_ROOT}" 2>/dev/null || true
+DI_ENTRY_MARKER="${WORK_ROOT}/di_entry_started_${RUN_ID}.txt"
+{
+  printf 'time=%s\n' "$(date -Iseconds 2>/dev/null || date)"
+  printf 'argv0=%s\n' "$0"
+  printf 'argc=%s\n' "$#"
+  printf 'user=%s\n' "$(id -un 2>/dev/null || true)"
+  printf 'uid=%s\n' "$(id -u 2>/dev/null || true)"
+  printf 'gid=%s\n' "$(id -g 2>/dev/null || true)"
+  printf 'host=%s\n' "$(hostname 2>/dev/null || true)"
+  printf 'pwd=%s\n' "$(pwd)"
+  printf 'output_url=%s\n' "${OUTPUT_URL:-}"
+  printf 'ma_vj_name=%s\n' "${MA_VJ_NAME:-}"
+  printf 'ma_num_hosts=%s\n' "${MA_NUM_HOSTS:-}"
+  printf 'vc_task_index=%s\n' "${VC_TASK_INDEX:-}"
+  printf 'ma_num_gpus=%s\n' "${MA_NUM_GPUS:-}"
+  printf 'vc_worker_hosts=%s\n' "${VC_WORKER_HOSTS:-}"
+} > "${DI_ENTRY_MARKER}" 2>/dev/null || true
+printf '[di-entry] marker=%s\n' "${DI_ENTRY_MARKER}"
 
 # Local cache paths inside the DI training node.
 TRAINROOT="${TRAINROOT:-${WORK_ROOT}/prepared_lane_intersection_trainroot}"

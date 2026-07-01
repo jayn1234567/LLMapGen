@@ -81,6 +81,11 @@ when the matching `*_OBS_PATH` variables are provided:
 bash scripts/npu/train/train_di_dinov2_centerline_qwen_lora_npu.sh
 ```
 
+The launcher prints `[di-entry]` lines before doing any setup. If a DI job log
+does not contain `[di-entry] reached LLMapGen DI launcher`, the platform did not
+execute this script yet, or you are looking at an init/sidecar log instead of
+the main training stdout/stderr.
+
 Known local defaults:
 
 ```bash

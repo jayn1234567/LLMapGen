@@ -498,7 +498,7 @@ VISION_TRAIN_LAST_N_LAYERS=4
 7. 默认 `DATASET_KIND=prepared`；找不到 train.jsonl 就打印解压目录并退出
 8. 只有显式 `DATASET_KIND=raw` 时才调用 prepare_di_qa_trainroot.py 转成 trainroot
 9. 用 moxing 下载 Qwen3-8B、DINOv2-large、资产包
-10. 调用 validate_di_trainroot.py 做快速校验
+10. 默认跳过 validate_di_trainroot.py；需要排查数据时显式 `VALIDATE_TRAINROOT=true`
 11. 自动识别 DI 单机/多机变量
 12. 按 TARGET_GLOBAL_BATCH_SIZE 计算梯度累积
 13. torchrun 启动 train_dinov2_centerline.py

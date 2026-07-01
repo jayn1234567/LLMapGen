@@ -79,6 +79,14 @@ VALIDATE_TRAINROOT="${VALIDATE_TRAINROOT:-false}"
 VALIDATE_MAX_SAMPLES="${VALIDATE_MAX_SAMPLES:-200}"
 NPU_PREFLIGHT="${NPU_PREFLIGHT:-true}"
 
+# Managed DI images can carry mismatched torch/torch_npu builds. By default we
+# refresh them before NPU preflight, following jiangjihua's DI launcher pattern.
+INSTALL_TORCH_NPU="${INSTALL_TORCH_NPU:-true}"
+TORCH_SPEC="${TORCH_SPEC:-torch==2.7.1}"
+TORCH_NPU_SPEC="${TORCH_NPU_SPEC:-torch_npu==2.7.1rc1}"
+TORCH_NPU_WHL_OBS_PATH="${TORCH_NPU_WHL_OBS_PATH:-obs://yw-ads-training-gy1/data/external/personal/w00886412/llm4drive_utils/torch_npu/whl/torch_npu-2.7.1.dev20250724-cp311-cp311-manylinux_2_28_aarch64.whl}"
+TORCH_NPU_WHL_LOCAL_PATH="${TORCH_NPU_WHL_LOCAL_PATH:-/home/ma-user/torch_npu-2.7.1.dev20250724-cp311-cp311-manylinux_2_28_aarch64.whl}"
+
 # Training defaults. The task defaults to centerline + intersection from now on.
 MAP_TASK="${MAP_TASK:-lane_intersection}"
 OUTPUT_DIR="${OUTPUT_DIR:-${WORK_ROOT}/outputs/di_dinov2_bridge_qwen_lora_${MAP_TASK}_${RUN_ID}}"
@@ -168,6 +176,10 @@ else
 fi
 MASTER_PORT="${MASTER_PORT:-6060}"
 
+bool_enabled() {
+  [[ "$1" =~ ^(1|true|True|TRUE|yes|YES)$ ]]
+}
+
 copy_obs_file() {
   src="$1"
   dst="$2"
@@ -188,6 +200,20 @@ import sys
 import moxing as mox
 mox.file.copy_parallel(sys.argv[1], sys.argv[2])
 PY
+}
+
+install_torch_npu_stack() {
+  echo "[di-train] installing torch/NPU stack"
+  echo "[di-train] torch spec: ${TORCH_SPEC}"
+  echo "[di-train] torch_npu spec: ${TORCH_NPU_SPEC}"
+  unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY
+  "${PYTHON_BIN}" -m pip install "${TORCH_SPEC}" "${TORCH_NPU_SPEC}"
+
+  if [ -n "${TORCH_NPU_WHL_OBS_PATH}" ]; then
+    echo "[di-train] downloading torch_npu override wheel: ${TORCH_NPU_WHL_OBS_PATH} -> ${TORCH_NPU_WHL_LOCAL_PATH}"
+    copy_obs_file "${TORCH_NPU_WHL_OBS_PATH}" "${TORCH_NPU_WHL_LOCAL_PATH}"
+    "${PYTHON_BIN}" -m pip install --force-reinstall "${TORCH_NPU_WHL_LOCAL_PATH}"
+  fi
 }
 
 npu_preflight() {
@@ -478,7 +504,13 @@ upload_output_if_possible() {
 
 mkdir -p "${WORK_ROOT}" "${OBS_CACHE}" "$(dirname "${OUTPUT_DIR}")"
 
-if [ "${NPU_PREFLIGHT}" = "true" ]; then
+if bool_enabled "${INSTALL_TORCH_NPU}"; then
+  install_torch_npu_stack
+else
+  echo "[di-train] skip torch/NPU stack install: INSTALL_TORCH_NPU=${INSTALL_TORCH_NPU}"
+fi
+
+if bool_enabled "${NPU_PREFLIGHT}"; then
   npu_preflight
 fi
 

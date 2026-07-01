@@ -101,14 +101,15 @@ The current DI defaults are:
 
 ```bash
 OUTPUT_URL=obs://bucket/path/to/output
-DATASET_OBS_PATH=obs://yw-ads-training-gy1/data/external/personal/h58801830/whu/jn/data/prepared_lane_intersection_trainroot.rar
+DATASET_OBS_PATH=obs://yw-ads-training-gy1/data/external/personal/h58801830/whu/jn/data/prepared_lane_intersection_trainroot.zip
 QWEN_MODEL_OBS_PATH=obs://yw-ads-training-gy1/data/external/personal/h58801830/whu/jn/checkpoint/Qwen3-8B
 DINOV2_MODEL_OBS_PATH=obs://yw-ads-training-gy1/data/external/personal/h58801830/whu/jjh/checkpoints/facebook_dinov2-large
 ASSET_OBS_PATH=obs://yw-ads-training-gy1/data/external/personal/h58801830/whu/jn/model/dinov2_centerline_assets_qwen3_8b
 ```
 
-`DATASET_OBS_PATH` currently points to a prepared trainroot rar, so the launcher
+`DATASET_OBS_PATH` currently points to a prepared trainroot zip, so the launcher
 will use the extracted `train.jsonl` directly instead of running the raw dataset
 converter again. If you pass a raw private dataset archive, set
 `DATASET_KIND=raw` and adjust `DATASET_DIR_NAME` when needed. Rar extraction
-requires `unrar`, `7z`/`7za`, `bsdtar`, or `unar` in the DI image.
+requires `unrar`, `7z`/`7za`, `bsdtar`, or `unar` in the DI image; prefer zip
+or tar for DI jobs.

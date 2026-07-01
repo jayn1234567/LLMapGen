@@ -61,7 +61,7 @@ BRIDGE_MODULES_STATE_PATH="${BRIDGE_MODULES_STATE_PATH:-${ASSET_DIR}/bridge_modu
 
 # OBS inputs for DI. OUTPUT_URL is usually injected by the platform; set it
 # manually only when the platform does not provide it.
-DATASET_OBS_PATH="${DATASET_OBS_PATH:-obs://yw-ads-training-gy1/data/external/personal/h58801830/whu/jn/data/prepared_lane_intersection_trainroot.rar}"
+DATASET_OBS_PATH="${DATASET_OBS_PATH:-obs://yw-ads-training-gy1/data/external/personal/h58801830/whu/jn/data/prepared_lane_intersection_trainroot.zip}"
 QWEN_MODEL_OBS_PATH="${QWEN_MODEL_OBS_PATH:-obs://yw-ads-training-gy1/data/external/personal/h58801830/whu/jn/checkpoint/Qwen3-8B}"
 DINOV2_MODEL_OBS_PATH="${DINOV2_MODEL_OBS_PATH:-obs://yw-ads-training-gy1/data/external/personal/h58801830/whu/jjh/checkpoints/facebook_dinov2-large}"
 ASSET_OBS_PATH="${ASSET_OBS_PATH:-obs://yw-ads-training-gy1/data/external/personal/h58801830/whu/jn/model/dinov2_centerline_assets_qwen3_8b}"

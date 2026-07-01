@@ -33,8 +33,19 @@ PEFT_SPEC="${PEFT_SPEC:-peft>=0.12.0,<0.20.0}"
 
 source_if_exists() {
   if [ -f "$1" ]; then
+    local nounset_was_on=0
+    case "$-" in
+      *u*)
+        nounset_was_on=1
+        set +u
+        ;;
+    esac
+    export ZSH_VERSION="${ZSH_VERSION:-}"
     # shellcheck disable=SC1090
     source "$1"
+    if [ "${nounset_was_on}" = "1" ]; then
+      set -u
+    fi
     echo "[npu-clone-env] sourced $1"
   fi
 }
@@ -179,8 +190,19 @@ cat > "${ACTIVATE_SCRIPT}" <<EOF
 set -euo pipefail
 source_if_exists() {
   if [ -f "\$1" ]; then
+    local nounset_was_on=0
+    case "\$-" in
+      *u*)
+        nounset_was_on=1
+        set +u
+        ;;
+    esac
+    export ZSH_VERSION="\${ZSH_VERSION:-}"
     # shellcheck disable=SC1090
     source "\$1"
+    if [ "\${nounset_was_on}" = "1" ]; then
+      set -u
+    fi
   fi
 }
 source_if_exists "\${ASCEND_TOOLKIT_HOME:-/usr/local/Ascend/ascend-toolkit/latest}/set_env.sh"

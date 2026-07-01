@@ -101,16 +101,30 @@ VISION_TRAIN_LAST_N_LAYERS="${VISION_TRAIN_LAST_N_LAYERS:-4}"
 # Environment. If the cloned/created env exists, source it; otherwise use current.
 ACTIVATE_ENV_SCRIPT="${ACTIVATE_ENV_SCRIPT:-/home/ma-user/.conda/envs/llmapgen-npu/activate_llmapgen_npu.sh}"
 PYTHON_BIN="${PYTHON_BIN:-python}"
+export ZSH_VERSION="${ZSH_VERSION:-}"
 if [ -f "${ACTIVATE_ENV_SCRIPT}" ]; then
   # shellcheck disable=SC1090
+  set +u
   source "${ACTIVATE_ENV_SCRIPT}"
+  set -u
   PYTHON_BIN="${PYTHON_BIN:-python}"
 fi
 
 source_if_exists() {
   if [ -f "$1" ]; then
+    local nounset_was_on=0
+    case "$-" in
+      *u*)
+        nounset_was_on=1
+        set +u
+        ;;
+    esac
+    export ZSH_VERSION="${ZSH_VERSION:-}"
     # shellcheck disable=SC1090
     source "$1"
+    if [ "${nounset_was_on}" = "1" ]; then
+      set -u
+    fi
     echo "[di-train] sourced $1"
   fi
 }
@@ -121,7 +135,7 @@ source_if_exists "/usr/local/Ascend/nnal/atb/set_env.sh"
 
 export PYTHONPATH="${REPO_ROOT}:${PYTHONPATH:-}"
 export TOKENIZERS_PARALLELISM="${TOKENIZERS_PARALLELISM:-false}"
-export ASCEND_RT_VISIBLE_DEVICES="${ASCEND_RT_VISIBLE_DEVICES:-0,1,2,3,4,5,6,7}"
+export ASCEND_RT_VISIBLE_DEVICES="${ASCEND_RT_VISIBLE_DEVICES:-${NPU_VISIBLE_DEVICES:-${ASCEND_VISIBLE_DEVICES:-0,1,2,3,4,5,6,7}}}"
 export GLOO_SOCKET_IFNAME="${GLOO_SOCKET_IFNAME:-eth0}"
 export HCCL_SOCKET_IFNAME="${HCCL_SOCKET_IFNAME:-eth0}"
 export TP_SOCKET_IFNAME="${TP_SOCKET_IFNAME:-eth0}"

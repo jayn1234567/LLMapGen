@@ -461,7 +461,7 @@ DI 平台配置：
 
 ```bash
 OUTPUT_URL=obs://bucket/path/to/output
-DATASET_OBS_PATH=obs://yw-ads-training-gy1/data/external/personal/h58801830/whu/jn/data/prepared_lane_intersection_trainroot.tar
+DATASET_OBS_PATH=obs://yw-ads-training-gy1/data/external/personal/h58801830/whu/jn/data/prepared_lane_intersection_trainroot.rar
 QWEN_MODEL_OBS_PATH=obs://yw-ads-training-gy1/data/external/personal/h58801830/whu/jn/checkpoint/Qwen3-8B
 DINOV2_MODEL_OBS_PATH=obs://yw-ads-training-gy1/data/external/personal/h58801830/whu/jjh/checkpoints/facebook_dinov2-large
 ASSET_OBS_PATH=obs://yw-ads-training-gy1/data/external/personal/h58801830/whu/jn/model/dinov2_centerline_assets_qwen3_8b
@@ -481,9 +481,10 @@ LEARNING_RATE=1e-4
 VISION_TRAIN_LAST_N_LAYERS=4
 ```
 
-当前 `DATASET_OBS_PATH` 指向已经转换好的 trainroot tar，脚本解压后会直接
+当前 `DATASET_OBS_PATH` 指向已经转换好的 trainroot rar，脚本解压后会直接
 查找 `train.jsonl` 并用于训练，不会再调用 `prepare_di_qa_trainroot.py`。如果后续
-传入的是原始私有数据集 zip/tar，再设置 `DATASET_KIND=raw`，脚本会走转换流程。
+传入的是原始私有数据集 zip/tar/rar，再设置 `DATASET_KIND=raw`，脚本会走转换流程。
+`.rar` 解压依赖 DI 镜像内存在 `unrar`、`7z/7za`、`bsdtar` 或 `unar` 之一。
 
 ### 脚本内部流程
 
@@ -491,7 +492,7 @@ VISION_TRAIN_LAST_N_LAYERS=4
 1. 定义 RUN_ID、/cache 路径、输出路径
 2. source Ascend 环境
 3. 可选安装/激活 conda 环境
-4. 用 moxing 下载数据 tar/zip/目录
+4. 用 moxing 下载数据 rar/tar/zip/目录
 5. 解压或复制到 /cache/dataset_extract_${RUN_ID}
 6. 如果发现 train.jsonl，直接作为 prepared trainroot 使用
 7. 否则按 raw dataset 调用 prepare_di_qa_trainroot.py 转成 trainroot

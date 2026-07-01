@@ -61,12 +61,12 @@ BRIDGE_MODULES_STATE_PATH="${BRIDGE_MODULES_STATE_PATH:-${ASSET_DIR}/bridge_modu
 
 # OBS inputs for DI. OUTPUT_URL is usually injected by the platform; set it
 # manually only when the platform does not provide it.
-DATASET_OBS_PATH="${DATASET_OBS_PATH:-obs://yw-ads-training-gy1/data/external/personal/h58801830/whu/jn/data/prepared_lane_intersection_trainroot.tar}"
+DATASET_OBS_PATH="${DATASET_OBS_PATH:-obs://yw-ads-training-gy1/data/external/personal/h58801830/whu/jn/data/prepared_lane_intersection_trainroot.rar}"
 QWEN_MODEL_OBS_PATH="${QWEN_MODEL_OBS_PATH:-obs://yw-ads-training-gy1/data/external/personal/h58801830/whu/jn/checkpoint/Qwen3-8B}"
 DINOV2_MODEL_OBS_PATH="${DINOV2_MODEL_OBS_PATH:-obs://yw-ads-training-gy1/data/external/personal/h58801830/whu/jjh/checkpoints/facebook_dinov2-large}"
 ASSET_OBS_PATH="${ASSET_OBS_PATH:-obs://yw-ads-training-gy1/data/external/personal/h58801830/whu/jn/model/dinov2_centerline_assets_qwen3_8b}"
 
-# Dataset handling. The default OBS input is already a prepared trainroot tar.
+# Dataset handling. The default OBS input is already a prepared trainroot archive.
 # If a raw private dataset is supplied instead, set DATASET_KIND=raw.
 DATASET_KIND="${DATASET_KIND:-auto}"
 DATASET_PHASE="${DATASET_PHASE:-phase_a}"
@@ -186,6 +186,26 @@ mox.file.copy_parallel(sys.argv[1], sys.argv[2])
 PY
 }
 
+extract_rar_archive() {
+  archive="$1"
+  dst="$2"
+  if command -v unrar >/dev/null 2>&1; then
+    unrar x -o+ "${archive}" "${dst}/"
+  elif command -v 7z >/dev/null 2>&1; then
+    7z x -y "-o${dst}" "${archive}"
+  elif command -v 7za >/dev/null 2>&1; then
+    7za x -y "-o${dst}" "${archive}"
+  elif command -v bsdtar >/dev/null 2>&1; then
+    bsdtar -xf "${archive}" -C "${dst}"
+  elif command -v unar >/dev/null 2>&1; then
+    unar -quiet -force-overwrite -output-directory "${dst}" "${archive}"
+  else
+    echo "[di-train] ERROR: cannot extract rar archive because no rar extractor was found." >&2
+    echo "[di-train] ERROR: install one of: unrar, 7z/7za, bsdtar, unar; or upload the trainroot as .tar/.zip." >&2
+    exit 2
+  fi
+}
+
 require_path_or_obs() {
   path="$1"
   obs="$2"
@@ -269,6 +289,12 @@ extract_dataset_if_needed() {
       echo "[di-train] downloading dataset tar: ${DATASET_OBS_PATH} -> ${dataset_archive}"
       copy_obs_file "${DATASET_OBS_PATH}" "${dataset_archive}"
       tar -xf "${dataset_archive}" -C "${DATASET_EXTRACT_ROOT}"
+      ;;
+    *.rar|*.RAR)
+      dataset_archive="${OBS_CACHE}/dataset_${RUN_ID}.rar"
+      echo "[di-train] downloading dataset rar: ${DATASET_OBS_PATH} -> ${dataset_archive}"
+      copy_obs_file "${DATASET_OBS_PATH}" "${dataset_archive}"
+      extract_rar_archive "${dataset_archive}" "${DATASET_EXTRACT_ROOT}"
       ;;
     *)
       target_dir="${DATASET_EXTRACT_ROOT}/${DATASET_DIR_NAME}"

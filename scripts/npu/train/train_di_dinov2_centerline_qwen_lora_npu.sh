@@ -77,6 +77,7 @@ DATASET_INPUT_ROOT="${DATASET_INPUT_ROOT:-}"
 PREPARED_TRAINROOT="${PREPARED_TRAINROOT:-${WORK_ROOT}/prepared_lane_intersection_trainroot_${RUN_ID}}"
 VALIDATE_TRAINROOT="${VALIDATE_TRAINROOT:-false}"
 VALIDATE_MAX_SAMPLES="${VALIDATE_MAX_SAMPLES:-200}"
+NPU_PREFLIGHT="${NPU_PREFLIGHT:-true}"
 
 # Training defaults. The task defaults to centerline + intersection from now on.
 MAP_TASK="${MAP_TASK:-lane_intersection}"
@@ -135,7 +136,10 @@ source_if_exists "/usr/local/Ascend/nnal/atb/set_env.sh"
 
 export PYTHONPATH="${REPO_ROOT}:${PYTHONPATH:-}"
 export TOKENIZERS_PARALLELISM="${TOKENIZERS_PARALLELISM:-false}"
-export ASCEND_RT_VISIBLE_DEVICES="${ASCEND_RT_VISIBLE_DEVICES:-${NPU_VISIBLE_DEVICES:-${ASCEND_VISIBLE_DEVICES:-0,1,2,3,4,5,6,7}}}"
+ASCEND_RT_VISIBLE_DEVICES="${ASCEND_RT_VISIBLE_DEVICES:-${NPU_VISIBLE_DEVICES:-${ASCEND_VISIBLE_DEVICES:-0,1,2,3,4,5,6,7}}}"
+export ASCEND_RT_VISIBLE_DEVICES
+export ASCEND_VISIBLE_DEVICES="${ASCEND_VISIBLE_DEVICES:-${ASCEND_RT_VISIBLE_DEVICES}}"
+export NPU_VISIBLE_DEVICES="${NPU_VISIBLE_DEVICES:-${ASCEND_RT_VISIBLE_DEVICES}}"
 export GLOO_SOCKET_IFNAME="${GLOO_SOCKET_IFNAME:-eth0}"
 export HCCL_SOCKET_IFNAME="${HCCL_SOCKET_IFNAME:-eth0}"
 export TP_SOCKET_IFNAME="${TP_SOCKET_IFNAME:-eth0}"
@@ -184,6 +188,62 @@ import sys
 import moxing as mox
 mox.file.copy_parallel(sys.argv[1], sys.argv[2])
 PY
+}
+
+npu_preflight() {
+  echo "[di-train] NPU preflight start"
+  "${PYTHON_BIN}" - <<'PY'
+import os
+import sys
+
+print(f"[di-train] python={sys.executable}", flush=True)
+for name in (
+    "ASCEND_RT_VISIBLE_DEVICES",
+    "ASCEND_VISIBLE_DEVICES",
+    "NPU_VISIBLE_DEVICES",
+    "LOCAL_RANK",
+    "RANK",
+    "WORLD_SIZE",
+    "RANK_TABLE_FILE",
+    "RANK_TABLE_FILE_V_1_0",
+):
+    print(f"[di-train] env {name}={os.environ.get(name, '<empty>')}", flush=True)
+
+try:
+    import torch
+    print(f"[di-train] torch={getattr(torch, '__version__', 'unknown')}", flush=True)
+except Exception as exc:
+    print(f"[di-train] ERROR: import torch failed: {exc!r}", flush=True)
+    raise
+
+try:
+    import torch_npu
+    print(f"[di-train] torch_npu={getattr(torch_npu, '__version__', 'unknown')}", flush=True)
+except Exception as exc:
+    print(f"[di-train] ERROR: import torch_npu failed: {exc!r}", flush=True)
+    raise SystemExit(12)
+
+npu_backend = getattr(torch, "npu", None)
+print(f"[di-train] torch_has_npu={npu_backend is not None}", flush=True)
+if npu_backend is None:
+    raise SystemExit(13)
+
+try:
+    print(f"[di-train] torch.npu.device_count={npu_backend.device_count()}", flush=True)
+except Exception as exc:
+    print(f"[di-train] torch.npu.device_count_error={exc!r}", flush=True)
+
+try:
+    available = bool(npu_backend.is_available())
+    print(f"[di-train] torch.npu.is_available={available}", flush=True)
+except Exception as exc:
+    print(f"[di-train] torch.npu.is_available_error={exc!r}", flush=True)
+    available = False
+
+if not available:
+    raise SystemExit(14)
+PY
+  echo "[di-train] NPU preflight ok"
 }
 
 extract_rar_archive() {
@@ -417,6 +477,10 @@ upload_output_if_possible() {
 }
 
 mkdir -p "${WORK_ROOT}" "${OBS_CACHE}" "$(dirname "${OUTPUT_DIR}")"
+
+if [ "${NPU_PREFLIGHT}" = "true" ]; then
+  npu_preflight
+fi
 
 ensure_model_dir "${MODEL_NAME_OR_PATH}" "${QWEN_MODEL_OBS_PATH}" "Qwen model"
 ensure_model_dir "${DINOV2_MODEL_NAME_OR_PATH}" "${DINOV2_MODEL_OBS_PATH}" "DINOv2 model"

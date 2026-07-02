@@ -98,14 +98,31 @@ source_if_exists() {
 export ASCEND_CUSTOM_PATH=${ASCEND_CUSTOM_PATH:-/usr/local/Ascend/ascend-toolkit/latest}
 export ASCEND_CUSTOM_OPP_PATH=${ASCEND_CUSTOM_OPP_PATH:-/usr/local/Ascend/ascend-toolkit/latest}
 export ASCEND_OPP_PATH=${ASCEND_OPP_PATH:-/usr/local/Ascend/ascend-toolkit/latest/opp}
+source_if_exists "${ASCEND_TOOLKIT_HOME:-/usr/local/Ascend/ascend-toolkit/latest}/set_env.sh"
 source_if_exists /usr/local/Ascend/ascend-toolkit/set_env.sh
 source_if_exists /usr/local/Ascend/nnal/atb/set_env.sh
 export GLOO_SOCKET_IFNAME=${GLOO_SOCKET_IFNAME:-eth0}
 export TP_SOCKET_IFNAME=${TP_SOCKET_IFNAME:-eth0}
 export HCCL_SOCKET_IFNAME=${HCCL_SOCKET_IFNAME:-eth0}
-export ASCEND_RT_VISIBLE_DEVICES=${ASCEND_RT_VISIBLE_DEVICES:-${NPU_VISIBLE_DEVICES:-0,1,2,3,4,5,6,7}}
-export ASCEND_VISIBLE_DEVICES=${ASCEND_VISIBLE_DEVICES:-${ASCEND_RT_VISIBLE_DEVICES}}
-export NPU_VISIBLE_DEVICES=${NPU_VISIBLE_DEVICES:-${ASCEND_RT_VISIBLE_DEVICES}}
+if [ -n "${MA_VJ_NAME:-}" ]; then
+  # ModelArts/DI injects ASCEND_VISIBLE_DEVICES and NPU_VISIBLE_DEVICES. Do not
+  # synthesize ASCEND_RT_VISIBLE_DEVICES from the DI physical device order, since
+  # torch_npu can then report zero visible devices on managed workers.
+  if [ -z "${ASCEND_VISIBLE_DEVICES:-}" ] && [ -n "${NPU_VISIBLE_DEVICES:-}" ]; then
+    export ASCEND_VISIBLE_DEVICES="${NPU_VISIBLE_DEVICES}"
+  fi
+  if [ -z "${NPU_VISIBLE_DEVICES:-}" ] && [ -n "${ASCEND_VISIBLE_DEVICES:-}" ]; then
+    export NPU_VISIBLE_DEVICES="${ASCEND_VISIBLE_DEVICES}"
+  fi
+  if [ -n "${ASCEND_RT_VISIBLE_DEVICES:-}" ] && [[ ! "${LLMAPGEN_KEEP_ASCEND_RT_VISIBLE_DEVICES:-false}" =~ ^(1|true|True|TRUE|yes|YES)$ ]]; then
+    echo "[di-train] unsetting ASCEND_RT_VISIBLE_DEVICES on DI worker; set LLMAPGEN_KEEP_ASCEND_RT_VISIBLE_DEVICES=true to keep it."
+    unset ASCEND_RT_VISIBLE_DEVICES
+  fi
+else
+  export ASCEND_RT_VISIBLE_DEVICES=${ASCEND_RT_VISIBLE_DEVICES:-${NPU_VISIBLE_DEVICES:-${ASCEND_VISIBLE_DEVICES:-0,1,2,3,4,5,6,7}}}
+  export ASCEND_VISIBLE_DEVICES=${ASCEND_VISIBLE_DEVICES:-${ASCEND_RT_VISIBLE_DEVICES}}
+  export NPU_VISIBLE_DEVICES=${NPU_VISIBLE_DEVICES:-${ASCEND_RT_VISIBLE_DEVICES}}
+fi
 export CUDA_DEVICE_MAX_CONNECTIONS=1
 export HCCL_WHITELIST_DISABLE=1
 export HCCL_CONNECT_TIMEOUT=7200

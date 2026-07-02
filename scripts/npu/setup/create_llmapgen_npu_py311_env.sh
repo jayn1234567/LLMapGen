@@ -20,6 +20,7 @@ HOST_PYTHON="${HOST_PYTHON:-}"
 TORCH_SPEC="${TORCH_SPEC:-torch==2.7.1}"
 TORCH_NPU_SPEC="${TORCH_NPU_SPEC:-torch_npu==2.7.1rc1}"
 TORCHVISION_SPEC="${TORCHVISION_SPEC:-torchvision==0.22.1}"
+SETUPTOOLS_SPEC="${SETUPTOOLS_SPEC:-setuptools==75.8.0}"
 TRANSFORMERS_SPEC="${TRANSFORMERS_SPEC:-transformers==4.56.2}"
 TOKENIZERS_SPEC="${TOKENIZERS_SPEC:-tokenizers>=0.22.0,<0.23.0}"
 ACCELERATE_SPEC="${ACCELERATE_SPEC:-accelerate==1.6.0}"
@@ -194,7 +195,7 @@ else
 fi
 
 unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY
-python -m pip install --upgrade pip setuptools wheel
+python -m pip install --upgrade pip "${SETUPTOOLS_SPEC}" wheel
 
 if bool_enabled "${ENABLE_MOXING_INSTALL}" && [ -f "${MOXING_WHL_LOCAL_PATH}" ]; then
   python -m pip uninstall -y moxing-framework || true
@@ -255,6 +256,8 @@ python -m pip install \
   "${HUGGINGFACE_HUB_SPEC}" \
   "urllib3==1.26.15" \
   "psutil"
+
+python -m pip install "${SETUPTOOLS_SPEC}"
 
 ACTIVATE_SCRIPT="${ENV_DIR}/activate_llmapgen_npu.sh"
 CONDA_ACTIVATE_TARGET="${ENV_DIR}"

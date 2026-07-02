@@ -233,7 +233,7 @@ python -m pip install \
   "ml-dtypes>=0.4.0" \
   "pydantic" \
   "markdown2[all]" \
-  "numpy>=1.26" \
+  "numpy>=1.26,<2.0" \
   "scipy>=1.10" \
   "scikit-learn>=1.2"
 

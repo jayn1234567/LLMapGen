@@ -145,8 +145,8 @@ if [[ "${INSTALL_DEPS}" =~ ^(1|true|True|TRUE|yes|YES)$ ]]; then
   pip install accelerate==1.6.0 deepspeed==0.14.4 "safetensors>=0.4.3" packaging "Pillow>=10.0.0" torchvision==0.22.1
   pip install shortuuid "peft>=0.10.0" pydantic 'markdown2[all]' 'numpy>=1.26,<2.0' 'scipy>=1.10' 'scikit-learn>=1.2'
   pip install requests uvicorn fastapi 'einops>=0.6' 'einops-exts>=0.0.4' 'timm>=0.9.0' 'opencv-python-headless==4.11.0.86'
-  pip install 'loguru>=0.7.0' 'shapely>=2.0.0' wandb swanlab "huggingface-hub==0.36.2" urllib3==1.26.15
-  pip install 'numpy>=1.26,<2.0' 'opencv-python-headless==4.11.0.86'
+  pip install 'loguru>=0.7.0' 'shapely>=2.0.0' wandb swanlab "huggingface-hub==0.36.2" urllib3==1.26.15 'protobuf==4.25.7'
+  pip install 'numpy>=1.26,<2.0' 'opencv-python-headless==4.11.0.86' 'protobuf==4.25.7'
 fi
 
 python - <<'PY'

@@ -27,6 +27,7 @@ TOKENIZERS_SPEC="${TOKENIZERS_SPEC:-tokenizers>=0.22.0,<0.23.0}"
 ACCELERATE_SPEC="${ACCELERATE_SPEC:-accelerate==1.6.0}"
 HUGGINGFACE_HUB_SPEC="${HUGGINGFACE_HUB_SPEC:-huggingface-hub==0.36.2}"
 PEFT_SPEC="${PEFT_SPEC:-peft>=0.10.0,<0.20.0}"
+PROTOBUF_SPEC="${PROTOBUF_SPEC:-protobuf==4.25.7}"
 
 ENABLE_MOXING_INSTALL="${ENABLE_MOXING_INSTALL:-true}"
 ENABLE_TORCH_NPU_WHL="${ENABLE_TORCH_NPU_WHL:-true}"
@@ -256,10 +257,11 @@ python -m pip install \
   "swanlab" \
   "${HUGGINGFACE_HUB_SPEC}" \
   "urllib3==1.26.15" \
+  "${PROTOBUF_SPEC}" \
   "psutil"
 
 python -m pip install "${SETUPTOOLS_SPEC}"
-python -m pip install "numpy>=1.26,<2.0" "${OPENCV_SPEC}"
+python -m pip install "numpy>=1.26,<2.0" "${OPENCV_SPEC}" "${PROTOBUF_SPEC}"
 
 ACTIVATE_SCRIPT="${ENV_DIR}/activate_llmapgen_npu.sh"
 CONDA_ACTIVATE_TARGET="${ENV_DIR}"

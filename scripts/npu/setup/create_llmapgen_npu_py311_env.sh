@@ -173,6 +173,10 @@ python -m pip install \
 python -m pip install \
   "shortuuid" \
   "${PEFT_SPEC}" \
+  "attrs>=23.0.0" \
+  "cloudpickle>=3.0.0" \
+  "decorator>=5.1.1" \
+  "ml-dtypes>=0.4.0" \
   "pydantic" \
   "markdown2[all]" \
   "numpy>=1.26" \
@@ -181,12 +185,14 @@ python -m pip install \
 
 python -m pip install \
   "requests" \
+  "absl-py>=2.0.0" \
   "uvicorn" \
   "fastapi" \
   "einops>=0.6" \
   "einops-exts>=0.0.4" \
   "timm>=0.9.0" \
-  "opencv-python-headless>=4.8.0"
+  "opencv-python-headless>=4.8.0" \
+  "tornado>=6.3.0"
 
 python -m pip install \
   "loguru>=0.7.0" \

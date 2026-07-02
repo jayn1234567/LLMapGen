@@ -76,15 +76,30 @@ LORA_ALPHA=${LORA_ALPHA:-64}
 LORA_DROPOUT=${LORA_DROPOUT:-0.05}
 
 # ====================== Ascend environment ======================
+source_if_exists() {
+  if [ -f "$1" ]; then
+    local nounset_was_on=0
+    case "$-" in
+      *u*)
+        nounset_was_on=1
+        set +u
+        ;;
+    esac
+    export ZSH_VERSION="${ZSH_VERSION:-}"
+    # shellcheck disable=SC1090
+    source "$1"
+    if [ "${nounset_was_on}" = "1" ]; then
+      set -u
+    fi
+    echo "[di-train] sourced $1"
+  fi
+}
+
 export ASCEND_CUSTOM_PATH=${ASCEND_CUSTOM_PATH:-/usr/local/Ascend/ascend-toolkit/latest}
 export ASCEND_CUSTOM_OPP_PATH=${ASCEND_CUSTOM_OPP_PATH:-/usr/local/Ascend/ascend-toolkit/latest}
 export ASCEND_OPP_PATH=${ASCEND_OPP_PATH:-/usr/local/Ascend/ascend-toolkit/latest/opp}
-if [ -f /usr/local/Ascend/ascend-toolkit/set_env.sh ]; then
-  source /usr/local/Ascend/ascend-toolkit/set_env.sh
-fi
-if [ -f /usr/local/Ascend/nnal/atb/set_env.sh ]; then
-  source /usr/local/Ascend/nnal/atb/set_env.sh
-fi
+source_if_exists /usr/local/Ascend/ascend-toolkit/set_env.sh
+source_if_exists /usr/local/Ascend/nnal/atb/set_env.sh
 export GLOO_SOCKET_IFNAME=${GLOO_SOCKET_IFNAME:-eth0}
 export TP_SOCKET_IFNAME=${TP_SOCKET_IFNAME:-eth0}
 export HCCL_SOCKET_IFNAME=${HCCL_SOCKET_IFNAME:-eth0}

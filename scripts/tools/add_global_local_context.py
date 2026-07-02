@@ -16,6 +16,7 @@ from PIL import Image
 
 
 GRID_RE = re.compile(r"(?:^|[_/\\-])r(?P<row>\d+)[_\\-]?c(?P<col>\d+)(?:[_/\\.-]|$)", re.IGNORECASE)
+XY_RE = re.compile(r"(?:^|[_/\\-])x(?P<x>-?\d+)y(?P<y>-?\d+)(?:[_/\\.-]|$)", re.IGNORECASE)
 
 
 @dataclass(frozen=True)
@@ -26,6 +27,10 @@ class PatchInfo:
     scene_key: str
     row: int | None
     col: int | None
+    x0: int | None
+    y0: int | None
+    x1: int | None
+    y1: int | None
 
 
 def load_jsonl(path: Path) -> List[Dict[str, Any]]:
@@ -81,12 +86,53 @@ def infer_row_col(row: Dict[str, Any], meta: Dict[str, Any], rel_image: str) -> 
         ):
             r = parse_int(source.get(row_key))
             c = parse_int(source.get(col_key))
-            if r is not None and c is not None:
+            if r is not None and c is not None and r >= 0 and c >= 0:
                 return r, c
     match = GRID_RE.search(str(rel_image))
     if match:
         return int(match.group("row")), int(match.group("col"))
     return None, None
+
+
+def infer_patch_box(
+    row: Dict[str, Any],
+    meta: Dict[str, Any],
+    rel_image: str,
+    local_patch_size: int,
+) -> Tuple[int | None, int | None, int | None, int | None]:
+    for source in (row, meta):
+        for key in (
+            "base_patch_box_full4096",
+            "patch_box_full4096",
+            "crop_box_full4096",
+            "box_full4096",
+            "patch_box",
+            "crop_box",
+        ):
+            value = source.get(key)
+            if not isinstance(value, (list, tuple)) or len(value) < 4:
+                continue
+            x0, y0, x1, y1 = (parse_int(item) for item in value[:4])
+            if x0 is not None and y0 is not None and x1 is not None and y1 is not None and x1 > x0 and y1 > y0:
+                return x0, y0, x1, y1
+
+        for x_key, y_key in (
+            ("patch_x", "patch_y"),
+            ("x", "y"),
+            ("left", "top"),
+            ("crop_left", "crop_top"),
+        ):
+            x0 = parse_int(source.get(x_key))
+            y0 = parse_int(source.get(y_key))
+            if x0 is not None and y0 is not None:
+                return x0, y0, x0 + int(local_patch_size), y0 + int(local_patch_size)
+
+    match = XY_RE.search(str(rel_image))
+    if match:
+        x0 = int(match.group("x"))
+        y0 = int(match.group("y"))
+        return x0, y0, x0 + int(local_patch_size), y0 + int(local_patch_size)
+    return None, None, None, None
 
 
 def infer_scene_key(row: Dict[str, Any], meta: Dict[str, Any], rel_image: str) -> str:
@@ -108,6 +154,7 @@ def build_patch_infos(
     rows: Sequence[Dict[str, Any]],
     metas: Sequence[Dict[str, Any]],
     media_dir: Path,
+    local_patch_size: int,
 ) -> List[PatchInfo]:
     metas_by_id = meta_by_id(metas)
     infos: List[PatchInfo] = []
@@ -118,6 +165,7 @@ def build_patch_infos(
         if not rel_image:
             continue
         row_idx, col_idx = infer_row_col(row, meta, rel_image)
+        x0, y0, x1, y1 = infer_patch_box(row, meta, rel_image, local_patch_size=int(local_patch_size))
         infos.append(
             PatchInfo(
                 sample_id=sample_id,
@@ -126,6 +174,10 @@ def build_patch_infos(
                 scene_key=infer_scene_key(row, meta, rel_image),
                 row=row_idx,
                 col=col_idx,
+                x0=x0,
+                y0=y0,
+                x1=x1,
+                y1=y1,
             )
         )
     return infos
@@ -156,9 +208,81 @@ def paste_clipped(canvas: Image.Image, patch: Image.Image, left: int, top: int) 
     canvas.paste(patch.crop((src_left, src_top, src_right, src_bottom)), (dst_left, dst_top))
 
 
+def patch_has_full_box(info: PatchInfo) -> bool:
+    return (
+        info.x0 is not None
+        and info.y0 is not None
+        and info.x1 is not None
+        and info.y1 is not None
+        and int(info.x1) > int(info.x0)
+        and int(info.y1) > int(info.y0)
+    )
+
+
+def boxes_overlap(
+    ax0: int,
+    ay0: int,
+    ax1: int,
+    ay1: int,
+    bx0: int,
+    by0: int,
+    bx1: int,
+    by1: int,
+) -> bool:
+    return ax0 < bx1 and ax1 > bx0 and ay0 < by1 and ay1 > by0
+
+
+def paste_fullcoord_context(
+    context: Image.Image,
+    info: PatchInfo,
+    scene_infos: Sequence[PatchInfo],
+    *,
+    context_size: int,
+    local_patch_size: int,
+) -> bool:
+    if not patch_has_full_box(info):
+        return False
+
+    center_x = (int(info.x0) + int(info.x1)) / 2.0
+    center_y = (int(info.y0) + int(info.y1)) / 2.0
+    window_left = int(round(center_x - int(context_size) / 2.0))
+    window_top = int(round(center_y - int(context_size) / 2.0))
+    window_right = window_left + int(context_size)
+    window_bottom = window_top + int(context_size)
+
+    def paste_priority(neighbor: PatchInfo) -> Tuple[int, str]:
+        if neighbor.sample_id == info.sample_id:
+            return 2, neighbor.sample_id
+        if "general_grid" in neighbor.sample_id:
+            return 0, neighbor.sample_id
+        return 1, neighbor.sample_id
+
+    pasted = False
+    for neighbor in sorted(scene_infos, key=paste_priority):
+        if not patch_has_full_box(neighbor) or not neighbor.abs_image.is_file():
+            continue
+        if not boxes_overlap(
+            int(neighbor.x0),
+            int(neighbor.y0),
+            int(neighbor.x1),
+            int(neighbor.y1),
+            window_left,
+            window_top,
+            window_right,
+            window_bottom,
+        ):
+            continue
+        left = int(neighbor.x0) - window_left
+        top = int(neighbor.y0) - window_top
+        paste_clipped(context, open_patch(neighbor.abs_image, int(local_patch_size)), left, top)
+        pasted = True
+    return pasted
+
+
 def build_context_image(
     info: PatchInfo,
     lookup: Dict[Tuple[str, int, int], PatchInfo],
+    scene_lookup: Dict[str, List[PatchInfo]],
     *,
     context_size: int,
     output_size: int,
@@ -167,6 +291,15 @@ def build_context_image(
 ) -> Image.Image:
     context = Image.new("RGB", (int(context_size), int(context_size)), tuple(pad_fill_rgb))
     half_offset = (int(context_size) - int(local_patch_size)) // 2
+    if paste_fullcoord_context(
+        context,
+        info,
+        scene_lookup.get(info.scene_key, []),
+        context_size=int(context_size),
+        local_patch_size=int(local_patch_size),
+    ):
+        return context.resize((int(output_size), int(output_size)), Image.Resampling.BICUBIC)
+
     if info.row is None or info.col is None:
         paste_clipped(context, open_patch(info.abs_image, int(local_patch_size)), half_offset, half_offset)
         return context.resize((int(output_size), int(output_size)), Image.Resampling.BICUBIC)
@@ -221,13 +354,16 @@ def process_split(args: argparse.Namespace, split: str) -> Dict[str, Any]:
     if not rows:
         return {"split": split, "rows": 0, "written": 0, "missing_images": 0}
 
-    all_infos = build_patch_infos(rows, metas, media_dir)
+    all_infos = build_patch_infos(rows, metas, media_dir, local_patch_size=int(args.local_patch_size))
     info_by_id = {info.sample_id: info for info in all_infos}
     lookup = {
         (info.scene_key, int(info.row), int(info.col)): info
         for info in all_infos
         if info.row is not None and info.col is not None
     }
+    scene_lookup: Dict[str, List[PatchInfo]] = {}
+    for info in all_infos:
+        scene_lookup.setdefault(info.scene_key, []).append(info)
     max_samples = int(args.max_train_samples if split == "train" else args.max_eval_samples)
     if max_samples <= 0:
         max_samples = int(args.max_samples)
@@ -249,6 +385,7 @@ def process_split(args: argparse.Namespace, split: str) -> Dict[str, Any]:
         context = build_context_image(
             info,
             lookup,
+            scene_lookup,
             context_size=int(args.context_size),
             output_size=int(args.output_size),
             local_patch_size=int(args.local_patch_size),

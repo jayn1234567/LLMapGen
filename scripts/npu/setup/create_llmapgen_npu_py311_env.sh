@@ -21,6 +21,7 @@ TORCH_SPEC="${TORCH_SPEC:-torch==2.7.1}"
 TORCH_NPU_SPEC="${TORCH_NPU_SPEC:-torch_npu==2.7.1rc1}"
 TORCHVISION_SPEC="${TORCHVISION_SPEC:-torchvision==0.22.1}"
 SETUPTOOLS_SPEC="${SETUPTOOLS_SPEC:-setuptools==75.8.0}"
+OPENCV_SPEC="${OPENCV_SPEC:-opencv-python-headless==4.11.0.86}"
 TRANSFORMERS_SPEC="${TRANSFORMERS_SPEC:-transformers==4.56.2}"
 TOKENIZERS_SPEC="${TOKENIZERS_SPEC:-tokenizers>=0.22.0,<0.23.0}"
 ACCELERATE_SPEC="${ACCELERATE_SPEC:-accelerate==1.6.0}"
@@ -245,7 +246,7 @@ python -m pip install \
   "einops>=0.6" \
   "einops-exts>=0.0.4" \
   "timm>=0.9.0" \
-  "opencv-python-headless>=4.8.0" \
+  "${OPENCV_SPEC}" \
   "tornado>=6.3.0"
 
 python -m pip install \
@@ -258,6 +259,7 @@ python -m pip install \
   "psutil"
 
 python -m pip install "${SETUPTOOLS_SPEC}"
+python -m pip install "numpy>=1.26,<2.0" "${OPENCV_SPEC}"
 
 ACTIVATE_SCRIPT="${ENV_DIR}/activate_llmapgen_npu.sh"
 CONDA_ACTIVATE_TARGET="${ENV_DIR}"

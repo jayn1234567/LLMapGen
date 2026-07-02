@@ -7,6 +7,11 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/../../.." && pwd)"
 ENV_DIR="${ENV_DIR:-/home/ma-user/.conda/envs/llmapgen-npu-py311}"
 CONDA_ENV_NAME="${CONDA_ENV_NAME:-}"
 PYTHON_VERSION="${PYTHON_VERSION:-3.11}"
+PYTHON_VERSION="${PYTHON_VERSION#python=}"
+PYTHON_VERSION="${PYTHON_VERSION#python}"
+if [ -z "${PYTHON_VERSION}" ]; then
+  PYTHON_VERSION="3.11"
+fi
 CLONE_FORCE="${CLONE_FORCE:-false}"
 HOST_PYTHON="${HOST_PYTHON:-python}"
 
@@ -77,6 +82,8 @@ fi
 CONDA_BASE="$(conda info --base)"
 # shellcheck disable=SC1091
 source "${CONDA_BASE}/etc/profile.d/conda.sh"
+
+echo "[npu-py311-env] requested python version: ${PYTHON_VERSION}"
 
 if bool_enabled "${CLONE_FORCE}"; then
   if [ -n "${CONDA_ENV_NAME}" ]; then

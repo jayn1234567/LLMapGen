@@ -1,0 +1,14 @@
+{
+  "checkpoint_dir": "/mingli01/data/outputs/llmapgen_dinov2_qwen3_8b_global_local1024_resize512_seginit_align_6epoch_35398/checkpoint-1000",
+  "run_root": "/mingli01/data/outputs/llmapgen_dinov2_qwen3_8b_global_local1024_resize512_seginit_align_6epoch_35398",
+  "loaded_trainer_state": true,
+  "dataset_jsonl": "/mingli01/data/outputs/llmapgen_vis_checks_35398/pred_best_intersections_more64_35446/val_intersections_64.jsonl",
+  "dataset_meta_jsonl": "/mingli01/data/outputs/llmapgen_vis_checks_35398/pred_best_intersections_more64_35446/meta_val_intersections_64.jsonl",
+  "media_dir": "/mingli01/data/outputs/rc_clean_dataset_xiuzheng_joint512_global_local1024_resize512_fullcoord_trainroot_20260702",
+  "output_jsonl": "/mingli01/data/outputs/llmapgen_vis_checks_35398/pred_best_intersections_more64_35446/predictions.jsonl",
+  "num_rows": 64,
+  "parse_ok": 62,
+  "parse_ok_rate": 0.96875,
+  "avg_gt_lines": 9.265625,
+  "avg_pred_lines": 10.3125
+}

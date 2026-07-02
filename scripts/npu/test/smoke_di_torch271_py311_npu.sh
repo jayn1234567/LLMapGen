@@ -52,8 +52,8 @@ export PER_DEVICE_TRAIN_BATCH_SIZE="${PER_DEVICE_TRAIN_BATCH_SIZE:-1}"
 export TARGET_GLOBAL_BATCH_SIZE="${TARGET_GLOBAL_BATCH_SIZE:-8}"
 export BF16="${BF16:-true}"
 export GRADIENT_CHECKPOINTING="${GRADIENT_CHECKPOINTING:-true}"
-export INSTALL_DEPS="${INSTALL_DEPS:-True}"
-export ENABLE_MOXING_UPGRADE="${ENABLE_MOXING_UPGRADE:-True}"
+export INSTALL_DEPS="${INSTALL_DEPS:-False}"
+export ENABLE_MOXING_UPGRADE="${ENABLE_MOXING_UPGRADE:-False}"
 export OUTPUT_URL="${OUTPUT_URL:-}"
 
 bash scripts/npu/train/train_di_stage_a_lane_intersection_dinov2_qwen3_lora_jjh_style_npu.sh

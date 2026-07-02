@@ -6,25 +6,16 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/../../.." && pwd)"
 
 ENV_DIR="${ENV_DIR:-/home/ma-user/.conda/envs/llmapgen-npu-py311}"
 CONDA_ENV_NAME="${CONDA_ENV_NAME:-}"
-PYTHON_VERSION="${PYTHON_VERSION:-3.11}"
+# This script is specifically for the torch_npu cp311 wheel. Ignore ambient
+# PYTHON_VERSION values that may be exported by the platform base environment.
+PYTHON_VERSION="${LLMAPGEN_PY311_PYTHON_VERSION:-3.11}"
 PYTHON_VERSION="${PYTHON_VERSION#python=}"
 PYTHON_VERSION="${PYTHON_VERSION#python}"
 if [ -z "${PYTHON_VERSION}" ]; then
   PYTHON_VERSION="3.11"
 fi
 CLONE_FORCE="${CLONE_FORCE:-false}"
-if [ -n "${HOST_PYTHON:-}" ]; then
-  HOST_PYTHON="${HOST_PYTHON}"
-else
-  HOST_PYTHON="$(command -v python 2>/dev/null || true)"
-  if [ -z "${HOST_PYTHON}" ]; then
-    HOST_PYTHON="$(command -v python3 2>/dev/null || true)"
-  fi
-fi
-if [ -z "${HOST_PYTHON}" ]; then
-  echo "[npu-py311-env] could not resolve host python for moxing downloads." >&2
-  exit 2
-fi
+HOST_PYTHON="${HOST_PYTHON:-}"
 
 TORCH_SPEC="${TORCH_SPEC:-torch==2.7.1}"
 TORCH_NPU_SPEC="${TORCH_NPU_SPEC:-torch_npu==2.7.1rc1}"
@@ -44,6 +35,56 @@ TORCH_NPU_WHL_LOCAL_PATH="${TORCH_NPU_WHL_LOCAL_PATH:-/home/ma-user/torch_npu-2.
 
 bool_enabled() {
   [[ "$1" =~ ^(1|true|True|TRUE|yes|YES)$ ]]
+}
+
+python_has_moxing() {
+  "$1" - <<'PY' >/dev/null 2>&1
+import moxing  # noqa: F401
+PY
+}
+
+resolve_host_python_with_moxing() {
+  local candidates=()
+  local candidate=""
+  local resolved=""
+  local seen=":"
+
+  if [ -n "${HOST_PYTHON}" ]; then
+    candidates+=("${HOST_PYTHON}")
+  fi
+  candidates+=(
+    "/home/ma-user/anaconda3/bin/python"
+    "/home/ma-user/miniconda3/bin/python"
+    "/modelarts/authoring/notebook-conda/bin/python"
+    "python"
+    "python3"
+    "/usr/bin/python3"
+  )
+
+  for candidate in "${candidates[@]}"; do
+    if [[ "${candidate}" == */* ]]; then
+      resolved="${candidate}"
+    else
+      resolved="$(command -v "${candidate}" 2>/dev/null || true)"
+    fi
+    if [ -z "${resolved}" ] || [ ! -x "${resolved}" ]; then
+      continue
+    fi
+    case "${seen}" in
+      *:"${resolved}":*) continue ;;
+    esac
+    seen="${seen}${resolved}:"
+    if python_has_moxing "${resolved}"; then
+      printf '%s\n' "${resolved}"
+      return 0
+    fi
+  done
+
+  echo "[npu-py311-env] could not find a host python that can import moxing." >&2
+  echo "[npu-py311-env] Set HOST_PYTHON=/path/to/python_with_moxing, or pre-place:" >&2
+  echo "[npu-py311-env]   ${MOXING_WHL_LOCAL_PATH}" >&2
+  echo "[npu-py311-env]   ${TORCH_NPU_WHL_LOCAL_PATH}" >&2
+  return 2
 }
 
 source_if_exists() {
@@ -95,7 +136,6 @@ CONDA_BASE="$(conda info --base)"
 source "${CONDA_BASE}/etc/profile.d/conda.sh"
 
 echo "[npu-py311-env] requested python version: ${PYTHON_VERSION}"
-echo "[npu-py311-env] host python for OBS downloads: ${HOST_PYTHON}"
 
 if bool_enabled "${CLONE_FORCE}"; then
   if [ -n "${CONDA_ENV_NAME}" ]; then
@@ -124,8 +164,19 @@ print(Path(sys.prefix).resolve())
 PY
 )"
 
-if bool_enabled "${ENABLE_MOXING_INSTALL}" || bool_enabled "${ENABLE_TORCH_NPU_WHL}"; then
-  USE_MEMARTS=0 "${HOST_PYTHON}" - "$MOXING_WHL_OBS_PATH" "$MOXING_WHL_LOCAL_PATH" "$TORCH_NPU_WHL_OBS_PATH" "$TORCH_NPU_WHL_LOCAL_PATH" "${ENABLE_MOXING_INSTALL}" "${ENABLE_TORCH_NPU_WHL}" <<'PY'
+DOWNLOAD_MOXING_WHL=false
+DOWNLOAD_TORCH_NPU_WHL=false
+if bool_enabled "${ENABLE_MOXING_INSTALL}" && [ ! -f "${MOXING_WHL_LOCAL_PATH}" ]; then
+  DOWNLOAD_MOXING_WHL=true
+fi
+if bool_enabled "${ENABLE_TORCH_NPU_WHL}" && [ ! -f "${TORCH_NPU_WHL_LOCAL_PATH}" ]; then
+  DOWNLOAD_TORCH_NPU_WHL=true
+fi
+
+if bool_enabled "${DOWNLOAD_MOXING_WHL}" || bool_enabled "${DOWNLOAD_TORCH_NPU_WHL}"; then
+  HOST_PYTHON="$(resolve_host_python_with_moxing)"
+  echo "[npu-py311-env] host python for OBS downloads: ${HOST_PYTHON}"
+  USE_MEMARTS=0 "${HOST_PYTHON}" - "$MOXING_WHL_OBS_PATH" "$MOXING_WHL_LOCAL_PATH" "$TORCH_NPU_WHL_OBS_PATH" "$TORCH_NPU_WHL_LOCAL_PATH" "${DOWNLOAD_MOXING_WHL}" "${DOWNLOAD_TORCH_NPU_WHL}" <<'PY'
 import sys
 import moxing as mox
 
@@ -138,6 +189,8 @@ if install_torch_wheel in truthy:
     mox.file.copy(torch_obs, torch_local)
     print(f"[npu-py311-env] downloaded torch_npu wheel: {torch_local}", flush=True)
 PY
+else
+  echo "[npu-py311-env] OBS wheels already exist locally; skip host moxing downloads."
 fi
 
 unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY

@@ -13,7 +13,18 @@ if [ -z "${PYTHON_VERSION}" ]; then
   PYTHON_VERSION="3.11"
 fi
 CLONE_FORCE="${CLONE_FORCE:-false}"
-HOST_PYTHON="${HOST_PYTHON:-python}"
+if [ -n "${HOST_PYTHON:-}" ]; then
+  HOST_PYTHON="${HOST_PYTHON}"
+else
+  HOST_PYTHON="$(command -v python 2>/dev/null || true)"
+  if [ -z "${HOST_PYTHON}" ]; then
+    HOST_PYTHON="$(command -v python3 2>/dev/null || true)"
+  fi
+fi
+if [ -z "${HOST_PYTHON}" ]; then
+  echo "[npu-py311-env] could not resolve host python for moxing downloads." >&2
+  exit 2
+fi
 
 TORCH_SPEC="${TORCH_SPEC:-torch==2.7.1}"
 TORCH_NPU_SPEC="${TORCH_NPU_SPEC:-torch_npu==2.7.1rc1}"
@@ -84,6 +95,7 @@ CONDA_BASE="$(conda info --base)"
 source "${CONDA_BASE}/etc/profile.d/conda.sh"
 
 echo "[npu-py311-env] requested python version: ${PYTHON_VERSION}"
+echo "[npu-py311-env] host python for OBS downloads: ${HOST_PYTHON}"
 
 if bool_enabled "${CLONE_FORCE}"; then
   if [ -n "${CONDA_ENV_NAME}" ]; then

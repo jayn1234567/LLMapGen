@@ -223,6 +223,18 @@ def _set_module_trainable(module: nn.Module, enabled: bool) -> int:
     return count
 
 
+def _freeze_known_unused_vision_parameters(vision_encoder: nn.Module) -> list[str]:
+    frozen_names: list[str] = []
+    unused_name_fragments = ("mask_token", "pooler")
+    for name, param in vision_encoder.named_parameters():
+        lowered = str(name).lower()
+        if any(fragment in lowered for fragment in unused_name_fragments):
+            if param.requires_grad:
+                param.requires_grad = False
+                frozen_names.append(str(name))
+    return frozen_names
+
+
 def _set_vision_encoder_trainability(
     vision_encoder: nn.Module,
     *,
@@ -236,6 +248,7 @@ def _set_vision_encoder_trainability(
         for param in vision_encoder.parameters():
             param.requires_grad = True
 
+    frozen_unused_names = _freeze_known_unused_vision_parameters(vision_encoder)
     info: Dict[str, Any] = {
         "freeze_vision_encoder": bool(freeze_vision_encoder),
         "requested_last_n_layers": int(train_last_n_layers),
@@ -243,6 +256,8 @@ def _set_vision_encoder_trainability(
         "total_layers": 0,
         "unfrozen_layers": 0,
         "trainable_params": sum(int(p.numel()) for p in vision_encoder.parameters() if p.requires_grad),
+        "frozen_known_unused_params": frozen_unused_names[:20],
+        "frozen_known_unused_param_count": len(frozen_unused_names),
     }
     if not bool(freeze_vision_encoder) or int(train_last_n_layers) <= 0:
         return info
@@ -271,6 +286,9 @@ def _set_vision_encoder_trainability(
             _set_module_trainable(norm_module, True)
             info.setdefault("unfrozen_extra_modules", []).append(norm_path)
 
+    frozen_unused_names.extend(_freeze_known_unused_vision_parameters(vision_encoder))
+    info["frozen_known_unused_params"] = frozen_unused_names[:20]
+    info["frozen_known_unused_param_count"] = len(frozen_unused_names)
     info["trainable_params"] = sum(int(p.numel()) for p in vision_encoder.parameters() if p.requires_grad)
     return info
 

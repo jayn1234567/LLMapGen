@@ -388,11 +388,25 @@ def main() -> None:
 
     image_size = int(saved_args.get("image_size", 512))
     encoder_input_pad_size = int(saved_args.get("encoder_input_pad_size", 518))
-    visual_grid_size, tokens_per_view = infer_visual_layout(
+    encoder_visual_grid_size, encoder_tokens_per_view = infer_visual_layout(
         image_size=image_size,
         encoder_input_pad_size=encoder_input_pad_size,
         patch_size=14,
     )
+    visual_token_compressor = str(saved_args.get("visual_token_compressor", "none")).strip().lower()
+    if visual_token_compressor in {"", "none", "identity"}:
+        visual_grid_size = int(encoder_visual_grid_size)
+    else:
+        visual_grid_size = int(
+            saved_args.get("effective_visual_grid_size")
+            or saved_args.get("visual_token_compressor_grid_size")
+            or 0
+        )
+        if visual_grid_size <= 0:
+            raise ValueError(
+                "Compressed checkpoint is missing effective_visual_grid_size/visual_token_compressor_grid_size."
+            )
+    tokens_per_view = int(visual_grid_size) * int(visual_grid_size)
     num_visual_views = int(saved_args.get("num_visual_views") or (2 if saved_args.get("use_global_local_views") else 1))
     num_visual_tokens = int(tokens_per_view) * int(num_visual_views)
     context_image_key = str(args.context_image_key).strip() or str(saved_args.get("context_image_key", "context_image"))
@@ -443,12 +457,17 @@ def main() -> None:
         modules_state_path=modules_state_for(checkpoint_dir, saved_args),
         num_visual_tokens=int(num_visual_tokens),
         visual_grid_size=int(visual_grid_size),
+        encoder_visual_grid_size=int(encoder_visual_grid_size),
         num_visual_views=int(num_visual_views),
         visual_projector_hidden_dim=int(saved_args.get("visual_projector_hidden_dim", 4096)),
         geometric_mlp_hidden_dim=int(saved_args.get("geometric_mlp_hidden_dim", 512)),
         token_alignment_hidden_dim=int(saved_args.get("token_alignment_hidden_dim", 4096)),
         token_alignment_num_layers=int(saved_args.get("token_alignment_num_layers", 2)),
         token_alignment_dropout=float(saved_args.get("token_alignment_dropout", 0.0)),
+        visual_token_compressor=visual_token_compressor,
+        visual_token_compressor_hidden_dim=int(saved_args.get("visual_token_compressor_hidden_dim", 512)),
+        visual_token_compressor_depth=int(saved_args.get("visual_token_compressor_depth", 2)),
+        visual_token_compressor_dropout=float(saved_args.get("visual_token_compressor_dropout", 0.0)),
         use_view_type_embedding=bool(saved_args.get("use_view_type_embedding", False)),
         view_type_embedding_count=int(saved_args.get("view_type_embedding_count", max(2, num_visual_views))),
         view_type_embedding_init_std=float(saved_args.get("view_type_embedding_init_std", 0.02)),

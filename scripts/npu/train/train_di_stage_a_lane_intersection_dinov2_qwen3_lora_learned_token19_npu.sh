@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# DI NPU SFT entrypoint for learned visual-token compression.
+# Compresses DINOv2 37x37 tokens to 19x19 tokens with a learnable Conv residual
+# compressor, then reuses the production DI launcher.
+
+SCRIPT_PATH=$(readlink -f "$0")
+SCRIPT_DIR=$(dirname "$SCRIPT_PATH")
+BASE_SCRIPT="${SCRIPT_DIR}/train_di_stage_a_lane_intersection_dinov2_qwen3_lora_jjh_style_npu.sh"
+
+if [ ! -f "${BASE_SCRIPT}" ]; then
+  echo "ERROR: base DI launcher not found: ${BASE_SCRIPT}"
+  exit 1
+fi
+
+export VISUAL_TOKEN_COMPRESSOR=learned_conv
+export VISUAL_TOKEN_COMPRESSOR_GRID_SIZE=${VISUAL_TOKEN_COMPRESSOR_GRID_SIZE:-19}
+export VISUAL_TOKEN_COMPRESSOR_HIDDEN_DIM=${VISUAL_TOKEN_COMPRESSOR_HIDDEN_DIM:-512}
+export VISUAL_TOKEN_COMPRESSOR_DEPTH=${VISUAL_TOKEN_COMPRESSOR_DEPTH:-2}
+export VISUAL_TOKEN_COMPRESSOR_DROPOUT=${VISUAL_TOKEN_COMPRESSOR_DROPOUT:-0.0}
+export FREEZE_VISION_ENCODER=${FREEZE_VISION_ENCODER:-true}
+export VISION_TRAIN_LAST_N_LAYERS=${VISION_TRAIN_LAST_N_LAYERS:-4}
+export LEARNING_RATE=${LEARNING_RATE:-5e-5}
+export NUM_TRAIN_EPOCHS=${NUM_TRAIN_EPOCHS:-6}
+export MAX_STEPS=${MAX_STEPS:--1}
+export RUN_ID=${RUN_ID:-dinov2_learned_token19_$(date -u +%Y%m%d_%H%M%S)}
+
+echo "Recipe override: learned visual-token compressor 19x19"
+echo "VISUAL_TOKEN_COMPRESSOR=${VISUAL_TOKEN_COMPRESSOR}"
+echo "VISUAL_TOKEN_COMPRESSOR_GRID_SIZE=${VISUAL_TOKEN_COMPRESSOR_GRID_SIZE}"
+echo "VISUAL_TOKEN_COMPRESSOR_HIDDEN_DIM=${VISUAL_TOKEN_COMPRESSOR_HIDDEN_DIM}"
+echo "VISUAL_TOKEN_COMPRESSOR_DEPTH=${VISUAL_TOKEN_COMPRESSOR_DEPTH}"
+echo "FREEZE_VISION_ENCODER=${FREEZE_VISION_ENCODER}"
+echo "VISION_TRAIN_LAST_N_LAYERS=${VISION_TRAIN_LAST_N_LAYERS}"
+echo "LEARNING_RATE=${LEARNING_RATE}"
+echo "NUM_TRAIN_EPOCHS=${NUM_TRAIN_EPOCHS}"
+echo "MAX_STEPS=${MAX_STEPS}"
+echo "RUN_ID=${RUN_ID}"
+
+exec bash "${BASE_SCRIPT}"

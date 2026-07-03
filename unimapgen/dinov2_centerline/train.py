@@ -135,6 +135,22 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--use-view-type-embedding", action=argparse.BooleanOptionalAction, default=None)
     parser.add_argument("--view-type-embedding-count", type=int, default=2)
     parser.add_argument("--view-type-embedding-init-std", type=float, default=0.02)
+    parser.add_argument(
+        "--visual-token-compressor",
+        type=str,
+        default="none",
+        choices=["none", "learned_conv"],
+        help="Optional learnable visual-token compressor before the projector.",
+    )
+    parser.add_argument(
+        "--visual-token-compressor-grid-size",
+        type=int,
+        default=0,
+        help="Compressed visual grid size per view. 0 keeps the raw DINOv2 grid.",
+    )
+    parser.add_argument("--visual-token-compressor-hidden-dim", type=int, default=512)
+    parser.add_argument("--visual-token-compressor-depth", type=int, default=2)
+    parser.add_argument("--visual-token-compressor-dropout", type=float, default=0.0)
     parser.add_argument("--model-dtype", type=str, default="auto")
     parser.add_argument("--freeze-language-model", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--freeze-vision-encoder", action=argparse.BooleanOptionalAction, default=True)
@@ -278,15 +294,33 @@ def main() -> None:
     if encoder_input_pad_size <= 0:
         encoder_input_pad_size = int(inferred_ckpt_args.get("encoder_input_pad_size", 0))
     args.encoder_input_pad_size = int(encoder_input_pad_size)
-    visual_grid_size, tokens_per_view = infer_visual_layout(
+    encoder_visual_grid_size, encoder_tokens_per_view = infer_visual_layout(
         image_size=int(args.image_size),
         encoder_input_pad_size=int(encoder_input_pad_size),
         patch_size=14,
     )
+    visual_token_compressor = str(args.visual_token_compressor).strip().lower()
+    if visual_token_compressor == "none":
+        visual_grid_size = int(encoder_visual_grid_size)
+    else:
+        visual_grid_size = int(args.visual_token_compressor_grid_size)
+        if visual_grid_size <= 0:
+            raise ValueError("--visual-token-compressor-grid-size must be > 0 when compression is enabled.")
+        if visual_grid_size > int(encoder_visual_grid_size):
+            raise ValueError(
+                f"visual_token_compressor_grid_size={visual_grid_size} cannot exceed raw encoder grid "
+                f"{encoder_visual_grid_size}."
+            )
+    tokens_per_view = int(visual_grid_size) * int(visual_grid_size)
     num_visual_views = int(args.global_local_view_count) if bool(args.use_global_local_views) else 1
     if num_visual_views <= 0:
         raise ValueError("--global-local-view-count must be positive.")
     num_visual_tokens = int(tokens_per_view) * int(num_visual_views)
+    args.encoder_visual_grid_size = int(encoder_visual_grid_size)
+    args.encoder_tokens_per_view = int(encoder_tokens_per_view)
+    args.effective_visual_grid_size = int(visual_grid_size)
+    args.effective_tokens_per_view = int(tokens_per_view)
+    args.effective_num_visual_tokens = int(num_visual_tokens)
     args.effective_dataset_jsonl = str(dataset_path)
     args.effective_dataset_meta_jsonl = str(dataset_meta_path or "")
     args.effective_eval_dataset_jsonl = str(eval_dataset_path or "")
@@ -311,6 +345,8 @@ def main() -> None:
                 "output_dir": str(output_dir),
                 "image_size": int(args.image_size),
                 "encoder_input_pad_size": int(encoder_input_pad_size),
+                "encoder_visual_grid_size": int(encoder_visual_grid_size),
+                "encoder_tokens_per_view": int(encoder_tokens_per_view),
                 "visual_grid_size": int(visual_grid_size),
                 "tokens_per_view": int(tokens_per_view),
                 "num_visual_views": int(num_visual_views),
@@ -318,6 +354,8 @@ def main() -> None:
                 "use_global_local_views": bool(args.use_global_local_views),
                 "context_image_key": str(args.context_image_key),
                 "use_view_type_embedding": bool(args.use_view_type_embedding),
+                "visual_token_compressor": str(args.visual_token_compressor),
+                "visual_token_compressor_grid_size": int(args.visual_token_compressor_grid_size),
                 "map_task": str(args.map_task),
                 "use_lora": not bool(args.no_lora),
                 "freeze_vision_encoder": bool(args.freeze_vision_encoder),
@@ -396,12 +434,17 @@ def main() -> None:
         modules_state_path=str(args.bridge_modules_state_path).strip(),
         num_visual_tokens=int(num_visual_tokens),
         visual_grid_size=int(visual_grid_size),
+        encoder_visual_grid_size=int(encoder_visual_grid_size),
         num_visual_views=int(num_visual_views),
         visual_projector_hidden_dim=int(args.visual_projector_hidden_dim),
         geometric_mlp_hidden_dim=int(args.geometric_mlp_hidden_dim),
         token_alignment_hidden_dim=int(args.token_alignment_hidden_dim),
         token_alignment_num_layers=int(args.token_alignment_num_layers),
         token_alignment_dropout=float(args.token_alignment_dropout),
+        visual_token_compressor=str(args.visual_token_compressor),
+        visual_token_compressor_hidden_dim=int(args.visual_token_compressor_hidden_dim),
+        visual_token_compressor_depth=int(args.visual_token_compressor_depth),
+        visual_token_compressor_dropout=float(args.visual_token_compressor_dropout),
         use_view_type_embedding=bool(args.use_view_type_embedding),
         view_type_embedding_count=int(args.view_type_embedding_count),
         view_type_embedding_init_std=float(args.view_type_embedding_init_std),

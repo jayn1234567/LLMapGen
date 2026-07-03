@@ -74,6 +74,11 @@ VISION_TRAIN_LAST_N_LAYERS=${VISION_TRAIN_LAST_N_LAYERS:-4}
 LORA_RANK=${LORA_RANK:-32}
 LORA_ALPHA=${LORA_ALPHA:-64}
 LORA_DROPOUT=${LORA_DROPOUT:-0.05}
+VISUAL_TOKEN_COMPRESSOR=${VISUAL_TOKEN_COMPRESSOR:-none}
+VISUAL_TOKEN_COMPRESSOR_GRID_SIZE=${VISUAL_TOKEN_COMPRESSOR_GRID_SIZE:-0}
+VISUAL_TOKEN_COMPRESSOR_HIDDEN_DIM=${VISUAL_TOKEN_COMPRESSOR_HIDDEN_DIM:-512}
+VISUAL_TOKEN_COMPRESSOR_DEPTH=${VISUAL_TOKEN_COMPRESSOR_DEPTH:-2}
+VISUAL_TOKEN_COMPRESSOR_DROPOUT=${VISUAL_TOKEN_COMPRESSOR_DROPOUT:-0.0}
 
 # ====================== Ascend environment ======================
 source_if_exists() {
@@ -263,6 +268,7 @@ echo "Cloud output: ${CLOUD_OUTPUT_PATH:-<empty>}"
 echo "NNODES/NPROC: ${NNODES}/${NPROC_PER_NODE}, rank=${NODE_RANK}, master=${MASTER_ADDR}:${MASTER_PORT}"
 echo "Global batch: target=${TARGET_GLOBAL_BATCH_SIZE}, grad_accum=${GRADIENT_ACCUMULATION_STEPS}"
 echo "Vision train: freeze=${FREEZE_VISION_ENCODER}, last_n=${VISION_TRAIN_LAST_N_LAYERS}"
+echo "Visual token compressor: mode=${VISUAL_TOKEN_COMPRESSOR}, grid=${VISUAL_TOKEN_COMPRESSOR_GRID_SIZE}, hidden=${VISUAL_TOKEN_COMPRESSOR_HIDDEN_DIM}, depth=${VISUAL_TOKEN_COMPRESSOR_DEPTH}"
 echo "============================================================"
 
 torchrun \
@@ -299,6 +305,11 @@ torchrun \
   --lora-rank "${LORA_RANK}" \
   --lora-alpha "${LORA_ALPHA}" \
   --lora-dropout "${LORA_DROPOUT}" \
+  --visual-token-compressor "${VISUAL_TOKEN_COMPRESSOR}" \
+  --visual-token-compressor-grid-size "${VISUAL_TOKEN_COMPRESSOR_GRID_SIZE}" \
+  --visual-token-compressor-hidden-dim "${VISUAL_TOKEN_COMPRESSOR_HIDDEN_DIM}" \
+  --visual-token-compressor-depth "${VISUAL_TOKEN_COMPRESSOR_DEPTH}" \
+  --visual-token-compressor-dropout "${VISUAL_TOKEN_COMPRESSOR_DROPOUT}" \
   --device-backend npu \
   --ddp-backend hccl \
   --local-files-only \

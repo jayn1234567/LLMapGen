@@ -6,6 +6,7 @@ from typing import Any, Dict, Sequence
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 from unimapgen.models.encoders.satellite_encoder import SatelliteEncoder
 from unimapgen.models.hf_utils import resolve_hf_snapshot_path
@@ -55,6 +56,7 @@ VISUAL_SPECIAL_TOKENS = ("<vis_start>", "<vis_patch>", "<vis_end>")
 TRAINABLE_VISUAL_SPECIAL_TOKENS = ("<vis_start>", "<vis_end>")
 MODULE_STATE_NAMES = (
     "vision_encoder",
+    "visual_token_compressor",
     "visual_norm",
     "visual_projector",
     "geometric_position_mlp",
@@ -273,6 +275,84 @@ def _set_vision_encoder_trainability(
     return info
 
 
+
+class LearnedConvVisualTokenCompressor(nn.Module):
+    def __init__(
+        self,
+        *,
+        hidden_size: int,
+        input_grid_size: int,
+        output_grid_size: int,
+        hidden_dim: int,
+        depth: int,
+        dropout: float,
+    ) -> None:
+        super().__init__()
+        self.hidden_size = int(hidden_size)
+        self.input_grid_size = int(input_grid_size)
+        self.output_grid_size = int(output_grid_size)
+        self.hidden_dim = int(hidden_dim) if int(hidden_dim) > 0 else int(hidden_size)
+        self.input_norm = nn.LayerNorm(int(hidden_size))
+        self.input_proj = nn.Conv2d(int(hidden_size), int(self.hidden_dim), kernel_size=1)
+        blocks: list[nn.Module] = []
+        for _ in range(max(1, int(depth))):
+            blocks.extend(
+                [
+                    nn.Conv2d(
+                        int(self.hidden_dim),
+                        int(self.hidden_dim),
+                        kernel_size=3,
+                        padding=1,
+                        groups=int(self.hidden_dim),
+                    ),
+                    nn.GELU(),
+                    nn.Conv2d(int(self.hidden_dim), int(self.hidden_dim), kernel_size=1),
+                    nn.GELU(),
+                    nn.Dropout2d(float(dropout)),
+                ]
+            )
+        self.blocks = nn.Sequential(*blocks)
+        self.output_proj = nn.Conv2d(int(self.hidden_dim), int(hidden_size), kernel_size=1)
+        nn.init.zeros_(self.output_proj.weight)
+        nn.init.zeros_(self.output_proj.bias)
+
+    def forward(self, tokens: torch.Tensor) -> torch.Tensor:
+        if tokens.ndim != 3:
+            raise ValueError(f"Expected 3D visual tokens, got shape={tuple(tokens.shape)}")
+        batch_size, token_count, hidden_size = tokens.shape
+        expected_tokens = int(self.input_grid_size) * int(self.input_grid_size)
+        if int(token_count) != expected_tokens:
+            raise ValueError(
+                f"LearnedConvVisualTokenCompressor expected {expected_tokens} tokens "
+                f"from {self.input_grid_size}x{self.input_grid_size}, got {int(token_count)}"
+            )
+        if int(hidden_size) != int(self.hidden_size):
+            raise ValueError(f"Expected hidden_size={self.hidden_size}, got {int(hidden_size)}")
+
+        feat = tokens.transpose(1, 2).reshape(
+            int(batch_size),
+            int(hidden_size),
+            int(self.input_grid_size),
+            int(self.input_grid_size),
+        )
+        base = F.adaptive_avg_pool2d(
+            feat,
+            output_size=(int(self.output_grid_size), int(self.output_grid_size)),
+        )
+
+        x = self.input_norm(tokens)
+        x = x.transpose(1, 2).reshape_as(feat)
+        x = self.input_proj(x)
+        x = self.blocks(x)
+        x = F.adaptive_avg_pool2d(
+            x,
+            output_size=(int(self.output_grid_size), int(self.output_grid_size)),
+        )
+        delta = self.output_proj(x)
+        out = base + delta
+        return out.flatten(2).transpose(1, 2).contiguous()
+
+
 class Qwen3RCDinoCenterlineJSONSFTModel(nn.Module):
     supports_gradient_checkpointing = True
 
@@ -284,12 +364,17 @@ class Qwen3RCDinoCenterlineJSONSFTModel(nn.Module):
         dinov2_model_name_or_path: str,
         num_visual_tokens: int,
         visual_grid_size: int,
+        encoder_visual_grid_size: int = 0,
         num_visual_views: int = 1,
         visual_projector_hidden_dim: int = 4096,
         geometric_mlp_hidden_dim: int = 512,
         token_alignment_hidden_dim: int = 4096,
         token_alignment_num_layers: int = 2,
         token_alignment_dropout: float = 0.0,
+        visual_token_compressor: str = "none",
+        visual_token_compressor_hidden_dim: int = 512,
+        visual_token_compressor_depth: int = 2,
+        visual_token_compressor_dropout: float = 0.0,
         use_view_type_embedding: bool = False,
         view_type_embedding_count: int = 2,
         view_type_embedding_init_std: float = 0.02,
@@ -336,6 +421,8 @@ class Qwen3RCDinoCenterlineJSONSFTModel(nn.Module):
 
         self.num_visual_tokens = int(num_visual_tokens)
         self.visual_grid_size = int(visual_grid_size)
+        self.encoder_visual_grid_size = int(encoder_visual_grid_size) if int(encoder_visual_grid_size) > 0 else int(self.visual_grid_size)
+        self.encoder_tokens_per_view = int(self.encoder_visual_grid_size) * int(self.encoder_visual_grid_size)
         self.num_visual_views = max(1, int(num_visual_views))
         self.tokens_per_view = int(self.visual_grid_size) * int(self.visual_grid_size)
         self.use_view_type_embedding = bool(use_view_type_embedding)
@@ -350,6 +437,10 @@ class Qwen3RCDinoCenterlineJSONSFTModel(nn.Module):
             raise ValueError(
                 f"visual_grid_size={self.visual_grid_size} and num_visual_views={self.num_visual_views} "
                 f"produce {expected_visual_tokens} tokens, but num_visual_tokens={self.num_visual_tokens}"
+            )
+        if int(self.encoder_visual_grid_size) < int(self.visual_grid_size):
+            raise ValueError(
+                f"encoder_visual_grid_size={self.encoder_visual_grid_size} must be >= visual_grid_size={self.visual_grid_size}"
             )
         self.register_buffer(
             "grid_centers",
@@ -410,6 +501,26 @@ class Qwen3RCDinoCenterlineJSONSFTModel(nn.Module):
             )
 
         self.visual_norm = nn.LayerNorm(int(self.vision_encoder.hidden_size))
+        compressor_name = str(visual_token_compressor).strip().lower()
+        if compressor_name in {"", "none", "identity"}:
+            if int(self.encoder_tokens_per_view) != int(self.tokens_per_view):
+                raise ValueError(
+                    "visual_token_compressor=none requires encoder_tokens_per_view "
+                    f"({self.encoder_tokens_per_view}) == tokens_per_view ({self.tokens_per_view})"
+                )
+            self.visual_token_compressor: nn.Module = nn.Identity()
+        elif compressor_name in {"learned_conv", "conv", "learned"}:
+            self.visual_token_compressor = LearnedConvVisualTokenCompressor(
+                hidden_size=int(self.vision_encoder.hidden_size),
+                input_grid_size=int(self.encoder_visual_grid_size),
+                output_grid_size=int(self.visual_grid_size),
+                hidden_dim=int(visual_token_compressor_hidden_dim),
+                depth=int(visual_token_compressor_depth),
+                dropout=float(visual_token_compressor_dropout),
+            )
+        else:
+            raise ValueError(f"Unsupported visual_token_compressor: {visual_token_compressor!r}")
+        self.visual_token_compressor_name = compressor_name or "none"
         self.visual_projector = nn.Sequential(
             nn.Linear(int(self.vision_encoder.hidden_size), int(visual_projector_hidden_dim)),
             nn.GELU(),
@@ -458,6 +569,11 @@ class Qwen3RCDinoCenterlineJSONSFTModel(nn.Module):
                     )
             else:
                 load_optional_state_dict(self.vision_encoder, modules_state.get("vision_encoder"), "vision_encoder")
+            load_optional_state_dict(
+                self.visual_token_compressor,
+                modules_state.get("visual_token_compressor"),
+                "visual_token_compressor",
+            )
             load_optional_state_dict(self.visual_norm, modules_state.get("visual_norm"), "visual_norm")
             load_visual_projector_with_bridge_v2_fallback(
                 self.visual_projector,
@@ -530,6 +646,19 @@ class Qwen3RCDinoCenterlineJSONSFTModel(nn.Module):
             train_last_n_layers=int(vision_train_last_n_layers),
         )
         print(f"[qwen3-rc-json] vision_trainability={json.dumps(vision_trainability, ensure_ascii=False)}", flush=True)
+        compressor_summary = {
+            "name": self.visual_token_compressor_name,
+            "encoder_visual_grid_size": int(self.encoder_visual_grid_size),
+            "encoder_tokens_per_view": int(self.encoder_tokens_per_view),
+            "visual_grid_size": int(self.visual_grid_size),
+            "tokens_per_view": int(self.tokens_per_view),
+            "num_visual_views": int(self.num_visual_views),
+            "num_visual_tokens": int(self.num_visual_tokens),
+        }
+        print(
+            f"[qwen3-rc-json] visual_token_compressor={json.dumps(compressor_summary, ensure_ascii=False)}",
+            flush=True,
+        )
 
         if bool(gradient_checkpointing) and hasattr(self.language_model, "gradient_checkpointing_enable"):
             try:
@@ -628,9 +757,14 @@ class Qwen3RCDinoCenterlineJSONSFTModel(nn.Module):
         visual_tokens = vision_outputs["tokens"]
         if visual_tokens.ndim != 3:
             raise ValueError(f"Expected visual tokens to be 3D, got shape={tuple(visual_tokens.shape)}")
+        if int(visual_tokens.shape[1]) != self.encoder_tokens_per_view:
+            raise ValueError(
+                f"Visual encoder produced {int(visual_tokens.shape[1])} tokens, expected {self.encoder_tokens_per_view}"
+            )
+        visual_tokens = self.visual_token_compressor(visual_tokens)
         if int(visual_tokens.shape[1]) != self.tokens_per_view:
             raise ValueError(
-                f"Visual encoder produced {int(visual_tokens.shape[1])} tokens, expected {self.tokens_per_view}"
+                f"Visual token compressor produced {int(visual_tokens.shape[1])} tokens, expected {self.tokens_per_view}"
             )
         projected = self.visual_projector(self.visual_norm(visual_tokens))
         pos = self.grid_centers.to(device=projected.device, dtype=projected.dtype)
@@ -707,6 +841,7 @@ def save_qwen3_rc_dinov2_centerline_json_modules(
     torch.save(
         {
             "vision_encoder": model_for_save.vision_encoder.state_dict(),
+            "visual_token_compressor": model_for_save.visual_token_compressor.state_dict(),
             "visual_norm": model_for_save.visual_norm.state_dict(),
             "visual_projector": model_for_save.visual_projector.state_dict(),
             "geometric_position_mlp": model_for_save.geometric_position_mlp.state_dict(),
@@ -722,6 +857,8 @@ def save_qwen3_rc_dinov2_centerline_json_modules(
                 else None
             ),
             "encoder_input_pad_size": int(model_for_save.encoder_input_pad_size),
+            "encoder_visual_grid_size": int(model_for_save.encoder_visual_grid_size),
+            "encoder_tokens_per_view": int(model_for_save.encoder_tokens_per_view),
             "visual_grid_size": int(model_for_save.visual_grid_size),
             "num_visual_tokens": int(model_for_save.num_visual_tokens),
             "tokens_per_view": int(getattr(model_for_save, "tokens_per_view", model_for_save.num_visual_tokens)),

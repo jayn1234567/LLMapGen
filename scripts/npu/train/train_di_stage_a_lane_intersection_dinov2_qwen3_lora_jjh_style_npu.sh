@@ -42,6 +42,8 @@ TRAINROOT_DIR_NAME=${TRAINROOT_DIR_NAME:-prepared_lane_intersection_trainroot}
 TRAINROOT=${TRAINROOT:-${DATASET_EXTRACT_ROOT}/${TRAINROOT_DIR_NAME}}
 
 QWEN_PATH=${QWEN_PATH:-${WORK_ROOT}/model/Qwen3-8B}
+EXTRACT_QWEN3VL_TEXT_LLM=${EXTRACT_QWEN3VL_TEXT_LLM:-false}
+QWEN_EXTRACTED_TEXT_PATH=${QWEN_EXTRACTED_TEXT_PATH:-${WORK_ROOT}/model/Qwen3-VL-8B-Instruct_llm_extracted}
 DINOV2_PATH=${DINOV2_PATH:-${WORK_ROOT}/model/dinov2-large}
 VISION_PATH=${VISION_PATH:-${DINOV2_PATH}}
 ASSET_DIR=${ASSET_DIR:-${WORK_ROOT}/model/dinov2_centerline_assets_qwen3_8b}
@@ -222,6 +224,14 @@ unzip -q "${DATASET_ZIP_PATH}" -d "${DATASET_EXTRACT_ROOT}"
 
 echo "[di-download] qwen: ${QWEN_MODEL_OBS_PATH} -> ${QWEN_PATH}"
 python -c "import moxing as mox; mox.file.copy_parallel('${QWEN_MODEL_OBS_PATH}', '${QWEN_PATH}')"
+if [[ "${EXTRACT_QWEN3VL_TEXT_LLM}" =~ ^(1|true|True|TRUE|yes|YES)$ ]]; then
+  echo "[di-extract] Qwen3-VL text LLM: ${QWEN_PATH} -> ${QWEN_EXTRACTED_TEXT_PATH}"
+  python scripts/tools/extract_qwen3vl_text_llm.py \
+    --input-dir "${QWEN_PATH}" \
+    --output-dir "${QWEN_EXTRACTED_TEXT_PATH}"
+  QWEN_PATH="${QWEN_EXTRACTED_TEXT_PATH}"
+  echo "[di-extract] training Qwen text path: ${QWEN_PATH}"
+fi
 echo "[di-download] vision(${VISION_MODEL_FAMILY}): ${VISION_MODEL_OBS_PATH} -> ${VISION_PATH}"
 python -c "import moxing as mox; mox.file.copy_parallel('${VISION_MODEL_OBS_PATH}', '${VISION_PATH}')"
 if [[ "${USE_PRETRAINED_VISUAL_BRIDGE}" =~ ^(1|true|True|TRUE|yes|YES)$ ]]; then
@@ -277,9 +287,13 @@ if [[ "${USE_PRETRAINED_VISUAL_BRIDGE}" =~ ^(1|true|True|TRUE|yes|YES)$ ]]; then
 fi
 
 VISUAL_BRIDGE_ARGS=()
-if [[ "${USE_PRETRAINED_VISUAL_BRIDGE}" =~ ^(1|true|True|TRUE|yes|YES)$ ]]; then
-  VISUAL_BRIDGE_ARGS=(
+if [[ "${USE_VISUAL_ENCODER_CHECKPOINT}" =~ ^(1|true|True|TRUE|yes|YES)$ ]]; then
+  VISUAL_BRIDGE_ARGS+=(
     --visual-encoder-checkpoint-path "${VISUAL_ENCODER_CHECKPOINT_PATH}"
+  )
+fi
+if [[ "${USE_PRETRAINED_VISUAL_BRIDGE}" =~ ^(1|true|True|TRUE|yes|YES)$ ]]; then
+  VISUAL_BRIDGE_ARGS+=(
     --bridge-modules-state-path "${BRIDGE_MODULES_STATE_PATH}"
   )
 fi

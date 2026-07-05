@@ -113,6 +113,174 @@ def _suffix_aligned_state(module: nn.Module, state_dict: Dict[str, torch.Tensor]
     return {target_key: value for target_key, (_, value) in source_by_suffix.items()}
 
 
+def _find_target_key(
+    target_state: Dict[str, torch.Tensor],
+    value: torch.Tensor,
+    suffixes: Sequence[str],
+) -> str | None:
+    value_shape = tuple(value.shape)
+    for suffix in suffixes:
+        matches = [
+            key
+            for key, target_value in target_state.items()
+            if str(key).endswith(str(suffix)) and tuple(target_value.shape) == value_shape
+        ]
+        if matches:
+            return sorted(matches, key=len)[0]
+    return None
+
+
+def _assign_by_suffix(
+    mapped: Dict[str, torch.Tensor],
+    target_state: Dict[str, torch.Tensor],
+    value: torch.Tensor | None,
+    suffixes: Sequence[str],
+) -> bool:
+    if value is None or not torch.is_tensor(value):
+        return False
+    target_key = _find_target_key(target_state, value, suffixes)
+    if target_key is None:
+        return False
+    mapped[target_key] = value
+    return True
+
+
+def _scripted_dinov3_to_hf_state(
+    vision_encoder: nn.Module,
+    raw_state: Dict[str, torch.Tensor],
+) -> Dict[str, torch.Tensor]:
+    if not any(str(key).startswith("encoder.blocks.") for key in raw_state):
+        return {}
+    target_state = vision_encoder.state_dict()
+    mapped: Dict[str, torch.Tensor] = {}
+
+    _assign_by_suffix(mapped, target_state, raw_state.get("encoder.cls_token"), ("embeddings.cls_token", "cls_token"))
+    _assign_by_suffix(
+        mapped,
+        target_state,
+        raw_state.get("encoder.storage_tokens"),
+        ("embeddings.register_tokens", "register_tokens", "storage_tokens"),
+    )
+    _assign_by_suffix(mapped, target_state, raw_state.get("encoder.mask_token"), ("embeddings.mask_token", "mask_token"))
+    _assign_by_suffix(
+        mapped,
+        target_state,
+        raw_state.get("encoder.patch_embed.proj.weight"),
+        ("embeddings.patch_embeddings.projection.weight", "patch_embed.proj.weight"),
+    )
+    _assign_by_suffix(
+        mapped,
+        target_state,
+        raw_state.get("encoder.patch_embed.proj.bias"),
+        ("embeddings.patch_embeddings.projection.bias", "patch_embed.proj.bias"),
+    )
+
+    block_indexes = sorted(
+        {
+            int(str(key).split(".")[2])
+            for key in raw_state
+            if str(key).startswith("encoder.blocks.") and len(str(key).split(".")) > 3 and str(key).split(".")[2].isdigit()
+        }
+    )
+    for idx in block_indexes:
+        src = f"encoder.blocks.{idx}"
+        target_layer_suffixes = (
+            f"encoder.layer.{idx}",
+            f"encoder.layers.{idx}",
+            f"encoder.blocks.{idx}",
+            f"blocks.{idx}",
+            f"layers.{idx}",
+        )
+
+        for norm_name in ("norm1", "norm2"):
+            for attr in ("weight", "bias"):
+                _assign_by_suffix(
+                    mapped,
+                    target_state,
+                    raw_state.get(f"{src}.{norm_name}.{attr}"),
+                    tuple(f"{layer}.{norm_name}.{attr}" for layer in target_layer_suffixes),
+                )
+        for mlp_name in ("fc1", "fc2"):
+            for attr in ("weight", "bias"):
+                _assign_by_suffix(
+                    mapped,
+                    target_state,
+                    raw_state.get(f"{src}.mlp.{mlp_name}.{attr}"),
+                    tuple(f"{layer}.mlp.{mlp_name}.{attr}" for layer in target_layer_suffixes),
+                )
+        for source_name, target_names in (
+            ("ls1.gamma", ("layer_scale1.lambda1", "layer_scale1.gamma", "ls1.gamma")),
+            ("ls2.gamma", ("layer_scale2.lambda1", "layer_scale2.gamma", "ls2.gamma")),
+        ):
+            _assign_by_suffix(
+                mapped,
+                target_state,
+                raw_state.get(f"{src}.{source_name}"),
+                tuple(f"{layer}.{target}" for layer in target_layer_suffixes for target in target_names),
+            )
+        for attr in ("weight", "bias"):
+            _assign_by_suffix(
+                mapped,
+                target_state,
+                raw_state.get(f"{src}.attn.proj.{attr}"),
+                tuple(
+                    f"{layer}.{target}.{attr}"
+                    for layer in target_layer_suffixes
+                    for target in ("attention.output.dense", "attention.output.projection", "attn.proj")
+                ),
+            )
+
+        qkv_weight = raw_state.get(f"{src}.attn.qkv.qkv.weight")
+        qkv_bias = raw_state.get(f"{src}.attn.qkv.qkv.bias")
+        if torch.is_tensor(qkv_weight) and qkv_weight.ndim == 2 and qkv_weight.shape[0] % 3 == 0:
+            q_weight, k_weight, v_weight = torch.chunk(qkv_weight, 3, dim=0)
+            q_delta_a = raw_state.get(f"{src}.attn.qkv.linear_a_q.weight")
+            q_delta_b = raw_state.get(f"{src}.attn.qkv.linear_b_q.weight")
+            v_delta_a = raw_state.get(f"{src}.attn.qkv.linear_a_v.weight")
+            v_delta_b = raw_state.get(f"{src}.attn.qkv.linear_b_v.weight")
+            if torch.is_tensor(q_delta_a) and torch.is_tensor(q_delta_b):
+                q_delta = torch.matmul(q_delta_b.to(dtype=q_weight.dtype), q_delta_a.to(dtype=q_weight.dtype))
+                if tuple(q_delta.shape) == tuple(q_weight.shape):
+                    q_weight = q_weight + q_delta
+            if torch.is_tensor(v_delta_a) and torch.is_tensor(v_delta_b):
+                v_delta = torch.matmul(v_delta_b.to(dtype=v_weight.dtype), v_delta_a.to(dtype=v_weight.dtype))
+                if tuple(v_delta.shape) == tuple(v_weight.shape):
+                    v_weight = v_weight + v_delta
+            for name, value in (("query", q_weight), ("key", k_weight), ("value", v_weight)):
+                _assign_by_suffix(
+                    mapped,
+                    target_state,
+                    value,
+                    tuple(
+                        f"{layer}.{target}.{name}.weight"
+                        for layer in target_layer_suffixes
+                        for target in ("attention.attention", "attention")
+                    )
+                    + tuple(f"{layer}.attn.{name}.weight" for layer in target_layer_suffixes),
+                )
+        if torch.is_tensor(qkv_bias) and qkv_bias.ndim == 1 and qkv_bias.shape[0] % 3 == 0:
+            q_bias, k_bias, v_bias = torch.chunk(qkv_bias, 3, dim=0)
+            for name, value in (("query", q_bias), ("key", k_bias), ("value", v_bias)):
+                _assign_by_suffix(
+                    mapped,
+                    target_state,
+                    value,
+                    tuple(
+                        f"{layer}.{target}.{name}.bias"
+                        for layer in target_layer_suffixes
+                        for target in ("attention.attention", "attention")
+                    )
+                    + tuple(f"{layer}.attn.{name}.bias" for layer in target_layer_suffixes),
+                )
+
+    for source_key, suffixes in (
+        ("encoder.norm.weight", ("layernorm.weight", "norm.weight")),
+        ("encoder.norm.bias", ("layernorm.bias", "norm.bias")),
+    ):
+        _assign_by_suffix(mapped, target_state, raw_state.get(source_key), suffixes)
+    return mapped
+
+
 def _candidate_encoder_states(
     vision_encoder: nn.Module,
     raw_state: Dict[str, torch.Tensor],
@@ -129,6 +297,9 @@ def _candidate_encoder_states(
     suffix_aligned = _suffix_aligned_state(vision_encoder, raw_state)
     if suffix_aligned:
         candidates.append(("suffix_aligned", suffix_aligned))
+    scripted_dinov3 = _scripted_dinov3_to_hf_state(vision_encoder, raw_state)
+    if scripted_dinov3:
+        candidates.append(("scripted_dinov3_hf", scripted_dinov3))
     deduped: list[tuple[str, Dict[str, torch.Tensor]]] = []
     seen = set()
     for name, state in candidates:
@@ -188,6 +359,15 @@ def load_visual_encoder_checkpoint(
         flush=True,
     )
     load_optional_state_dict(vision_encoder, encoder_state, f"visual_encoder_checkpoint[{ckpt_path}]")
+    if selected_name == "scripted_dinov3_hf" and hasattr(vision_encoder, "pixel_mean") and hasattr(vision_encoder, "pixel_std"):
+        with torch.no_grad():
+            vision_encoder.pixel_mean.copy_(
+                torch.tensor([0.5, 0.5, 0.5], dtype=vision_encoder.pixel_mean.dtype).view(1, 3, 1, 1)
+            )
+            vision_encoder.pixel_std.copy_(
+                torch.tensor([1.0, 1.0, 1.0], dtype=vision_encoder.pixel_std.dtype).view(1, 3, 1, 1)
+            )
+        print("[visual-checkpoint] using scripted DINOv3 segmentation normalization: mean=0.5 std=1.0", flush=True)
 
 
 def build_grid_centers(grid_size: int) -> torch.Tensor:

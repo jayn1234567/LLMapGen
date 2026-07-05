@@ -29,6 +29,8 @@ from unimapgen.runtime.device import is_accelerator_device, resolve_torch_device
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Predict centerline JSON with the minimal DINOv2 -> Qwen route.")
     parser.add_argument("--checkpoint-dir", type=str, required=True)
+    parser.add_argument("--run-root", type=str, default="", help="Training output root containing args.json/tokenizer/modules.")
+    parser.add_argument("--run-args-json", type=str, default="", help="Explicit args.json saved by training.")
     parser.add_argument("--trainroot", type=str, default="", help="Root with split jsonl files; usually the prepared trainroot.")
     parser.add_argument("--split", type=str, default="val", help="Used with --trainroot.")
     parser.add_argument("--dataset-jsonl", type=str, default="", help="Alternative explicit dataset jsonl.")
@@ -81,8 +83,12 @@ def resolve_checkpoint_dir(path_str: str) -> Tuple[Path, Path]:
     return candidates[-1], path
 
 
-def load_run_args(run_root: Path) -> Dict[str, Any]:
-    args_path = run_root / "args.json"
+def load_run_args(run_root: Path, explicit_args_json: str = "") -> Dict[str, Any]:
+    args_path = (
+        Path(str(explicit_args_json)).expanduser().resolve()
+        if str(explicit_args_json).strip()
+        else run_root / "args.json"
+    )
     if not args_path.is_file():
         raise FileNotFoundError(f"Missing args.json under run root: {args_path}")
     return load_json_dict(args_path)
@@ -366,10 +372,13 @@ def model_source_for(checkpoint_dir: Path, saved_args: Dict[str, Any]) -> str:
     return str(saved_args["model_name_or_path"])
 
 
-def modules_state_for(checkpoint_dir: Path, saved_args: Dict[str, Any]) -> str:
+def modules_state_for(checkpoint_dir: Path, run_root: Path, saved_args: Dict[str, Any]) -> str:
     modules_path = checkpoint_dir / "rc_dinov2_centerline_json_modules.pt"
     if modules_path.is_file():
         return str(modules_path)
+    run_modules_path = run_root / "rc_dinov2_centerline_json_modules.pt"
+    if run_modules_path.is_file():
+        return str(run_modules_path)
     return str(saved_args.get("bridge_modules_state_path", ""))
 
 
@@ -378,8 +387,15 @@ def main() -> None:
     args.device = resolve_torch_device(str(args.device))
     set_random_seed(int(args.seed))
 
-    checkpoint_dir, run_root = resolve_checkpoint_dir(str(args.checkpoint_dir))
-    saved_args = load_run_args(run_root)
+    checkpoint_dir, inferred_run_root = resolve_checkpoint_dir(str(args.checkpoint_dir))
+    run_root = (
+        Path(str(args.run_root)).expanduser().resolve()
+        if str(args.run_root).strip()
+        else inferred_run_root
+    )
+    if str(args.run_args_json).strip() and not str(args.run_root).strip():
+        run_root = Path(str(args.run_args_json)).expanduser().resolve().parent
+    saved_args = load_run_args(run_root, str(args.run_args_json))
     dataset_path, dataset_meta_path, media_dir = resolve_dataset_paths(args)
     if not dataset_path.is_file():
         raise FileNotFoundError(f"dataset_jsonl not found: {dataset_path}")
@@ -454,7 +470,7 @@ def main() -> None:
         tokenizer=tokenizer,
         dinov2_model_name_or_path=str(saved_args["dinov2_model_name_or_path"]),
         visual_encoder_checkpoint_path=str(saved_args.get("visual_encoder_checkpoint_path", "")),
-        modules_state_path=modules_state_for(checkpoint_dir, saved_args),
+        modules_state_path=modules_state_for(checkpoint_dir, run_root, saved_args),
         num_visual_tokens=int(num_visual_tokens),
         visual_grid_size=int(visual_grid_size),
         encoder_visual_grid_size=int(encoder_visual_grid_size),

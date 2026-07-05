@@ -44,6 +44,7 @@ DINOV2_PATH=${DINOV2_PATH:-${WORK_ROOT}/model/dinov2-large}
 ASSET_DIR=${ASSET_DIR:-${WORK_ROOT}/model/dinov2_centerline_assets_qwen3_8b}
 VISUAL_ENCODER_CHECKPOINT_PATH=${VISUAL_ENCODER_CHECKPOINT_PATH:-${ASSET_DIR}/visual_encoder_checkpoint.pt}
 BRIDGE_MODULES_STATE_PATH=${BRIDGE_MODULES_STATE_PATH:-${ASSET_DIR}/bridge_modules_state.pt}
+USE_PRETRAINED_VISUAL_BRIDGE=${USE_PRETRAINED_VISUAL_BRIDGE:-true}
 
 CLOUD_OUTPUT_PATH=${OSB_SHARE_PATH:+${OSB_SHARE_PATH%/}/${RUN_ID}}
 LOCAL_MODEL_SAVE_ROOT=${LOCAL_MODEL_SAVE_ROOT:-/cache/local_model_save_path}
@@ -216,8 +217,14 @@ echo "[di-download] qwen: ${QWEN_MODEL_OBS_PATH} -> ${QWEN_PATH}"
 python -c "import moxing as mox; mox.file.copy_parallel('${QWEN_MODEL_OBS_PATH}', '${QWEN_PATH}')"
 echo "[di-download] dinov2: ${DINOV2_MODEL_OBS_PATH} -> ${DINOV2_PATH}"
 python -c "import moxing as mox; mox.file.copy_parallel('${DINOV2_MODEL_OBS_PATH}', '${DINOV2_PATH}')"
-echo "[di-download] bridge assets: ${ASSET_OBS_PATH} -> ${ASSET_DIR}"
-python -c "import moxing as mox; mox.file.copy_parallel('${ASSET_OBS_PATH}', '${ASSET_DIR}')"
+if [[ "${USE_PRETRAINED_VISUAL_BRIDGE}" =~ ^(1|true|True|TRUE|yes|YES)$ ]]; then
+  echo "[di-download] bridge assets: ${ASSET_OBS_PATH} -> ${ASSET_DIR}"
+  python -c "import moxing as mox; mox.file.copy_parallel('${ASSET_OBS_PATH}', '${ASSET_DIR}')"
+else
+  echo "[di-download] skip bridge assets; using original DINOv2 and randomly initialized alignment modules."
+  VISUAL_ENCODER_CHECKPOINT_PATH=""
+  BRIDGE_MODULES_STATE_PATH=""
+fi
 
 if [ ! -f "${TRAINROOT}/train.jsonl" ]; then
   FOUND_TRAINROOT=$(find "${DATASET_EXTRACT_ROOT}" -maxdepth 6 -type f -name train.jsonl -printf '%h\n' 2>/dev/null | sort | head -n 1 || true)
@@ -229,9 +236,7 @@ fi
 for path in \
   "${TRAINROOT}/train.jsonl" \
   "${QWEN_PATH}/config.json" \
-  "${DINOV2_PATH}/config.json" \
-  "${VISUAL_ENCODER_CHECKPOINT_PATH}" \
-  "${BRIDGE_MODULES_STATE_PATH}"; do
+  "${DINOV2_PATH}/config.json"; do
   if [ ! -e "${path}" ]; then
     echo "ERROR: required path not found: ${path}"
     echo "Dataset extract summary:"
@@ -239,6 +244,25 @@ for path in \
     exit 1
   fi
 done
+if [[ "${USE_PRETRAINED_VISUAL_BRIDGE}" =~ ^(1|true|True|TRUE|yes|YES)$ ]]; then
+  for path in \
+    "${VISUAL_ENCODER_CHECKPOINT_PATH}" \
+    "${BRIDGE_MODULES_STATE_PATH}"; do
+    if [ ! -e "${path}" ]; then
+      echo "ERROR: required pretrained bridge path not found: ${path}"
+      echo "Set USE_PRETRAINED_VISUAL_BRIDGE=false to train from original DINOv2 and randomly initialized alignment modules."
+      exit 1
+    fi
+  done
+fi
+
+VISUAL_BRIDGE_ARGS=()
+if [[ "${USE_PRETRAINED_VISUAL_BRIDGE}" =~ ^(1|true|True|TRUE|yes|YES)$ ]]; then
+  VISUAL_BRIDGE_ARGS=(
+    --visual-encoder-checkpoint-path "${VISUAL_ENCODER_CHECKPOINT_PATH}"
+    --bridge-modules-state-path "${BRIDGE_MODULES_STATE_PATH}"
+  )
+fi
 
 TOTAL_DEVICES=$(( NNODES * NPROC_PER_NODE ))
 MICRO_BATCH=$(( TOTAL_DEVICES * PER_DEVICE_TRAIN_BATCH_SIZE ))
@@ -263,6 +287,7 @@ echo "Qwen:         ${QWEN_PATH}"
 echo "DINOv2:       ${DINOV2_PATH}"
 echo "Visual ckpt:  ${VISUAL_ENCODER_CHECKPOINT_PATH}"
 echo "Bridge state: ${BRIDGE_MODULES_STATE_PATH}"
+echo "Pretrained visual bridge: ${USE_PRETRAINED_VISUAL_BRIDGE}"
 echo "Output:       ${OUTPUT_PATH}"
 echo "Cloud output: ${CLOUD_OUTPUT_PATH:-<empty>}"
 echo "NNODES/NPROC: ${NNODES}/${NPROC_PER_NODE}, rank=${NODE_RANK}, master=${MASTER_ADDR}:${MASTER_PORT}"
@@ -281,8 +306,7 @@ torchrun \
   --trainroot "${TRAINROOT}" \
   --model-name-or-path "${QWEN_PATH}" \
   --dinov2-model-name-or-path "${DINOV2_PATH}" \
-  --visual-encoder-checkpoint-path "${VISUAL_ENCODER_CHECKPOINT_PATH}" \
-  --bridge-modules-state-path "${BRIDGE_MODULES_STATE_PATH}" \
+  "${VISUAL_BRIDGE_ARGS[@]}" \
   --output-dir "${OUTPUT_PATH}" \
   --num-train-epochs "${NUM_TRAIN_EPOCHS}" \
   --max-steps "${MAX_STEPS}" \

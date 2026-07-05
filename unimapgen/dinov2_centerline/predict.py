@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import random
 import re
 from pathlib import Path
@@ -31,6 +32,27 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--checkpoint-dir", type=str, required=True)
     parser.add_argument("--run-root", type=str, default="", help="Training output root containing args.json/tokenizer/modules.")
     parser.add_argument("--run-args-json", type=str, default="", help="Explicit args.json saved by training.")
+    parser.add_argument("--model-name-or-path", type=str, default=os.environ.get("MODEL_NAME_OR_PATH", ""))
+    parser.add_argument("--tokenizer-name-or-path", type=str, default=os.environ.get("TOKENIZER_NAME_OR_PATH", ""))
+    parser.add_argument("--dinov2-model-name-or-path", type=str, default=os.environ.get("DINOV2_MODEL_NAME_OR_PATH", ""))
+    parser.add_argument("--visual-encoder-checkpoint-path", type=str, default=os.environ.get("VISUAL_ENCODER_CHECKPOINT_PATH", ""))
+    parser.add_argument("--bridge-modules-state-path", type=str, default=os.environ.get("BRIDGE_MODULES_STATE_PATH", ""))
+    parser.add_argument("--map-task", type=str, default=os.environ.get("MAP_TASK", "lane_intersection"))
+    parser.add_argument("--image-size", type=int, default=int(os.environ.get("IMAGE_SIZE", "512")))
+    parser.add_argument("--encoder-input-pad-size", type=int, default=int(os.environ.get("ENCODER_INPUT_PAD_SIZE", "518")))
+    parser.add_argument("--visual-token-compressor", type=str, default=os.environ.get("VISUAL_TOKEN_COMPRESSOR", "none"))
+    parser.add_argument("--visual-token-compressor-grid-size", type=int, default=int(os.environ.get("VISUAL_TOKEN_COMPRESSOR_GRID_SIZE", "0")))
+    parser.add_argument("--visual-token-compressor-hidden-dim", type=int, default=int(os.environ.get("VISUAL_TOKEN_COMPRESSOR_HIDDEN_DIM", "512")))
+    parser.add_argument("--visual-token-compressor-depth", type=int, default=int(os.environ.get("VISUAL_TOKEN_COMPRESSOR_DEPTH", "2")))
+    parser.add_argument("--visual-token-compressor-dropout", type=float, default=float(os.environ.get("VISUAL_TOKEN_COMPRESSOR_DROPOUT", "0.0")))
+    parser.add_argument("--visual-projector-hidden-dim", type=int, default=int(os.environ.get("VISUAL_PROJECTOR_HIDDEN_DIM", "4096")))
+    parser.add_argument("--geometric-mlp-hidden-dim", type=int, default=int(os.environ.get("GEOMETRIC_MLP_HIDDEN_DIM", "512")))
+    parser.add_argument("--token-alignment-hidden-dim", type=int, default=int(os.environ.get("TOKEN_ALIGNMENT_HIDDEN_DIM", "4096")))
+    parser.add_argument("--token-alignment-num-layers", type=int, default=int(os.environ.get("TOKEN_ALIGNMENT_NUM_LAYERS", "2")))
+    parser.add_argument("--token-alignment-dropout", type=float, default=float(os.environ.get("TOKEN_ALIGNMENT_DROPOUT", "0.0")))
+    parser.add_argument("--lora-rank", type=int, default=int(os.environ.get("LORA_RANK", "32")))
+    parser.add_argument("--lora-alpha", type=int, default=int(os.environ.get("LORA_ALPHA", "64")))
+    parser.add_argument("--lora-dropout", type=float, default=float(os.environ.get("LORA_DROPOUT", "0.05")))
     parser.add_argument("--trainroot", type=str, default="", help="Root with split jsonl files; usually the prepared trainroot.")
     parser.add_argument("--split", type=str, default="val", help="Used with --trainroot.")
     parser.add_argument("--dataset-jsonl", type=str, default="", help="Alternative explicit dataset jsonl.")
@@ -85,15 +107,88 @@ def resolve_checkpoint_dir(path_str: str) -> Tuple[Path, Path]:
     return candidates[-1], path
 
 
-def load_run_args(run_root: Path, explicit_args_json: str = "") -> Dict[str, Any]:
+def load_training_args_output_dir(checkpoint_dir: Path) -> Path | None:
+    training_args_path = checkpoint_dir / "training_args.bin"
+    if not training_args_path.is_file():
+        return None
+    try:
+        training_args = torch.load(str(training_args_path), map_location="cpu", weights_only=False)
+        output_dir = getattr(training_args, "output_dir", "")
+    except Exception:
+        return None
+    if not str(output_dir).strip():
+        return None
+    return Path(str(output_dir)).expanduser().resolve()
+
+
+def fallback_run_args_from_cli(args: argparse.Namespace) -> Dict[str, Any]:
+    model_name_or_path = str(args.model_name_or_path).strip()
+    dinov2_model_name_or_path = str(args.dinov2_model_name_or_path).strip()
+    if not model_name_or_path or not dinov2_model_name_or_path:
+        return {}
+    return {
+        "model_name_or_path": model_name_or_path,
+        "tokenizer_name_or_path": str(args.tokenizer_name_or_path).strip() or model_name_or_path,
+        "dinov2_model_name_or_path": dinov2_model_name_or_path,
+        "visual_encoder_checkpoint_path": str(args.visual_encoder_checkpoint_path).strip(),
+        "bridge_modules_state_path": str(args.bridge_modules_state_path).strip(),
+        "image_size": int(args.image_size),
+        "encoder_input_pad_size": int(args.encoder_input_pad_size),
+        "visual_projector_hidden_dim": int(args.visual_projector_hidden_dim),
+        "geometric_mlp_hidden_dim": int(args.geometric_mlp_hidden_dim),
+        "token_alignment_hidden_dim": int(args.token_alignment_hidden_dim),
+        "token_alignment_num_layers": int(args.token_alignment_num_layers),
+        "token_alignment_dropout": float(args.token_alignment_dropout),
+        "visual_token_compressor": str(args.visual_token_compressor).strip() or "none",
+        "visual_token_compressor_grid_size": int(args.visual_token_compressor_grid_size),
+        "visual_token_compressor_hidden_dim": int(args.visual_token_compressor_hidden_dim),
+        "visual_token_compressor_depth": int(args.visual_token_compressor_depth),
+        "visual_token_compressor_dropout": float(args.visual_token_compressor_dropout),
+        "map_task": str(args.map_task).strip() or "lane_intersection",
+        "use_lora": True,
+        "no_lora": False,
+        "lora_rank": int(args.lora_rank),
+        "lora_alpha": int(args.lora_alpha),
+        "lora_dropout": float(args.lora_dropout),
+        "freeze_language_model": False,
+        "freeze_vision_encoder": True,
+        "num_visual_views": 1,
+        "use_global_local_views": False,
+        "use_view_type_embedding": False,
+        "view_type_embedding_count": 2,
+        "view_type_embedding_init_std": 0.02,
+        "model_dtype": "auto",
+        "fallback_args_source": "cli_or_environment",
+    }
+
+
+def load_run_args(run_root: Path, checkpoint_dir: Path, explicit_args_json: str = "", fallback_args: Dict[str, Any] | None = None) -> Dict[str, Any]:
     args_path = (
         Path(str(explicit_args_json)).expanduser().resolve()
         if str(explicit_args_json).strip()
         else run_root / "args.json"
     )
-    if not args_path.is_file():
-        raise FileNotFoundError(f"Missing args.json under run root: {args_path}")
-    return load_json_dict(args_path)
+    candidates = [args_path]
+    training_output_dir = load_training_args_output_dir(checkpoint_dir)
+    if training_output_dir is not None:
+        candidates.append(training_output_dir / "args.json")
+    for candidate in candidates:
+        if candidate.is_file():
+            payload = load_json_dict(candidate)
+            payload.setdefault("args_json_path", str(candidate))
+            return payload
+    if fallback_args:
+        print(
+            "[dinov2-centerline-predict] args.json not found; using CLI/environment fallback args. "
+            f"looked_for={[str(item) for item in candidates]}",
+            flush=True,
+        )
+        return dict(fallback_args)
+    raise FileNotFoundError(
+        "Missing args.json and no fallback model paths were provided. "
+        f"looked_for={[str(item) for item in candidates]}. "
+        "Set MODEL_NAME_OR_PATH and DINOV2_MODEL_NAME_OR_PATH, or pass --run-root/--run-args-json."
+    )
 
 
 def resolve_dataset_paths(args: argparse.Namespace) -> Tuple[Path, Path | None, Path]:
@@ -375,12 +470,13 @@ def model_source_for(checkpoint_dir: Path, saved_args: Dict[str, Any]) -> str:
 
 
 def modules_state_for(checkpoint_dir: Path, run_root: Path, saved_args: Dict[str, Any]) -> str:
-    modules_path = checkpoint_dir / "rc_dinov2_centerline_json_modules.pt"
-    if modules_path.is_file():
-        return str(modules_path)
-    run_modules_path = run_root / "rc_dinov2_centerline_json_modules.pt"
-    if run_modules_path.is_file():
-        return str(run_modules_path)
+    for filename in ("rc_dinov2_centerline_json_modules.pt", "rc_dinov2_centerline_json_modules.pth"):
+        modules_path = checkpoint_dir / filename
+        if modules_path.is_file():
+            return str(modules_path)
+        run_modules_path = run_root / filename
+        if run_modules_path.is_file():
+            return str(run_modules_path)
     return str(saved_args.get("bridge_modules_state_path", ""))
 
 
@@ -397,7 +493,12 @@ def main() -> None:
     )
     if str(args.run_args_json).strip() and not str(args.run_root).strip():
         run_root = Path(str(args.run_args_json)).expanduser().resolve().parent
-    saved_args = load_run_args(run_root, str(args.run_args_json))
+    saved_args = load_run_args(
+        run_root,
+        checkpoint_dir,
+        str(args.run_args_json),
+        fallback_run_args_from_cli(args),
+    )
     dataset_path, dataset_meta_path, media_dir = resolve_dataset_paths(args)
     if not dataset_path.is_file():
         raise FileNotFoundError(f"dataset_jsonl not found: {dataset_path}")

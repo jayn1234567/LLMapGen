@@ -113,7 +113,9 @@ def _resolve_modules_state_path(path_candidate: Path) -> Path | None:
         return None
     for filename in (
         "rc_dinov2_centerline_json_modules.pt",
+        "rc_dinov2_centerline_json_modules.pth",
         "rc_dinov2_caption_modules.pt",
+        "rc_dinov2_caption_modules.pth",
         "pytorch_model.bin",
         "model.safetensors",
     ):
@@ -422,6 +424,10 @@ class Qwen3RCDinoCenterlineJSONSFTModel(nn.Module):
 
         resolved_model_path = resolve_hf_snapshot_path(str(model_name_or_path))
         default_modules_state_path = Path(resolved_model_path) / "rc_dinov2_centerline_json_modules.pt"
+        if not default_modules_state_path.is_file():
+            pth_modules_state_path = Path(resolved_model_path) / "rc_dinov2_centerline_json_modules.pth"
+            if pth_modules_state_path.is_file():
+                default_modules_state_path = pth_modules_state_path
         adapter_config_path = Path(resolved_model_path) / "adapter_config.json"
         language_model_source = resolved_model_path
         adapter_checkpoint_dir: Path | None = None

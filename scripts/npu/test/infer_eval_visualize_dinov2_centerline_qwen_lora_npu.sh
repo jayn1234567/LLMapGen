@@ -30,6 +30,8 @@ JIANGJIHUA_BUFFER_SIZE="${JIANGJIHUA_BUFFER_SIZE:-1.0}"
 JIANGJIHUA_MATCH_THRESHOLD="${JIANGJIHUA_MATCH_THRESHOLD:-0.33}"
 AUTO_INSTALL_EVAL_DEPS="${AUTO_INSTALL_EVAL_DEPS:-true}"
 PIP_INDEX_URL="${PIP_INDEX_URL:-http://repo.huaweicloud.com/repository/pypi/simple/}"
+INFER_HEARTBEAT_SECONDS="${INFER_HEARTBEAT_SECONDS:-60}"
+SHARD_LOG_TAIL_LINES="${SHARD_LOG_TAIL_LINES:-120}"
 
 RUN_NAME="${RUN_NAME:-$(basename "${CHECKPOINT_DIR}")_${SPLIT}_$(date -u +%Y%m%d_%H%M%S)}"
 OUTPUT_DIR="${OUTPUT_DIR:-/cache/jn/outputs/infer_eval_visualize_${RUN_NAME}}"
@@ -82,6 +84,7 @@ else
   rm -rf "${SHARD_DIR}"
   mkdir -p "${SHARD_DIR}"
   PIDS=()
+  SHARD_LOGS=()
   for ((SHARD_INDEX=0; SHARD_INDEX<NPROC_PER_NODE; SHARD_INDEX++)); do
     DEVICE_ID="${VISIBLE_DEVICE_ITEMS[${SHARD_INDEX}]}"
     SHARD_JSONL="${SHARD_DIR}/predictions_shard_${SHARD_INDEX}.jsonl"
@@ -100,16 +103,52 @@ else
         --device "${DEVICE}"
     ) >"${SHARD_LOG}" 2>&1 &
     PIDS+=("$!")
+    SHARD_LOGS+=("${SHARD_LOG}")
   done
 
+  echo "[multi-infer] shard stdout/stderr is redirected to: ${SHARD_DIR}/predict_shard_*.log"
+  echo "[multi-infer] main process will print a heartbeat every ${INFER_HEARTBEAT_SECONDS}s while waiting."
+  (
+    while true; do
+      sleep "${INFER_HEARTBEAT_SECONDS}"
+      RUNNING=0
+      for PID in "${PIDS[@]}"; do
+        if kill -0 "${PID}" >/dev/null 2>&1; then
+          RUNNING=$((RUNNING + 1))
+        fi
+      done
+      echo "[multi-infer] waiting: running=${RUNNING}/${NPROC_PER_NODE}; logs=${SHARD_DIR}"
+      for LOG_PATH in "${SHARD_LOGS[@]}"; do
+        if [ -s "${LOG_PATH}" ]; then
+          echo "[multi-infer] $(basename "${LOG_PATH}") last line: $(tail -n 1 "${LOG_PATH}")"
+        fi
+      done
+    done
+  ) &
+  HEARTBEAT_PID="$!"
+
   FAILED=0
-  for PID in "${PIDS[@]}"; do
-    if ! wait "${PID}"; then
+  for SHARD_INDEX in "${!PIDS[@]}"; do
+    PID="${PIDS[${SHARD_INDEX}]}"
+    if wait "${PID}"; then
+      echo "[multi-infer] shard ${SHARD_INDEX} completed"
+    else
+      echo "[multi-infer] shard ${SHARD_INDEX} failed; log=${SHARD_LOGS[${SHARD_INDEX}]}" >&2
       FAILED=1
     fi
   done
+  kill "${HEARTBEAT_PID}" >/dev/null 2>&1 || true
+  wait "${HEARTBEAT_PID}" >/dev/null 2>&1 || true
   if [ "${FAILED}" -ne 0 ]; then
     echo "ERROR: at least one inference shard failed. Logs are under ${SHARD_DIR}" >&2
+    for LOG_PATH in "${SHARD_LOGS[@]}"; do
+      echo "==================== tail -n ${SHARD_LOG_TAIL_LINES} ${LOG_PATH} ====================" >&2
+      if [ -f "${LOG_PATH}" ]; then
+        tail -n "${SHARD_LOG_TAIL_LINES}" "${LOG_PATH}" >&2 || true
+      else
+        echo "missing log file" >&2
+      fi
+    done
     exit 1
   fi
 

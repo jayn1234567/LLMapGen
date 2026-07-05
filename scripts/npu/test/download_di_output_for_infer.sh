@@ -142,7 +142,7 @@ for checkpoint_name in downloaded_checkpoints:
 print("============================================================", flush=True)
 PY
 
-echo "下载完成！"
+echo "Download complete!"
 echo "RUN_ROOT=${LOCAL_RUN_ROOT}"
 for checkpoint_name in ${CHECKPOINT_NAMES//,/ }; do
   echo "CHECKPOINT_DIR=${LOCAL_RUN_ROOT}/${checkpoint_name}"

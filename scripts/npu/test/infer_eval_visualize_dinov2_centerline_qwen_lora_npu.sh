@@ -10,6 +10,7 @@ export TOKENIZERS_PARALLELISM="${TOKENIZERS_PARALLELISM:-false}"
 export HCCL_CONNECT_TIMEOUT="${HCCL_CONNECT_TIMEOUT:-1800}"
 export ASCEND_RT_VISIBLE_DEVICES="${ASCEND_RT_VISIBLE_DEVICES:-${NPU_VISIBLE_DEVICES:-0}}"
 
+NPROC_PER_NODE="${NPROC_PER_NODE:-1}"
 CHECKPOINT_DIR="${CHECKPOINT_DIR:-/cache/jn/checkpoint-29610}"
 RUN_ROOT="${RUN_ROOT:-}"
 RUN_ARGS_JSON="${RUN_ARGS_JSON:-}"
@@ -34,6 +35,7 @@ RUN_NAME="${RUN_NAME:-$(basename "${CHECKPOINT_DIR}")_${SPLIT}_$(date -u +%Y%m%d
 OUTPUT_DIR="${OUTPUT_DIR:-/cache/jn/outputs/infer_eval_visualize_${RUN_NAME}}"
 PRED_JSONL="${PRED_JSONL:-${OUTPUT_DIR}/predictions.jsonl}"
 PRED_SUMMARY_JSON="${PRED_SUMMARY_JSON:-${OUTPUT_DIR}/predict_summary.json}"
+SHARD_DIR="${SHARD_DIR:-${OUTPUT_DIR}/shards}"
 
 mkdir -p "${OUTPUT_DIR}"
 
@@ -46,7 +48,6 @@ PREDICT_ARGS=(
   --summary-json "${PRED_SUMMARY_JSON}"
   --max-samples "${MAX_SAMPLES}"
   --max-new-tokens "${MAX_NEW_TOKENS}"
-  --device "${DEVICE}"
 )
 
 if [ -n "${RUN_ROOT}" ]; then
@@ -67,9 +68,94 @@ echo "Trainroot:  ${TRAINROOT}"
 echo "Split:      ${SPLIT}"
 echo "Output:     ${OUTPUT_DIR}"
 echo "Device:     ${DEVICE}, visible=${ASCEND_RT_VISIBLE_DEVICES}"
+echo "NPROC:      ${NPROC_PER_NODE}"
 echo "============================================================"
 
-python "${PREDICT_ARGS[@]}"
+if [ "${NPROC_PER_NODE}" -le 1 ]; then
+  python "${PREDICT_ARGS[@]}" --device "${DEVICE}"
+else
+  IFS=',' read -r -a VISIBLE_DEVICE_ITEMS <<< "${ASCEND_RT_VISIBLE_DEVICES}"
+  if [ "${#VISIBLE_DEVICE_ITEMS[@]}" -lt "${NPROC_PER_NODE}" ]; then
+    echo "ERROR: NPROC_PER_NODE=${NPROC_PER_NODE}, but ASCEND_RT_VISIBLE_DEVICES has only ${#VISIBLE_DEVICE_ITEMS[@]} entries: ${ASCEND_RT_VISIBLE_DEVICES}" >&2
+    exit 1
+  fi
+  rm -rf "${SHARD_DIR}"
+  mkdir -p "${SHARD_DIR}"
+  PIDS=()
+  for ((SHARD_INDEX=0; SHARD_INDEX<NPROC_PER_NODE; SHARD_INDEX++)); do
+    DEVICE_ID="${VISIBLE_DEVICE_ITEMS[${SHARD_INDEX}]}"
+    SHARD_JSONL="${SHARD_DIR}/predictions_shard_${SHARD_INDEX}.jsonl"
+    SHARD_SUMMARY="${SHARD_DIR}/predict_summary_shard_${SHARD_INDEX}.json"
+    SHARD_LOG="${SHARD_DIR}/predict_shard_${SHARD_INDEX}.log"
+    echo "[multi-infer] start shard ${SHARD_INDEX}/${NPROC_PER_NODE} on visible device ${DEVICE_ID}"
+    (
+      export ASCEND_RT_VISIBLE_DEVICES="${DEVICE_ID}"
+      export ASCEND_VISIBLE_DEVICES="${DEVICE_ID}"
+      export NPU_VISIBLE_DEVICES="${DEVICE_ID}"
+      python "${PREDICT_ARGS[@]}" \
+        --output-jsonl "${SHARD_JSONL}" \
+        --summary-json "${SHARD_SUMMARY}" \
+        --num-shards "${NPROC_PER_NODE}" \
+        --shard-index "${SHARD_INDEX}" \
+        --device "${DEVICE}"
+    ) >"${SHARD_LOG}" 2>&1 &
+    PIDS+=("$!")
+  done
+
+  FAILED=0
+  for PID in "${PIDS[@]}"; do
+    if ! wait "${PID}"; then
+      FAILED=1
+    fi
+  done
+  if [ "${FAILED}" -ne 0 ]; then
+    echo "ERROR: at least one inference shard failed. Logs are under ${SHARD_DIR}" >&2
+    exit 1
+  fi
+
+  python - "${SHARD_DIR}" "${PRED_JSONL}" "${PRED_SUMMARY_JSON}" "${NPROC_PER_NODE}" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+shard_dir = Path(sys.argv[1])
+output_jsonl = Path(sys.argv[2])
+summary_json = Path(sys.argv[3])
+nproc = int(sys.argv[4])
+output_jsonl.parent.mkdir(parents=True, exist_ok=True)
+
+total = 0
+parse_ok = 0
+summaries = []
+with output_jsonl.open("w", encoding="utf-8") as out:
+    for shard_index in range(nproc):
+        shard_path = shard_dir / f"predictions_shard_{shard_index}.jsonl"
+        if not shard_path.is_file():
+            raise FileNotFoundError(shard_path)
+        with shard_path.open("r", encoding="utf-8") as src:
+            for line in src:
+                if line.strip():
+                    out.write(line)
+                    total += 1
+        shard_summary_path = shard_dir / f"predict_summary_shard_{shard_index}.json"
+        if shard_summary_path.is_file():
+            payload = json.loads(shard_summary_path.read_text(encoding="utf-8"))
+            summaries.append(payload)
+            parse_ok += int(payload.get("parse_ok", 0) or 0)
+
+summary = {
+    "mode": "multi_shard_inference",
+    "num_shards": nproc,
+    "output_jsonl": str(output_jsonl),
+    "num_rows": total,
+    "parse_ok": parse_ok,
+    "parse_ok_rate": (parse_ok / total) if total else 0.0,
+    "shard_summaries": summaries,
+}
+summary_json.write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
+print(json.dumps(summary, ensure_ascii=False, indent=2), flush=True)
+PY
+fi
 
 if [ "${AUTO_INSTALL_EVAL_DEPS}" = "true" ]; then
   python - <<'PY'

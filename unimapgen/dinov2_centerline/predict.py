@@ -39,6 +39,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output-jsonl", type=str, required=True)
     parser.add_argument("--summary-json", type=str, default="")
     parser.add_argument("--max-samples", type=int, default=0)
+    parser.add_argument("--num-shards", type=int, default=1, help="Total dataset shards for parallel inference.")
+    parser.add_argument("--shard-index", type=int, default=0, help="This process shard index, 0-based.")
     parser.add_argument("--shuffle", action="store_true")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--max-new-tokens", type=int, default=3072)
@@ -451,6 +453,13 @@ def main() -> None:
         random.Random(int(args.seed)).shuffle(rows)
     if int(args.max_samples) > 0:
         rows = rows[: int(args.max_samples)]
+    num_shards = max(1, int(args.num_shards))
+    shard_index = int(args.shard_index)
+    if shard_index < 0 or shard_index >= num_shards:
+        raise ValueError(f"--shard-index must be in [0, {num_shards}), got {shard_index}.")
+    total_rows_before_shard = len(rows)
+    if num_shards > 1:
+        rows = [row for idx, row in enumerate(rows) if idx % num_shards == shard_index]
     meta_rows = load_jsonl(dataset_meta_path) if dataset_meta_path is not None else []
     meta_by_id = {str(item.get("id", "")): item for item in meta_rows if str(item.get("id", "")).strip()}
 
@@ -573,6 +582,9 @@ def main() -> None:
         "dataset_meta_jsonl": str(dataset_meta_path or ""),
         "media_dir": str(media_dir),
         "output_jsonl": str(output_jsonl),
+        "num_shards": int(num_shards),
+        "shard_index": int(shard_index),
+        "total_rows_before_shard": int(total_rows_before_shard),
         "num_rows": int(total),
         "parse_ok": int(parse_ok),
         "parse_ok_rate": float(parse_ok) / float(total) if total > 0 else 0.0,

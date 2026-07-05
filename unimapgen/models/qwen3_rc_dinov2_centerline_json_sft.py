@@ -382,6 +382,9 @@ class Qwen3RCDinoCenterlineJSONSFTModel(nn.Module):
         model_name_or_path: str,
         tokenizer: Any,
         dinov2_model_name_or_path: str,
+        vision_model_name_or_path: str = "",
+        vision_patch_size: int = 14,
+        vision_num_prefix_tokens: int = -1,
         num_visual_tokens: int,
         visual_grid_size: int,
         encoder_visual_grid_size: int = 0,
@@ -508,13 +511,16 @@ class Qwen3RCDinoCenterlineJSONSFTModel(nn.Module):
         if self.vis_patch_token_id < 0:
             raise ValueError("Tokenizer is missing required <vis_patch> token.")
 
+        resolved_vision_model_name_or_path = str(vision_model_name_or_path).strip() or str(dinov2_model_name_or_path)
+        prefix_tokens = None if int(vision_num_prefix_tokens) < 0 else int(vision_num_prefix_tokens)
         self.vision_encoder = SatelliteEncoder(
-            model_name=str(dinov2_model_name_or_path),
+            model_name=resolved_vision_model_name_or_path,
             local_files_only=bool(local_files_only),
             use_fallback=False,
             out_hw=None,
-            patch_size=14,
+            patch_size=int(vision_patch_size),
             drop_cls_token=True,
+            num_prefix_tokens=prefix_tokens,
             normalize_input=True,
         )
         has_visual_encoder_checkpoint = bool(str(visual_encoder_checkpoint_path).strip())

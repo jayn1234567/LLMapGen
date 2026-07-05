@@ -32,6 +32,8 @@ WORK_ROOT=${WORK_ROOT:-/cache/llmapgen}
 DATASET_OBS_PATH=${DATASET_OBS_PATH:-obs://yw-ads-training-gy1/data/external/personal/h58801830/whu/jn/data/prepared_lane_intersection_trainroot.zip}
 QWEN_MODEL_OBS_PATH=${QWEN_MODEL_OBS_PATH:-obs://yw-ads-training-gy1/data/external/personal/h58801830/whu/jn/checkpoint/Qwen3-8B}
 DINOV2_MODEL_OBS_PATH=${DINOV2_MODEL_OBS_PATH:-obs://yw-ads-training-gy1/data/external/personal/h58801830/whu/jjh/checkpoints/facebook_dinov2-large}
+VISION_MODEL_OBS_PATH=${VISION_MODEL_OBS_PATH:-${DINOV2_MODEL_OBS_PATH}}
+VISION_MODEL_FAMILY=${VISION_MODEL_FAMILY:-dinov2}
 ASSET_OBS_PATH=${ASSET_OBS_PATH:-obs://yw-ads-training-gy1/data/external/personal/h58801830/whu/jn/model/dinov2_centerline_assets_qwen3_8b}
 
 DATASET_ZIP_PATH=${DATASET_ZIP_PATH:-${OBS_CACHE}/dataset_${RUN_ID}.zip}
@@ -41,6 +43,7 @@ TRAINROOT=${TRAINROOT:-${DATASET_EXTRACT_ROOT}/${TRAINROOT_DIR_NAME}}
 
 QWEN_PATH=${QWEN_PATH:-${WORK_ROOT}/model/Qwen3-8B}
 DINOV2_PATH=${DINOV2_PATH:-${WORK_ROOT}/model/dinov2-large}
+VISION_PATH=${VISION_PATH:-${DINOV2_PATH}}
 ASSET_DIR=${ASSET_DIR:-${WORK_ROOT}/model/dinov2_centerline_assets_qwen3_8b}
 VISUAL_ENCODER_CHECKPOINT_PATH=${VISUAL_ENCODER_CHECKPOINT_PATH:-${ASSET_DIR}/visual_encoder_checkpoint.pt}
 BRIDGE_MODULES_STATE_PATH=${BRIDGE_MODULES_STATE_PATH:-${ASSET_DIR}/bridge_modules_state.pt}
@@ -69,6 +72,8 @@ MAX_EVAL_SAMPLES=${MAX_EVAL_SAMPLES:-0}
 CUTOFF_LEN=${CUTOFF_LEN:-7168}
 IMAGE_SIZE=${IMAGE_SIZE:-512}
 ENCODER_INPUT_PAD_SIZE=${ENCODER_INPUT_PAD_SIZE:-518}
+VISION_PATCH_SIZE=${VISION_PATCH_SIZE:-14}
+VISION_NUM_PREFIX_TOKENS=${VISION_NUM_PREFIX_TOKENS:--1}
 FREEZE_LANGUAGE_MODEL=${FREEZE_LANGUAGE_MODEL:-false}
 FREEZE_VISION_ENCODER=${FREEZE_VISION_ENCODER:-true}
 VISION_TRAIN_LAST_N_LAYERS=${VISION_TRAIN_LAST_N_LAYERS:-4}
@@ -215,13 +220,13 @@ unzip -q "${DATASET_ZIP_PATH}" -d "${DATASET_EXTRACT_ROOT}"
 
 echo "[di-download] qwen: ${QWEN_MODEL_OBS_PATH} -> ${QWEN_PATH}"
 python -c "import moxing as mox; mox.file.copy_parallel('${QWEN_MODEL_OBS_PATH}', '${QWEN_PATH}')"
-echo "[di-download] dinov2: ${DINOV2_MODEL_OBS_PATH} -> ${DINOV2_PATH}"
-python -c "import moxing as mox; mox.file.copy_parallel('${DINOV2_MODEL_OBS_PATH}', '${DINOV2_PATH}')"
+echo "[di-download] vision(${VISION_MODEL_FAMILY}): ${VISION_MODEL_OBS_PATH} -> ${VISION_PATH}"
+python -c "import moxing as mox; mox.file.copy_parallel('${VISION_MODEL_OBS_PATH}', '${VISION_PATH}')"
 if [[ "${USE_PRETRAINED_VISUAL_BRIDGE}" =~ ^(1|true|True|TRUE|yes|YES)$ ]]; then
   echo "[di-download] bridge assets: ${ASSET_OBS_PATH} -> ${ASSET_DIR}"
   python -c "import moxing as mox; mox.file.copy_parallel('${ASSET_OBS_PATH}', '${ASSET_DIR}')"
 else
-  echo "[di-download] skip bridge assets; using original DINOv2 and randomly initialized alignment modules."
+  echo "[di-download] skip bridge assets; using ${VISION_MODEL_FAMILY} vision checkpoint and randomly initialized alignment modules."
   VISUAL_ENCODER_CHECKPOINT_PATH=""
   BRIDGE_MODULES_STATE_PATH=""
 fi
@@ -236,7 +241,7 @@ fi
 for path in \
   "${TRAINROOT}/train.jsonl" \
   "${QWEN_PATH}/config.json" \
-  "${DINOV2_PATH}/config.json"; do
+  "${VISION_PATH}/config.json"; do
   if [ ! -e "${path}" ]; then
     echo "ERROR: required path not found: ${path}"
     echo "Dataset extract summary:"
@@ -284,7 +289,7 @@ echo "============================================================"
 echo "Run id:       ${RUN_ID}"
 echo "Trainroot:    ${TRAINROOT}"
 echo "Qwen:         ${QWEN_PATH}"
-echo "DINOv2:       ${DINOV2_PATH}"
+echo "Vision:       ${VISION_PATH} (${VISION_MODEL_FAMILY}, patch=${VISION_PATCH_SIZE}, prefix=${VISION_NUM_PREFIX_TOKENS})"
 echo "Visual ckpt:  ${VISUAL_ENCODER_CHECKPOINT_PATH}"
 echo "Bridge state: ${BRIDGE_MODULES_STATE_PATH}"
 echo "Pretrained visual bridge: ${USE_PRETRAINED_VISUAL_BRIDGE}"
@@ -305,7 +310,10 @@ torchrun \
   scripts/train_dinov2_centerline.py \
   --trainroot "${TRAINROOT}" \
   --model-name-or-path "${QWEN_PATH}" \
-  --dinov2-model-name-or-path "${DINOV2_PATH}" \
+  --dinov2-model-name-or-path "${VISION_PATH}" \
+  --vision-model-name-or-path "${VISION_PATH}" \
+  --vision-patch-size "${VISION_PATCH_SIZE}" \
+  --vision-num-prefix-tokens "${VISION_NUM_PREFIX_TOKENS}" \
   "${VISUAL_BRIDGE_ARGS[@]}" \
   --output-dir "${OUTPUT_PATH}" \
   --num-train-epochs "${NUM_TRAIN_EPOCHS}" \

@@ -35,6 +35,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--model-name-or-path", type=str, default=os.environ.get("MODEL_NAME_OR_PATH", ""))
     parser.add_argument("--tokenizer-name-or-path", type=str, default=os.environ.get("TOKENIZER_NAME_OR_PATH", ""))
     parser.add_argument("--dinov2-model-name-or-path", type=str, default=os.environ.get("DINOV2_MODEL_NAME_OR_PATH", ""))
+    parser.add_argument("--vision-model-name-or-path", type=str, default=os.environ.get("VISION_MODEL_NAME_OR_PATH", ""))
+    parser.add_argument("--vision-patch-size", type=int, default=int(os.environ.get("VISION_PATCH_SIZE", "14")))
+    parser.add_argument("--vision-num-prefix-tokens", type=int, default=int(os.environ.get("VISION_NUM_PREFIX_TOKENS", "-1")))
     parser.add_argument("--visual-encoder-checkpoint-path", type=str, default=os.environ.get("VISUAL_ENCODER_CHECKPOINT_PATH", ""))
     parser.add_argument("--bridge-modules-state-path", type=str, default=os.environ.get("BRIDGE_MODULES_STATE_PATH", ""))
     parser.add_argument("--map-task", type=str, default=os.environ.get("MAP_TASK", "lane_intersection"))
@@ -123,13 +126,16 @@ def load_training_args_output_dir(checkpoint_dir: Path) -> Path | None:
 
 def fallback_run_args_from_cli(args: argparse.Namespace) -> Dict[str, Any]:
     model_name_or_path = str(args.model_name_or_path).strip()
-    dinov2_model_name_or_path = str(args.dinov2_model_name_or_path).strip()
-    if not model_name_or_path or not dinov2_model_name_or_path:
+    vision_model_name_or_path = str(args.vision_model_name_or_path).strip() or str(args.dinov2_model_name_or_path).strip()
+    if not model_name_or_path or not vision_model_name_or_path:
         return {}
     return {
         "model_name_or_path": model_name_or_path,
         "tokenizer_name_or_path": str(args.tokenizer_name_or_path).strip() or model_name_or_path,
-        "dinov2_model_name_or_path": dinov2_model_name_or_path,
+        "dinov2_model_name_or_path": str(args.dinov2_model_name_or_path).strip() or vision_model_name_or_path,
+        "vision_model_name_or_path": vision_model_name_or_path,
+        "vision_patch_size": int(args.vision_patch_size),
+        "vision_num_prefix_tokens": int(args.vision_num_prefix_tokens),
         "visual_encoder_checkpoint_path": str(args.visual_encoder_checkpoint_path).strip(),
         "bridge_modules_state_path": str(args.bridge_modules_state_path).strip(),
         "image_size": int(args.image_size),
@@ -187,7 +193,7 @@ def load_run_args(run_root: Path, checkpoint_dir: Path, explicit_args_json: str 
     raise FileNotFoundError(
         "Missing args.json and no fallback model paths were provided. "
         f"looked_for={[str(item) for item in candidates]}. "
-        "Set MODEL_NAME_OR_PATH and DINOV2_MODEL_NAME_OR_PATH, or pass --run-root/--run-args-json."
+        "Set MODEL_NAME_OR_PATH and VISION_MODEL_NAME_OR_PATH/DINOV2_MODEL_NAME_OR_PATH, or pass --run-root/--run-args-json."
     )
 
 
@@ -196,6 +202,7 @@ def apply_runtime_path_overrides(saved_args: Dict[str, Any], args: argparse.Name
         "model_name_or_path": args.model_name_or_path,
         "tokenizer_name_or_path": args.tokenizer_name_or_path,
         "dinov2_model_name_or_path": args.dinov2_model_name_or_path,
+        "vision_model_name_or_path": args.vision_model_name_or_path,
         "visual_encoder_checkpoint_path": args.visual_encoder_checkpoint_path,
         "bridge_modules_state_path": args.bridge_modules_state_path,
     }
@@ -534,10 +541,15 @@ def main() -> None:
 
     image_size = int(saved_args.get("image_size", 512))
     encoder_input_pad_size = int(saved_args.get("encoder_input_pad_size", 518))
+    vision_patch_size = int(saved_args.get("vision_patch_size", args.vision_patch_size))
+    vision_num_prefix_tokens = int(saved_args.get("vision_num_prefix_tokens", args.vision_num_prefix_tokens))
+    vision_model_name_or_path = str(
+        saved_args.get("vision_model_name_or_path") or saved_args.get("dinov2_model_name_or_path", "")
+    ).strip()
     encoder_visual_grid_size, encoder_tokens_per_view = infer_visual_layout(
         image_size=image_size,
         encoder_input_pad_size=encoder_input_pad_size,
-        patch_size=14,
+        patch_size=int(vision_patch_size),
     )
     visual_token_compressor = str(saved_args.get("visual_token_compressor", "none")).strip().lower()
     if visual_token_compressor in {"", "none", "identity"}:
@@ -606,6 +618,9 @@ def main() -> None:
         model_name_or_path=model_source_for(checkpoint_dir, saved_args),
         tokenizer=tokenizer,
         dinov2_model_name_or_path=str(saved_args["dinov2_model_name_or_path"]),
+        vision_model_name_or_path=vision_model_name_or_path,
+        vision_patch_size=int(vision_patch_size),
+        vision_num_prefix_tokens=int(vision_num_prefix_tokens),
         visual_encoder_checkpoint_path=str(saved_args.get("visual_encoder_checkpoint_path", "")),
         modules_state_path=modules_state_for(checkpoint_dir, run_root, saved_args),
         num_visual_tokens=int(num_visual_tokens),

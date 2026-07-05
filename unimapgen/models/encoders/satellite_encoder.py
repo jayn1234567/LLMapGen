@@ -33,6 +33,7 @@ class SatelliteEncoder(nn.Module):
         out_hw: Tuple[int, int] = (8, 8),
         patch_size: int = 14,
         drop_cls_token: bool = True,
+        num_prefix_tokens: int | None = None,
         normalize_input: bool = True,
         image_mean: Sequence[float] = (0.485, 0.456, 0.406),
         image_std: Sequence[float] = (0.229, 0.224, 0.225),
@@ -43,6 +44,7 @@ class SatelliteEncoder(nn.Module):
         self.out_hw = (int(out_hw[0]), int(out_hw[1])) if out_hw is not None else None
         self.patch_size = max(1, int(patch_size))
         self.drop_cls_token = bool(drop_cls_token)
+        self.num_prefix_tokens = None if num_prefix_tokens is None else max(0, int(num_prefix_tokens))
         self.normalize_input = bool(normalize_input)
         self.register_buffer(
             "pixel_mean",
@@ -66,6 +68,8 @@ class SatelliteEncoder(nn.Module):
                     torch_dtype="auto",
                 )
                 self.hidden_size = int(getattr(self.model.config, "hidden_size", fallback_dim))
+                if self.num_prefix_tokens is None:
+                    self.num_prefix_tokens = self._infer_num_prefix_tokens()
                 if AutoImageProcessor is not None:
                     try:
                         proc = AutoImageProcessor.from_pretrained(
@@ -82,13 +86,16 @@ class SatelliteEncoder(nn.Module):
                         pass
                 print(
                     f"[SatelliteEncoder] use DINO backbone: {model_name} "
-                    f"(hidden={self.hidden_size}, load={time.time() - load_start:.1f}s)",
+                    f"(hidden={self.hidden_size}, patch={self.patch_size}, "
+                    f"prefix_tokens={self.num_prefix_tokens}, load={time.time() - load_start:.1f}s)",
                     flush=True,
                 )
             except Exception:
                 self.use_fallback = True
 
         if self.use_fallback:
+            if self.num_prefix_tokens is None:
+                self.num_prefix_tokens = 0
             fb_hw = self.out_hw if self.out_hw is not None else tuple(fallback_hw)
             self.model = SimpleBEVEncoder(
                 in_ch=3,
@@ -110,8 +117,9 @@ class SatelliteEncoder(nn.Module):
             x = (x - self.pixel_mean.to(dtype=x.dtype, device=x.device)) / self.pixel_std.to(dtype=x.dtype, device=x.device).clamp_min(1e-6)
         out = self.model(pixel_values=x)
         tok = out.last_hidden_state
-        if self.drop_cls_token and tok.shape[1] > 1:
-            tok = tok[:, 1:, :]
+        prefix_tokens = int(self.num_prefix_tokens or 0)
+        if prefix_tokens > 0 and tok.shape[1] > prefix_tokens:
+            tok = tok[:, prefix_tokens:, :]
         if self.out_hw is not None:
             tok = self._pool_patch_tokens(tok, h=int(image.shape[-2]), w=int(image.shape[-1]))
             token_hw = self.out_hw
@@ -167,3 +175,26 @@ class SatelliteEncoder(nn.Module):
         feat = tokens.view(b, gh, gw, d).permute(0, 3, 1, 2).contiguous()
         pooled = F.adaptive_avg_pool2d(feat, output_size=self.out_hw)
         return pooled.flatten(2).transpose(1, 2).contiguous()
+
+    def _infer_num_prefix_tokens(self) -> int:
+        if not self.drop_cls_token:
+            return 0
+        register_count = 0
+        config = getattr(self.model, "config", None)
+        for name in ("num_register_tokens", "num_registers", "num_reg_tokens"):
+            value = getattr(config, name, None)
+            if value is not None:
+                try:
+                    register_count = int(value)
+                    break
+                except (TypeError, ValueError):
+                    pass
+        if register_count <= 0:
+            embeddings = getattr(self.model, "embeddings", None)
+            reg_tokens = getattr(embeddings, "register_tokens", None)
+            if torch.is_tensor(reg_tokens):
+                if reg_tokens.ndim >= 2:
+                    register_count = int(reg_tokens.shape[-2])
+                elif reg_tokens.ndim == 1:
+                    register_count = 1
+        return 1 + max(0, int(register_count))

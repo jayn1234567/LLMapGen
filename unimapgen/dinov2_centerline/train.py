@@ -46,7 +46,7 @@ GLOBAL_LOCAL_VIEW_PROMPT = (
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Train the minimal DINOv2 -> Qwen centerline JSON SFT model. "
+            "Train the minimal DINO-family -> Qwen centerline JSON SFT model. "
             "Use --trainroot for the common train.jsonl/meta_train.jsonl layout, "
             "or pass --dataset-jsonl/--media-dir explicitly."
         )
@@ -56,6 +56,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--model-name-or-path", type=str, required=True, help="Base Qwen/Qwen3 language model path.")
     parser.add_argument("--tokenizer-name-or-path", type=str, default="", help="Defaults to --model-name-or-path.")
     parser.add_argument("--dinov2-model-name-or-path", type=str, default="", help="DINOv2 ViT-L/14 checkpoint path.")
+    parser.add_argument("--vision-model-name-or-path", type=str, default="", help="Generic DINO-family vision checkpoint path. Defaults to --dinov2-model-name-or-path.")
+    parser.add_argument("--vision-patch-size", type=int, default=14, help="Vision encoder patch size. Use 14 for DINOv2-L/14 and 16 for DINOv3 ViT/16.")
+    parser.add_argument("--vision-num-prefix-tokens", type=int, default=-1, help="Number of non-patch tokens to drop before patch tokens. -1 auto-detects CLS/register tokens.")
     parser.add_argument("--visual-encoder-checkpoint-path", type=str, default="")
     parser.add_argument("--bridge-modules-state-path", type=str, default="")
     parser.add_argument("--local-files-only", action="store_true")
@@ -158,7 +161,7 @@ def parse_args() -> argparse.Namespace:
         "--vision-train-last-n-layers",
         type=int,
         default=0,
-        help="When --freeze-vision-encoder is true, unfreeze only the last N DINOv2 transformer layers.",
+        help="When --freeze-vision-encoder is true, unfreeze only the last N DINO-family transformer layers.",
     )
     parser.add_argument("--no-lora", action="store_true")
     parser.add_argument("--lora-rank", type=int, default=32)
@@ -280,15 +283,20 @@ def main() -> None:
     if visual_encoder_checkpoint_path:
         inferred_ckpt_args = inspect_visual_encoder_checkpoint(visual_encoder_checkpoint_path)
 
-    dinov2_model_name_or_path = str(args.dinov2_model_name_or_path).strip() or str(
+    vision_model_name_or_path = str(args.vision_model_name_or_path).strip() or str(
+        args.dinov2_model_name_or_path
+    ).strip() or str(
         inferred_ckpt_args.get("dinov2_model_name_or_path", "")
     ).strip()
-    if not dinov2_model_name_or_path:
+    if not vision_model_name_or_path:
         raise ValueError(
-            "dinov2_model_name_or_path is required. Pass --dinov2-model-name-or-path, "
+            "vision_model_name_or_path is required. Pass --vision-model-name-or-path or --dinov2-model-name-or-path, "
             "or provide --visual-encoder-checkpoint-path with saved args."
         )
-    args.dinov2_model_name_or_path = dinov2_model_name_or_path
+    args.vision_model_name_or_path = vision_model_name_or_path
+    args.dinov2_model_name_or_path = str(args.dinov2_model_name_or_path).strip() or vision_model_name_or_path
+    args.vision_patch_size = int(args.vision_patch_size)
+    args.vision_num_prefix_tokens = int(args.vision_num_prefix_tokens)
 
     encoder_input_pad_size = int(args.encoder_input_pad_size)
     if encoder_input_pad_size <= 0:
@@ -297,7 +305,7 @@ def main() -> None:
     encoder_visual_grid_size, encoder_tokens_per_view = infer_visual_layout(
         image_size=int(args.image_size),
         encoder_input_pad_size=int(encoder_input_pad_size),
-        patch_size=14,
+        patch_size=int(args.vision_patch_size),
     )
     visual_token_compressor = str(args.visual_token_compressor).strip().lower()
     if visual_token_compressor == "none":
@@ -336,7 +344,10 @@ def main() -> None:
             {
                 "stage": "dinov2_centerline_train_setup",
                 "model": str(args.model_name_or_path),
-                "dinov2_model": dinov2_model_name_or_path,
+                "dinov2_model": args.dinov2_model_name_or_path,
+                "vision_model": vision_model_name_or_path,
+                "vision_patch_size": int(args.vision_patch_size),
+                "vision_num_prefix_tokens": int(args.vision_num_prefix_tokens),
                 "dataset_jsonl": str(dataset_path),
                 "dataset_meta_jsonl": str(dataset_meta_path or ""),
                 "eval_dataset_jsonl": str(eval_dataset_path or ""),
@@ -429,7 +440,10 @@ def main() -> None:
     model = Qwen3RCDinoCenterlineJSONSFTModel(
         model_name_or_path=str(args.model_name_or_path),
         tokenizer=tokenizer,
-        dinov2_model_name_or_path=dinov2_model_name_or_path,
+        dinov2_model_name_or_path=str(args.dinov2_model_name_or_path),
+        vision_model_name_or_path=str(args.vision_model_name_or_path),
+        vision_patch_size=int(args.vision_patch_size),
+        vision_num_prefix_tokens=int(args.vision_num_prefix_tokens),
         visual_encoder_checkpoint_path=visual_encoder_checkpoint_path,
         modules_state_path=str(args.bridge_modules_state_path).strip(),
         num_visual_tokens=int(num_visual_tokens),

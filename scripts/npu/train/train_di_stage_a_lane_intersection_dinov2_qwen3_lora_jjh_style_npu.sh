@@ -48,6 +48,8 @@ ASSET_DIR=${ASSET_DIR:-${WORK_ROOT}/model/dinov2_centerline_assets_qwen3_8b}
 VISUAL_ENCODER_CHECKPOINT_PATH=${VISUAL_ENCODER_CHECKPOINT_PATH:-${ASSET_DIR}/visual_encoder_checkpoint.pt}
 BRIDGE_MODULES_STATE_PATH=${BRIDGE_MODULES_STATE_PATH:-${ASSET_DIR}/bridge_modules_state.pt}
 USE_PRETRAINED_VISUAL_BRIDGE=${USE_PRETRAINED_VISUAL_BRIDGE:-true}
+USE_VISUAL_ENCODER_CHECKPOINT=${USE_VISUAL_ENCODER_CHECKPOINT:-${USE_PRETRAINED_VISUAL_BRIDGE}}
+VISUAL_ENCODER_CHECKPOINT_OBS_PATH=${VISUAL_ENCODER_CHECKPOINT_OBS_PATH:-}
 
 CLOUD_OUTPUT_PATH=${OSB_SHARE_PATH:+${OSB_SHARE_PATH%/}/${RUN_ID}}
 LOCAL_MODEL_SAVE_ROOT=${LOCAL_MODEL_SAVE_ROOT:-/cache/local_model_save_path}
@@ -227,8 +229,16 @@ if [[ "${USE_PRETRAINED_VISUAL_BRIDGE}" =~ ^(1|true|True|TRUE|yes|YES)$ ]]; then
   python -c "import moxing as mox; mox.file.copy_parallel('${ASSET_OBS_PATH}', '${ASSET_DIR}')"
 else
   echo "[di-download] skip bridge assets; using ${VISION_MODEL_FAMILY} vision checkpoint and randomly initialized alignment modules."
-  VISUAL_ENCODER_CHECKPOINT_PATH=""
   BRIDGE_MODULES_STATE_PATH=""
+fi
+if [[ "${USE_VISUAL_ENCODER_CHECKPOINT}" =~ ^(1|true|True|TRUE|yes|YES)$ ]]; then
+  if [ -n "${VISUAL_ENCODER_CHECKPOINT_OBS_PATH}" ]; then
+    mkdir -p "$(dirname "${VISUAL_ENCODER_CHECKPOINT_PATH}")"
+    echo "[di-download] visual encoder checkpoint: ${VISUAL_ENCODER_CHECKPOINT_OBS_PATH} -> ${VISUAL_ENCODER_CHECKPOINT_PATH}"
+    python -c "import moxing as mox; mox.file.copy('${VISUAL_ENCODER_CHECKPOINT_OBS_PATH}', '${VISUAL_ENCODER_CHECKPOINT_PATH}')"
+  fi
+else
+  VISUAL_ENCODER_CHECKPOINT_PATH=""
 fi
 
 if [ ! -f "${TRAINROOT}/train.jsonl" ]; then
@@ -249,9 +259,14 @@ for path in \
     exit 1
   fi
 done
+if [[ "${USE_VISUAL_ENCODER_CHECKPOINT}" =~ ^(1|true|True|TRUE|yes|YES)$ ]]; then
+  if [ ! -e "${VISUAL_ENCODER_CHECKPOINT_PATH}" ]; then
+    echo "ERROR: required visual encoder checkpoint path not found: ${VISUAL_ENCODER_CHECKPOINT_PATH}"
+    exit 1
+  fi
+fi
 if [[ "${USE_PRETRAINED_VISUAL_BRIDGE}" =~ ^(1|true|True|TRUE|yes|YES)$ ]]; then
   for path in \
-    "${VISUAL_ENCODER_CHECKPOINT_PATH}" \
     "${BRIDGE_MODULES_STATE_PATH}"; do
     if [ ! -e "${path}" ]; then
       echo "ERROR: required pretrained bridge path not found: ${path}"
@@ -293,6 +308,7 @@ echo "Vision:       ${VISION_PATH} (${VISION_MODEL_FAMILY}, patch=${VISION_PATCH
 echo "Visual ckpt:  ${VISUAL_ENCODER_CHECKPOINT_PATH}"
 echo "Bridge state: ${BRIDGE_MODULES_STATE_PATH}"
 echo "Pretrained visual bridge: ${USE_PRETRAINED_VISUAL_BRIDGE}"
+echo "Visual encoder checkpoint enabled: ${USE_VISUAL_ENCODER_CHECKPOINT}"
 echo "Output:       ${OUTPUT_PATH}"
 echo "Cloud output: ${CLOUD_OUTPUT_PATH:-<empty>}"
 echo "NNODES/NPROC: ${NNODES}/${NPROC_PER_NODE}, rank=${NODE_RANK}, master=${MASTER_ADDR}:${MASTER_PORT}"

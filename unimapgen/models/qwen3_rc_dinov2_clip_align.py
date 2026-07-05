@@ -12,6 +12,7 @@ import torch.nn.functional as F
 from unimapgen.models.encoders.satellite_encoder import SatelliteEncoder
 from unimapgen.models.hf_utils import resolve_hf_snapshot_path
 from unimapgen.models.qwen3_rc_centerline_16745style import (
+    filter_state_dict_by_shape,
     load_optional_state_dict,
     resolve_torch_dtype,
     unwrap_model,
@@ -45,6 +46,103 @@ def extract_prefixed_state_dict(state_dict: Dict[str, torch.Tensor], prefixes: S
     return extracted
 
 
+def _tensor_state_dict(payload: Any) -> Dict[str, torch.Tensor]:
+    if not isinstance(payload, dict):
+        return {}
+    direct = {str(key): value for key, value in payload.items() if torch.is_tensor(value)}
+    if direct:
+        return direct
+    for key in (
+        "vision_encoder",
+        "encoder",
+        "backbone",
+        "model",
+        "state_dict",
+        "module",
+        "net",
+    ):
+        nested = payload.get(key)
+        nested_state = _tensor_state_dict(nested)
+        if nested_state:
+            return nested_state
+    return {}
+
+
+def _strip_common_prefixes(state_dict: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
+    prefixes = (
+        "module.",
+        "_orig_mod.",
+        "base_model.model.",
+        "base_model.",
+        "vision_encoder.",
+        "encoder.",
+        "backbone.",
+        "net.",
+    )
+    state = dict(state_dict)
+    changed = True
+    while changed:
+        changed = False
+        for prefix in prefixes:
+            if state and all(str(key).startswith(prefix) for key in state):
+                state = {str(key)[len(prefix) :]: value for key, value in state.items()}
+                changed = True
+                break
+    return state
+
+
+def _candidate_encoder_states(raw_state: Dict[str, torch.Tensor]) -> list[tuple[str, Dict[str, torch.Tensor]]]:
+    stripped = _strip_common_prefixes(raw_state)
+    candidates: list[tuple[str, Dict[str, torch.Tensor]]] = [
+        ("raw", raw_state),
+        ("stripped", stripped),
+    ]
+    if stripped and not all(str(key).startswith("model.") for key in stripped):
+        candidates.append(("stripped_plus_model", {f"model.{key}": value for key, value in stripped.items()}))
+    if raw_state and not all(str(key).startswith("model.") for key in raw_state):
+        candidates.append(("raw_plus_model", {f"model.{key}": value for key, value in raw_state.items()}))
+    deduped: list[tuple[str, Dict[str, torch.Tensor]]] = []
+    seen = set()
+    for name, state in candidates:
+        signature = tuple(sorted(state.keys())[:20])
+        if signature in seen:
+            continue
+        seen.add(signature)
+        deduped.append((name, state))
+    return deduped
+
+
+def _shape_match_score(module: nn.Module, state_dict: Dict[str, torch.Tensor]) -> tuple[int, int]:
+    target_state = module.state_dict()
+    filtered, _, _ = filter_state_dict_by_shape(target_state, state_dict)
+    matched_tensors = len(filtered)
+    matched_numel = sum(int(value.numel()) for value in filtered.values())
+    return matched_tensors, matched_numel
+
+
+def _select_encoder_state(vision_encoder: nn.Module, raw_state: Dict[str, torch.Tensor]) -> tuple[str, Dict[str, torch.Tensor]]:
+    best_name = ""
+    best_state: Dict[str, torch.Tensor] = {}
+    best_score = (0, 0)
+    for name, candidate in _candidate_encoder_states(raw_state):
+        score = _shape_match_score(vision_encoder, candidate)
+        if score > best_score:
+            best_name = name
+            best_state = candidate
+            best_score = score
+    if best_score[0] <= 0:
+        lora_keys = [key for key in raw_state if "lora" in str(key).lower()]
+        hint = ""
+        if lora_keys:
+            hint = (
+                " The checkpoint looks like a LoRA-only adapter because it contains LoRA keys. "
+                "Merge the LoRA adapter into the base DINOv3 weights first, or provide a checkpoint "
+                "that contains full vision encoder weights."
+            )
+        raise ValueError(f"Unable to match any visual encoder weights by shape.{hint}")
+    return best_name, best_state
+
+
 def load_visual_encoder_checkpoint(
     vision_encoder: nn.Module,
     checkpoint_path: str | Path,
@@ -53,23 +151,14 @@ def load_visual_encoder_checkpoint(
     if not ckpt_path.is_file():
         raise FileNotFoundError(f"Visual encoder checkpoint not found: {ckpt_path}")
     state = torch.load(str(ckpt_path), map_location="cpu", weights_only=False)
-    encoder_state: Dict[str, torch.Tensor] | None = None
-
-    if isinstance(state, dict):
-        if isinstance(state.get("vision_encoder"), dict):
-            encoder_state = dict(state["vision_encoder"])
-        elif isinstance(state.get("model"), dict):
-            encoder_state = extract_prefixed_state_dict(
-                state["model"],
-                prefixes=("encoder.", "module.encoder.", "vision_encoder.", "module.vision_encoder."),
-            )
-        else:
-            encoder_state = extract_prefixed_state_dict(
-                state,
-                prefixes=("encoder.", "module.encoder.", "vision_encoder.", "module.vision_encoder."),
-            )
+    encoder_state = _tensor_state_dict(state)
     if not encoder_state:
         raise ValueError(f"Unable to extract encoder weights from checkpoint: {ckpt_path}")
+    selected_name, encoder_state = _select_encoder_state(vision_encoder, encoder_state)
+    print(
+        f"[visual-checkpoint] selected_state={selected_name} tensors={len(encoder_state)} path={ckpt_path}",
+        flush=True,
+    )
     load_optional_state_dict(vision_encoder, encoder_state, f"visual_encoder_checkpoint[{ckpt_path}]")
 
 

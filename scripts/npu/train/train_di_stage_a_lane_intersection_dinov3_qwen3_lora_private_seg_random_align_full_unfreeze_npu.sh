@@ -2,7 +2,8 @@
 set -euo pipefail
 
 # DI NPU SFT entrypoint:
-# - private-data segmentation-trained DINOv3 checkpoint from DINOV3_MODEL_OBS_PATH
+# - DINOv3 base model from DINOV3_BASE_MODEL_OBS_PATH
+# - private-data segmentation-trained DINOv3 weights from DINOV3_VISUAL_CHECKPOINT_OBS_PATH
 # - randomly initialized visual alignment modules
 # - fully unfrozen DINOv3 vision encoder
 # - Qwen3-8B trained with LoRA
@@ -16,24 +17,22 @@ if [ ! -f "${BASE_SCRIPT}" ]; then
   exit 1
 fi
 
-if [ -z "${DINOV3_MODEL_OBS_PATH:-}" ]; then
-  echo "ERROR: DINOV3_MODEL_OBS_PATH is required."
-  echo "Example:"
-  echo "  DINOV3_MODEL_OBS_PATH=obs://bucket/path/to/private_dinov3 bash ${SCRIPT_PATH}"
-  exit 1
-fi
-
 export USE_PRETRAINED_VISUAL_BRIDGE=false
+export USE_VISUAL_ENCODER_CHECKPOINT=true
 export FREEZE_VISION_ENCODER=false
 export VISION_TRAIN_LAST_N_LAYERS=0
 export DATASET_OBS_PATH="obs://yw-ads-training-gy1/data/external/personal/h58801830/whu/jn/data/prepared_lane_intersection_trainroot.zip"
 export QWEN_MODEL_OBS_PATH="obs://yw-ads-training-gy1/data/external/personal/h58801830/whu/jn/checkpoint/Qwen3-8B"
 
+export DINOV3_BASE_MODEL_OBS_PATH=${DINOV3_BASE_MODEL_OBS_PATH:-obs://yw-ads-training-gy1/data/external/personal/h58801830/whu/jjh/checkpoints/facebook_dinov3-vitl16-pretrain-lvd1689m}
+export DINOV3_VISUAL_CHECKPOINT_OBS_PATH=${DINOV3_VISUAL_CHECKPOINT_OBS_PATH:-obs://yw-ads-training-gy1/data/external/personal/h58801830/whu/jn/model/dinov3_lora.pt}
 export VISION_MODEL_FAMILY=dinov3
-export VISION_MODEL_OBS_PATH="${DINOV3_MODEL_OBS_PATH}"
-export VISION_PATH="${VISION_PATH:-/cache/llmapgen/model/dinov3-private-seg}"
+export VISION_MODEL_OBS_PATH="${DINOV3_BASE_MODEL_OBS_PATH}"
+export VISION_PATH="${VISION_PATH:-/cache/llmapgen/model/facebook_dinov3-vitl16-pretrain-lvd1689m}"
 export DINOV2_MODEL_OBS_PATH="${VISION_MODEL_OBS_PATH}"
 export DINOV2_PATH="${VISION_PATH}"
+export VISUAL_ENCODER_CHECKPOINT_OBS_PATH="${DINOV3_VISUAL_CHECKPOINT_OBS_PATH}"
+export VISUAL_ENCODER_CHECKPOINT_PATH="${VISUAL_ENCODER_CHECKPOINT_PATH:-/cache/llmapgen/model/dinov3_lora.pt}"
 export VISION_PATCH_SIZE=${VISION_PATCH_SIZE:-16}
 export VISION_NUM_PREFIX_TOKENS=${VISION_NUM_PREFIX_TOKENS:--1}
 export ENCODER_INPUT_PAD_SIZE=${ENCODER_INPUT_PAD_SIZE:-512}
@@ -46,13 +45,16 @@ export MAX_STEPS=${MAX_STEPS:--1}
 export RUN_ID=${RUN_ID:-dinov3_private_seg_random_align_full_unfreeze_lora_$(date -u +%Y%m%d_%H%M%S)}
 
 echo "Recipe override: private DINOv3 segmentation backbone + random alignment + full DINOv3 unfreeze + Qwen LoRA"
+echo "USE_VISUAL_ENCODER_CHECKPOINT=${USE_VISUAL_ENCODER_CHECKPOINT}"
 echo "USE_PRETRAINED_VISUAL_BRIDGE=${USE_PRETRAINED_VISUAL_BRIDGE}"
 echo "FREEZE_VISION_ENCODER=${FREEZE_VISION_ENCODER}"
 echo "VISION_TRAIN_LAST_N_LAYERS=${VISION_TRAIN_LAST_N_LAYERS}"
 echo "DATASET_OBS_PATH=${DATASET_OBS_PATH}"
 echo "QWEN_MODEL_OBS_PATH=${QWEN_MODEL_OBS_PATH}"
-echo "DINOV3_MODEL_OBS_PATH=${DINOV3_MODEL_OBS_PATH}"
+echo "DINOV3_BASE_MODEL_OBS_PATH=${DINOV3_BASE_MODEL_OBS_PATH}"
+echo "DINOV3_VISUAL_CHECKPOINT_OBS_PATH=${DINOV3_VISUAL_CHECKPOINT_OBS_PATH}"
 echo "VISION_PATH=${VISION_PATH}"
+echo "VISUAL_ENCODER_CHECKPOINT_PATH=${VISUAL_ENCODER_CHECKPOINT_PATH}"
 echo "VISION_PATCH_SIZE=${VISION_PATCH_SIZE}"
 echo "VISION_NUM_PREFIX_TOKENS=${VISION_NUM_PREFIX_TOKENS}"
 echo "ENCODER_INPUT_PAD_SIZE=${ENCODER_INPUT_PAD_SIZE}"

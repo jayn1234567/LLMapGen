@@ -21,9 +21,14 @@ MAX_SAMPLES="${MAX_SAMPLES:-0}"
 MAX_NEW_TOKENS="${MAX_NEW_TOKENS:-3072}"
 VIS_LIMIT="${VIS_LIMIT:-64}"
 IMAGE_SIZE="${IMAGE_SIZE:-512}"
+MAP_TASK="${MAP_TASK:-lane_intersection}"
 CATEGORIES="${CATEGORIES:-centerline,intersection}"
 METER_PER_PIXEL="${METER_PER_PIXEL:-0.2}"
 LINE_WIDTH_PX="${LINE_WIDTH_PX:-6}"
+JIANGJIHUA_BUFFER_SIZE="${JIANGJIHUA_BUFFER_SIZE:-1.0}"
+JIANGJIHUA_MATCH_THRESHOLD="${JIANGJIHUA_MATCH_THRESHOLD:-0.33}"
+AUTO_INSTALL_EVAL_DEPS="${AUTO_INSTALL_EVAL_DEPS:-true}"
+PIP_INDEX_URL="${PIP_INDEX_URL:-http://repo.huaweicloud.com/repository/pypi/simple/}"
 
 RUN_NAME="${RUN_NAME:-$(basename "${CHECKPOINT_DIR}")_${SPLIT}_$(date -u +%Y%m%d_%H%M%S)}"
 OUTPUT_DIR="${OUTPUT_DIR:-/cache/jn/outputs/infer_eval_visualize_${RUN_NAME}}"
@@ -66,14 +71,48 @@ echo "============================================================"
 
 python "${PREDICT_ARGS[@]}"
 
+if [ "${AUTO_INSTALL_EVAL_DEPS}" = "true" ]; then
+  python - <<'PY'
+import importlib.util
+import os
+import subprocess
+import sys
+
+missing = []
+for module_name, package_name in (("shapely", "shapely"), ("scipy", "scipy")):
+    if importlib.util.find_spec(module_name) is None:
+        missing.append(package_name)
+if missing:
+    index_url = os.environ.get("PIP_INDEX_URL", "http://repo.huaweicloud.com/repository/pypi/simple/")
+    cmd = [
+        sys.executable,
+        "-m",
+        "pip",
+        "install",
+        "-i",
+        index_url,
+        "--trusted-host",
+        "repo.huaweicloud.com",
+        *missing,
+    ]
+    print("[eval-deps] installing: " + " ".join(missing), flush=True)
+    subprocess.check_call(cmd)
+else:
+    print("[eval-deps] shapely/scipy already available", flush=True)
+PY
+fi
+
 python scripts/tools/eval_visualize_dinov2_centerline_predictions.py \
   --pred-jsonl "${PRED_JSONL}" \
   --trainroot "${TRAINROOT}" \
   --out-dir "${OUTPUT_DIR}" \
   --image-size "${IMAGE_SIZE}" \
+  --map-task "${MAP_TASK}" \
   --categories "${CATEGORIES}" \
   --meter-per-pixel "${METER_PER_PIXEL}" \
   --line-width-px "${LINE_WIDTH_PX}" \
+  --jiangjihua-buffer-size "${JIANGJIHUA_BUFFER_SIZE}" \
+  --jiangjihua-match-threshold "${JIANGJIHUA_MATCH_THRESHOLD}" \
   --vis-limit "${VIS_LIMIT}"
 
 echo "============================================================"
@@ -81,6 +120,7 @@ echo "Done."
 echo "Prediction JSONL: ${PRED_JSONL}"
 echo "Prediction summary: ${PRED_SUMMARY_JSON}"
 echo "Eval summary: ${OUTPUT_DIR}/eval_visualization_summary.json"
+echo "Jiangjihua eval: ${OUTPUT_DIR}/eval_jiangjihua.json"
 echo "Official eval: ${OUTPUT_DIR}/eval_official.json"
 echo "Engineering eval: ${OUTPUT_DIR}/eval_engineering.json"
 echo "Visualization sheet: ${OUTPUT_DIR}/visualization/prediction_overlay_sheet.png"

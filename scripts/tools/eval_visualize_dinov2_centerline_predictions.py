@@ -30,8 +30,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--trainroot", default="", help="Prepared trainroot, used as default media root.")
     parser.add_argument("--media-dir", default="", help="Directory used to resolve relative image paths.")
     parser.add_argument("--image-size", type=int, default=512)
+    parser.add_argument("--map-task", choices=["lane", "lane_intersection"], default="lane_intersection")
     parser.add_argument("--categories", default="centerline,intersection")
     parser.add_argument("--meter-per-pixel", type=float, default=0.2)
+    parser.add_argument("--jiangjihua-buffer-size", type=float, default=1.0)
+    parser.add_argument("--jiangjihua-match-threshold", type=float, default=0.33)
     parser.add_argument("--line-width-px", type=int, default=6)
     parser.add_argument("--engineering-thresholds-px", default="2,4,8")
     parser.add_argument("--mask-iou-thresholds", default="0.50,0.55,0.60,0.65,0.70,0.75,0.80,0.85,0.90,0.95")
@@ -516,6 +519,309 @@ def evaluate_engineering_records(records: Sequence[Dict[str, Any]], thresholds: 
     return {key: float(np.mean(values)) for key, values in aggregated.items()}
 
 
+def jiangjihua_category_filter(categories: str | Sequence[str] | None) -> set[str]:
+    if categories is None:
+        return {"centerline"}
+    if isinstance(categories, str):
+        text = categories.strip().lower()
+        if text in {"all", "lane_intersection", "combined", "*"}:
+            return {"centerline", "intersection"}
+        if text in {"lane", "centerline", "center_line"}:
+            return {"centerline"}
+        if text in {"intersection", "junction", "crossing"}:
+            return {"intersection"}
+        return {normalize_category(text)}
+    out: set[str] = set()
+    for item in categories:
+        out.update(jiangjihua_category_filter(str(item)))
+    return out
+
+
+def jiangjihua_table_text(summary: Dict[str, Any], title: str) -> str:
+    samples_num = int(summary.get("samples_num", 0) or 0)
+    valid_string_format = int(summary.get("valid_string_format", 0) or 0)
+    valid_ratio = valid_string_format / samples_num if samples_num else 0.0
+    return "\n".join(
+        [
+            "=" * 58,
+            f"{(' ' + title + ' '):^58}",
+            "=" * 58,
+            f"{'Metric':<18} {'Precision':<12} {'Recall':<12} {'F1':<12}",
+            "-" * 58,
+            (
+                f"{'Instance Level':<18} "
+                f"{float(summary.get('instance_pre', 0.0)):<12.4f} "
+                f"{float(summary.get('instance_recall', 0.0)):<12.4f} "
+                f"{float(summary.get('instance_f1', 0.0)):<12.4f}"
+            ),
+            (
+                f"{'Length Level':<18} "
+                f"{float(summary.get('length_pre', 0.0)):<12.4f} "
+                f"{float(summary.get('length_recall', 0.0)):<12.4f} "
+                f"{float(summary.get('length_f1', 0.0)):<12.4f}"
+            ),
+            "=" * 58,
+            f"valid prediction format ratio: {valid_ratio:.4f}({valid_string_format}/{samples_num})",
+        ]
+    )
+
+
+def record_lines_to_meter_linestrings(
+    record: Dict[str, Any],
+    line_key: str,
+    *,
+    categories: str | Sequence[str] | None,
+    meter_per_pixel: float,
+) -> List[Any]:
+    try:
+        from shapely.geometry import LineString
+    except ImportError as exc:
+        raise ImportError("jiangjihua metrics require shapely. Install with: pip install shapely scipy") from exc
+
+    allowed_categories = jiangjihua_category_filter(categories)
+    output: List[Any] = []
+    for line in record.get(line_key, []):
+        if not isinstance(line, dict):
+            continue
+        if normalize_category(line.get("category", "centerline")) not in allowed_categories:
+            continue
+        points = line_points(line)
+        if points.shape[0] < 2:
+            continue
+        output.append(LineString((points * float(meter_per_pixel)).tolist()))
+    return output
+
+
+def jiangjihua_line_match_metric(line1: Any, line2: Any, buffer_size: float) -> float:
+    poly1 = line1.buffer(float(buffer_size))
+    poly2 = line2.buffer(float(buffer_size))
+    union_area = poly1.union(poly2).area
+    if union_area <= 0.0:
+        return 0.0
+    return float(poly1.intersection(poly2).area / union_area)
+
+
+def jiangjihua_hungarian_match(
+    gt_lines: Sequence[Any],
+    pred_lines: Sequence[Any],
+    *,
+    buffer_size: float,
+    match_threshold: float,
+) -> tuple[List[int], List[int]]:
+    try:
+        from scipy.optimize import linear_sum_assignment
+    except ImportError as exc:
+        raise ImportError("jiangjihua metrics require scipy. Install with: pip install shapely scipy") from exc
+
+    num_gt = len(gt_lines)
+    num_pred = len(pred_lines)
+    if num_gt == 0 or num_pred == 0:
+        return [], []
+
+    cost_matrix = np.zeros((num_gt, num_pred), dtype=np.float32)
+    for gt_idx, gt_line in enumerate(gt_lines):
+        for pred_idx, pred_line in enumerate(pred_lines):
+            cost_matrix[gt_idx, pred_idx] = jiangjihua_line_match_metric(gt_line, pred_line, buffer_size)
+
+    gt_indices, pred_indices = linear_sum_assignment(-cost_matrix)
+    matched_gt: List[int] = []
+    matched_pred: List[int] = []
+    for gt_idx, pred_idx in zip(gt_indices, pred_indices):
+        if float(cost_matrix[gt_idx, pred_idx]) < float(match_threshold):
+            continue
+        matched_gt.append(int(gt_idx))
+        matched_pred.append(int(pred_idx))
+    return matched_gt, matched_pred
+
+
+def evaluate_jiangjihua_one_record(
+    record: Dict[str, Any],
+    *,
+    categories: str | Sequence[str] | None,
+    meter_per_pixel: float,
+    buffer_size: float,
+    match_threshold: float,
+) -> Dict[str, Any]:
+    valid_string_format = bool(record.get("parse_ok", True))
+    try:
+        gt_lines = record_lines_to_meter_linestrings(
+            record,
+            "gt_lines",
+            categories=categories,
+            meter_per_pixel=meter_per_pixel,
+        )
+    except Exception:
+        gt_lines = []
+        valid_string_format = False
+    try:
+        if not bool(record.get("parse_ok", True)):
+            raise ValueError(record.get("parse_error") or "prediction parse_ok is false")
+        pred_lines = record_lines_to_meter_linestrings(
+            record,
+            "pred_lines",
+            categories=categories,
+            meter_per_pixel=meter_per_pixel,
+        )
+    except Exception:
+        pred_lines = []
+        valid_string_format = False
+
+    matched_gt, _ = jiangjihua_hungarian_match(
+        gt_lines,
+        pred_lines,
+        buffer_size=buffer_size,
+        match_threshold=match_threshold,
+    )
+    return {
+        "gt_line_num": len(gt_lines),
+        "gt_line_length_sum": float(sum(line.length for line in gt_lines)),
+        "pred_line_num": len(pred_lines),
+        "pred_line_length_sum": float(sum(line.length for line in pred_lines)),
+        "matched_line_num": len(matched_gt),
+        "matched_line_length_sum": float(sum(gt_lines[idx].length for idx in matched_gt)),
+        "sample_num": 1,
+        "valid_string_format": int(bool(valid_string_format)),
+    }
+
+
+def safe_div(num: float, den: float) -> float:
+    return float(num) / float(den) if float(den) else 0.0
+
+
+def summarize_jiangjihua_sample_results(
+    sample_results: Sequence[Dict[str, Any]],
+    *,
+    eval_name: str,
+    category_filter: str | Sequence[str] | None,
+    meter_per_pixel: float,
+    buffer_size: float,
+    match_threshold: float,
+) -> Dict[str, Any]:
+    totals = {
+        "gt_line_num": 0,
+        "gt_line_length_sum": 0.0,
+        "pred_line_num": 0,
+        "pred_line_length_sum": 0.0,
+        "matched_line_num": 0,
+        "matched_line_length_sum": 0.0,
+        "sample_num": 0,
+        "valid_string_format": 0,
+    }
+    for item in sample_results:
+        for key in totals:
+            totals[key] += item.get(key, 0)
+
+    instance_pre = safe_div(totals["matched_line_num"], totals["pred_line_num"])
+    instance_recall = safe_div(totals["matched_line_num"], totals["gt_line_num"])
+    length_pre = safe_div(totals["matched_line_length_sum"], totals["pred_line_length_sum"])
+    length_recall = safe_div(totals["matched_line_length_sum"], totals["gt_line_length_sum"])
+    summary = {
+        "instance_pre": round(instance_pre, 4),
+        "instance_recall": round(instance_recall, 4),
+        "instance_f1": round(2 * instance_pre * instance_recall / (instance_pre + instance_recall + 1e-6), 4),
+        "length_pre": round(length_pre, 4),
+        "length_recall": round(length_recall, 4),
+        "length_f1": round(2 * length_pre * length_recall / (length_pre + length_recall + 1e-6), 4),
+        "valid_string_format": int(totals["valid_string_format"]),
+        "samples_num": int(totals["sample_num"]),
+        "backend": "jiangjihua.infer_index.line_eval_compatible",
+        "eval_name": eval_name,
+        "category_filter": category_filter,
+        "meter_per_pixel": float(meter_per_pixel),
+        "buffer_size": float(buffer_size),
+        "match_threshold": float(match_threshold),
+        "raw_totals": totals,
+    }
+    summary["table"] = jiangjihua_table_text(summary, eval_name)
+    return summary
+
+
+def evaluate_jiangjihua_records(
+    records: Sequence[Dict[str, Any]],
+    *,
+    categories: str | Sequence[str] | None,
+    eval_name: str,
+    meter_per_pixel: float,
+    buffer_size: float,
+    match_threshold: float,
+    include_samples: bool = False,
+) -> Dict[str, Any]:
+    sample_results = [
+        evaluate_jiangjihua_one_record(
+            record,
+            categories=categories,
+            meter_per_pixel=meter_per_pixel,
+            buffer_size=buffer_size,
+            match_threshold=match_threshold,
+        )
+        for record in records
+    ]
+    summary = summarize_jiangjihua_sample_results(
+        sample_results,
+        eval_name=eval_name,
+        category_filter=categories,
+        meter_per_pixel=meter_per_pixel,
+        buffer_size=buffer_size,
+        match_threshold=match_threshold,
+    )
+    if include_samples:
+        return {"summary": summary, "samples": sample_results}
+    return summary
+
+
+def evaluate_jiangjihua_map_records(
+    records: Sequence[Dict[str, Any]],
+    *,
+    map_task: str,
+    meter_per_pixel: float,
+    buffer_size: float,
+    match_threshold: float,
+) -> Dict[str, Any]:
+    if str(map_task) == "lane":
+        return {
+            "line_eval": evaluate_jiangjihua_records(
+                records,
+                categories="lane",
+                eval_name="Line Evaluation Results",
+                meter_per_pixel=meter_per_pixel,
+                buffer_size=buffer_size,
+                match_threshold=match_threshold,
+            )
+        }
+    map_eval = {
+        "lane": evaluate_jiangjihua_records(
+            records,
+            categories="lane",
+            eval_name="Lane Evaluation Results",
+            meter_per_pixel=meter_per_pixel,
+            buffer_size=buffer_size,
+            match_threshold=match_threshold,
+        ),
+        "intersection": evaluate_jiangjihua_records(
+            records,
+            categories="intersection",
+            eval_name="Intersection Evaluation Results",
+            meter_per_pixel=meter_per_pixel,
+            buffer_size=buffer_size,
+            match_threshold=match_threshold,
+        ),
+        "lane_intersection": evaluate_jiangjihua_records(
+            records,
+            categories="all",
+            eval_name="Lane + Intersection Evaluation Results",
+            meter_per_pixel=meter_per_pixel,
+            buffer_size=buffer_size,
+            match_threshold=match_threshold,
+        ),
+    }
+    return {
+        "centerline_eval": map_eval["lane"],
+        "intersection_eval": map_eval["intersection"],
+        "lane_intersection_eval": map_eval["lane_intersection"],
+        "map_eval": map_eval,
+    }
+
+
 def resolve_image_path(record: Dict[str, Any], media_dir: Path | None) -> Path | None:
     image = str(record.get("image", "")).strip().replace("\\", "/")
     if not image:
@@ -649,6 +955,16 @@ def main() -> None:
     pred_json = out_dir / "predictions.json"
     pred_json.write_text(json.dumps(records, ensure_ascii=False, indent=2), encoding="utf-8")
 
+    jiangjihua = evaluate_jiangjihua_map_records(
+        records,
+        map_task=str(args.map_task),
+        meter_per_pixel=float(args.meter_per_pixel),
+        buffer_size=float(args.jiangjihua_buffer_size),
+        match_threshold=float(args.jiangjihua_match_threshold),
+    )
+    jiangjihua_path = out_dir / "eval_jiangjihua.json"
+    jiangjihua_path.write_text(json.dumps(jiangjihua, ensure_ascii=False, indent=2), encoding="utf-8")
+
     categories = [str(item) for item in parse_csv(args.categories, str)]
     official = evaluate_official_records(
         records=records,
@@ -677,6 +993,7 @@ def main() -> None:
     summary = {
         "pred_jsonl": str(pred_jsonl),
         "pred_json": str(pred_json),
+        "eval_jiangjihua_json": str(jiangjihua_path),
         "eval_official_json": str(official_path),
         "eval_engineering_json": str(engineering_path),
         "visualization": vis_manifest,
@@ -684,6 +1001,8 @@ def main() -> None:
         "parse_ok_rate": (
             sum(1 for item in records if bool(item.get("parse_ok"))) / max(1, len(records))
         ),
+        "primary_metric": "jiangjihua.infer_index.line_eval",
+        "jiangjihua": jiangjihua,
         "official": {
             "mIoU": official.get("mIoU"),
             "APM": official.get("APM"),

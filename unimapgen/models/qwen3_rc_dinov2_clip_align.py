@@ -47,6 +47,13 @@ def extract_prefixed_state_dict(state_dict: Dict[str, torch.Tensor], prefixes: S
 
 
 def _tensor_state_dict(payload: Any) -> Dict[str, torch.Tensor]:
+    if hasattr(payload, "state_dict") and not isinstance(payload, dict):
+        try:
+            module_state = payload.state_dict()
+        except Exception:
+            module_state = None
+        if isinstance(module_state, dict):
+            return {str(key): value for key, value in module_state.items() if torch.is_tensor(value)}
     if not isinstance(payload, dict):
         return {}
     direct = {str(key): value for key, value in payload.items() if torch.is_tensor(value)}
@@ -91,7 +98,25 @@ def _strip_common_prefixes(state_dict: Dict[str, torch.Tensor]) -> Dict[str, tor
     return state
 
 
-def _candidate_encoder_states(raw_state: Dict[str, torch.Tensor]) -> list[tuple[str, Dict[str, torch.Tensor]]]:
+def _suffix_aligned_state(module: nn.Module, state_dict: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
+    target_state = module.state_dict()
+    source_by_suffix: Dict[str, tuple[str, torch.Tensor]] = {}
+    for source_key, value in state_dict.items():
+        parts = str(source_key).split(".")
+        for start in range(len(parts)):
+            suffix = ".".join(parts[start:])
+            target = target_state.get(suffix)
+            if target is not None and tuple(target.shape) == tuple(value.shape):
+                existing = source_by_suffix.get(suffix)
+                if existing is None or len(str(source_key)) < len(existing[0]):
+                    source_by_suffix[suffix] = (str(source_key), value)
+    return {target_key: value for target_key, (_, value) in source_by_suffix.items()}
+
+
+def _candidate_encoder_states(
+    vision_encoder: nn.Module,
+    raw_state: Dict[str, torch.Tensor],
+) -> list[tuple[str, Dict[str, torch.Tensor]]]:
     stripped = _strip_common_prefixes(raw_state)
     candidates: list[tuple[str, Dict[str, torch.Tensor]]] = [
         ("raw", raw_state),
@@ -101,10 +126,13 @@ def _candidate_encoder_states(raw_state: Dict[str, torch.Tensor]) -> list[tuple[
         candidates.append(("stripped_plus_model", {f"model.{key}": value for key, value in stripped.items()}))
     if raw_state and not all(str(key).startswith("model.") for key in raw_state):
         candidates.append(("raw_plus_model", {f"model.{key}": value for key, value in raw_state.items()}))
+    suffix_aligned = _suffix_aligned_state(vision_encoder, raw_state)
+    if suffix_aligned:
+        candidates.append(("suffix_aligned", suffix_aligned))
     deduped: list[tuple[str, Dict[str, torch.Tensor]]] = []
     seen = set()
     for name, state in candidates:
-        signature = tuple(sorted(state.keys())[:20])
+        signature = tuple(sorted(state.keys()))
         if signature in seen:
             continue
         seen.add(signature)
@@ -124,7 +152,7 @@ def _select_encoder_state(vision_encoder: nn.Module, raw_state: Dict[str, torch.
     best_name = ""
     best_state: Dict[str, torch.Tensor] = {}
     best_score = (0, 0)
-    for name, candidate in _candidate_encoder_states(raw_state):
+    for name, candidate in _candidate_encoder_states(vision_encoder, raw_state):
         score = _shape_match_score(vision_encoder, candidate)
         if score > best_score:
             best_name = name

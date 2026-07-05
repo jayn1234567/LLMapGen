@@ -191,6 +191,32 @@ def load_run_args(run_root: Path, checkpoint_dir: Path, explicit_args_json: str 
     )
 
 
+def apply_runtime_path_overrides(saved_args: Dict[str, Any], args: argparse.Namespace) -> Dict[str, Any]:
+    overrides = {
+        "model_name_or_path": args.model_name_or_path,
+        "tokenizer_name_or_path": args.tokenizer_name_or_path,
+        "dinov2_model_name_or_path": args.dinov2_model_name_or_path,
+        "visual_encoder_checkpoint_path": args.visual_encoder_checkpoint_path,
+        "bridge_modules_state_path": args.bridge_modules_state_path,
+    }
+    changed: Dict[str, Dict[str, str]] = {}
+    for key, raw_value in overrides.items():
+        value = str(raw_value).strip()
+        if not value:
+            continue
+        old_value = str(saved_args.get(key, "")).strip()
+        if old_value != value:
+            saved_args[key] = value
+            changed[key] = {"old": old_value, "new": value}
+    if changed:
+        print(
+            "[dinov2-centerline-predict] runtime path overrides="
+            + json.dumps(changed, ensure_ascii=False),
+            flush=True,
+        )
+    return saved_args
+
+
 def resolve_dataset_paths(args: argparse.Namespace) -> Tuple[Path, Path | None, Path]:
     if str(args.trainroot).strip():
         trainroot = Path(str(args.trainroot)).expanduser().resolve()
@@ -499,6 +525,7 @@ def main() -> None:
         str(args.run_args_json),
         fallback_run_args_from_cli(args),
     )
+    saved_args = apply_runtime_path_overrides(saved_args, args)
     dataset_path, dataset_meta_path, media_dir = resolve_dataset_paths(args)
     if not dataset_path.is_file():
         raise FileNotFoundError(f"dataset_jsonl not found: {dataset_path}")

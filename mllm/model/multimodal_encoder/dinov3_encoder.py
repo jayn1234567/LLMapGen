@@ -86,6 +86,71 @@ def _module_target_tensors(module: nn.Module) -> Dict[str, torch.Tensor]:
     return module.state_dict()
 
 
+def _distributed_rank() -> int:
+    try:
+        import torch.distributed as dist
+
+        if dist.is_available() and dist.is_initialized():
+            return int(dist.get_rank())
+    except Exception:
+        pass
+    return 0
+
+
+def _copy_checkpoint_tensor(target: torch.Tensor, value: torch.Tensor, key: str) -> None:
+    if _logical_shape(target) != tuple(value.shape):
+        raise RuntimeError(
+            f"Shape mismatch for {key}: checkpoint={tuple(value.shape)} "
+            f"target_logical={_logical_shape(target)} target_local={tuple(target.shape)}"
+        )
+
+    def _copy_into_target() -> None:
+        source = value.detach().to(device=target.device, dtype=target.dtype)
+        target.data.copy_(source)
+
+    if isinstance(target, nn.Parameter) and hasattr(target, "ds_id"):
+        try:
+            import deepspeed
+
+            with deepspeed.zero.GatheredParameters([target], modifier_rank=0):
+                if _distributed_rank() == 0:
+                    _copy_into_target()
+            return
+        except Exception as exc:
+            if tuple(target.shape) != tuple(value.shape):
+                raise RuntimeError(
+                    f"Failed to load ZeRO-partitioned DINOv3 parameter {key}. "
+                    "This usually means DeepSpeed is active but the parameter could not be gathered."
+                ) from exc
+
+    if tuple(target.shape) != tuple(value.shape):
+        raise RuntimeError(
+            f"Cannot load {key}: checkpoint={tuple(value.shape)} "
+            f"target_local={tuple(target.shape)} target_logical={_logical_shape(target)}. "
+            "If this is a DeepSpeed ZeRO-3 run, install/import deepspeed before loading the vision checkpoint."
+        )
+    _copy_into_target()
+
+
+def _load_state_dict_zero_aware(
+    module: nn.Module,
+    filtered: Dict[str, torch.Tensor],
+) -> tuple[list[str], list[str]]:
+    target_state = _module_target_tensors(module)
+    loaded_keys = set()
+    with torch.no_grad():
+        for key, value in filtered.items():
+            target = target_state.get(key)
+            if target is None:
+                continue
+            _copy_checkpoint_tensor(target, value, key)
+            loaded_keys.add(key)
+
+    missing = [key for key in target_state if key not in loaded_keys]
+    unexpected = [key for key in filtered if key not in target_state]
+    return missing, unexpected
+
+
 def _assign_by_suffix(
     mapped: Dict[str, torch.Tensor],
     target_state: Dict[str, torch.Tensor],
@@ -361,7 +426,7 @@ def _load_external_dinov3_checkpoint(module: nn.Module, checkpoint_path: str) ->
         for key, value in selected_state.items()
         if key in target_state and torch.is_tensor(value) and _logical_shape(target_state[key]) == tuple(value.shape)
     }
-    missing, unexpected = module.load_state_dict(filtered, strict=False)
+    missing, unexpected = _load_state_dict_zero_aware(module, filtered)
     print(
         "[DINOv3 checkpoint] "
         f"selected_state={selected_name} loaded={len(filtered)} "

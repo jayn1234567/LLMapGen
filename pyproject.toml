@@ -1,0 +1,50 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mllm"
+version = "1.2.2.post1"
+description = "Generic multimodal large language model training and inference framework."
+readme = "README.md"
+requires-python = ">=3.8"
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: Apache Software License",
+]
+dependencies = [
+    "torch>=2.0.0",
+    "transformers>=5.7.0", "tokenizers>=0.22.0", "sentencepiece>=0.1.99", "shortuuid",
+    "accelerate>=0.20.0", "peft>=0.10.0", "bitsandbytes",
+    "pydantic", "markdown2[all]", "numpy>=1.26", "scikit-learn>=1.2",
+    "gradio>=5.0", "requests", "uvicorn", "fastapi",
+    "einops>=0.6", "einops-exts>=0.0.4", "timm>=0.9.0",
+    "Pillow"
+]
+
+[project.optional-dependencies]
+train = ["deepspeed==0.14.4", "ninja", "wandb", "swanlab"]
+rl = [
+    "transformers>=5.7.0",
+    "huggingface-hub==0.36.2",
+    "ray[default]==2.55.1",
+    "vllm==0.9.2",
+    "wandb",
+    "swanlab",
+]
+rl_npu = [
+    "transformers>=5.7.0",
+    "huggingface-hub==0.36.2",
+    "ray[default]==2.55.1",
+    "vllm==0.9.2",
+    "vllm-ascend==0.9.2rc1",
+    "wandb",
+    "swanlab",
+]
+build = ["build", "twine"]
+
+[tool.setuptools.packages.find]
+exclude = ["assets*", "benchmark*", "docs", "dist*", "playground*", "scripts*", "tests*"]
+
+[tool.wheel]
+exclude = ["assets*", "benchmark*", "docs", "dist*", "playground*", "scripts*", "tests*"]

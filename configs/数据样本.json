@@ -1,0 +1,389 @@
+{
+  "source": {
+    "remote_host": "172.29.15.117",
+    "dataset_root": "/file_storage01/home/mingli/data/outputs/rc_clean_dataset_xiuzheng_stageb_trace_patch256_douglas_merge6h22_cutinside_20260508",
+    "split": "train",
+    "train_jsonl": "/file_storage01/home/mingli/data/outputs/rc_clean_dataset_xiuzheng_stageb_trace_patch256_douglas_merge6h22_cutinside_20260508/train.jsonl",
+    "meta_jsonl": "/file_storage01/home/mingli/data/outputs/rc_clean_dataset_xiuzheng_stageb_trace_patch256_douglas_merge6h22_cutinside_20260508/meta_train.jsonl"
+  },
+  "selection": {
+    "description": "Real StageB QA samples selected from train split; up to 2 examples per incoming-trace mode.",
+    "modes": [
+      "left_top",
+      "left_only",
+      "top_only",
+      "no_incoming"
+    ],
+    "scanned_meta_rows": 16,
+    "scanned_train_rows": 16,
+    "sample_count": 8
+  },
+  "notes": {
+    "qa_row_from_train_jsonl": "This is the actual ShareGPT QA row used by training.",
+    "meta_from_meta_train_jsonl": "This carries debugging/supervision fields such as incoming_traces and target_lines.",
+    "important_training_flags": [
+      "--use-dataset-user-prompt",
+      "--use-dataset-system-prompt"
+    ]
+  },
+  "samples": [
+    {
+      "mode": "left_top",
+      "qa_row_from_train_jsonl": {
+        "id": "01bb304d7bd835f8bbef7086b688e35e__Summer_2019__ox000oy000__r04c07",
+        "messages": [
+          {
+            "role": "system",
+            "content": "You are a road-centerline reconstruction assistant for RC-style road-structure images.\nThe image shows lane_boundary/road_edge in orange-yellow and lane_divider in cyan-blue on a dark background.\nThe centerlines are not directly drawn; infer them from the visible road structure.\nUse incoming traces only as continuity hints from already processed neighboring patches.\nReturn only valid JSON in the required schema, with start_type and end_type for every line.\nUse cut for endpoints clipped by the patch boundary and inside for natural endpoints inside the patch."
+          },
+          {
+            "role": "user",
+            "content": "<image>\nThis is a 256x256 RC road-structure patch.\nPredict the road centerlines inside this patch only.\n\nIncoming traces JSON:\n[{\"id\":\"L0\",\"side\":\"left\",\"points\":[[-25,170],[-13,149],[-1,128]]},{\"id\":\"L1\",\"side\":\"left\",\"points\":[[-25,244],[-13,223],[-1,202]]},{\"id\":\"T0\",\"side\":\"top\",\"points\":[[96,-42],[84,-22],[72,-1]]},{\"id\":\"T1\",\"side\":\"top\",\"points\":[[138,-42],[126,-22],[114,-1]]}]\n\nEach incoming trace has 1 to 3 points and is ordered from the previous patch interior toward the current patch boundary.\nIncoming traces are continuity hints only; they may be incomplete or absent.\nReturn only valid JSON in this schema:\n{\"lines\":[{\"category\":\"centerline\",\"start_type\":\"cut|inside\",\"end_type\":\"cut|inside\",\"points\":[[x,y],[x,y]]}]}\nAll output points must be integers inside [0,255]. Do not output points outside the image."
+          },
+          {
+            "role": "assistant",
+            "content": "{\"lines\":[{\"category\":\"centerline\",\"start_type\":\"cut\",\"end_type\":\"cut\",\"points\":[[71,0],[59,21],[0,126]]},{\"category\":\"centerline\",\"start_type\":\"cut\",\"end_type\":\"cut\",\"points\":[[113,0],[101,21],[0,201]]}]}"
+          }
+        ],
+        "images": [
+          "patches256_offset/rc_input/clean_dataset_xiuzheng_rcstyle_20260428/WDC/01bb304d7bd835f8bbef7086b688e35e__Summer_2019__ox000oy000__r04c07.png"
+        ]
+      },
+      "meta_from_meta_train_jsonl": {
+        "id": "01bb304d7bd835f8bbef7086b688e35e__Summer_2019__ox000oy000__r04c07",
+        "split": "train",
+        "tile_id": "01bb304d7bd835f8bbef7086b688e35e__Summer_2019",
+        "log_id": "01bb304d7bd835f8bbef7086b688e35e__Summer_2019",
+        "city": "WDC",
+        "image": "patches256_offset/rc_input/clean_dataset_xiuzheng_rcstyle_20260428/WDC/01bb304d7bd835f8bbef7086b688e35e__Summer_2019__ox000oy000__r04c07.png",
+        "base_patch_box_full4096": [1792, 1024, 2048, 1280],
+        "patch_row": 4,
+        "patch_col": 7,
+        "target_mode": "stageb_rc_centerline_trace_patch_map",
+        "coord_system": "patch_local_256",
+        "stageb_state_mode": "left_top_incoming_trace_points",
+        "stageb_trace_point_min": 1,
+        "stageb_trace_point_max": 3,
+        "stageb_trace_span_px": 48.0,
+        "stageb_boundary_tol_px": 2.5,
+        "incoming_traces": [
+          {"id": "L0", "side": "left", "points": [[-25,170],[-13,149],[-1,128]]},
+          {"id": "L1", "side": "left", "points": [[-25,244],[-13,223],[-1,202]]},
+          {"id": "T0", "side": "top", "points": [[96,-42],[84,-22],[72,-1]]},
+          {"id": "T1", "side": "top", "points": [[138,-42],[126,-22],[114,-1]]}
+        ],
+        "raw_incoming_traces": [
+          {"side": "left", "source_patch_id": "01bb304d7bd835f8bbef7086b688e35e__Summer_2019__ox000oy000__r04c06", "source_line_index": 0, "points": [[-25,170],[-13,149],[-1,128]]},
+          {"side": "left", "source_patch_id": "01bb304d7bd835f8bbef7086b688e35e__Summer_2019__ox000oy000__r04c06", "source_line_index": 1, "points": [[-25,244],[-13,223],[-1,202]]},
+          {"side": "top", "source_patch_id": "01bb304d7bd835f8bbef7086b688e35e__Summer_2019__ox000oy000__r03c07", "source_line_index": 0, "points": [[96,-42],[84,-22],[72,-1]]},
+          {"side": "top", "source_patch_id": "01bb304d7bd835f8bbef7086b688e35e__Summer_2019__ox000oy000__r03c07", "source_line_index": 1, "points": [[138,-42],[126,-22],[114,-1]]}
+        ],
+        "num_incoming_traces": 4,
+        "num_incoming_left_traces": 2,
+        "num_incoming_top_traces": 2,
+        "target_lines": [
+          {"category": "centerline", "start_type": "cut", "end_type": "cut", "points": [[71,0],[59,21],[0,126]]},
+          {"category": "centerline", "start_type": "cut", "end_type": "cut", "points": [[113,0],[101,21],[0,201]]}
+        ],
+        "num_target_lines": 2,
+        "prompt_text": "<image>\nThis is a 256x256 RC road-structure patch.\nPredict the road centerlines inside this patch only.\n\nIncoming traces JSON:\n[{\"id\":\"L0\",\"side\":\"left\",\"points\":[[-25,170],[-13,149],[-1,128]]},{\"id\":\"L1\",\"side\":\"left\",\"points\":[[-25,244],[-13,223],[-1,202]]},{\"id\":\"T0\",\"side\":\"top\",\"points\":[[96,-42],[84,-22],[72,-1]]},{\"id\":\"T1\",\"side\":\"top\",\"points\":[[138,-42],[126,-22],[114,-1]]}]\n\nEach incoming trace has 1 to 3 points and is ordered from the previous patch interior toward the current patch boundary.\nIncoming traces are continuity hints only; they may be incomplete or absent.\nReturn only valid JSON in this schema:\n{\"lines\":[{\"category\":\"centerline\",\"start_type\":\"cut|inside\",\"end_type\":\"cut|inside\",\"points\":[[x,y],[x,y]]}]}\nAll output points must be integers inside [0,255]. Do not output points outside the image."
+      }
+    },
+    {
+      "mode": "left_top",
+      "qa_row_from_train_jsonl": {
+        "id": "01bb304d7bd835f8bbef7086b688e35e__Summer_2019__ox000oy000__r05c09",
+        "messages": [
+          {"role": "system", "content": "You are a road-centerline reconstruction assistant for RC-style road-structure images.\nThe image shows lane_boundary/road_edge in orange-yellow and lane_divider in cyan-blue on a dark background.\nThe centerlines are not directly drawn; infer them from the visible road structure.\nUse incoming traces only as continuity hints from already processed neighboring patches.\nReturn only valid JSON in the required schema, with start_type and end_type for every line.\nUse cut for endpoints clipped by the patch boundary and inside for natural endpoints inside the patch."},
+          {"role": "user", "content": "<image>\nThis is a 256x256 RC road-structure patch.\nPredict the road centerlines inside this patch only.\n\nIncoming traces JSON:\n[{\"id\":\"L0\",\"side\":\"left\",\"points\":[[-25,247],[-13,226],[-1,205]]},{\"id\":\"T0\",\"side\":\"top\",\"points\":[[141,-43],[129,-22],[117,-1]]},{\"id\":\"T1\",\"side\":\"top\",\"points\":[[183,-42],[171,-22],[159,-1]]}]\n\nEach incoming trace has 1 to 3 points and is ordered from the previous patch interior toward the current patch boundary.\nIncoming traces are continuity hints only; they may be incomplete or absent.\nReturn only valid JSON in this schema:\n{\"lines\":[{\"category\":\"centerline\",\"start_type\":\"cut|inside\",\"end_type\":\"cut|inside\",\"points\":[[x,y],[x,y]]}]}\nAll output points must be integers inside [0,255]. Do not output points outside the image."},
+          {"role": "assistant", "content": "{\"lines\":[{\"category\":\"centerline\",\"start_type\":\"cut\",\"end_type\":\"cut\",\"points\":[[116,0],[107,15],[0,204]]},{\"category\":\"centerline\",\"start_type\":\"cut\",\"end_type\":\"cut\",\"points\":[[159,0],[150,15],[12,255]]}]}"}
+        ],
+        "images": ["patches256_offset/rc_input/clean_dataset_xiuzheng_rcstyle_20260428/WDC/01bb304d7bd835f8bbef7086b688e35e__Summer_2019__ox000oy000__r05c09.png"]
+      },
+      "meta_from_meta_train_jsonl": {
+        "id": "01bb304d7bd835f8bbef7086b688e35e__Summer_2019__ox000oy000__r05c09",
+        "split": "train",
+        "tile_id": "01bb304d7bd835f8bbef7086b688e35e__Summer_2019",
+        "log_id": "01bb304d7bd835f8bbef7086b688e35e__Summer_2019",
+        "city": "WDC",
+        "image": "patches256_offset/rc_input/clean_dataset_xiuzheng_rcstyle_20260428/WDC/01bb304d7bd835f8bbef7086b688e35e__Summer_2019__ox000oy000__r05c09.png",
+        "base_patch_box_full4096": [2304, 1280, 2560, 1536],
+        "patch_row": 5, "patch_col": 9,
+        "target_mode": "stageb_rc_centerline_trace_patch_map",
+        "coord_system": "patch_local_256",
+        "stageb_state_mode": "left_top_incoming_trace_points",
+        "stageb_trace_point_min": 1, "stageb_trace_point_max": 3,
+        "stageb_trace_span_px": 48.0, "stageb_boundary_tol_px": 2.5,
+        "incoming_traces": [
+          {"id": "L0", "side": "left", "points": [[-25,247],[-13,226],[-1,205]]},
+          {"id": "T0", "side": "top", "points": [[141,-43],[129,-22],[117,-1]]},
+          {"id": "T1", "side": "top", "points": [[183,-42],[171,-22],[159,-1]]}
+        ],
+        "raw_incoming_traces": [
+          {"side": "left", "source_patch_id": "01bb304d7bd835f8bbef7086b688e35e__Summer_2019__ox000oy000__r05c08", "source_line_index": 0, "points": [[-25,247],[-13,226],[-1,205]]},
+          {"side": "top", "source_patch_id": "01bb304d7bd835f8bbef7086b688e35e__Summer_2019__ox000oy000__r04c09", "source_line_index": 0, "points": [[141,-43],[129,-22],[117,-1]]},
+          {"side": "top", "source_patch_id": "01bb304d7bd835f8bbef7086b688e35e__Summer_2019__ox000oy000__r04c09", "source_line_index": 1, "points": [[183,-42],[171,-22],[159,-1]]}
+        ],
+        "num_incoming_traces": 3, "num_incoming_left_traces": 1, "num_incoming_top_traces": 2,
+        "target_lines": [
+          {"category": "centerline", "start_type": "cut", "end_type": "cut", "points": [[116,0],[107,15],[0,204]]},
+          {"category": "centerline", "start_type": "cut", "end_type": "cut", "points": [[159,0],[150,15],[12,255]]}
+        ],
+        "num_target_lines": 2,
+        "prompt_text": "<image>\nThis is a 256x256 RC road-structure patch.\nPredict the road centerlines inside this patch only.\n\nIncoming traces JSON:\n[{\"id\":\"L0\",\"side\":\"left\",\"points\":[[-25,247],[-13,226],[-1,205]]},{\"id\":\"T0\",\"side\":\"top\",\"points\":[[141,-43],[129,-22],[117,-1]]},{\"id\":\"T1\",\"side\":\"top\",\"points\":[[183,-42],[171,-22],[159,-1]]}]\n\nEach incoming trace has 1 to 3 points and is ordered from the previous patch interior toward the current patch boundary.\nIncoming traces are continuity hints only; they may be incomplete or absent.\nReturn only valid JSON in this schema:\n{\"lines\":[{\"category\":\"centerline\",\"start_type\":\"cut|inside\",\"end_type\":\"cut|inside\",\"points\":[[x,y],[x,y]]}]}\nAll output points must be integers inside [0,255]. Do not output points outside the image."
+      }
+    },
+    {
+      "mode": "left_only",
+      "qa_row_from_train_jsonl": {
+        "id": "01bb304d7bd835f8bbef7086b688e35e__Summer_2019__ox000oy000__r04c04",
+        "messages": [
+          {"role": "system", "content": "You are a road-centerline reconstruction assistant for RC-style road-structure images.\nThe image shows lane_boundary/road_edge in orange-yellow and lane_divider in cyan-blue on a dark background.\nThe centerlines are not directly drawn; infer them from the visible road structure.\nUse incoming traces only as continuity hints from already processed neighboring patches.\nReturn only valid JSON in the required schema, with start_type and end_type for every line.\nUse cut for endpoints clipped by the patch boundary and inside for natural endpoints inside the patch."},
+          {"role": "user", "content": "<image>\nThis is a 256x256 RC road-structure patch.\nPredict the road centerlines inside this patch only.\n\nIncoming traces JSON:\n[{\"id\":\"L0\",\"side\":\"left\",\"points\":[[-43,168],[-22,180],[-1,192]]},{\"id\":\"L1\",\"side\":\"left\",\"points\":[[-42,202],[-22,214],[-1,226]]},{\"id\":\"L2\",\"side\":\"left\",\"points\":[[-45,231],[-24,243],[-3,255]]}]\n\nEach incoming trace has 1 to 3 points and is ordered from the previous patch interior toward the current patch boundary.\nIncoming traces are continuity hints only; they may be incomplete or absent.\nReturn only valid JSON in this schema:\n{\"lines\":[{\"category\":\"centerline\",\"start_type\":\"cut|inside\",\"end_type\":\"cut|inside\",\"points\":[[x,y],[x,y]]}]}\nAll output points must be integers inside [0,255]. Do not output points outside the image."},
+          {"role": "assistant", "content": "{\"lines\":[{\"category\":\"centerline\",\"start_type\":\"inside\",\"end_type\":\"inside\",\"points\":[[146,21],[72,150]]},{\"category\":\"centerline\",\"start_type\":\"cut\",\"end_type\":\"cut\",\"points\":[[0,193],[109,255]]},{\"category\":\"centerline\",\"start_type\":\"cut\",\"end_type\":\"cut\",\"points\":[[0,226],[52,255]]}]}"}
+        ],
+        "images": ["patches256_offset/rc_input/clean_dataset_xiuzheng_rcstyle_20260428/WDC/01bb304d7bd835f8bbef7086b688e35e__Summer_2019__ox000oy000__r04c04.png"]
+      },
+      "meta_from_meta_train_jsonl": {
+        "id": "01bb304d7bd835f8bbef7086b688e35e__Summer_2019__ox000oy000__r04c04",
+        "split": "train",
+        "tile_id": "01bb304d7bd835f8bbef7086b688e35e__Summer_2019",
+        "log_id": "01bb304d7bd835f8bbef7086b688e35e__Summer_2019",
+        "city": "WDC",
+        "image": "patches256_offset/rc_input/clean_dataset_xiuzheng_rcstyle_20260428/WDC/01bb304d7bd835f8bbef7086b688e35e__Summer_2019__ox000oy000__r04c04.png",
+        "base_patch_box_full4096": [1024, 1024, 1280, 1280],
+        "patch_row": 4, "patch_col": 4,
+        "target_mode": "stageb_rc_centerline_trace_patch_map",
+        "coord_system": "patch_local_256",
+        "stageb_state_mode": "left_top_incoming_trace_points",
+        "stageb_trace_point_min": 1, "stageb_trace_point_max": 3,
+        "stageb_trace_span_px": 48.0, "stageb_boundary_tol_px": 2.5,
+        "incoming_traces": [
+          {"id": "L0", "side": "left", "points": [[-43,168],[-22,180],[-1,192]]},
+          {"id": "L1", "side": "left", "points": [[-42,202],[-22,214],[-1,226]]},
+          {"id": "L2", "side": "left", "points": [[-45,231],[-24,243],[-3,255]]}
+        ],
+        "raw_incoming_traces": [
+          {"side": "left", "source_patch_id": "01bb304d7bd835f8bbef7086b688e35e__Summer_2019__ox000oy000__r04c03", "source_line_index": 0, "points": [[-43,168],[-22,180],[-1,192]]},
+          {"side": "left", "source_patch_id": "01bb304d7bd835f8bbef7086b688e35e__Summer_2019__ox000oy000__r04c03", "source_line_index": 2, "points": [[-42,202],[-22,214],[-1,226]]},
+          {"side": "left", "source_patch_id": "01bb304d7bd835f8bbef7086b688e35e__Summer_2019__ox000oy000__r04c03", "source_line_index": 3, "points": [[-45,231],[-24,243],[-3,255]]}
+        ],
+        "num_incoming_traces": 3, "num_incoming_left_traces": 3, "num_incoming_top_traces": 0,
+        "target_lines": [
+          {"category": "centerline", "start_type": "inside", "end_type": "inside", "points": [[146,21],[72,150]]},
+          {"category": "centerline", "start_type": "cut", "end_type": "cut", "points": [[0,193],[109,255]]},
+          {"category": "centerline", "start_type": "cut", "end_type": "cut", "points": [[0,226],[52,255]]}
+        ],
+        "num_target_lines": 3,
+        "prompt_text": "<image>\nThis is a 256x256 RC road-structure patch.\nPredict the road centerlines inside this patch only.\n\nIncoming traces JSON:\n[{\"id\":\"L0\",\"side\":\"left\",\"points\":[[-43,168],[-22,180],[-1,192]]},{\"id\":\"L1\",\"side\":\"left\",\"points\":[[-42,202],[-22,214],[-1,226]]},{\"id\":\"L2\",\"side\":\"left\",\"points\":[[-45,231],[-24,243],[-3,255]]}]\n\nEach incoming trace has 1 to 3 points and is ordered from the previous patch interior toward the current patch boundary.\nIncoming traces are continuity hints only; they may be incomplete or absent.\nReturn only valid JSON in this schema:\n{\"lines\":[{\"category\":\"centerline\",\"start_type\":\"cut|inside\",\"end_type\":\"cut|inside\",\"points\":[[x,y],[x,y]]}]}\nAll output points must be integers inside [0,255]. Do not output points outside the image."
+      }
+    },
+    {
+      "mode": "left_only",
+      "qa_row_from_train_jsonl": {
+        "id": "01bb304d7bd835f8bbef7086b688e35e__Summer_2019__ox000oy000__r06c07",
+        "messages": [
+          {"role": "system", "content": "You are a road-centerline reconstruction assistant for RC-style road-structure images.\nThe image shows lane_boundary/road_edge in orange-yellow and lane_divider in cyan-blue on a dark background.\nThe centerlines are not directly drawn; infer them from the visible road structure.\nUse incoming traces only as continuity hints from already processed neighboring patches.\nReturn only valid JSON in the required schema, with start_type and end_type for every line.\nUse cut for endpoints clipped by the patch boundary and inside for natural endpoints inside the patch."},
+          {"role": "user", "content": "<image>\nThis is a 256x256 RC road-structure patch.\nPredict the road centerlines inside this patch only.\n\nIncoming traces JSON:\n[{\"id\":\"L0\",\"side\":\"left\",\"points\":[[-43,97],[-22,109],[-1,121]]},{\"id\":\"L1\",\"side\":\"left\",\"points\":[[-42,129],[-22,141],[-1,153]]},{\"id\":\"L2\",\"side\":\"left\",\"points\":[[-42,162],[-22,174],[-1,186]]},{\"id\":\"L3\",\"side\":\"left\",\"points\":[[-43,195],[-22,207],[-1,219]]}]\n\nEach incoming trace has 1 to 3 points and is ordered from the previous patch interior toward the current patch boundary.\nIncoming traces are continuity hints only; they may be incomplete or absent.\nReturn only valid JSON in this schema:\n{\"lines\":[{\"category\":\"centerline\",\"start_type\":\"cut|inside\",\"end_type\":\"cut|inside\",\"points\":[[x,y],[x,y]]}]}\nAll output points must be integers inside [0,255]. Do not output points outside the image."},
+          {"role": "assistant", "content": "{\"lines\":[{\"category\":\"centerline\",\"start_type\":\"cut\",\"end_type\":\"inside\",\"points\":[[0,122],[64,158],[195,234]]},{\"category\":\"centerline\",\"start_type\":\"cut\",\"end_type\":\"cut\",\"points\":[[0,154],[50,182],[176,255]]},{\"category\":\"centerline\",\"start_type\":\"cut\",\"end_type\":\"cut\",\"points\":[[0,186],[36,207],[121,255]]},{\"category\":\"centerline\",\"start_type\":\"cut\",\"end_type\":\"cut\",\"points\":[[0,220],[21,232],[62,255]]}]}"}
+        ],
+        "images": ["patches256_offset/rc_input/clean_dataset_xiuzheng_rcstyle_20260428/WDC/01bb304d7bd835f8bbef7086b688e35e__Summer_2019__ox000oy000__r06c07.png"]
+      },
+      "meta_from_meta_train_jsonl": {
+        "id": "01bb304d7bd835f8bbef7086b688e35e__Summer_2019__ox000oy000__r06c07",
+        "split": "train",
+        "tile_id": "01bb304d7bd835f8bbef7086b688e35e__Summer_2019",
+        "log_id": "01bb304d7bd835f8bbef7086b688e35e__Summer_2019",
+        "city": "WDC",
+        "image": "patches256_offset/rc_input/clean_dataset_xiuzheng_rcstyle_20260428/WDC/01bb304d7bd835f8bbef7086b688e35e__Summer_2019__ox000oy000__r06c07.png",
+        "base_patch_box_full4096": [1792, 1536, 2048, 1792],
+        "patch_row": 6, "patch_col": 7,
+        "target_mode": "stageb_rc_centerline_trace_patch_map",
+        "coord_system": "patch_local_256",
+        "stageb_state_mode": "left_top_incoming_trace_points",
+        "stageb_trace_point_min": 1, "stageb_trace_point_max": 3,
+        "stageb_trace_span_px": 48.0, "stageb_boundary_tol_px": 2.5,
+        "incoming_traces": [
+          {"id": "L0", "side": "left", "points": [[-43,97],[-22,109],[-1,121]]},
+          {"id": "L1", "side": "left", "points": [[-42,129],[-22,141],[-1,153]]},
+          {"id": "L2", "side": "left", "points": [[-42,162],[-22,174],[-1,186]]},
+          {"id": "L3", "side": "left", "points": [[-43,195],[-22,207],[-1,219]]}
+        ],
+        "raw_incoming_traces": [
+          {"side": "left", "source_patch_id": "01bb304d7bd835f8bbef7086b688e35e__Summer_2019__ox000oy000__r06c06", "source_line_index": 1, "points": [[-43,97],[-22,109],[-1,121]]},
+          {"side": "left", "source_patch_id": "01bb304d7bd835f8bbef7086b688e35e__Summer_2019__ox000oy000__r06c06", "source_line_index": 0, "points": [[-42,129],[-22,141],[-1,153]]},
+          {"side": "left", "source_patch_id": "01bb304d7bd835f8bbef7086b688e35e__Summer_2019__ox000oy000__r06c06", "source_line_index": 2, "points": [[-42,162],[-22,174],[-1,186]]},
+          {"side": "left", "source_patch_id": "01bb304d7bd835f8bbef7086b688e35e__Summer_2019__ox000oy000__r06c06", "source_line_index": 3, "points": [[-43,195],[-22,207],[-1,219]]}
+        ],
+        "num_incoming_traces": 4, "num_incoming_left_traces": 4, "num_incoming_top_traces": 0,
+        "target_lines": [
+          {"category": "centerline", "start_type": "cut", "end_type": "inside", "points": [[0,122],[64,158],[195,234]]},
+          {"category": "centerline", "start_type": "cut", "end_type": "cut", "points": [[0,154],[50,182],[176,255]]},
+          {"category": "centerline", "start_type": "cut", "end_type": "cut", "points": [[0,186],[36,207],[121,255]]},
+          {"category": "centerline", "start_type": "cut", "end_type": "cut", "points": [[0,220],[21,232],[62,255]]}
+        ],
+        "num_target_lines": 4,
+        "prompt_text": "<image>\nThis is a 256x256 RC road-structure patch.\nPredict the road centerlines inside this patch only.\n\nIncoming traces JSON:\n[{\"id\":\"L0\",\"side\":\"left\",\"points\":[[-43,97],[-22,109],[-1,121]]},{\"id\":\"L1\",\"side\":\"left\",\"points\":[[-42,129],[-22,141],[-1,153]]},{\"id\":\"L2\",\"side\":\"left\",\"points\":[[-42,162],[-22,174],[-1,186]]},{\"id\":\"L3\",\"side\":\"left\",\"points\":[[-43,195],[-22,207],[-1,219]]}]\n\nEach incoming trace has 1 to 3 points and is ordered from the previous patch interior toward the current patch boundary.\nIncoming traces are continuity hints only; they may be incomplete or absent.\nReturn only valid JSON in this schema:\n{\"lines\":[{\"category\":\"centerline\",\"start_type\":\"cut|inside\",\"end_type\":\"cut|inside\",\"points\":[[x,y],[x,y]]}]}\nAll output points must be integers inside [0,255]. Do not output points outside the image."
+      }
+    },
+    {
+      "mode": "top_only",
+      "qa_row_from_train_jsonl": {
+        "id": "01bb304d7bd835f8bbef7086b688e35e__Summer_2019__ox000oy000__r05c03",
+        "messages": [
+          {"role": "system", "content": "You are a road-centerline reconstruction assistant for RC-style road-structure images.\nThe image shows lane_boundary/road_edge in orange-yellow and lane_divider in cyan-blue on a dark background.\nThe centerlines are not directly drawn; infer them from the visible road structure.\nUse incoming traces only as continuity hints from already processed neighboring patches.\nReturn only valid JSON in the required schema, with start_type and end_type for every line.\nUse cut for endpoints clipped by the patch boundary and inside for natural endpoints inside the patch."},
+          {"role": "user", "content": "<image>\nThis is a 256x256 RC road-structure patch.\nPredict the road centerlines inside this patch only.\n\nIncoming traces JSON:\n[{\"id\":\"T0\",\"side\":\"top\",\"points\":[[166,-17],[180,-9],[193,-1]]},{\"id\":\"T1\",\"side\":\"top\",\"points\":[[211,-25],[232,-13],[253,-1]]}]\n\nEach incoming trace has 1 to 3 points and is ordered from the previous patch interior toward the current patch boundary.\nIncoming traces are continuity hints only; they may be incomplete or absent.\nReturn only valid JSON in this schema:\n{\"lines\":[{\"category\":\"centerline\",\"start_type\":\"cut|inside\",\"end_type\":\"cut|inside\",\"points\":[[x,y],[x,y]]}]}\nAll output points must be integers inside [0,255]. Do not output points outside the image."},
+          {"role": "assistant", "content": "{\"lines\":[{\"category\":\"centerline\",\"start_type\":\"cut\",\"end_type\":\"cut\",\"points\":[[195,0],[255,34]]},{\"category\":\"centerline\",\"start_type\":\"inside\",\"end_type\":\"cut\",\"points\":[[15,202],[241,207],[255,207]]},{\"category\":\"centerline\",\"start_type\":\"inside\",\"end_type\":\"cut\",\"points\":[[15,231],[240,236],[255,236]]}]}"}
+        ],
+        "images": ["patches256_offset/rc_input/clean_dataset_xiuzheng_rcstyle_20260428/WDC/01bb304d7bd835f8bbef7086b688e35e__Summer_2019__ox000oy000__r05c03.png"]
+      },
+      "meta_from_meta_train_jsonl": {
+        "id": "01bb304d7bd835f8bbef7086b688e35e__Summer_2019__ox000oy000__r05c03",
+        "split": "train",
+        "tile_id": "01bb304d7bd835f8bbef7086b688e35e__Summer_2019",
+        "log_id": "01bb304d7bd835f8bbef7086b688e35e__Summer_2019",
+        "city": "WDC",
+        "image": "patches256_offset/rc_input/clean_dataset_xiuzheng_rcstyle_20260428/WDC/01bb304d7bd835f8bbef7086b688e35e__Summer_2019__ox000oy000__r05c03.png",
+        "base_patch_box_full4096": [768, 1280, 1024, 1536],
+        "patch_row": 5, "patch_col": 3,
+        "target_mode": "stageb_rc_centerline_trace_patch_map",
+        "coord_system": "patch_local_256",
+        "stageb_state_mode": "left_top_incoming_trace_points",
+        "stageb_trace_point_min": 1, "stageb_trace_point_max": 3,
+        "stageb_trace_span_px": 48.0, "stageb_boundary_tol_px": 2.5,
+        "incoming_traces": [
+          {"id": "T0", "side": "top", "points": [[166,-17],[180,-9],[193,-1]]},
+          {"id": "T1", "side": "top", "points": [[211,-25],[232,-13],[253,-1]]}
+        ],
+        "raw_incoming_traces": [
+          {"side": "top", "source_patch_id": "01bb304d7bd835f8bbef7086b688e35e__Summer_2019__ox000oy000__r04c03", "source_line_index": 1, "points": [[166,-17],[180,-9],[193,-1]]},
+          {"side": "top", "source_patch_id": "01bb304d7bd835f8bbef7086b688e35e__Summer_2019__ox000oy000__r04c03", "source_line_index": 3, "points": [[211,-25],[232,-13],[253,-1]]}
+        ],
+        "num_incoming_traces": 2, "num_incoming_left_traces": 0, "num_incoming_top_traces": 2,
+        "target_lines": [
+          {"category": "centerline", "start_type": "cut", "end_type": "cut", "points": [[195,0],[255,34]]},
+          {"category": "centerline", "start_type": "inside", "end_type": "cut", "points": [[15,202],[241,207],[255,207]]},
+          {"category": "centerline", "start_type": "inside", "end_type": "cut", "points": [[15,231],[240,236],[255,236]]}
+        ],
+        "num_target_lines": 3,
+        "prompt_text": "<image>\nThis is a 256x256 RC road-structure patch.\nPredict the road centerlines inside this patch only.\n\nIncoming traces JSON:\n[{\"id\":\"T0\",\"side\":\"top\",\"points\":[[166,-17],[180,-9],[193,-1]]},{\"id\":\"T1\",\"side\":\"top\",\"points\":[[211,-25],[232,-13],[253,-1]]}]\n\nEach incoming trace has 1 to 3 points and is ordered from the previous patch interior toward the current patch boundary.\nIncoming traces are continuity hints only; they may be incomplete or absent.\nReturn only valid JSON in this schema:\n{\"lines\":[{\"category\":\"centerline\",\"start_type\":\"cut|inside\",\"end_type\":\"cut|inside\",\"points\":[[x,y],[x,y]]}]}\nAll output points must be integers inside [0,255]. Do not output points outside the image."
+      }
+    },
+    {
+      "mode": "top_only",
+      "qa_row_from_train_jsonl": {
+        "id": "01bb304d7bd835f8bbef7086b688e35e__Summer_2019__ox000oy000__r05c06",
+        "messages": [
+          {"role": "system", "content": "You are a road-centerline reconstruction assistant for RC-style road-structure images.\nThe image shows lane_boundary/road_edge in orange-yellow and lane_divider in cyan-blue on a dark background.\nThe centerlines are not directly drawn; infer them from the visible road structure.\nUse incoming traces only as continuity hints from already processed neighboring patches.\nReturn only valid JSON in the required schema, with start_type and end_type for every line.\nUse cut for endpoints clipped by the patch boundary and inside for natural endpoints inside the patch."},
+          {"role": "user", "content": "<image>\nThis is a 256x256 RC road-structure patch.\nPredict the road centerlines inside this patch only.\n\nIncoming traces JSON:\n[{\"id\":\"T0\",\"side\":\"top\",\"points\":[[206,-43],[194,-22],[182,-1]]},{\"id\":\"T1\",\"side\":\"top\",\"points\":[[249,-43],[237,-22],[225,-1]]}]\n\nEach incoming trace has 1 to 3 points and is ordered from the previous patch interior toward the current patch boundary.\nIncoming traces are continuity hints only; they may be incomplete or absent.\nReturn only valid JSON in this schema:\n{\"lines\":[{\"category\":\"centerline\",\"start_type\":\"cut|inside\",\"end_type\":\"cut|inside\",\"points\":[[x,y],[x,y]]}]}\nAll output points must be integers inside [0,255]. Do not output points outside the image."},
+          {"role": "assistant", "content": "{\"lines\":[{\"category\":\"centerline\",\"start_type\":\"cut\",\"end_type\":\"inside\",\"points\":[[181,0],[89,162]]},{\"category\":\"centerline\",\"start_type\":\"cut\",\"end_type\":\"inside\",\"points\":[[225,0],[123,178]]}]}"}
+        ],
+        "images": ["patches256_offset/rc_input/clean_dataset_xiuzheng_rcstyle_20260428/WDC/01bb304d7bd835f8bbef7086b688e35e__Summer_2019__ox000oy000__r05c06.png"]
+      },
+      "meta_from_meta_train_jsonl": {
+        "id": "01bb304d7bd835f8bbef7086b688e35e__Summer_2019__ox000oy000__r05c06",
+        "split": "train",
+        "tile_id": "01bb304d7bd835f8bbef7086b688e35e__Summer_2019",
+        "log_id": "01bb304d7bd835f8bbef7086b688e35e__Summer_2019",
+        "city": "WDC",
+        "image": "patches256_offset/rc_input/clean_dataset_xiuzheng_rcstyle_20260428/WDC/01bb304d7bd835f8bbef7086b688e35e__Summer_2019__ox000oy000__r05c06.png",
+        "base_patch_box_full4096": [1536, 1280, 1792, 1536],
+        "patch_row": 5, "patch_col": 6,
+        "target_mode": "stageb_rc_centerline_trace_patch_map",
+        "coord_system": "patch_local_256",
+        "stageb_state_mode": "left_top_incoming_trace_points",
+        "stageb_trace_point_min": 1, "stageb_trace_point_max": 3,
+        "stageb_trace_span_px": 48.0, "stageb_boundary_tol_px": 2.5,
+        "incoming_traces": [
+          {"id": "T0", "side": "top", "points": [[206,-43],[194,-22],[182,-1]]},
+          {"id": "T1", "side": "top", "points": [[249,-43],[237,-22],[225,-1]]}
+        ],
+        "raw_incoming_traces": [
+          {"side": "top", "source_patch_id": "01bb304d7bd835f8bbef7086b688e35e__Summer_2019__ox000oy000__r04c06", "source_line_index": 0, "points": [[206,-43],[194,-22],[182,-1]]},
+          {"side": "top", "source_patch_id": "01bb304d7bd835f8bbef7086b688e35e__Summer_2019__ox000oy000__r04c06", "source_line_index": 1, "points": [[249,-43],[237,-22],[225,-1]]}
+        ],
+        "num_incoming_traces": 2, "num_incoming_left_traces": 0, "num_incoming_top_traces": 2,
+        "target_lines": [
+          {"category": "centerline", "start_type": "cut", "end_type": "inside", "points": [[181,0],[89,162]]},
+          {"category": "centerline", "start_type": "cut", "end_type": "inside", "points": [[225,0],[123,178]]}
+        ],
+        "num_target_lines": 2,
+        "prompt_text": "<image>\nThis is a 256x256 RC road-structure patch.\nPredict the road centerlines inside this patch only.\n\nIncoming traces JSON:\n[{\"id\":\"T0\",\"side\":\"top\",\"points\":[[206,-43],[194,-22],[182,-1]]},{\"id\":\"T1\",\"side\":\"top\",\"points\":[[249,-43],[237,-22],[225,-1]]}]\n\nEach incoming trace has 1 to 3 points and is ordered from the previous patch interior toward the current patch boundary.\nIncoming traces are continuity hints only; they may be incomplete or absent.\nReturn only valid JSON in this schema:\n{\"lines\":[{\"category\":\"centerline\",\"start_type\":\"cut|inside\",\"end_type\":\"cut|inside\",\"points\":[[x,y],[x,y]]}]}\nAll output points must be integers inside [0,255]. Do not output points outside the image."
+      }
+    },
+    {
+      "mode": "no_incoming",
+      "qa_row_from_train_jsonl": {
+        "id": "01bb304d7bd835f8bbef7086b688e35e__Summer_2019__ox000oy000__r03c07",
+        "messages": [
+          {"role": "system", "content": "You are a road-centerline reconstruction assistant for RC-style road-structure images.\nThe image shows lane_boundary/road_edge in orange-yellow and lane_divider in cyan-blue on a dark background.\nThe centerlines are not directly drawn; infer them from the visible road structure.\nUse incoming traces only as continuity hints from already processed neighboring patches.\nReturn only valid JSON in the required schema, with start_type and end_type for every line.\nUse cut for endpoints clipped by the patch boundary and inside for natural endpoints inside the patch."},
+          {"role": "user", "content": "<image>\nThis is a 256x256 RC road-structure patch.\nPredict the road centerlines inside this patch only.\n\nIncoming traces JSON:\n[]\n\nEach incoming trace has 1 to 3 points and is ordered from the previous patch interior toward the current patch boundary.\nIncoming traces are continuity hints only; they may be incomplete or absent.\nReturn only valid JSON in this schema:\n{\"lines\":[{\"category\":\"centerline\",\"start_type\":\"cut|inside\",\"end_type\":\"cut|inside\",\"points\":[[x,y],[x,y]]}]}\nAll output points must be integers inside [0,255]. Do not output points outside the image."},
+          {"role": "assistant", "content": "{\"lines\":[{\"category\":\"centerline\",\"start_type\":\"cut\",\"end_type\":\"inside\",\"points\":[[72,255],[186,61]]},{\"category\":\"centerline\",\"start_type\":\"cut\",\"end_type\":\"inside\",\"points\":[[114,255],[217,79]]}]}"}
+        ],
+        "images": ["patches256_offset/rc_input/clean_dataset_xiuzheng_rcstyle_20260428/WDC/01bb304d7bd835f8bbef7086b688e35e__Summer_2019__ox000oy000__r03c07.png"]
+      },
+      "meta_from_meta_train_jsonl": {
+        "id": "01bb304d7bd835f8bbef7086b688e35e__Summer_2019__ox000oy000__r03c07",
+        "split": "train",
+        "tile_id": "01bb304d7bd835f8bbef7086b688e35e__Summer_2019",
+        "log_id": "01bb304d7bd835f8bbef7086b688e35e__Summer_2019",
+        "city": "WDC",
+        "image": "patches256_offset/rc_input/clean_dataset_xiuzheng_rcstyle_20260428/WDC/01bb304d7bd835f8bbef7086b688e35e__Summer_2019__ox000oy000__r03c07.png",
+        "base_patch_box_full4096": [1792, 768, 2048, 1024],
+        "patch_row": 3, "patch_col": 7,
+        "target_mode": "stageb_rc_centerline_trace_patch_map",
+        "coord_system": "patch_local_256",
+        "stageb_state_mode": "left_top_incoming_trace_points",
+        "stageb_trace_point_min": 1, "stageb_trace_point_max": 3,
+        "stageb_trace_span_px": 48.0, "stageb_boundary_tol_px": 2.5,
+        "incoming_traces": [],
+        "raw_incoming_traces": [],
+        "num_incoming_traces": 0, "num_incoming_left_traces": 0, "num_incoming_top_traces": 0,
+        "target_lines": [
+          {"category": "centerline", "start_type": "cut", "end_type": "inside", "points": [[72,255],[186,61]]},
+          {"category": "centerline", "start_type": "cut", "end_type": "inside", "points": [[114,255],[217,79]]}
+        ],
+        "num_target_lines": 2,
+        "prompt_text": "<image>\nThis is a 256x256 RC road-structure patch.\nPredict the road centerlines inside this patch only.\n\nIncoming traces JSON:\n[]\n\nEach incoming trace has 1 to 3 points and is ordered from the previous patch interior toward the current patch boundary.\nIncoming traces are continuity hints only; they may be incomplete or absent.\nReturn only valid JSON in this schema:\n{\"lines\":[{\"category\":\"centerline\",\"start_type\":\"cut|inside\",\"end_type\":\"cut|inside\",\"points\":[[x,y],[x,y]]}]}\nAll output points must be integers inside [0,255]. Do not output points outside the image."
+      }
+    },
+    {
+      "mode": "no_incoming",
+      "qa_row_from_train_jsonl": {
+        "id": "01bb304d7bd835f8bbef7086b688e35e__Summer_2019__ox000oy000__r04c03",
+        "messages": [
+          {"role": "system", "content": "You are a road-centerline reconstruction assistant for RC-style road-structure images.\nThe image shows lane_boundary/road_edge in orange-yellow and lane_divider in cyan-blue on a dark background.\nThe centerlines are not directly drawn; infer them from the visible road structure.\nUse incoming traces only as continuity hints from already processed neighboring patches.\nReturn only valid JSON in the required schema, with start_type and end_type for every line.\nUse cut for endpoints clipped by the patch boundary and inside for natural endpoints inside the patch."},
+          {"role": "user", "content": "<image>\nThis is a 256x256 RC road-structure patch.\nPredict the road centerlines inside this patch only.\n\nIncoming traces JSON:\n[]\n\nEach incoming trace has 1 to 3 points and is ordered from the previous patch interior toward the current patch boundary.\nIncoming traces are continuity hints only; they may be incomplete or absent.\nReturn only valid JSON in this schema:\n{\"lines\":[{\"category\":\"centerline\",\"start_type\":\"cut|inside\",\"end_type\":\"cut|inside\",\"points\":[[x,y],[x,y]]}]}\nAll output points must be integers inside [0,255]. Do not output points outside the image."},
+          {"role": "assistant", "content": "{\"lines\":[{\"category\":\"centerline\",\"start_type\":\"cut\",\"end_type\":\"inside\",\"points\":[[255,192],[208,165]]},{\"category\":\"centerline\",\"start_type\":\"cut\",\"end_type\":\"inside\",\"points\":[[193,255],[166,239]]},{\"category\":\"centerline\",\"start_type\":\"cut\",\"end_type\":\"inside\",\"points\":[[255,226],[194,190]]},{\"category\":\"centerline\",\"start_type\":\"cut\",\"end_type\":\"inside\",\"points\":[[253,255],[180,214]]}]}"}
+        ],
+        "images": ["patches256_offset/rc_input/clean_dataset_xiuzheng_rcstyle_20260428/WDC/01bb304d7bd835f8bbef7086b688e35e__Summer_2019__ox000oy000__r04c03.png"]
+      },
+      "meta_from_meta_train_jsonl": {
+        "id": "01bb304d7bd835f8bbef7086b688e35e__Summer_2019__ox000oy000__r04c03",
+        "split": "train",
+        "tile_id": "01bb304d7bd835f8bbef7086b688e35e__Summer_2019",
+        "log_id": "01bb304d7bd835f8bbef7086b688e35e__Summer_2019",
+        "city": "WDC",
+        "image": "patches256_offset/rc_input/clean_dataset_xiuzheng_rcstyle_20260428/WDC/01bb304d7bd835f8bbef7086b688e35e__Summer_2019__ox000oy000__r04c03.png",
+        "base_patch_box_full4096": [768, 1024, 1024, 1280],
+        "patch_row": 4, "patch_col": 3,
+        "target_mode": "stageb_rc_centerline_trace_patch_map",
+        "coord_system": "patch_local_256",
+        "stageb_state_mode": "left_top_incoming_trace_points",
+        "stageb_trace_point_min": 1, "stageb_trace_point_max": 3,
+        "stageb_trace_span_px": 48.0, "stageb_boundary_tol_px": 2.5,
+        "incoming_traces": [],
+        "raw_incoming_traces": [],
+        "num_incoming_traces": 0, "num_incoming_left_traces": 0, "num_incoming_top_traces": 0,
+        "target_lines": [
+          {"category": "centerline", "start_type": "cut", "end_type": "inside", "points": [[255,192],[208,165]]},
+          {"category": "centerline", "start_type": "cut", "end_type": "inside", "points": [[193,255],[166,239]]},
+          {"category": "centerline", "start_type": "cut", "end_type": "inside", "points": [[255,226],[194,190]]},
+          {"category": "centerline", "start_type": "cut", "end_type": "inside", "points": [[253,255],[180,214]]}
+        ],
+        "num_target_lines": 4,
+        "prompt_text": "<image>\nThis is a 256x256 RC road-structure patch.\nPredict the road centerlines inside this patch only.\n\nIncoming traces JSON:\n[]\n\nEach incoming trace has 1 to 3 points and is ordered from the previous patch interior toward the current patch boundary.\nIncoming traces are continuity hints only; they may be incomplete or absent.\nReturn only valid JSON in this schema:\n{\"lines\":[{\"category\":\"centerline\",\"start_type\":\"cut|inside\",\"end_type\":\"cut|inside\",\"points\":[[x,y],[x,y]]}]}\nAll output points must be integers inside [0,255]. Do not output points outside the image."
+      }
+    }
+  ]
+}

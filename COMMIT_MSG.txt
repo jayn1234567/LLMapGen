@@ -1,0 +1,23 @@
+feat: Qwen3-VL integration — DeepStack, LLM extraction, Qwen3 support
+
+New modules:
+- DeepStack module (multi-layer ViT feature fusion from Qwen3-VL paper)
+- LlavaQwen3ForCausalLM (Qwen3 LLM adapter with Qwen2 fallback)
+- Qwen3-VL LLM auto-extractor (model.language_model.* -> model.*)
+
+Training scripts (all self-contained with params at top):
+- train_dinov2_qwen2-1.5b.sh (single GPU)
+- train_dinov2_qwen3-8b.sh (multi GPU + ZeRO-3)
+- train_dinov2_qwen3vl-2b.sh (auto-extract + DeepStack)
+- train_dinov2_qwen3vl-8b.sh (auto-extract + ZeRO-3)
+- train_dinov2_qwen2-1.5b_npu.sh (NPU + train->infer)
+- train_dinov2_qwen3vl-8b_npu.sh (NPU + auto-extract + train->infer)
+- infer_dinov2_centerline.sh (inference wrapper)
+
+Fixes:
+- model_type saved as llava_qwen2/llava_qwen3 in checkpoints
+- transformers 5.x API compatibility (processing_class, _get_train_sampler)
+- inference auto-detects Qwen2/Qwen3 from checkpoint config
+- updated deps: transformers>=4.51.0, tokenizers>=0.21
+
+Verified: Qwen2-1.5B + Qwen3-VL-2B + DINOv2 + DeepStack, train + inference, GPU + ZeRO

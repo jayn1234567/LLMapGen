@@ -44,17 +44,19 @@ DATASET_OBS_PATH=${DATASET_OBS_PATH:-obs://yw-ads-training-gy1/data/external/per
 DATASET_DIR_NAME=${DATASET_DIR_NAME:-data_line_samples_33w}                       # Dataset directory name expected after the zip is extracted.
 
 VISION_TOWER=${VISION_TOWER:-${OBS_CACHE}/checkpoints/${VISION_TOWER_NAME}}       # Vision tower path passed to the model loader. Multi-vision uses a comma list.
+VISION_TOWER_OBS_PATH=${VISION_TOWER_OBS_PATH:-${MODEL_OBS_PATH}/${VISION_TOWER_NAME}}  # OBS source for the base DINOv3 HF directory.
 TRAINED_DINOV3_CHECKPOINT_PATH=${TRAINED_DINOV3_CHECKPOINT_PATH:-${OBS_CACHE}/checkpoints/trained_dinov3/dinov3_lora.pt}  # Local optional trained-DINOv3 checkpoint.
 # Local dataset and output paths for this run.
 DATASET_ZIP_PATH=${DATASET_ZIP_PATH:-${OBS_CACHE}/dataset_${RUN_ID}.zip}          # Local path for the downloaded dataset zip.
 DATASET_EXTRACT_ROOT=${DATASET_EXTRACT_ROOT:-${OBS_CACHE}/dataset_extract_${RUN_ID}}  # Local directory where the dataset zip is extracted.
-DATASET_PATH=${DATASET_PATH:-${DATASET_EXTRACT_ROOT}/data_line_samples_33w}       # Extracted dataset root containing phase_a and phase_b folders.
+DATASET_PATH=${DATASET_PATH:-${DATASET_EXTRACT_ROOT}/${DATASET_DIR_NAME}}         # Extracted dataset root containing phase_a and phase_b folders.
 IMAGE_FOLDER=${IMAGE_FOLDER:-${DATASET_PATH}}                                     # Image root passed to training or inference. Usually DATASET_PATH.
 CLOUD_OUTPUT_PATH=${OSB_SHARE_PATH%/}/${RUN_ID}                                   # Final cloud output directory for training artifacts.
 LOCAL_MODEL_SAVE_ROOT=${LOCAL_MODEL_SAVE_ROOT:-/cache/local_model_save_path}      # Local root for training outputs before cloud upload.
 LOCAL_MODEL_SAVE_PATH=${LOCAL_MODEL_SAVE_PATH:-${LOCAL_MODEL_SAVE_ROOT}/${RUN_ID}}  # Per-run local training output directory.
 # Base LLM assets. Stage-A starts here; Stage-B normally starts from Stage-A checkpoints.
 QWEN_PATH=${QWEN_PATH:-${OBS_CACHE}/checkpoints/Qwen3-VL-8B-Instruct}             # Local base Qwen/Qwen3-VL path. Download is skipped when config.json exists.
+QWEN_MODEL_OBS_PATH=${QWEN_MODEL_OBS_PATH:-${MODEL_OBS_PATH}/Qwen3-VL-8B-Instruct}  # OBS source for the base Qwen3-VL checkpoint.
 
 # ====================== training params ======================
 # Main knobs for this SFT recipe. Edit values here instead of passing one-off shell prefixes.
@@ -180,15 +182,21 @@ SWANLAB_LOG_DIR=${SWANLAB_LOG_DIR:-${OUTPUT_PATH}/swanlab}                      
 
 # ====================== downloads ======================
 # Download recipe-specific assets and the dataset, then verify required local paths.
-python -c "import moxing as mox; mox.file.copy_parallel('${MODEL_OBS_PATH}/${VISION_TOWER_NAME}', '${VISION_TOWER}')"
-if [ -n "${TRAINED_DINOV3_CHECKPOINT_OBS_PATH}" ]; then
+if [ ! -e "${VISION_TOWER}/config.json" ]; then
+  python -c "import moxing as mox; mox.file.copy_parallel('${VISION_TOWER_OBS_PATH}', '${VISION_TOWER}')"
+fi
+if [ -n "${TRAINED_DINOV3_CHECKPOINT_OBS_PATH}" ] && [ ! -f "${TRAINED_DINOV3_CHECKPOINT_PATH}" ]; then
   mkdir -p "$(dirname "${TRAINED_DINOV3_CHECKPOINT_PATH}")"
   python -c "import moxing as mox; mox.file.copy('${TRAINED_DINOV3_CHECKPOINT_OBS_PATH}', '${TRAINED_DINOV3_CHECKPOINT_PATH}')"
 fi
-python -c "import moxing as mox; mox.file.copy('${DATASET_OBS_PATH}', '${DATASET_ZIP_PATH}')"
-mkdir -p "${DATASET_EXTRACT_ROOT}"
-unzip -q "${DATASET_ZIP_PATH}" -d "${DATASET_EXTRACT_ROOT}"
-python -c "import moxing as mox; mox.file.copy_parallel('${MODEL_OBS_PATH}/Qwen3-VL-8B-Instruct', '${QWEN_PATH}')"
+if [ ! -e "${DATASET_PATH}/${DATASET_PHASE}/train.jsonl" ] || [ ! -e "${DATASET_PATH}/${DATASET_PHASE}/eval.jsonl" ]; then
+  python -c "import moxing as mox; mox.file.copy('${DATASET_OBS_PATH}', '${DATASET_ZIP_PATH}')"
+  mkdir -p "${DATASET_EXTRACT_ROOT}"
+  unzip -q "${DATASET_ZIP_PATH}" -d "${DATASET_EXTRACT_ROOT}"
+fi
+if [ ! -e "${QWEN_PATH}/config.json" ]; then
+  python -c "import moxing as mox; mox.file.copy_parallel('${QWEN_MODEL_OBS_PATH}', '${QWEN_PATH}')"
+fi
 INIT_MODEL_PATH="${QWEN_PATH}"                                                    # Initial model path passed to train_qwen. Stage B uses the Stage-A checkpoint.
 TRAIN_PATH="${DATASET_PATH}/${DATASET_PHASE}/train.jsonl"                         # Training JSONL path for the selected dataset phase.
 EVAL_PATH="${DATASET_PATH}/${DATASET_PHASE}/eval.jsonl"                           # Evaluation JSONL path for the selected dataset phase.

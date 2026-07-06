@@ -30,10 +30,13 @@ DEFAULT_CENTERLINE_SYSTEM_PROMPT = (
     "3. Do NOT output explanations or extra text.\n"
     "4. Use the patch-local coordinate system.\n"
     "5. All x and y coordinates must be integers between 0 and 512 inclusive.\n"
-    "6. Strictly use this JSON structure:\n"
+    "6. Every centerline record must include category, start_type, end_type, and points.\n"
+    "7. Use category=\"centerline\" for centerline records.\n"
+    "8. Use start_type/end_type=\"cut\" when that endpoint is clipped by the patch border, otherwise use \"inside\".\n"
+    "9. Strictly use this JSON structure:\n"
     '{"lines":[]}\n'
     "or\n"
-    '{"lines":[{"points":[[x1,y1],[x2,y2]]}]}'
+    '{"lines":[{"category":"centerline","start_type":"inside","end_type":"cut","points":[[x1,y1],[x2,y2]]}]}'
 )
 
 DEFAULT_CENTERLINE_USER_PROMPT = (
@@ -58,11 +61,16 @@ DEFAULT_LANE_INTERSECTION_SYSTEM_PROMPT = (
     "3. Do NOT output explanations or extra text.\n"
     "4. Use the patch-local coordinate system.\n"
     "5. All x and y coordinates must be integers between 0 and 512 inclusive.\n"
-    "6. Strictly use this JSON structure:\n"
+    "6. Centerline records must include category, start_type, end_type, and points.\n"
+    "7. Use category=\"centerline\" for centerline records.\n"
+    "8. Use start_type/end_type=\"cut\" when that centerline endpoint is clipped by the patch border, otherwise use \"inside\".\n"
+    "9. Intersection records must include category=\"intersection\" and points; include is_cut only when needed.\n"
+    "10. Intersection points describe a polygon and should repeat the first point as the final point when closed.\n"
+    "11. Strictly use this JSON structure:\n"
     '{"lines":[]}\n'
     "or\n"
     '{"lines":[{"category":"centerline","start_type":"inside","end_type":"cut","points":[[x1,y1],[x2,y2]]},'
-    '{"category":"intersection","is_cut":false,"points":[[x1,y1],[x2,y2],[x3,y3],[x1,y1]]}]}'
+    '{"category":"intersection","points":[[x1,y1],[x2,y2],[x3,y3],[x1,y1]]}]}'
 )
 
 DEFAULT_LANE_INTERSECTION_USER_PROMPT = (

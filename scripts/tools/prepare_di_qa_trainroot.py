@@ -335,8 +335,17 @@ def normalize_task(value: Any) -> str:
 
 def user_prompt_for_task(task: str) -> str:
     if normalize_task(task) == "lane_intersection":
-        return "Predict the road centerlines and intersection regions for this patch."
-    return "Predict the road centerlines for this patch."
+        return (
+            "Predict the road centerlines and intersection regions for this patch. "
+            "Return only valid JSON with this schema: "
+            '{"lines":[{"category":"centerline","start_type":"cut|inside","end_type":"cut|inside","points":[[x,y],[x,y]]},'
+            '{"category":"intersection","points":[[x,y],[x,y],[x,y],[x,y]]}]}'
+        )
+    return (
+        "Predict the road centerlines for this patch. "
+        "Return only valid JSON with this schema: "
+        '{"lines":[{"category":"centerline","start_type":"cut|inside","end_type":"cut|inside","points":[[x,y],[x,y]]}]}'
+    )
 
 
 def min_points_for_category(category: str) -> int:

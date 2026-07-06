@@ -85,6 +85,21 @@ def _assign_by_suffix(
     return True
 
 
+def _assign_with_optional_unsqueeze(
+    mapped: Dict[str, torch.Tensor],
+    target_state: Dict[str, torch.Tensor],
+    value: Optional[torch.Tensor],
+    suffixes: Sequence[str],
+) -> bool:
+    if value is None or not torch.is_tensor(value):
+        return False
+    if _assign_by_suffix(mapped, target_state, value, suffixes):
+        return True
+    if value.ndim == 2:
+        return _assign_by_suffix(mapped, target_state, value.unsqueeze(1), suffixes)
+    return False
+
+
 def _suffix_aligned_state(module: nn.Module, state_dict: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
     target_state = module.state_dict()
     source_by_suffix: Dict[str, tuple[str, torch.Tensor]] = {}
@@ -116,18 +131,31 @@ def _scripted_dinov3_to_hf_state(
         raw_state.get("encoder.storage_tokens"),
         ("embeddings.register_tokens", "register_tokens", "storage_tokens"),
     )
-    _assign_by_suffix(mapped, target_state, raw_state.get("encoder.mask_token"), ("embeddings.mask_token", "mask_token"))
+    _assign_with_optional_unsqueeze(
+        mapped,
+        target_state,
+        raw_state.get("encoder.mask_token"),
+        ("embeddings.mask_token", "mask_token"),
+    )
     _assign_by_suffix(
         mapped,
         target_state,
         raw_state.get("encoder.patch_embed.proj.weight"),
-        ("embeddings.patch_embeddings.projection.weight", "patch_embed.proj.weight"),
+        (
+            "embeddings.patch_embeddings.weight",
+            "embeddings.patch_embeddings.projection.weight",
+            "patch_embed.proj.weight",
+        ),
     )
     _assign_by_suffix(
         mapped,
         target_state,
         raw_state.get("encoder.patch_embed.proj.bias"),
-        ("embeddings.patch_embeddings.projection.bias", "patch_embed.proj.bias"),
+        (
+            "embeddings.patch_embeddings.bias",
+            "embeddings.patch_embeddings.projection.bias",
+            "patch_embed.proj.bias",
+        ),
     )
 
     block_indexes = sorted(
@@ -142,6 +170,7 @@ def _scripted_dinov3_to_hf_state(
     for idx in block_indexes:
         src = f"encoder.blocks.{idx}"
         layer_suffixes = (
+            f"model.layer.{idx}",
             f"encoder.layer.{idx}",
             f"encoder.layers.{idx}",
             f"encoder.blocks.{idx}",
@@ -158,12 +187,17 @@ def _scripted_dinov3_to_hf_state(
                     tuple(f"{layer}.{norm_name}.{attr}" for layer in layer_suffixes),
                 )
         for mlp_name in ("fc1", "fc2"):
+            target_mlp_names = ("up_proj", "fc1") if mlp_name == "fc1" else ("down_proj", "fc2")
             for attr in ("weight", "bias"):
                 _assign_by_suffix(
                     mapped,
                     target_state,
                     raw_state.get(f"{src}.mlp.{mlp_name}.{attr}"),
-                    tuple(f"{layer}.mlp.{mlp_name}.{attr}" for layer in layer_suffixes),
+                    tuple(
+                        f"{layer}.mlp.{target_name}.{attr}"
+                        for layer in layer_suffixes
+                        for target_name in target_mlp_names
+                    ),
                 )
         for source_name, target_names in (
             ("ls1.gamma", ("layer_scale1.lambda1", "layer_scale1.gamma", "ls1.gamma")),
@@ -183,7 +217,7 @@ def _scripted_dinov3_to_hf_state(
                 tuple(
                     f"{layer}.{target}.{attr}"
                     for layer in layer_suffixes
-                    for target in ("attention.output.dense", "attention.output.projection", "attn.proj")
+                    for target in ("attention.o_proj", "attention.output.dense", "attention.output.projection", "attn.proj")
                 ),
             )
 
@@ -204,6 +238,7 @@ def _scripted_dinov3_to_hf_state(
                 if tuple(v_delta.shape) == tuple(v_weight.shape):
                     v_weight = v_weight + v_delta
             for name, value in (("query", q_weight), ("key", k_weight), ("value", v_weight)):
+                short_name = {"query": "q_proj", "key": "k_proj", "value": "v_proj"}[name]
                 _assign_by_suffix(
                     mapped,
                     target_state,
@@ -213,11 +248,13 @@ def _scripted_dinov3_to_hf_state(
                         for layer in layer_suffixes
                         for target in ("attention.attention", "attention")
                     )
+                    + tuple(f"{layer}.attention.{short_name}.weight" for layer in layer_suffixes)
                     + tuple(f"{layer}.attn.{name}.weight" for layer in layer_suffixes),
                 )
         if torch.is_tensor(qkv_bias) and qkv_bias.ndim == 1 and qkv_bias.shape[0] % 3 == 0:
             q_bias, k_bias, v_bias = torch.chunk(qkv_bias, 3, dim=0)
             for name, value in (("query", q_bias), ("key", k_bias), ("value", v_bias)):
+                short_name = {"query": "q_proj", "key": "k_proj", "value": "v_proj"}[name]
                 _assign_by_suffix(
                     mapped,
                     target_state,
@@ -227,6 +264,7 @@ def _scripted_dinov3_to_hf_state(
                         for layer in layer_suffixes
                         for target in ("attention.attention", "attention")
                     )
+                    + tuple(f"{layer}.attention.{short_name}.bias" for layer in layer_suffixes)
                     + tuple(f"{layer}.attn.{name}.bias" for layer in layer_suffixes),
                 )
 
@@ -280,7 +318,14 @@ def _select_checkpoint_state(module: nn.Module, raw_state: Dict[str, torch.Tenso
                 " The checkpoint looks like a LoRA-only adapter. Merge it into the base "
                 "DINOv3 weights first, or provide a checkpoint with full encoder weights."
             )
-        raise ValueError(f"Unable to match any DINOv3 checkpoint weights by shape.{hint}")
+        target_keys = list(module.state_dict().keys())[:12]
+        raw_keys = list(raw_state.keys())[:12]
+        scripted_count = len(_scripted_dinov3_to_hf_state(module, raw_state))
+        raise ValueError(
+            "Unable to match any DINOv3 checkpoint weights by shape. "
+            f"raw_keys_sample={raw_keys}; target_keys_sample={target_keys}; "
+            f"scripted_dinov3_candidate_tensors={scripted_count}.{hint}"
+        )
     return best_name, best_state
 
 

@@ -65,6 +65,7 @@ QWEN_PATH=${QWEN_PATH:-${OBS_CACHE}/checkpoints/Qwen3-VL-8B-Instruct}           
 TARGET_GLOBAL_BATCH_SIZE=${TARGET_GLOBAL_BATCH_SIZE:-128}                         # Desired global batch size used to derive gradient accumulation.
 PER_DEVICE_TRAIN_BATCH_SIZE=${PER_DEVICE_TRAIN_BATCH_SIZE:-4}                     # Micro batch size per NPU process.
 NUM_EPOCHS=${NUM_EPOCHS:-5}                                                       # Number of SFT training epochs.
+MAX_STEPS=${MAX_STEPS:-}                                                          # Optional smoke-test max steps. Empty means train by epochs.
 LR=${LR:-2e-5}                                                                    # Base learning rate for LLM and default trainable parameters.
 MM_PROJECTOR_LR=${MM_PROJECTOR_LR:-2e-5}                                          # Learning rate for the multimodal projector.
 MM_VISION_TOWER_LR=${MM_VISION_TOWER_LR:-2e-6}                                    # Learning rate for trainable vision tower parameters.
@@ -209,6 +210,11 @@ if [ -n "${TRAINED_DINOV3_CHECKPOINT_OBS_PATH}" ]; then
   VISION_CHECKPOINT_ARGS=(--vision_tower_checkpoint_path "${TRAINED_DINOV3_CHECKPOINT_PATH}")
 fi
 
+MAX_STEPS_ARGS=()
+if [ -n "${MAX_STEPS}" ]; then
+  MAX_STEPS_ARGS=(--max_steps "${MAX_STEPS}")
+fi
+
 # Derive gradient accumulation from the requested global batch size.
 TOTAL_DEVICES=$(( NNODES * NPROC_PER_NODE ))                                      # Total number of NPU processes across all nodes.
 MICRO_BATCH=$(( TOTAL_DEVICES * PER_DEVICE_TRAIN_BATCH_SIZE ))                    # Global micro-batch size before gradient accumulation.
@@ -249,6 +255,7 @@ echo "Layer fusion: ${VISION_LAYER_FUSION_INDEXES:-off} (${VISION_LAYER_FUSION_T
 echo "Train:        ${TRAIN_PATH}"
 echo "Eval:         ${EVAL_PATH}"
 echo "Output:       ${OUTPUT_PATH}"
+echo "Max steps:    ${MAX_STEPS:-epoch-based}"
 echo "============================================================"
 
 # Launch the recipe entrypoint. Training uses HCCL/DDP and full SFT may add DeepSpeed.
@@ -278,6 +285,7 @@ torchrun \
   --bf16 True \
   --output_dir "${OUTPUT_PATH}" \
   --num_train_epochs "${NUM_EPOCHS}" \
+  "${MAX_STEPS_ARGS[@]}" \
   --per_device_train_batch_size "${PER_DEVICE_TRAIN_BATCH_SIZE}" \
   --gradient_accumulation_steps "${GRADIENT_ACCUMULATION_STEPS}" \
   --learning_rate "${LR}" \

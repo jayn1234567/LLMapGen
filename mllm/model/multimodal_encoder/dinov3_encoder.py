@@ -63,11 +63,27 @@ def _find_target_key(target_state: Dict[str, torch.Tensor], value: torch.Tensor,
         matches = [
             key
             for key, target_value in target_state.items()
-            if str(key).endswith(str(suffix)) and tuple(target_value.shape) == value_shape
+            if str(key).endswith(str(suffix)) and _logical_shape(target_value) == value_shape
         ]
         if matches:
             return sorted(matches, key=len)[0]
     return None
+
+
+def _logical_shape(value: torch.Tensor) -> tuple[int, ...]:
+    ds_shape = getattr(value, "ds_shape", None)
+    if ds_shape is not None:
+        return tuple(int(dim) for dim in ds_shape)
+    return tuple(value.shape)
+
+
+def _module_target_tensors(module: nn.Module) -> Dict[str, torch.Tensor]:
+    targets: Dict[str, torch.Tensor] = {}
+    targets.update({name: param for name, param in module.named_parameters()})
+    targets.update({name: buffer for name, buffer in module.named_buffers()})
+    if targets:
+        return targets
+    return module.state_dict()
 
 
 def _assign_by_suffix(
@@ -101,14 +117,14 @@ def _assign_with_optional_unsqueeze(
 
 
 def _suffix_aligned_state(module: nn.Module, state_dict: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
-    target_state = module.state_dict()
+    target_state = _module_target_tensors(module)
     source_by_suffix: Dict[str, tuple[str, torch.Tensor]] = {}
     for source_key, value in state_dict.items():
         parts = str(source_key).split(".")
         for start in range(len(parts)):
             suffix = ".".join(parts[start:])
             target = target_state.get(suffix)
-            if target is not None and tuple(target.shape) == tuple(value.shape):
+            if target is not None and _logical_shape(target) == tuple(value.shape):
                 existing = source_by_suffix.get(suffix)
                 if existing is None or len(str(source_key)) < len(existing[0]):
                     source_by_suffix[suffix] = (str(source_key), value)
@@ -121,7 +137,7 @@ def _scripted_dinov3_to_hf_state(
 ) -> Dict[str, torch.Tensor]:
     if not any(str(key).startswith("encoder.blocks.") for key in raw_state):
         return {}
-    target_state = vision_encoder.state_dict()
+    target_state = _module_target_tensors(vision_encoder)
     mapped: Dict[str, torch.Tensor] = {}
 
     _assign_by_suffix(mapped, target_state, raw_state.get("encoder.cls_token"), ("embeddings.cls_token", "cls_token"))
@@ -170,6 +186,7 @@ def _scripted_dinov3_to_hf_state(
     for idx in block_indexes:
         src = f"encoder.blocks.{idx}"
         layer_suffixes = (
+            f"layer.{idx}",
             f"model.layer.{idx}",
             f"encoder.layer.{idx}",
             f"encoder.layers.{idx}",
@@ -277,11 +294,11 @@ def _scripted_dinov3_to_hf_state(
 
 
 def _shape_match_score(module: nn.Module, state_dict: Dict[str, torch.Tensor]) -> tuple[int, int]:
-    target_state = module.state_dict()
+    target_state = _module_target_tensors(module)
     matched = {
         key: value
         for key, value in state_dict.items()
-        if key in target_state and torch.is_tensor(value) and tuple(target_state[key].shape) == tuple(value.shape)
+        if key in target_state and torch.is_tensor(value) and _logical_shape(target_state[key]) == tuple(value.shape)
     }
     return len(matched), sum(int(value.numel()) for value in matched.values())
 
@@ -338,11 +355,11 @@ def _load_external_dinov3_checkpoint(module: nn.Module, checkpoint_path: str) ->
     if not raw_state:
         raise ValueError(f"Unable to extract tensor state_dict from DINOv3 checkpoint: {ckpt_path}")
     selected_name, selected_state = _select_checkpoint_state(module, raw_state)
-    target_state = module.state_dict()
+    target_state = _module_target_tensors(module)
     filtered = {
         key: value
         for key, value in selected_state.items()
-        if key in target_state and torch.is_tensor(value) and tuple(target_state[key].shape) == tuple(value.shape)
+        if key in target_state and torch.is_tensor(value) and _logical_shape(target_state[key]) == tuple(value.shape)
     }
     missing, unexpected = module.load_state_dict(filtered, strict=False)
     print(

@@ -49,8 +49,9 @@ DEFAULT_LANE_INTERSECTION_SYSTEM_PROMPT = (
     "You are a road-map reconstruction assistant for black-background BEV road patches.\n\n"
     "TASK DEFINITION:\n"
     "Predict only the road geometry inside the current patch.\n"
-    "Use the visible road structure to infer road centerlines and intersections.\n"
+    "The image is a BEV semantic road-structure map. Use the visible road structure to infer road centerlines and intersections.\n"
     "Do not trace visible road-structure marks, boundaries, dividers, or semantic masks themselves.\n"
+    "Some semantic colors or local labels may be noisy; rely on the overall road geometry and traffic-flow continuity.\n"
     "Use incoming or surrounding visual context only as continuity hints when it is provided.\n\n"
     "OUTPUT CONSTRAINTS:\n"
     "1. Return ONLY valid JSON.\n"
@@ -62,9 +63,10 @@ DEFAULT_LANE_INTERSECTION_SYSTEM_PROMPT = (
     "7. For centerline records, use start_type/end_type=\"cut\" when that endpoint is clipped by the patch border, otherwise use \"inside\".\n"
     "8. For intersection records, output a closed polyline with category=\"intersection\" and points.\n"
     "9. For intersection records, do not include start_type or end_type.\n"
-    "10. An intersection closed polyline should repeat the first point as the final point.\n"
-    "11. If an intersection is clipped by the patch border, include is_cut=true; otherwise omit is_cut or set it to false.\n"
-    "12. Strictly use this JSON structure:\n"
+    "10. List intersection records from left to right.\n"
+    "11. Intersection points should start from the upper-left keypoint, traverse counterclockwise, and repeat the first point as the final point.\n"
+    "12. If an intersection is clipped by the patch border, include is_cut=true; otherwise omit is_cut or set it to false.\n"
+    "13. Strictly use this JSON structure:\n"
     '{"lines":[]}\n'
     "or\n"
     '{"lines":[{"category":"centerline","start_type":"inside","end_type":"cut","points":[[x1,y1],[x2,y2]]},'
@@ -74,7 +76,7 @@ DEFAULT_LANE_INTERSECTION_SYSTEM_PROMPT = (
 DEFAULT_LANE_INTERSECTION_USER_PROMPT = (
     "This is a black-background BEV road-structure image.\n"
     "Please construct the complete road map in the current BEV image patch.\n"
-    "For intersection records, output closed polylines without start_type or end_type.\n"
+    "For intersection records, output closed polylines from left to right; each polygon starts at the upper-left keypoint, goes counterclockwise, and returns to the start keypoint.\n"
     "Coordinates use a normalized 0-1000 patch-local grid.\n"
     "Return only the raw JSON object."
 )

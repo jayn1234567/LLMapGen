@@ -337,7 +337,8 @@ def user_prompt_for_task(task: str) -> str:
     if normalize_task(task) == "lane_intersection":
         return (
             "Please construct the complete road map in the current BEV image patch. "
-            "For intersection records, output closed polylines without start_type or end_type. "
+            "For intersection records, output closed polylines from left to right; "
+            "each polygon starts at the upper-left keypoint, goes counterclockwise, and returns to the start keypoint. "
             "Return only valid JSON with this schema: "
             '{"lines":[{"category":"centerline","start_type":"cut|inside","end_type":"cut|inside","points":[[x,y],[x,y]]},'
             '{"category":"intersection","is_cut":true|false,"points":[[x,y],[x,y],[x,y],[x,y]]}]}'

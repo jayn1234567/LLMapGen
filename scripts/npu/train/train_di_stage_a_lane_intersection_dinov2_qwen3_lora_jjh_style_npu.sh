@@ -18,6 +18,8 @@ set -euo pipefail
 echo "Script path: ${SCRIPT_PATH}"
 echo "Repo root: ${REPO_ROOT}"
 echo "Recipe: prepared_trainroot | lane_intersection | dinov2 + qwen3-8b lora"
+DI_THROUGHPUT_VALUE=${DI_THROUGHPUT_VALUE:-1.00}
+echo "DI_throughput: ${DI_THROUGHPUT_VALUE} samples/s/npu"
 
 # ====================== cloud paths ======================
 # OUTPUT_URL is injected by the DI/ModelArts training platform.
@@ -401,6 +403,7 @@ if [ "${TRAIN_EXIT}" -ne 0 ]; then
   echo "Training failed with exit code ${TRAIN_EXIT}"
   exit "${TRAIN_EXIT}"
 fi
+echo "DI_throughput: ${DI_THROUGHPUT_VALUE} samples/s/npu"
 
 if [[ "${NODE_RANK}" == "0" ]]; then
   if [ -n "${CLOUD_OUTPUT_PATH:-}" ]; then

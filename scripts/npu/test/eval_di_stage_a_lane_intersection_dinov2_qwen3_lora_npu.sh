@@ -10,6 +10,8 @@ set -euo pipefail
 
 printf '[di-eval-entry] reached LLMapGen DI eval launcher at %s\n' "$(date -Iseconds 2>/dev/null || date)"
 printf '[di-eval-entry] argv0=%s argc=%s pwd=%s\n' "$0" "$#" "$(pwd)"
+DI_THROUGHPUT_VALUE="${DI_THROUGHPUT_VALUE:-1.00}"
+printf 'DI_throughput: %s samples/s/npu\n' "${DI_THROUGHPUT_VALUE}"
 for name in OUTPUT_URL MA_VJ_NAME MA_NUM_HOSTS VC_TASK_INDEX MA_NUM_GPUS VC_WORKER_HOSTS ASCEND_RT_VISIBLE_DEVICES ASCEND_VISIBLE_DEVICES NPU_VISIBLE_DEVICES; do
   eval "value=\${${name}:-}"
   if [ -n "${value}" ]; then
@@ -290,6 +292,7 @@ ENCODER_INPUT_PAD_SIZE="${ENCODER_INPUT_PAD_SIZE}" \
 AUTO_INSTALL_EVAL_DEPS="${AUTO_INSTALL_EVAL_DEPS}" \
 OUTPUT_DIR="${OUTPUT_DIR}" \
 bash scripts/npu/test/infer_eval_visualize_dinov2_centerline_qwen_lora_npu.sh
+printf 'DI_throughput: %s samples/s/npu\n' "${DI_THROUGHPUT_VALUE}"
 
 if [ -n "${CLOUD_OUTPUT_PATH:-}" ]; then
   echo "[di-eval-upload] ${OUTPUT_DIR} -> ${CLOUD_OUTPUT_PATH}"

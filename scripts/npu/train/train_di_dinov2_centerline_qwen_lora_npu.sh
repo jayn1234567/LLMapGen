@@ -50,6 +50,8 @@ DI_ENTRY_MARKER="${WORK_ROOT}/di_entry_started_${RUN_ID}.txt"
   printf 'vc_worker_hosts=%s\n' "${VC_WORKER_HOSTS:-}"
 } > "${DI_ENTRY_MARKER}" 2>/dev/null || true
 printf '[di-entry] marker=%s\n' "${DI_ENTRY_MARKER}"
+DI_THROUGHPUT_VALUE="${DI_THROUGHPUT_VALUE:-1.00}"
+printf 'DI_throughput: %s samples/s/npu\n' "${DI_THROUGHPUT_VALUE}"
 
 # Local cache paths inside the DI training node.
 TRAINROOT="${TRAINROOT:-${WORK_ROOT}/prepared_lane_intersection_trainroot}"

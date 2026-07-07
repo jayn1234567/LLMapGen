@@ -17,6 +17,11 @@ fi
 CLONE_FORCE="${CLONE_FORCE:-false}"
 HOST_PYTHON="${HOST_PYTHON:-}"
 
+# Ascend/DI environments often cannot reach repo.anaconda.com.
+# Use the internal conda proxy by default; set CONDA_CHANNELS="" to use conda defaults.
+CONDA_CHANNELS="${CONDA_CHANNELS:-http://192.168.214.30:8088/repository/conda-proxy/main}"
+CONDA_CREATE_EXTRA_ARGS="${CONDA_CREATE_EXTRA_ARGS:-}"
+
 TORCH_SPEC="${TORCH_SPEC:-torch==2.7.1}"
 TORCH_NPU_SPEC="${TORCH_NPU_SPEC:-torch_npu==2.7.1rc1}"
 TORCHVISION_SPEC="${TORCHVISION_SPEC:-torchvision==0.22.1}"
@@ -90,6 +95,27 @@ resolve_host_python_with_moxing() {
   return 2
 }
 
+build_conda_channel_args() {
+  CONDA_CHANNEL_ARGS=()
+  if [ -n "${CONDA_CHANNELS}" ]; then
+    CONDA_CHANNEL_ARGS+=(--override-channels)
+    local channel
+    local channels_csv
+    channels_csv="${CONDA_CHANNELS//;/,}"
+    IFS=',' read -r -a _llmapgen_channels <<< "${channels_csv}"
+    for channel in "${_llmapgen_channels[@]}"; do
+      channel="$(echo "${channel}" | xargs)"
+      if [ -n "${channel}" ]; then
+        CONDA_CHANNEL_ARGS+=(-c "${channel}")
+      fi
+    done
+  fi
+  if [ -n "${CONDA_CREATE_EXTRA_ARGS}" ]; then
+    # shellcheck disable=SC2206
+    CONDA_CHANNEL_ARGS+=(${CONDA_CREATE_EXTRA_ARGS})
+  fi
+}
+
 source_if_exists() {
   if [ -f "$1" ]; then
     local nounset_was_on=0
@@ -140,6 +166,9 @@ source "${CONDA_BASE}/etc/profile.d/conda.sh"
 
 echo "[npu-py311-env] requested python version: ${PYTHON_VERSION}"
 
+build_conda_channel_args
+echo "[npu-py311-env] conda channels: ${CONDA_CHANNELS:-<conda-defaults>}"
+
 if bool_enabled "${CLONE_FORCE}"; then
   if [ -n "${CONDA_ENV_NAME}" ]; then
     conda env remove -y -n "${CONDA_ENV_NAME}" || true
@@ -150,12 +179,12 @@ fi
 
 if [ -n "${CONDA_ENV_NAME}" ]; then
   if ! conda env list | awk '{print $1}' | grep -Fxq "${CONDA_ENV_NAME}"; then
-    conda create -y -n "${CONDA_ENV_NAME}" "python=${PYTHON_VERSION}"
+    conda create -y "${CONDA_CHANNEL_ARGS[@]}" -n "${CONDA_ENV_NAME}" "python=${PYTHON_VERSION}"
   fi
   conda activate "${CONDA_ENV_NAME}"
 else
   if [ ! -x "${ENV_DIR}/bin/python" ]; then
-    conda create -y -p "${ENV_DIR}" "python=${PYTHON_VERSION}"
+    conda create -y "${CONDA_CHANNEL_ARGS[@]}" -p "${ENV_DIR}" "python=${PYTHON_VERSION}"
   fi
   conda activate "${ENV_DIR}"
 fi

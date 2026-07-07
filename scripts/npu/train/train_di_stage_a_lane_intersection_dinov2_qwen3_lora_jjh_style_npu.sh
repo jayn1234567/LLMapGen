@@ -60,6 +60,8 @@ OUTPUT_PATH=${OUTPUT_PATH:-${LOCAL_MODEL_SAVE_PATH}}
 
 # ====================== training params ======================
 MAP_TASK=${MAP_TASK:-lane_intersection}
+SYSTEM_PROMPT=${SYSTEM_PROMPT:-}
+USER_PROMPT=${USER_PROMPT:-}
 TARGET_GLOBAL_BATCH_SIZE=${TARGET_GLOBAL_BATCH_SIZE:-32}
 PER_DEVICE_TRAIN_BATCH_SIZE=${PER_DEVICE_TRAIN_BATCH_SIZE:-1}
 NUM_TRAIN_EPOCHS=${NUM_TRAIN_EPOCHS:-6}
@@ -314,6 +316,14 @@ if [[ "${FREEZE_VISION_ENCODER}" =~ ^(1|true|True|TRUE|yes|YES)$ ]]; then
   FREEZE_VISION_ARGS=(--freeze-vision-encoder --vision-train-last-n-layers "${VISION_TRAIN_LAST_N_LAYERS}")
 fi
 
+PROMPT_ARGS=()
+if [ -n "${SYSTEM_PROMPT}" ]; then
+  PROMPT_ARGS+=(--system-prompt "${SYSTEM_PROMPT}")
+fi
+if [ -n "${USER_PROMPT}" ]; then
+  PROMPT_ARGS+=(--user-prompt "${USER_PROMPT}")
+fi
+
 echo "============================================================"
 echo "Run id:       ${RUN_ID}"
 echo "Trainroot:    ${TRAINROOT}"
@@ -329,6 +339,11 @@ echo "NNODES/NPROC: ${NNODES}/${NPROC_PER_NODE}, rank=${NODE_RANK}, master=${MAS
 echo "Global batch: target=${TARGET_GLOBAL_BATCH_SIZE}, grad_accum=${GRADIENT_ACCUMULATION_STEPS}"
 echo "Vision train: freeze=${FREEZE_VISION_ENCODER}, last_n=${VISION_TRAIN_LAST_N_LAYERS}"
 echo "Visual token compressor: mode=${VISUAL_TOKEN_COMPRESSOR}, grid=${VISUAL_TOKEN_COMPRESSOR_GRID_SIZE}, hidden=${VISUAL_TOKEN_COMPRESSOR_HIDDEN_DIM}, depth=${VISUAL_TOKEN_COMPRESSOR_DEPTH}"
+if [ -n "${SYSTEM_PROMPT}" ] || [ -n "${USER_PROMPT}" ]; then
+  echo "Prompt override: system=$( [ -n "${SYSTEM_PROMPT}" ] && echo yes || echo no ), user=$( [ -n "${USER_PROMPT}" ] && echo yes || echo no )"
+else
+  echo "Prompt override: none; using Python defaults for MAP_TASK=${MAP_TASK}"
+fi
 echo "============================================================"
 
 torchrun \
@@ -364,6 +379,7 @@ torchrun \
   --image-size "${IMAGE_SIZE}" \
   --encoder-input-pad-size "${ENCODER_INPUT_PAD_SIZE}" \
   --map-task "${MAP_TASK}" \
+  "${PROMPT_ARGS[@]}" \
   --lora-rank "${LORA_RANK}" \
   --lora-alpha "${LORA_ALPHA}" \
   --lora-dropout "${LORA_DROPOUT}" \

@@ -46,36 +46,36 @@ DEFAULT_CENTERLINE_USER_PROMPT = (
 )
 
 DEFAULT_LANE_INTERSECTION_SYSTEM_PROMPT = (
-    "You are an expert road-map reconstruction assistant for black-background BEV road-structure images.\n\n"
+    "You are a road-map reconstruction assistant for black-background BEV road patches.\n\n"
     "TASK DEFINITION:\n"
-    "Your task is to infer road centerlines and intersection regions strictly from the visible road structure.\n"
-    "1. A centerline is the geometric middle path of one valid drivable corridor.\n"
-    "2. An intersection region is the drivable junction area where multiple road branches meet.\n"
-    "3. Do not trace visible road-structure marks, boundaries, dividers, or semantic masks themselves.\n"
-    "4. Keep different lanes, branches, and intersecting paths as separate continuous centerline polylines.\n"
-    "5. If a centerline or intersection reaches the patch border, terminate or clip it at the visible border.\n"
-    "6. Predict all valid centerlines and intersection regions implied by the visible road structure in the current patch only.\n\n"
+    "Predict only the road geometry inside the current patch.\n"
+    "Use the visible road structure to infer road centerlines and intersections.\n"
+    "Do not trace visible road-structure marks, boundaries, dividers, or semantic masks themselves.\n"
+    "Use incoming or surrounding visual context only as continuity hints when it is provided.\n\n"
     "OUTPUT CONSTRAINTS:\n"
     "1. Return ONLY valid JSON.\n"
     "2. Do NOT wrap the JSON in markdown fences.\n"
     "3. Do NOT output explanations or extra text.\n"
-    "4. Use the patch-local coordinate system.\n"
-    "5. All x and y coordinates must be integers between 0 and 512 inclusive.\n"
-    "6. Centerline records must include category, start_type, end_type, and points.\n"
-    "7. Use category=\"centerline\" for centerline records.\n"
-    "8. Use start_type/end_type=\"cut\" when that centerline endpoint is clipped by the patch border, otherwise use \"inside\".\n"
-    "9. Intersection records must include category=\"intersection\" and points; include is_cut only when needed.\n"
-    "10. Intersection points describe a polygon and should repeat the first point as the final point when closed.\n"
-    "11. Strictly use this JSON structure:\n"
+    "4. Keep all coordinates in the patch-local coordinate system.\n"
+    "5. All x and y coordinates must be integers between 0 and 1000 inclusive.\n"
+    "6. For centerline records, include category, start_type, end_type, and points.\n"
+    "7. For centerline records, use start_type/end_type=\"cut\" when that endpoint is clipped by the patch border, otherwise use \"inside\".\n"
+    "8. For intersection records, output a closed polyline with category=\"intersection\" and points.\n"
+    "9. For intersection records, do not include start_type or end_type.\n"
+    "10. An intersection closed polyline should repeat the first point as the final point.\n"
+    "11. If an intersection is clipped by the patch border, include is_cut=true; otherwise omit is_cut or set it to false.\n"
+    "12. Strictly use this JSON structure:\n"
     '{"lines":[]}\n'
     "or\n"
     '{"lines":[{"category":"centerline","start_type":"inside","end_type":"cut","points":[[x1,y1],[x2,y2]]},'
-    '{"category":"intersection","points":[[x1,y1],[x2,y2],[x3,y3],[x1,y1]]}]}'
+    '{"category":"intersection","is_cut":false,"points":[[x1,y1],[x2,y2],[x3,y3],[x1,y1]]}]}'
 )
 
 DEFAULT_LANE_INTERSECTION_USER_PROMPT = (
     "This is a black-background BEV road-structure image.\n"
-    "Predict the road centerlines and intersection regions for this patch from the visible road structure.\n"
+    "Please construct the complete road map in the current BEV image patch.\n"
+    "For intersection records, output closed polylines without start_type or end_type.\n"
+    "Coordinates use a normalized 0-1000 patch-local grid.\n"
     "Return only the raw JSON object."
 )
 

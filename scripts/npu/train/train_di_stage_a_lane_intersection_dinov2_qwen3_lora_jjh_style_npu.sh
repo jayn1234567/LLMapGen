@@ -72,6 +72,7 @@ LEARNING_RATE=${LEARNING_RATE:-1e-4}
 WEIGHT_DECAY=${WEIGHT_DECAY:-0.0}
 WARMUP_RATIO=${WARMUP_RATIO:-0.03}
 OPTIM=${OPTIM:-}
+DEEPSPEED_CONFIG=${DEEPSPEED_CONFIG:-}
 SAVE_STEPS=${SAVE_STEPS:-1000}
 SAVE_TOTAL_LIMIT=${SAVE_TOTAL_LIMIT:-5}
 LOGGING_STEPS=${LOGGING_STEPS:-10}
@@ -334,6 +335,11 @@ if [ -n "${OPTIM}" ]; then
   OPTIM_ARGS=(--optim "${OPTIM}")
 fi
 
+DEEPSPEED_ARGS=()
+if [ -n "${DEEPSPEED_CONFIG}" ]; then
+  DEEPSPEED_ARGS=(--deepspeed "${DEEPSPEED_CONFIG}")
+fi
+
 PROMPT_ARGS=()
 if [ -n "${SYSTEM_PROMPT}" ]; then
   PROMPT_ARGS+=(--system-prompt "${SYSTEM_PROMPT}")
@@ -357,6 +363,7 @@ echo "NNODES/NPROC: ${NNODES}/${NPROC_PER_NODE}, rank=${NODE_RANK}, master=${MAS
 echo "Global batch: target=${TARGET_GLOBAL_BATCH_SIZE}, grad_accum=${GRADIENT_ACCUMULATION_STEPS}"
 echo "Vision train: freeze=${FREEZE_VISION_ENCODER}, last_n=${VISION_TRAIN_LAST_N_LAYERS}"
 echo "Qwen train:    no_lora=${NO_LORA}, optim=${OPTIM:-<default>}"
+echo "DeepSpeed:     ${DEEPSPEED_CONFIG:-<disabled>}"
 echo "Visual token compressor: mode=${VISUAL_TOKEN_COMPRESSOR}, grid=${VISUAL_TOKEN_COMPRESSOR_GRID_SIZE}, hidden=${VISUAL_TOKEN_COMPRESSOR_HIDDEN_DIM}, depth=${VISUAL_TOKEN_COMPRESSOR_DEPTH}"
 if [ -n "${SYSTEM_PROMPT}" ] || [ -n "${USER_PROMPT}" ]; then
   echo "Prompt override: system=$( [ -n "${SYSTEM_PROMPT}" ] && echo yes || echo no ), user=$( [ -n "${USER_PROMPT}" ] && echo yes || echo no )"
@@ -401,6 +408,7 @@ torchrun \
   "${PROMPT_ARGS[@]}" \
   "${LORA_ARGS[@]}" \
   "${OPTIM_ARGS[@]}" \
+  "${DEEPSPEED_ARGS[@]}" \
   --visual-token-compressor "${VISUAL_TOKEN_COMPRESSOR}" \
   --visual-token-compressor-grid-size "${VISUAL_TOKEN_COMPRESSOR_GRID_SIZE}" \
   --visual-token-compressor-hidden-dim "${VISUAL_TOKEN_COMPRESSOR_HIDDEN_DIM}" \

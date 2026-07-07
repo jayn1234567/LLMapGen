@@ -71,6 +71,7 @@ MAX_STEPS=${MAX_STEPS:--1}
 LEARNING_RATE=${LEARNING_RATE:-1e-4}
 WEIGHT_DECAY=${WEIGHT_DECAY:-0.0}
 WARMUP_RATIO=${WARMUP_RATIO:-0.03}
+OPTIM=${OPTIM:-}
 SAVE_STEPS=${SAVE_STEPS:-1000}
 SAVE_TOTAL_LIMIT=${SAVE_TOTAL_LIMIT:-5}
 LOGGING_STEPS=${LOGGING_STEPS:-10}
@@ -83,6 +84,7 @@ ENCODER_INPUT_PAD_SIZE=${ENCODER_INPUT_PAD_SIZE:-518}
 VISION_PATCH_SIZE=${VISION_PATCH_SIZE:-14}
 VISION_NUM_PREFIX_TOKENS=${VISION_NUM_PREFIX_TOKENS:--1}
 FREEZE_LANGUAGE_MODEL=${FREEZE_LANGUAGE_MODEL:-false}
+NO_LORA=${NO_LORA:-false}
 FREEZE_VISION_ENCODER=${FREEZE_VISION_ENCODER:-true}
 VISION_TRAIN_LAST_N_LAYERS=${VISION_TRAIN_LAST_N_LAYERS:-4}
 LORA_RANK=${LORA_RANK:-32}
@@ -318,6 +320,20 @@ if [[ "${FREEZE_VISION_ENCODER}" =~ ^(1|true|True|TRUE|yes|YES)$ ]]; then
   FREEZE_VISION_ARGS=(--freeze-vision-encoder --vision-train-last-n-layers "${VISION_TRAIN_LAST_N_LAYERS}")
 fi
 
+LORA_ARGS=(
+  --lora-rank "${LORA_RANK}"
+  --lora-alpha "${LORA_ALPHA}"
+  --lora-dropout "${LORA_DROPOUT}"
+)
+if [[ "${NO_LORA}" =~ ^(1|true|True|TRUE|yes|YES)$ ]]; then
+  LORA_ARGS=(--no-lora)
+fi
+
+OPTIM_ARGS=()
+if [ -n "${OPTIM}" ]; then
+  OPTIM_ARGS=(--optim "${OPTIM}")
+fi
+
 PROMPT_ARGS=()
 if [ -n "${SYSTEM_PROMPT}" ]; then
   PROMPT_ARGS+=(--system-prompt "${SYSTEM_PROMPT}")
@@ -340,6 +356,7 @@ echo "Cloud output: ${CLOUD_OUTPUT_PATH:-<empty>}"
 echo "NNODES/NPROC: ${NNODES}/${NPROC_PER_NODE}, rank=${NODE_RANK}, master=${MASTER_ADDR}:${MASTER_PORT}"
 echo "Global batch: target=${TARGET_GLOBAL_BATCH_SIZE}, grad_accum=${GRADIENT_ACCUMULATION_STEPS}"
 echo "Vision train: freeze=${FREEZE_VISION_ENCODER}, last_n=${VISION_TRAIN_LAST_N_LAYERS}"
+echo "Qwen train:    no_lora=${NO_LORA}, optim=${OPTIM:-<default>}"
 echo "Visual token compressor: mode=${VISUAL_TOKEN_COMPRESSOR}, grid=${VISUAL_TOKEN_COMPRESSOR_GRID_SIZE}, hidden=${VISUAL_TOKEN_COMPRESSOR_HIDDEN_DIM}, depth=${VISUAL_TOKEN_COMPRESSOR_DEPTH}"
 if [ -n "${SYSTEM_PROMPT}" ] || [ -n "${USER_PROMPT}" ]; then
   echo "Prompt override: system=$( [ -n "${SYSTEM_PROMPT}" ] && echo yes || echo no ), user=$( [ -n "${USER_PROMPT}" ] && echo yes || echo no )"
@@ -382,9 +399,8 @@ torchrun \
   --encoder-input-pad-size "${ENCODER_INPUT_PAD_SIZE}" \
   --map-task "${MAP_TASK}" \
   "${PROMPT_ARGS[@]}" \
-  --lora-rank "${LORA_RANK}" \
-  --lora-alpha "${LORA_ALPHA}" \
-  --lora-dropout "${LORA_DROPOUT}" \
+  "${LORA_ARGS[@]}" \
+  "${OPTIM_ARGS[@]}" \
   --visual-token-compressor "${VISUAL_TOKEN_COMPRESSOR}" \
   --visual-token-compressor-grid-size "${VISUAL_TOKEN_COMPRESSOR_GRID_SIZE}" \
   --visual-token-compressor-hidden-dim "${VISUAL_TOKEN_COMPRESSOR_HIDDEN_DIM}" \

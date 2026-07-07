@@ -111,6 +111,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--dataloader-num-workers", type=int, default=2)
     parser.add_argument("--bf16", action="store_true")
     parser.add_argument("--gradient-checkpointing", action="store_true")
+    parser.add_argument("--optim", type=str, default="", help="Optional Hugging Face TrainingArguments optim, e.g. adafactor for full-parameter smoke tests.")
     parser.add_argument("--ddp-find-unused-parameters", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument(
         "--device-backend",
@@ -503,6 +504,7 @@ def main() -> None:
             "dataloader_num_workers": int(args.dataloader_num_workers),
             "bf16": bool(args.bf16),
             "gradient_checkpointing": bool(args.gradient_checkpointing),
+            "optim": (str(args.optim).strip() or None),
             "ddp_find_unused_parameters": bool(args.ddp_find_unused_parameters),
             "ddp_backend": (str(args.ddp_backend).strip() or None),
             "remove_unused_columns": False,

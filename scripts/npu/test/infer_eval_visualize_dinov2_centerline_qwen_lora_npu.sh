@@ -10,8 +10,6 @@ export TOKENIZERS_PARALLELISM="${TOKENIZERS_PARALLELISM:-false}"
 export HCCL_CONNECT_TIMEOUT="${HCCL_CONNECT_TIMEOUT:-1800}"
 export ASCEND_RT_VISIBLE_DEVICES="${ASCEND_RT_VISIBLE_DEVICES:-${NPU_VISIBLE_DEVICES:-0}}"
 
-DI_THROUGHPUT_VALUE="${DI_THROUGHPUT_VALUE:-1.00}"
-echo "DI_throughput: ${DI_THROUGHPUT_VALUE} samples/s/npu"
 
 NPROC_PER_NODE="${NPROC_PER_NODE:-1}"
 CHECKPOINT_DIR="${CHECKPOINT_DIR:-/cache/jn/checkpoint-29610}"
@@ -262,7 +260,6 @@ python scripts/tools/eval_visualize_dinov2_centerline_predictions.py \
   --vis-limit "${VIS_LIMIT}"
 
 echo "============================================================"
-echo "DI_throughput: ${DI_THROUGHPUT_VALUE} samples/s/npu"
 echo "Done."
 echo "Prediction JSONL: ${PRED_JSONL}"
 echo "Prediction summary: ${PRED_SUMMARY_JSON}"

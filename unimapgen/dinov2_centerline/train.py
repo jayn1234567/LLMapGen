@@ -5,7 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import torch
 from transformers import AutoTokenizer, Trainer
@@ -97,6 +97,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--per-device-eval-batch-size", type=int, default=1)
     parser.add_argument("--gradient-accumulation-steps", type=int, default=1)
     parser.add_argument("--learning-rate", type=float, default=1.0e-4)
+    parser.add_argument("--language-model-lr", type=float, default=0.0, help="Optional LR for Qwen/Qwen3 language_model params. 0 uses --learning-rate.")
+    parser.add_argument("--vision-encoder-lr", type=float, default=0.0, help="Optional LR for DINO-family vision_encoder params. 0 uses --learning-rate.")
+    parser.add_argument("--alignment-lr", type=float, default=0.0, help="Optional LR for visual bridge/alignment params. 0 uses --learning-rate.")
     parser.add_argument("--weight-decay", type=float, default=0.0)
     parser.add_argument("--warmup-ratio", type=float, default=0.03)
     parser.add_argument("--logging-steps", type=int, default=10)
@@ -258,6 +261,89 @@ def resolve_dataset_paths(args: argparse.Namespace, output_dir: Path) -> Tuple[P
     return dataset_path, dataset_meta_path, eval_dataset_path, eval_meta_path, media_dir
 
 
+
+def _positive_or_default(value: float, default: float) -> float:
+    value = float(value)
+    return value if value > 0 else float(default)
+
+
+def _parameter_lr_group(name: str, args: argparse.Namespace) -> tuple[str, float]:
+    base_lr = float(args.learning_rate)
+    language_lr = _positive_or_default(float(args.language_model_lr), base_lr)
+    vision_lr = _positive_or_default(float(args.vision_encoder_lr), base_lr)
+    alignment_lr = _positive_or_default(float(args.alignment_lr), base_lr)
+
+    if name.startswith("vision_encoder."):
+        return "vision_encoder", vision_lr
+    if name.startswith("language_model."):
+        return "language_model", language_lr
+    if name.startswith(
+        (
+            "visual_norm.",
+            "visual_token_compressor.",
+            "visual_projector.",
+            "geometric_position_mlp.",
+            "token_alignment.",
+            "view_type_embeddings.",
+            "special_token_adapter.",
+        )
+    ):
+        return "alignment", alignment_lr
+    return "other_trainable", alignment_lr
+
+
+def _uses_weight_decay(name: str, param: torch.nn.Parameter) -> bool:
+    lname = name.lower()
+    if param.ndim < 2:
+        return False
+    if name.endswith(".bias"):
+        return False
+    if any(token in lname for token in ("norm", "layernorm", "layer_norm", "embedding")):
+        return False
+    return True
+
+
+def build_grouped_lr_optimizer(model: torch.nn.Module, args: argparse.Namespace) -> Optional[torch.optim.Optimizer]:
+    if not any(float(value) > 0 for value in (args.language_model_lr, args.vision_encoder_lr, args.alignment_lr)):
+        return None
+
+    grouped: Dict[tuple[str, float, float], Dict[str, Any]] = {}
+    summaries: Dict[str, int] = {}
+    for name, param in model.named_parameters():
+        if not param.requires_grad:
+            continue
+        group_name, lr = _parameter_lr_group(name, args)
+        weight_decay = float(args.weight_decay) if _uses_weight_decay(name, param) else 0.0
+        key = (group_name, float(lr), float(weight_decay))
+        if key not in grouped:
+            grouped[key] = {
+                "params": [],
+                "lr": float(lr),
+                "weight_decay": float(weight_decay),
+                "name": group_name,
+            }
+        grouped[key]["params"].append(param)
+        summaries[group_name] = summaries.get(group_name, 0) + int(param.numel())
+
+    param_groups = list(grouped.values())
+    print(
+        json.dumps(
+            {
+                "stage": "grouped_lr_optimizer",
+                "base_lr": float(args.learning_rate),
+                "language_model_lr": _positive_or_default(float(args.language_model_lr), float(args.learning_rate)),
+                "vision_encoder_lr": _positive_or_default(float(args.vision_encoder_lr), float(args.learning_rate)),
+                "alignment_lr": _positive_or_default(float(args.alignment_lr), float(args.learning_rate)),
+                "group_param_counts": summaries,
+                "num_optimizer_groups": len(param_groups),
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        flush=True,
+    )
+    return torch.optim.AdamW(param_groups, lr=float(args.learning_rate), weight_decay=float(args.weight_decay))
+
 def main() -> None:
     args = parse_args()
     if bool(args.use_global_local_views):
@@ -371,6 +457,9 @@ def main() -> None:
                 "visual_token_compressor_grid_size": int(args.visual_token_compressor_grid_size),
                 "map_task": str(args.map_task),
                 "use_lora": not bool(args.no_lora),
+                "language_model_lr": float(args.language_model_lr),
+                "vision_encoder_lr": float(args.vision_encoder_lr),
+                "alignment_lr": float(args.alignment_lr),
                 "freeze_vision_encoder": bool(args.freeze_vision_encoder),
                 "vision_train_last_n_layers": int(args.vision_train_last_n_layers),
                 "device_backend": str(args.resolved_device_backend),
@@ -516,12 +605,15 @@ def main() -> None:
         evaluation_strategy=eval_strategy,
     )
 
+    optimizer = build_grouped_lr_optimizer(model, args)
+
     trainer = Trainer(
         model=model,
         args=training_args,
         train_dataset=train_dataset,
         eval_dataset=eval_dataset,
         data_collator=collator,
+        optimizers=((optimizer, None) if optimizer is not None else (None, None)),
     )
     result = trainer.train(resume_from_checkpoint=(str(args.resume_from_checkpoint).strip() or None))
     print(json.dumps({"train_result": result.metrics}, ensure_ascii=False), flush=True)

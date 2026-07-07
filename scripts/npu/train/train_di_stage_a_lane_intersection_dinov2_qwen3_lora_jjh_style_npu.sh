@@ -69,6 +69,9 @@ PER_DEVICE_TRAIN_BATCH_SIZE=${PER_DEVICE_TRAIN_BATCH_SIZE:-1}
 NUM_TRAIN_EPOCHS=${NUM_TRAIN_EPOCHS:-6}
 MAX_STEPS=${MAX_STEPS:--1}
 LEARNING_RATE=${LEARNING_RATE:-1e-4}
+LANGUAGE_MODEL_LR=${LANGUAGE_MODEL_LR:-}
+ALIGNMENT_LR=${ALIGNMENT_LR:-}
+VISION_ENCODER_LR=${VISION_ENCODER_LR:-}
 WEIGHT_DECAY=${WEIGHT_DECAY:-0.0}
 WARMUP_RATIO=${WARMUP_RATIO:-0.03}
 OPTIM=${OPTIM:-}
@@ -340,6 +343,17 @@ if [ -n "${DEEPSPEED_CONFIG}" ]; then
   DEEPSPEED_ARGS=(--deepspeed "${DEEPSPEED_CONFIG}")
 fi
 
+LR_GROUP_ARGS=()
+if [ -n "${LANGUAGE_MODEL_LR}" ]; then
+  LR_GROUP_ARGS+=(--language-model-lr "${LANGUAGE_MODEL_LR}")
+fi
+if [ -n "${ALIGNMENT_LR}" ]; then
+  LR_GROUP_ARGS+=(--alignment-lr "${ALIGNMENT_LR}")
+fi
+if [ -n "${VISION_ENCODER_LR}" ]; then
+  LR_GROUP_ARGS+=(--vision-encoder-lr "${VISION_ENCODER_LR}")
+fi
+
 PROMPT_ARGS=()
 if [ -n "${SYSTEM_PROMPT}" ]; then
   PROMPT_ARGS+=(--system-prompt "${SYSTEM_PROMPT}")
@@ -363,6 +377,7 @@ echo "NNODES/NPROC: ${NNODES}/${NPROC_PER_NODE}, rank=${NODE_RANK}, master=${MAS
 echo "Global batch: target=${TARGET_GLOBAL_BATCH_SIZE}, grad_accum=${GRADIENT_ACCUMULATION_STEPS}"
 echo "Vision train: freeze=${FREEZE_VISION_ENCODER}, last_n=${VISION_TRAIN_LAST_N_LAYERS}"
 echo "Qwen train:    no_lora=${NO_LORA}, optim=${OPTIM:-<default>}"
+echo "LR groups:     language=${LANGUAGE_MODEL_LR:-<base>}, alignment=${ALIGNMENT_LR:-<base>}, vision=${VISION_ENCODER_LR:-<base>}"
 echo "DeepSpeed:     ${DEEPSPEED_CONFIG:-<disabled>}"
 echo "Visual token compressor: mode=${VISUAL_TOKEN_COMPRESSOR}, grid=${VISUAL_TOKEN_COMPRESSOR_GRID_SIZE}, hidden=${VISUAL_TOKEN_COMPRESSOR_HIDDEN_DIM}, depth=${VISUAL_TOKEN_COMPRESSOR_DEPTH}"
 if [ -n "${SYSTEM_PROMPT}" ] || [ -n "${USER_PROMPT}" ]; then
@@ -409,6 +424,7 @@ torchrun \
   "${LORA_ARGS[@]}" \
   "${OPTIM_ARGS[@]}" \
   "${DEEPSPEED_ARGS[@]}" \
+  "${LR_GROUP_ARGS[@]}" \
   --visual-token-compressor "${VISUAL_TOKEN_COMPRESSOR}" \
   --visual-token-compressor-grid-size "${VISUAL_TOKEN_COMPRESSOR_GRID_SIZE}" \
   --visual-token-compressor-hidden-dim "${VISUAL_TOKEN_COMPRESSOR_HIDDEN_DIM}" \

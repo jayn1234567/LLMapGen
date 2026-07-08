@@ -30,6 +30,7 @@ echo "System defined obs share path: ${OSB_SHARE_PATH:-<empty>}"
 RUN_ID=${RUN_ID:-$(date -u +%Y%m%d_%H%M%S)}
 OBS_CACHE=${OBS_CACHE:-/cache}
 WORK_ROOT=${WORK_ROOT:-/cache/llmapgen}
+SKIP_OBS_DOWNLOADS=${SKIP_OBS_DOWNLOADS:-false}
 
 DATASET_OBS_PATH=${DATASET_OBS_PATH:-obs://yw-ads-training-gy1/data/external/personal/h58801830/whu/jn/data/prepared_lane_intersection_trainroot.zip}
 QWEN_MODEL_OBS_PATH=${QWEN_MODEL_OBS_PATH:-obs://yw-ads-training-gy1/data/external/personal/h58801830/whu/jn/checkpoint/Qwen3-8B}
@@ -228,25 +229,41 @@ export RDZV_ID=${RDZV_ID:-llmapgen_dinov2_qwen3_lora_${RUN_ID}}
 mkdir -p "${OUTPUT_PATH}" "${WORK_ROOT}/model" "${DATASET_EXTRACT_ROOT}"
 
 # ====================== downloads ======================
-echo "[di-download] dataset: ${DATASET_OBS_PATH} -> ${DATASET_ZIP_PATH}"
-python -c "import moxing as mox; mox.file.copy('${DATASET_OBS_PATH}', '${DATASET_ZIP_PATH}')"
-unzip -q "${DATASET_ZIP_PATH}" -d "${DATASET_EXTRACT_ROOT}"
+if [[ "${SKIP_OBS_DOWNLOADS}" =~ ^(1|true|True|TRUE|yes|YES)$ ]]; then
+  echo "[di-download] SKIP_OBS_DOWNLOADS=true; using local TRAINROOT/QWEN_PATH/VISION_PATH/checkpoints."
+else
+  echo "[di-download] dataset: ${DATASET_OBS_PATH} -> ${DATASET_ZIP_PATH}"
+  python -c "import moxing as mox; mox.file.copy('${DATASET_OBS_PATH}', '${DATASET_ZIP_PATH}')"
+  unzip -q "${DATASET_ZIP_PATH}" -d "${DATASET_EXTRACT_ROOT}"
 
-echo "[di-download] qwen: ${QWEN_MODEL_OBS_PATH} -> ${QWEN_PATH}"
-python -c "import moxing as mox; mox.file.copy_parallel('${QWEN_MODEL_OBS_PATH}', '${QWEN_PATH}')"
+  echo "[di-download] qwen: ${QWEN_MODEL_OBS_PATH} -> ${QWEN_PATH}"
+  python -c "import moxing as mox; mox.file.copy_parallel('${QWEN_MODEL_OBS_PATH}', '${QWEN_PATH}')"
+fi
 if [[ "${EXTRACT_QWEN3VL_TEXT_LLM}" =~ ^(1|true|True|TRUE|yes|YES)$ ]]; then
-  echo "[di-extract] Qwen3-VL text LLM: ${QWEN_PATH} -> ${QWEN_EXTRACTED_TEXT_PATH}"
-  python scripts/tools/extract_qwen3vl_text_llm.py \
-    --input-dir "${QWEN_PATH}" \
-    --output-dir "${QWEN_EXTRACTED_TEXT_PATH}"
+  if [ -f "${QWEN_EXTRACTED_TEXT_PATH}/config.json" ]; then
+    echo "[di-extract] use existing Qwen3-VL text LLM: ${QWEN_EXTRACTED_TEXT_PATH}"
+  else
+    echo "[di-extract] Qwen3-VL text LLM: ${QWEN_PATH} -> ${QWEN_EXTRACTED_TEXT_PATH}"
+    python scripts/tools/extract_qwen3vl_text_llm.py \
+      --input-dir "${QWEN_PATH}" \
+      --output-dir "${QWEN_EXTRACTED_TEXT_PATH}"
+  fi
   QWEN_PATH="${QWEN_EXTRACTED_TEXT_PATH}"
   echo "[di-extract] training Qwen text path: ${QWEN_PATH}"
 fi
-echo "[di-download] vision(${VISION_MODEL_FAMILY}): ${VISION_MODEL_OBS_PATH} -> ${VISION_PATH}"
-python -c "import moxing as mox; mox.file.copy_parallel('${VISION_MODEL_OBS_PATH}', '${VISION_PATH}')"
+if [[ "${SKIP_OBS_DOWNLOADS}" =~ ^(1|true|True|TRUE|yes|YES)$ ]]; then
+  echo "[di-download] skip vision download; using local ${VISION_PATH}"
+else
+  echo "[di-download] vision(${VISION_MODEL_FAMILY}): ${VISION_MODEL_OBS_PATH} -> ${VISION_PATH}"
+  python -c "import moxing as mox; mox.file.copy_parallel('${VISION_MODEL_OBS_PATH}', '${VISION_PATH}')"
+fi
 if [[ "${USE_PRETRAINED_VISUAL_BRIDGE}" =~ ^(1|true|True|TRUE|yes|YES)$ ]]; then
-  echo "[di-download] bridge assets: ${ASSET_OBS_PATH} -> ${ASSET_DIR}"
-  python -c "import moxing as mox; mox.file.copy_parallel('${ASSET_OBS_PATH}', '${ASSET_DIR}')"
+  if [[ "${SKIP_OBS_DOWNLOADS}" =~ ^(1|true|True|TRUE|yes|YES)$ ]]; then
+    echo "[di-download] skip bridge asset download; using local ${ASSET_DIR}"
+  else
+    echo "[di-download] bridge assets: ${ASSET_OBS_PATH} -> ${ASSET_DIR}"
+    python -c "import moxing as mox; mox.file.copy_parallel('${ASSET_OBS_PATH}', '${ASSET_DIR}')"
+  fi
 else
   echo "[di-download] skip bridge assets; using ${VISION_MODEL_FAMILY} vision checkpoint and randomly initialized alignment modules."
   BRIDGE_MODULES_STATE_PATH=""
@@ -254,8 +271,12 @@ fi
 if [[ "${USE_VISUAL_ENCODER_CHECKPOINT}" =~ ^(1|true|True|TRUE|yes|YES)$ ]]; then
   if [ -n "${VISUAL_ENCODER_CHECKPOINT_OBS_PATH}" ]; then
     mkdir -p "$(dirname "${VISUAL_ENCODER_CHECKPOINT_PATH}")"
-    echo "[di-download] visual encoder checkpoint: ${VISUAL_ENCODER_CHECKPOINT_OBS_PATH} -> ${VISUAL_ENCODER_CHECKPOINT_PATH}"
-    python -c "import moxing as mox; mox.file.copy('${VISUAL_ENCODER_CHECKPOINT_OBS_PATH}', '${VISUAL_ENCODER_CHECKPOINT_PATH}')"
+    if [[ "${SKIP_OBS_DOWNLOADS}" =~ ^(1|true|True|TRUE|yes|YES)$ ]]; then
+      echo "[di-download] skip visual encoder checkpoint download; using local ${VISUAL_ENCODER_CHECKPOINT_PATH}"
+    else
+      echo "[di-download] visual encoder checkpoint: ${VISUAL_ENCODER_CHECKPOINT_OBS_PATH} -> ${VISUAL_ENCODER_CHECKPOINT_PATH}"
+      python -c "import moxing as mox; mox.file.copy('${VISUAL_ENCODER_CHECKPOINT_OBS_PATH}', '${VISUAL_ENCODER_CHECKPOINT_PATH}')"
+    fi
   fi
 else
   VISUAL_ENCODER_CHECKPOINT_PATH=""

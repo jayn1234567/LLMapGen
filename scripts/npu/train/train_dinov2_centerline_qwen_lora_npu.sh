@@ -14,6 +14,7 @@ PYTHON_BIN="${PYTHON_BIN:-python}"
 TRAINROOT="${TRAINROOT:-${DATA_ROOT:-}}"
 MODEL_NAME_OR_PATH="${MODEL_NAME_OR_PATH:-${MODEL_PATH:-}}"
 DINOV2_MODEL_NAME_OR_PATH="${DINOV2_MODEL_NAME_OR_PATH:-${DINOV2_PATH:-}}"
+VISION_MODEL_NAME_OR_PATH="${VISION_MODEL_NAME_OR_PATH:-${VISION_PATH:-${DINOV2_MODEL_NAME_OR_PATH}}}"
 
 : "${TRAINROOT:?Set TRAINROOT to the trainroot containing train.jsonl/meta_train.jsonl.}"
 : "${MODEL_NAME_OR_PATH:?Set MODEL_NAME_OR_PATH to the Qwen/Qwen3 checkpoint.}"
@@ -41,12 +42,31 @@ MAX_SAMPLES="${MAX_SAMPLES:-0}"
 MAX_EVAL_SAMPLES="${MAX_EVAL_SAMPLES:-0}"
 BF16="${BF16:-true}"
 GRADIENT_CHECKPOINTING="${GRADIENT_CHECKPOINTING:-true}"
+OPTIM="${OPTIM:-}"
+DEEPSPEED_CONFIG="${DEEPSPEED_CONFIG:-}"
+LANGUAGE_MODEL_LR="${LANGUAGE_MODEL_LR:-}"
+ALIGNMENT_LR="${ALIGNMENT_LR:-}"
+VISION_ENCODER_LR="${VISION_ENCODER_LR:-}"
 PREPARE_TRAINROOT="${PREPARE_TRAINROOT:-false}"
 LOCAL_FILES_ONLY="${LOCAL_FILES_ONLY:-false}"
 FREEZE_LANGUAGE_MODEL="${FREEZE_LANGUAGE_MODEL:-false}"
 FREEZE_VISION_ENCODER="${FREEZE_VISION_ENCODER:-true}"
 VISION_TRAIN_LAST_N_LAYERS="${VISION_TRAIN_LAST_N_LAYERS:-0}"
+VISION_PATCH_SIZE="${VISION_PATCH_SIZE:-14}"
+VISION_NUM_PREFIX_TOKENS="${VISION_NUM_PREFIX_TOKENS:--1}"
 MAP_TASK="${MAP_TASK:-lane}"
+CUTOFF_LEN="${CUTOFF_LEN:-7168}"
+IMAGE_SIZE="${IMAGE_SIZE:-512}"
+ENCODER_INPUT_PAD_SIZE="${ENCODER_INPUT_PAD_SIZE:-518}"
+NO_LORA="${NO_LORA:-false}"
+LORA_RANK="${LORA_RANK:-32}"
+LORA_ALPHA="${LORA_ALPHA:-64}"
+LORA_DROPOUT="${LORA_DROPOUT:-0.05}"
+VISUAL_TOKEN_COMPRESSOR="${VISUAL_TOKEN_COMPRESSOR:-none}"
+VISUAL_TOKEN_COMPRESSOR_GRID_SIZE="${VISUAL_TOKEN_COMPRESSOR_GRID_SIZE:-0}"
+VISUAL_TOKEN_COMPRESSOR_HIDDEN_DIM="${VISUAL_TOKEN_COMPRESSOR_HIDDEN_DIM:-512}"
+VISUAL_TOKEN_COMPRESSOR_DEPTH="${VISUAL_TOKEN_COMPRESSOR_DEPTH:-2}"
+VISUAL_TOKEN_COMPRESSOR_DROPOUT="${VISUAL_TOKEN_COMPRESSOR_DROPOUT:-0.0}"
 USE_GLOBAL_LOCAL_VIEWS="${USE_GLOBAL_LOCAL_VIEWS:-false}"
 GLOBAL_LOCAL_VIEW_COUNT="${GLOBAL_LOCAL_VIEW_COUNT:-2}"
 CONTEXT_IMAGE_KEY="${CONTEXT_IMAGE_KEY:-context_image}"
@@ -61,6 +81,9 @@ set -- \
   --trainroot "${TRAINROOT}" \
   --model-name-or-path "${MODEL_NAME_OR_PATH}" \
   --dinov2-model-name-or-path "${DINOV2_MODEL_NAME_OR_PATH}" \
+  --vision-model-name-or-path "${VISION_MODEL_NAME_OR_PATH}" \
+  --vision-patch-size "${VISION_PATCH_SIZE}" \
+  --vision-num-prefix-tokens "${VISION_NUM_PREFIX_TOKENS}" \
   --output-dir "${OUTPUT_DIR}" \
   --num-train-epochs "${NUM_TRAIN_EPOCHS}" \
   --max-steps "${MAX_STEPS}" \
@@ -73,7 +96,15 @@ set -- \
   --dataloader-num-workers "${DATALOADER_NUM_WORKERS}" \
   --max-samples "${MAX_SAMPLES}" \
   --max-eval-samples "${MAX_EVAL_SAMPLES}" \
+  --cutoff-len "${CUTOFF_LEN}" \
+  --image-size "${IMAGE_SIZE}" \
+  --encoder-input-pad-size "${ENCODER_INPUT_PAD_SIZE}" \
   --map-task "${MAP_TASK}" \
+  --visual-token-compressor "${VISUAL_TOKEN_COMPRESSOR}" \
+  --visual-token-compressor-grid-size "${VISUAL_TOKEN_COMPRESSOR_GRID_SIZE}" \
+  --visual-token-compressor-hidden-dim "${VISUAL_TOKEN_COMPRESSOR_HIDDEN_DIM}" \
+  --visual-token-compressor-depth "${VISUAL_TOKEN_COMPRESSOR_DEPTH}" \
+  --visual-token-compressor-dropout "${VISUAL_TOKEN_COMPRESSOR_DROPOUT}" \
   --device-backend npu \
   --ddp-backend hccl
 
@@ -124,6 +155,29 @@ else
 fi
 if [ "${VISION_TRAIN_LAST_N_LAYERS}" != "0" ]; then
   set -- "$@" --vision-train-last-n-layers "${VISION_TRAIN_LAST_N_LAYERS}"
+fi
+if [ "${NO_LORA}" = "true" ]; then
+  set -- "$@" --no-lora
+else
+  set -- "$@" \
+    --lora-rank "${LORA_RANK}" \
+    --lora-alpha "${LORA_ALPHA}" \
+    --lora-dropout "${LORA_DROPOUT}"
+fi
+if [ -n "${OPTIM}" ]; then
+  set -- "$@" --optim "${OPTIM}"
+fi
+if [ -n "${DEEPSPEED_CONFIG}" ]; then
+  set -- "$@" --deepspeed "${DEEPSPEED_CONFIG}"
+fi
+if [ -n "${LANGUAGE_MODEL_LR}" ]; then
+  set -- "$@" --language-model-lr "${LANGUAGE_MODEL_LR}"
+fi
+if [ -n "${ALIGNMENT_LR}" ]; then
+  set -- "$@" --alignment-lr "${ALIGNMENT_LR}"
+fi
+if [ -n "${VISION_ENCODER_LR}" ]; then
+  set -- "$@" --vision-encoder-lr "${VISION_ENCODER_LR}"
 fi
 if [ -n "${TOKENIZER_NAME_OR_PATH:-}" ]; then
   set -- "$@" --tokenizer-name-or-path "${TOKENIZER_NAME_OR_PATH}"

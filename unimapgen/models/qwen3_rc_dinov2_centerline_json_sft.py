@@ -854,18 +854,33 @@ class Qwen3RCDinoCenterlineJSONSFTModel(nn.Module):
         }
 
 
+def _distributed_rank() -> int:
+    if torch.distributed.is_available() and torch.distributed.is_initialized():
+        return int(torch.distributed.get_rank())
+    return 0
+
+
+def _distributed_barrier() -> None:
+    if torch.distributed.is_available() and torch.distributed.is_initialized():
+        torch.distributed.barrier()
+
+
 def save_qwen3_rc_dinov2_centerline_json_modules(
     model: nn.Module,
     output_dir: str | Path,
     tokenizer: Any | None = None,
 ) -> None:
+    if _distributed_rank() != 0:
+        _distributed_barrier()
+        return
+
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
     model_for_save = unwrap_model(model)
     language_model = getattr(model_for_save, "language_model", None)
     if language_model is None:
         raise AttributeError("Wrapped model does not expose language_model.")
-    language_model.save_pretrained(str(output_path))
+    language_model.save_pretrained(str(output_path), safe_serialization=False)
     if tokenizer is not None:
         tokenizer.save_pretrained(str(output_path))
     torch.save(
@@ -897,3 +912,4 @@ def save_qwen3_rc_dinov2_centerline_json_modules(
         },
         str(output_path / "rc_dinov2_centerline_json_modules.pt"),
     )
+    _distributed_barrier()

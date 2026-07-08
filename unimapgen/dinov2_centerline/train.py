@@ -572,36 +572,40 @@ def main() -> None:
     if bool(args.load_best_model_at_end) and eval_dataset is None:
         raise ValueError("--load-best-model-at-end requires an eval dataset.")
     eval_strategy = str(args.evaluation_strategy) if eval_dataset is not None else "no"
+    training_kwargs = {
+        "output_dir": str(output_dir),
+        "per_device_train_batch_size": int(args.per_device_train_batch_size),
+        "per_device_eval_batch_size": int(args.per_device_eval_batch_size),
+        "gradient_accumulation_steps": int(args.gradient_accumulation_steps),
+        "num_train_epochs": float(args.num_train_epochs),
+        "max_steps": int(args.max_steps),
+        "learning_rate": float(args.learning_rate),
+        "weight_decay": float(args.weight_decay),
+        "warmup_ratio": float(args.warmup_ratio),
+        "logging_steps": int(args.logging_steps),
+        "save_strategy": str(args.save_strategy),
+        "save_steps": int(args.save_steps),
+        "save_total_limit": int(args.save_total_limit),
+        "eval_steps": (int(args.eval_steps) if int(args.eval_steps) > 0 else None),
+        "load_best_model_at_end": bool(args.load_best_model_at_end),
+        "metric_for_best_model": (str(args.metric_for_best_model).strip() or None),
+        "greater_is_better": args.greater_is_better,
+        "dataloader_num_workers": int(args.dataloader_num_workers),
+        "bf16": bool(args.bf16),
+        "gradient_checkpointing": bool(args.gradient_checkpointing),
+        "ddp_find_unused_parameters": bool(args.ddp_find_unused_parameters),
+        "ddp_backend": (str(args.ddp_backend).strip() or None),
+        "remove_unused_columns": False,
+        "report_to": [],
+        "label_names": ["labels"],
+    }
+    if str(args.optim).strip():
+        training_kwargs["optim"] = str(args.optim).strip()
+    if str(args.deepspeed).strip():
+        training_kwargs["deepspeed"] = str(args.deepspeed).strip()
+
     training_args = create_training_arguments(
-        base_kwargs={
-            "output_dir": str(output_dir),
-            "per_device_train_batch_size": int(args.per_device_train_batch_size),
-            "per_device_eval_batch_size": int(args.per_device_eval_batch_size),
-            "gradient_accumulation_steps": int(args.gradient_accumulation_steps),
-            "num_train_epochs": float(args.num_train_epochs),
-            "max_steps": int(args.max_steps),
-            "learning_rate": float(args.learning_rate),
-            "weight_decay": float(args.weight_decay),
-            "warmup_ratio": float(args.warmup_ratio),
-            "logging_steps": int(args.logging_steps),
-            "save_strategy": str(args.save_strategy),
-            "save_steps": int(args.save_steps),
-            "save_total_limit": int(args.save_total_limit),
-            "eval_steps": (int(args.eval_steps) if int(args.eval_steps) > 0 else None),
-            "load_best_model_at_end": bool(args.load_best_model_at_end),
-            "metric_for_best_model": (str(args.metric_for_best_model).strip() or None),
-            "greater_is_better": args.greater_is_better,
-            "dataloader_num_workers": int(args.dataloader_num_workers),
-            "bf16": bool(args.bf16),
-            "gradient_checkpointing": bool(args.gradient_checkpointing),
-            "optim": (str(args.optim).strip() or None),
-            "deepspeed": (str(args.deepspeed).strip() or None),
-            "ddp_find_unused_parameters": bool(args.ddp_find_unused_parameters),
-            "ddp_backend": (str(args.ddp_backend).strip() or None),
-            "remove_unused_columns": False,
-            "report_to": [],
-            "label_names": ["labels"],
-        },
+        base_kwargs=training_kwargs,
         evaluation_strategy=eval_strategy,
     )
 

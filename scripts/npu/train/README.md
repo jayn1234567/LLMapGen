@@ -98,6 +98,7 @@ Qwen text LLM overrides:
 | `train_sft_stage_a_lane_dinov2_qwen3_nodeepstack_npu.sh` | SFT training: Stage A, lane-only, DINOv2, no DeepStack, Qwen3 text LLM. |
 | `train_sft_stage_a_lane_dinov2_qwen3vl_deepstack_layer_fusion_npu.sh` | SFT training: Stage A, lane-only, DINOv2, DeepStack + ViT direct layer fusion, Qwen3-VL-derived Qwen3 LLM. |
 | `train_sft_stage_a_lane_dinov2_qwen3vl_nodeepstack_npu.sh` | SFT training: Stage A, lane-only, DINOv2, no DeepStack, Qwen3-VL-derived Qwen3 LLM. |
+| `train_sft_stage_a_lane_oracle_intersection_dinov2_qwen3vl_nodeepstack_npu.sh` | SFT training: Stage A, lane-only, DINOv2, no DeepStack, Qwen3-VL-derived Qwen3 LLM; GT intersections are moved into the user prompt as oracle topology priors. |
 | `train_sft_stage_a_lane_dinov2_siglip_concat_qwen3_5_nodeepstack_npu.sh` | SFT training: Stage A, lane-only, DINOv2+SigLIP concat, no DeepStack, Qwen3.5 text LLM. |
 | `train_sft_stage_a_lane_dinov2_siglip_concat_qwen3_nodeepstack_npu.sh` | SFT training: Stage A, lane-only, DINOv2+SigLIP concat, no DeepStack, Qwen3 text LLM. |
 | `train_sft_stage_a_lane_dinov2_siglip_concat_qwen3vl_nodeepstack_npu.sh` | SFT training: Stage A, lane-only, DINOv2+SigLIP concat, no DeepStack, Qwen3-VL-derived Qwen3 LLM. |

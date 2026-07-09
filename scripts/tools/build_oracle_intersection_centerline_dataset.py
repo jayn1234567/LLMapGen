@@ -212,14 +212,42 @@ def image_field(record: Dict[str, Any]) -> str:
     return ""
 
 
-def coord_note(record: Dict[str, Any], coord_max: int) -> str:
+def infer_pixel_coord_max(lines: Sequence[Dict[str, Any]], fallback: int) -> int:
+    max_coord = -1
+    for line in lines:
+        points = line.get("points", [])
+        if not isinstance(points, list):
+            continue
+        for point in points:
+            if not isinstance(point, (list, tuple)) or len(point) < 2:
+                continue
+            try:
+                max_coord = max(max_coord, int(point[0]), int(point[1]))
+            except (TypeError, ValueError):
+                continue
+    if max_coord <= 255:
+        return 255
+    if max_coord <= 511:
+        return 511
+    if max_coord <= 512:
+        return 512
+    return int(fallback)
+
+
+def coord_note(
+    record: Dict[str, Any],
+    coord_max: int,
+    centerlines: Sequence[Dict[str, Any]],
+    intersections: Sequence[Dict[str, Any]],
+) -> str:
     meta = record.get("meta") if isinstance(record.get("meta"), dict) else {}
     coord_mode = str(meta.get("coord_mode", meta.get("coord_system", ""))).lower()
     coord_range = meta.get("coord_range", coord_max)
     patch_size = meta.get("pixel_patch_size", meta.get("patch_size", 512))
     if "norm" in coord_mode:
         return f"Coordinates use a normalized 0-{coord_range} grid over the original {patch_size}x{patch_size} patch."
-    return f"Coordinates use patch-local integer coordinates in [0,{coord_max}]."
+    inferred_coord_max = infer_pixel_coord_max([*centerlines, *intersections], coord_max)
+    return f"Coordinates use patch-local integer coordinates in [0,{inferred_coord_max}]."
 
 
 def centerline_schema(centerlines: Sequence[Dict[str, Any]]) -> str:
@@ -263,7 +291,7 @@ def build_prompt(
         "Predict only the road centerline records inside the current patch.",
         "Do not output intersection records and do not copy the known intersections into the answer.",
         "Match the centerline JSON field set used by the training labels.",
-        coord_note(record, coord_max),
+        coord_note(record, coord_max, centerlines, intersections),
         "Return only valid JSON with this schema:",
         schema,
         ]

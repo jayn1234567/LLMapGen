@@ -25,9 +25,9 @@ FORCE_RECREATE=true bash scripts/npu/setup/create_mllm_npu_py311_env.sh
 Useful overrides:
 
 ```bash
-ENV_NAME=mllm-npu-py311
-ENV_PREFIX=/home/ma-user/.conda/envs/mllm-npu-py311
-PYTHON_VERSION=3.11
+MLLM_ENV_NAME=mllm-npu-py311
+MLLM_ENV_PREFIX=/home/ma-user/.conda/envs/mllm-npu-py311
+MLLM_PYTHON_VERSION=3.11
 CONDA_CHANNEL=http://192.168.214.30:8088/repository/conda-proxy/main
 ```
 

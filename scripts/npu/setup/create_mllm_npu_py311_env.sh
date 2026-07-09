@@ -8,16 +8,17 @@ set -euo pipefail
 #   bash scripts/npu/setup/create_mllm_npu_py311_env.sh
 #
 # Optional overrides:
-#   ENV_NAME=mllm-npu-py311
-#   ENV_PREFIX=/home/ma-user/.conda/envs/mllm-npu-py311
-#   PYTHON_VERSION=3.11
+#   MLLM_ENV_NAME=mllm-npu-py311
+#   MLLM_ENV_PREFIX=/home/ma-user/.conda/envs/mllm-npu-py311
+#   MLLM_PYTHON_VERSION=3.11
 #   CONDA_CHANNEL=http://192.168.214.30:8088/repository/conda-proxy/main
 #   FORCE_RECREATE=true
 # ============================================================
 
-ENV_NAME=${ENV_NAME:-mllm-npu-py311}
-PYTHON_VERSION=${PYTHON_VERSION:-3.11}
-ENV_PREFIX=${ENV_PREFIX:-${HOME}/.conda/envs/${ENV_NAME}}
+MLLM_ENV_NAME=${MLLM_ENV_NAME:-mllm-npu-py311}
+MLLM_PYTHON_VERSION=${MLLM_PYTHON_VERSION:-3.11}
+MLLM_PYTHON_VERSION=${MLLM_PYTHON_VERSION#python}
+MLLM_ENV_PREFIX=${MLLM_ENV_PREFIX:-${HOME}/.conda/envs/${MLLM_ENV_NAME}}
 FORCE_RECREATE=${FORCE_RECREATE:-false}
 CONDA_CHANNEL=${CONDA_CHANNEL:-}
 PIP_INDEX_URL=${PIP_INDEX_URL:-http://repo.huaweicloud.com/repository/pypi/simple/}
@@ -56,25 +57,25 @@ unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY || true
 
 command -v conda >/dev/null 2>&1 || die "conda not found. Source your conda profile first."
 
-if [ -d "${ENV_PREFIX}" ] && as_bool "${FORCE_RECREATE}"; then
-  log "removing existing environment: ${ENV_PREFIX}"
-  conda env remove -p "${ENV_PREFIX}" -y || rm -rf "${ENV_PREFIX}"
+if [ -d "${MLLM_ENV_PREFIX}" ] && as_bool "${FORCE_RECREATE}"; then
+  log "removing existing environment: ${MLLM_ENV_PREFIX}"
+  conda env remove -p "${MLLM_ENV_PREFIX}" -y || rm -rf "${MLLM_ENV_PREFIX}"
 fi
 
-if [ ! -d "${ENV_PREFIX}" ]; then
-  log "creating conda environment: ${ENV_PREFIX} python=${PYTHON_VERSION}"
-  CONDA_CREATE_ARGS=(create -y -p "${ENV_PREFIX}" "python=${PYTHON_VERSION}" pip setuptools wheel)
+if [ ! -d "${MLLM_ENV_PREFIX}" ]; then
+  log "creating conda environment: ${MLLM_ENV_PREFIX} python=${MLLM_PYTHON_VERSION}"
+  CONDA_CREATE_ARGS=(create -y -p "${MLLM_ENV_PREFIX}" "python=${MLLM_PYTHON_VERSION}" pip setuptools wheel)
   if [ -n "${CONDA_CHANNEL}" ]; then
     CONDA_CREATE_ARGS+=(-c "${CONDA_CHANNEL}" --override-channels)
   fi
   conda "${CONDA_CREATE_ARGS[@]}"
 else
-  log "environment already exists: ${ENV_PREFIX}"
+  log "environment already exists: ${MLLM_ENV_PREFIX}"
 fi
 
-PYTHON="${ENV_PREFIX}/bin/python"
-PIP="${ENV_PREFIX}/bin/pip"
-ACTIVATE_SCRIPT="${ENV_PREFIX}/activate_mllm_npu.sh"
+PYTHON="${MLLM_ENV_PREFIX}/bin/python"
+PIP="${MLLM_ENV_PREFIX}/bin/pip"
+ACTIVATE_SCRIPT="${MLLM_ENV_PREFIX}/activate_mllm_npu.sh"
 
 [ -x "${PYTHON}" ] || die "python not found in environment: ${PYTHON}"
 
@@ -192,7 +193,7 @@ if [ -f /usr/local/Ascend/nnal/atb/set_env.sh ]; then
   source /usr/local/Ascend/nnal/atb/set_env.sh
 fi
 source "\$(conda info --base)/etc/profile.d/conda.sh"
-conda activate "${ENV_PREFIX}"
+conda activate "${MLLM_ENV_PREFIX}"
 export PYTHONPATH="${ROOT_DIR}:\${PYTHONPATH:-}"
 export TOKENIZERS_PARALLELISM=false
 EOF
@@ -241,5 +242,5 @@ PY
   mllm/model/multimodal_encoder/dinov3_encoder.py \
   scripts/tools/build_oracle_intersection_centerline_dataset.py
 
-log "environment ready: ${ENV_PREFIX}"
+log "environment ready: ${MLLM_ENV_PREFIX}"
 log "activate with: source ${ACTIVATE_SCRIPT}"

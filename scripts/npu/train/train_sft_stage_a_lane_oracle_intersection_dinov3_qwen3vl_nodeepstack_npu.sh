@@ -65,6 +65,7 @@ QWEN_PATH=${QWEN_PATH:-${OBS_CACHE}/checkpoints/Qwen3-VL-8B-Instruct}           
 TARGET_GLOBAL_BATCH_SIZE=${TARGET_GLOBAL_BATCH_SIZE:-128}                         # Desired global batch size used to derive gradient accumulation.
 PER_DEVICE_TRAIN_BATCH_SIZE=${PER_DEVICE_TRAIN_BATCH_SIZE:-4}                     # Micro batch size per NPU process.
 NUM_EPOCHS=${NUM_EPOCHS:-5}                                                       # Number of SFT training epochs.
+MAX_STEPS=${MAX_STEPS:-}                                                          # Optional smoke-test max optimizer steps. Empty means train by epochs.
 LR=${LR:-2e-5}                                                                    # Base learning rate for LLM and default trainable parameters.
 MM_PROJECTOR_LR=${MM_PROJECTOR_LR:-2e-5}                                          # Learning rate for the multimodal projector.
 MM_VISION_TOWER_LR=${MM_VISION_TOWER_LR:-2e-6}                                    # Learning rate for trainable vision tower parameters.
@@ -230,6 +231,11 @@ if [[ "${ENABLE_EVAL}" =~ ^(1|true|True|TRUE|yes|YES)$ ]]; then
   )
 fi
 
+MAX_STEPS_ARGS=()                                                                 # Optional smoke-test step cap.
+if [ -n "${MAX_STEPS}" ]; then
+  MAX_STEPS_ARGS=(--max_steps "${MAX_STEPS}")                                     # Optional smoke-test step cap.
+fi
+
 VISION_LAYER_FUSION_ARGS=()                                                       # Optional direct ViT layer-fusion CLI arguments.
 if [ -n "${VISION_LAYER_FUSION_INDEXES}" ]; then
   VISION_LAYER_FUSION_ARGS=(                                                      # Optional direct ViT layer-fusion CLI arguments.
@@ -246,6 +252,7 @@ echo "Oracle data:  intersections are prompt-only; assistant target is centerlin
 echo "Init model:   ${INIT_MODEL_PATH}"
 echo "Vision tower: ${VISION_TOWER}"
 echo "Layer fusion: ${VISION_LAYER_FUSION_INDEXES:-off} (${VISION_LAYER_FUSION_TYPE})"
+echo "Max steps:    ${MAX_STEPS:-epoch-based}"
 echo "Train:        ${TRAIN_PATH}"
 echo "Eval:         ${EVAL_PATH}"
 echo "Output:       ${OUTPUT_PATH}"
@@ -277,6 +284,7 @@ torchrun \
   --bf16 True \
   --output_dir "${OUTPUT_PATH}" \
   --num_train_epochs "${NUM_EPOCHS}" \
+  "${MAX_STEPS_ARGS[@]}" \
   --per_device_train_batch_size "${PER_DEVICE_TRAIN_BATCH_SIZE}" \
   --gradient_accumulation_steps "${GRADIENT_ACCUMULATION_STEPS}" \
   --learning_rate "${LR}" \

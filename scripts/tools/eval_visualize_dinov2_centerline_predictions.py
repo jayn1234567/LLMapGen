@@ -171,6 +171,14 @@ def trainroot_coord_mode(trainroot: str) -> str:
         value = str(info.get(key, "")).strip().lower()
         if value:
             return value
+    for key in ("coord_max", "coord_range", "source_dataset_coord_range"):
+        value = info.get(key)
+        try:
+            numeric = float(value)
+        except (TypeError, ValueError):
+            continue
+        if numeric >= 900.0:
+            return "norm1000"
     return ""
 
 

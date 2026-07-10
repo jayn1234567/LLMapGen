@@ -74,6 +74,13 @@ DATASET_KIND="${DATASET_KIND:-prepared}"
 DATASET_PHASE="${DATASET_PHASE:-phase_a}"
 DATASET_DIR_NAME="${DATASET_DIR_NAME:-prepared_lane_intersection_trainroot}"
 DATASET_IMAGE_ROOT="${DATASET_IMAGE_ROOT:-images}"
+DATASET_PATCH_SIZE="${DATASET_PATCH_SIZE:-512}"
+DATASET_COORD_MAX="${DATASET_COORD_MAX:-512}"
+DATASET_EVAL_OUTPUT_NAME="${DATASET_EVAL_OUTPUT_NAME:-val.jsonl}"
+DATASET_MEDIA_MODE="${DATASET_MEDIA_MODE:-symlink}"
+DATASET_TRAIN_IMAGE_SPLIT="${DATASET_TRAIN_IMAGE_SPLIT:-train}"
+DATASET_EVAL_IMAGE_SPLIT="${DATASET_EVAL_IMAGE_SPLIT:-eval}"
+FORCE_PREPARE_TRAINROOT="${FORCE_PREPARE_TRAINROOT:-false}"
 DATASET_EXTRACT_ROOT="${DATASET_EXTRACT_ROOT:-${OBS_CACHE}/dataset_extract_${RUN_ID}}"
 DATASET_INPUT_ROOT="${DATASET_INPUT_ROOT:-}"
 PREPARED_TRAINROOT="${PREPARED_TRAINROOT:-${WORK_ROOT}/prepared_lane_intersection_trainroot_${RUN_ID}}"
@@ -355,7 +362,7 @@ extract_dataset_if_needed() {
     echo "[di-train] raw dataset exists: ${DATASET_INPUT_ROOT}"
     return 0
   fi
-  if [ -f "${TRAINROOT}/train.jsonl" ]; then
+  if [ "${FORCE_PREPARE_TRAINROOT}" != "true" ] && [ -f "${TRAINROOT}/train.jsonl" ]; then
     echo "[di-train] prepared trainroot exists: ${TRAINROOT}"
     return 0
   fi
@@ -461,11 +468,11 @@ resolve_prepared_trainroot_root() {
 }
 
 prepare_trainroot_if_needed() {
-  if [ -f "${TRAINROOT}/train.jsonl" ]; then
+  if [ "${FORCE_PREPARE_TRAINROOT}" != "true" ] && [ -f "${TRAINROOT}/train.jsonl" ]; then
     return 0
   fi
   extract_dataset_if_needed
-  if prepared_root="$(resolve_prepared_trainroot_root)"; then
+  if [ "${FORCE_PREPARE_TRAINROOT}" != "true" ] && prepared_root="$(resolve_prepared_trainroot_root)"; then
     TRAINROOT="${prepared_root}"
     echo "[di-train] using prepared trainroot: ${TRAINROOT}"
     return 0
@@ -484,6 +491,12 @@ prepare_trainroot_if_needed() {
     --input-root "${DATASET_INPUT_ROOT}" \
     --phase "${DATASET_PHASE}" \
     --image-root "${DATASET_IMAGE_ROOT}" \
+    --train-image-split "${DATASET_TRAIN_IMAGE_SPLIT}" \
+    --eval-image-split "${DATASET_EVAL_IMAGE_SPLIT}" \
+    --patch-size "${DATASET_PATCH_SIZE}" \
+    --coord-max "${DATASET_COORD_MAX}" \
+    --eval-output-name "${DATASET_EVAL_OUTPUT_NAME}" \
+    --media-mode "${DATASET_MEDIA_MODE}" \
     --task "${MAP_TASK}" \
     --output-root "${PREPARED_TRAINROOT}"
   TRAINROOT="${PREPARED_TRAINROOT}"

@@ -30,6 +30,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--trainroot", default="", help="Prepared trainroot, used as default media root.")
     parser.add_argument("--media-dir", default="", help="Directory used to resolve relative image paths.")
     parser.add_argument("--image-size", type=int, default=512)
+    parser.add_argument("--coord-range", type=float, default=1000.0, help="Coordinate range for normalized labels, e.g. 1000 for norm1000.")
+    parser.add_argument("--gt-coord-mode", choices=["auto", "pixel", "norm1000"], default="auto", help="Coordinate mode for gt_lines before evaluation/visualization.")
+    parser.add_argument("--pred-coord-mode", choices=["auto", "pixel", "norm1000"], default="auto", help="Coordinate mode for pred_lines before evaluation/visualization.")
     parser.add_argument("--map-task", choices=["lane", "lane_intersection"], default="lane_intersection")
     parser.add_argument("--categories", default="centerline,intersection")
     parser.add_argument("--meter-per-pixel", type=float, default=0.2)
@@ -126,6 +129,153 @@ def sanitize_records(records: Iterable[Dict[str, Any]], image_size: int) -> List
         item = dict(record)
         item["gt_lines"] = sanitize_lines(record.get("gt_lines", []), image_size)
         item["pred_lines"] = sanitize_lines(record.get("pred_lines", []), image_size)
+        out.append(item)
+    return out
+
+
+def lines_coord_max(lines: Any) -> float:
+    max_value = 0.0
+    if not isinstance(lines, list):
+        return max_value
+    for line in lines:
+        if not isinstance(line, dict):
+            continue
+        points = line.get("points", [])
+        if not isinstance(points, (list, tuple)):
+            continue
+        for point in points:
+            if not isinstance(point, (list, tuple)) or len(point) < 2:
+                continue
+            try:
+                x = abs(float(point[0]))
+                y = abs(float(point[1]))
+            except (TypeError, ValueError):
+                continue
+            if math.isfinite(x) and math.isfinite(y):
+                max_value = max(max_value, x, y)
+    return float(max_value)
+
+
+def trainroot_coord_mode(trainroot: str) -> str:
+    root = Path(str(trainroot)).expanduser() if str(trainroot).strip() else None
+    if root is None:
+        return ""
+    info_path = root / "dataset_info.json"
+    if not info_path.is_file():
+        return ""
+    try:
+        info = json.loads(info_path.read_text(encoding="utf-8"))
+    except Exception:
+        return ""
+    for key in ("coord_mode", "coord_system", "source_dataset_coord_mode"):
+        value = str(info.get(key, "")).strip().lower()
+        if value:
+            return value
+    return ""
+
+
+def is_norm_mode(mode: str) -> bool:
+    return "norm" in str(mode or "").strip().lower()
+
+
+def convert_norm_point_to_pixel(point: Sequence[Any], image_size: int, coord_range: float) -> List[int] | None:
+    if not isinstance(point, (list, tuple)) or len(point) < 2:
+        return None
+    try:
+        x = float(point[0])
+        y = float(point[1])
+    except (TypeError, ValueError):
+        return None
+    if not (math.isfinite(x) and math.isfinite(y)):
+        return None
+    high = max(1.0, float(image_size) - 1.0)
+    denom = max(float(coord_range), 1e-6)
+    return [int(round(x / denom * high)), int(round(y / denom * high))]
+
+
+def convert_lines_coord_mode(lines: Any, *, mode: str, image_size: int, coord_range: float) -> List[Dict[str, Any]]:
+    if not isinstance(lines, list):
+        return []
+    if str(mode).strip().lower() != "norm1000":
+        return [dict(line) if isinstance(line, dict) else line for line in lines]
+    converted: List[Dict[str, Any]] = []
+    for line in lines:
+        if not isinstance(line, dict):
+            continue
+        item = dict(line)
+        points: List[List[int]] = []
+        for raw in item.get("points", []):
+            point = convert_norm_point_to_pixel(raw, image_size=image_size, coord_range=coord_range)
+            if point is not None:
+                points.append(point)
+        item["points"] = points
+        item["coord_mode_before_eval"] = "norm1000"
+        item["coord_range_before_eval"] = float(coord_range)
+        converted.append(item)
+    return converted
+
+
+def resolve_line_coord_mode(
+    *,
+    requested: str,
+    record: Dict[str, Any],
+    field: str,
+    dataset_mode: str,
+    image_size: int,
+) -> str:
+    requested = str(requested or "auto").strip().lower()
+    if requested != "auto":
+        return requested
+    explicit = str(record.get(f"{field}_coord_mode", record.get("coord_mode", ""))).strip().lower()
+    if explicit:
+        if is_norm_mode(explicit):
+            return "norm1000"
+        if "pixel" in explicit:
+            return "pixel"
+    # Current norm1000 trainroots write GT in normalized coordinates, while older
+    # prediction files did not tag gt_lines. Treat GT from such datasets as norm1000
+    # to avoid clamping 0..1000 labels to the 512px image border.
+    if field == "gt_lines" and is_norm_mode(dataset_mode):
+        return "norm1000"
+    max_coord = lines_coord_max(record.get(field, []))
+    if max_coord > float(image_size) + 2.0:
+        return "norm1000"
+    return "pixel"
+
+
+def convert_record_coordinates(
+    records: Iterable[Dict[str, Any]],
+    *,
+    image_size: int,
+    coord_range: float,
+    gt_coord_mode: str,
+    pred_coord_mode: str,
+    dataset_mode: str,
+) -> List[Dict[str, Any]]:
+    out: List[Dict[str, Any]] = []
+    for record in records:
+        item = dict(record)
+        gt_mode = resolve_line_coord_mode(
+            requested=gt_coord_mode,
+            record=item,
+            field="gt_lines",
+            dataset_mode=dataset_mode,
+            image_size=image_size,
+        )
+        pred_mode = resolve_line_coord_mode(
+            requested=pred_coord_mode,
+            record=item,
+            field="pred_lines",
+            dataset_mode="",
+            image_size=image_size,
+        )
+        item["gt_lines"] = convert_lines_coord_mode(
+            item.get("gt_lines", []), mode=gt_mode, image_size=image_size, coord_range=coord_range
+        )
+        item["pred_lines"] = convert_lines_coord_mode(
+            item.get("pred_lines", []), mode=pred_mode, image_size=image_size, coord_range=coord_range
+        )
+        item["eval_coord_modes"] = {"gt_lines": gt_mode, "pred_lines": pred_mode, "dataset": dataset_mode}
         out.append(item)
     return out
 
@@ -951,7 +1101,17 @@ def main() -> None:
     media_dir_text = str(args.media_dir).strip() or str(args.trainroot).strip()
     media_dir = Path(media_dir_text).expanduser().resolve() if media_dir_text else None
 
-    records = sanitize_records(read_prediction_records(pred_jsonl), image_size=int(args.image_size))
+    raw_records = read_prediction_records(pred_jsonl)
+    dataset_mode = trainroot_coord_mode(str(args.trainroot))
+    coord_records = convert_record_coordinates(
+        raw_records,
+        image_size=int(args.image_size),
+        coord_range=float(args.coord_range),
+        gt_coord_mode=str(args.gt_coord_mode),
+        pred_coord_mode=str(args.pred_coord_mode),
+        dataset_mode=dataset_mode,
+    )
+    records = sanitize_records(coord_records, image_size=int(args.image_size))
     pred_json = out_dir / "predictions.json"
     pred_json.write_text(json.dumps(records, ensure_ascii=False, indent=2), encoding="utf-8")
 
@@ -998,6 +1158,13 @@ def main() -> None:
         "eval_engineering_json": str(engineering_path),
         "visualization": vis_manifest,
         "num_records": len(records),
+        "coord_conversion": {
+            "dataset_coord_mode": dataset_mode,
+            "gt_coord_mode": str(args.gt_coord_mode),
+            "pred_coord_mode": str(args.pred_coord_mode),
+            "coord_range": float(args.coord_range),
+            "image_size": int(args.image_size),
+        },
         "parse_ok_rate": (
             sum(1 for item in records if bool(item.get("parse_ok"))) / max(1, len(records))
         ),

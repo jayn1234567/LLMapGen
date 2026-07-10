@@ -28,6 +28,9 @@ MAX_SAMPLES="${MAX_SAMPLES:-0}"
 MAX_NEW_TOKENS="${MAX_NEW_TOKENS:-3072}"
 VIS_LIMIT="${VIS_LIMIT:-64}"
 IMAGE_SIZE="${IMAGE_SIZE:-512}"
+COORD_RANGE="${COORD_RANGE:-1000}"
+GT_COORD_MODE="${GT_COORD_MODE:-auto}"
+PRED_COORD_MODE="${PRED_COORD_MODE:-auto}"
 ENCODER_INPUT_PAD_SIZE="${ENCODER_INPUT_PAD_SIZE:-518}"
 MAP_TASK="${MAP_TASK:-lane_intersection}"
 CATEGORIES="${CATEGORIES:-centerline,intersection}"
@@ -251,6 +254,9 @@ python scripts/tools/eval_visualize_dinov2_centerline_predictions.py \
   --trainroot "${TRAINROOT}" \
   --out-dir "${OUTPUT_DIR}" \
   --image-size "${IMAGE_SIZE}" \
+  --coord-range "${COORD_RANGE}" \
+  --gt-coord-mode "${GT_COORD_MODE}" \
+  --pred-coord-mode "${PRED_COORD_MODE}" \
   --map-task "${MAP_TASK}" \
   --categories "${CATEGORIES}" \
   --meter-per-pixel "${METER_PER_PIXEL}" \

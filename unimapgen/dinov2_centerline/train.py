@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -41,6 +42,64 @@ GLOBAL_LOCAL_VIEW_PROMPT = (
     "as spatial context. Predict only the road geometry inside View 2, and output all "
     "coordinates in the View 2 patch-local coordinate system."
 )
+
+
+
+def _env_bool(name: str, default: bool = False) -> bool:
+    value = str(os.environ.get(name, "")).strip()
+    if not value:
+        return bool(default)
+    return value.lower() in {"1", "true", "yes", "y", "on"}
+
+
+def _looks_like_npu_job() -> bool:
+    return any(
+        str(os.environ.get(name, "")).strip()
+        for name in ("ASCEND_RT_VISIBLE_DEVICES", "ASCEND_VISIBLE_DEVICES", "NPU_VISIBLE_DEVICES")
+    )
+
+
+def _empty_accelerator_cache() -> None:
+    try:
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+    except Exception:
+        pass
+    try:
+        npu = getattr(torch, "npu", None)
+        if npu is not None and hasattr(npu, "empty_cache"):
+            npu.empty_cache()
+    except Exception:
+        pass
+
+
+class LLMapGenTrainer(Trainer):
+    """Small NPU-friendly Trainer shim.
+
+    HF Trainer broadcasts FLOPs scalars during checkpoint saving. On Ascend NPU
+    this can allocate device memory at the worst possible moment and OOM an
+    otherwise stable run, so DI/NPU jobs skip that nonessential statistic by
+    default. Set LLMAPGEN_DISABLE_TRAINER_FLOS=false to restore upstream behavior.
+    """
+
+    def store_flos(self) -> None:
+        disable_flos = _env_bool(
+            "LLMAPGEN_DISABLE_TRAINER_FLOS",
+            default=_looks_like_npu_job(),
+        )
+        if disable_flos:
+            self.current_flos = 0
+            if hasattr(self.state, "total_flos"):
+                self.state.total_flos = float(getattr(self.state, "total_flos", 0.0) or 0.0)
+            return
+        return super().store_flos()
+
+    def _save_checkpoint(self, model, trial):
+        _empty_accelerator_cache()
+        try:
+            return super()._save_checkpoint(model, trial)
+        finally:
+            _empty_accelerator_cache()
 
 
 def parse_args() -> argparse.Namespace:
@@ -611,7 +670,7 @@ def main() -> None:
 
     optimizer = build_grouped_lr_optimizer(model, args)
 
-    trainer = Trainer(
+    trainer = LLMapGenTrainer(
         model=model,
         args=training_args,
         train_dataset=train_dataset,

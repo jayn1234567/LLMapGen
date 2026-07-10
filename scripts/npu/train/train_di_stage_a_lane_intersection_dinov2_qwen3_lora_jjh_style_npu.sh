@@ -185,8 +185,18 @@ fi
 if [[ "${INSTALL_DEPS}" =~ ^(1|true|True|TRUE|yes|YES)$ ]]; then
   unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY
   pip install torch==2.7.1 torch_npu==2.7.1rc1
-  python -c "import moxing as mox; mox.file.copy('${TORCH_NPU_WHL_OBS_PATH}', '${TORCH_NPU_WHL_LOCAL_PATH}')"
-  pip install --force-reinstall "${TORCH_NPU_WHL_LOCAL_PATH}"
+  PY_ABI_TAG=$(python - <<'PY'
+import sys
+print(f"cp{sys.version_info.major}{sys.version_info.minor}")
+PY
+)
+  if [[ "${TORCH_NPU_WHL_OBS_PATH}" == *"${PY_ABI_TAG}"* || "${TORCH_NPU_WHL_LOCAL_PATH}" == *"${PY_ABI_TAG}"* ]]; then
+    python -c "import moxing as mox; mox.file.copy('${TORCH_NPU_WHL_OBS_PATH}', '${TORCH_NPU_WHL_LOCAL_PATH}')"
+    pip install --force-reinstall "${TORCH_NPU_WHL_LOCAL_PATH}"
+  else
+    echo "[di-deps] skip forced torch_npu wheel because current python ABI is ${PY_ABI_TAG}, but wheel path is ${TORCH_NPU_WHL_OBS_PATH}"
+    echo "[di-deps] using torch_npu installed from pip package torch_npu==2.7.1rc1 instead."
+  fi
   pip install "sentencepiece>=0.1.99" "tiktoken>=0.7.0" "transformers==4.56.2" "tokenizers>=0.22.0,<0.23.0"
   pip install accelerate==1.6.0 deepspeed==0.14.4 "safetensors>=0.4.3" packaging "Pillow>=10.0.0" torchvision==0.22.1
   pip install shortuuid "peft>=0.10.0" pydantic 'markdown2[all]' 'numpy>=1.26,<2.0' 'scipy>=1.10' 'scikit-learn>=1.2'

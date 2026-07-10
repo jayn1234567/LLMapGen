@@ -485,6 +485,7 @@ class Qwen3RCDinoCenterlineJSONSFTModel(nn.Module):
             torch_dtype=lm_torch_dtype,
             low_cpu_mem_usage=True,
         )
+        self.config = self.language_model.config
         old_vocab_size = int(self.language_model.get_input_embeddings().weight.shape[0])
         new_vocab_size = int(len(tokenizer))
         if new_vocab_size != old_vocab_size:

@@ -385,6 +385,8 @@ class Qwen3RCDinoCenterlineJSONSFTModel(nn.Module):
         vision_model_name_or_path: str = "",
         vision_patch_size: int = 14,
         vision_num_prefix_tokens: int = -1,
+        vision_layer_fusion_indexes: Sequence[int] | str | None = None,
+        vision_layer_fusion_type: str = "mean",
         num_visual_tokens: int,
         visual_grid_size: int,
         encoder_visual_grid_size: int = 0,
@@ -522,6 +524,8 @@ class Qwen3RCDinoCenterlineJSONSFTModel(nn.Module):
             drop_cls_token=True,
             num_prefix_tokens=prefix_tokens,
             normalize_input=True,
+            vision_layer_fusion_indexes=vision_layer_fusion_indexes,
+            vision_layer_fusion_type=str(vision_layer_fusion_type),
         )
         has_visual_encoder_checkpoint = bool(str(visual_encoder_checkpoint_path).strip())
         if has_visual_encoder_checkpoint:

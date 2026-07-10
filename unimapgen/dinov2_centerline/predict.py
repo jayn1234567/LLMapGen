@@ -543,6 +543,8 @@ def main() -> None:
     encoder_input_pad_size = int(saved_args.get("encoder_input_pad_size", 518))
     vision_patch_size = int(saved_args.get("vision_patch_size", args.vision_patch_size))
     vision_num_prefix_tokens = int(saved_args.get("vision_num_prefix_tokens", args.vision_num_prefix_tokens))
+    vision_layer_fusion_indexes = str(saved_args.get("vision_layer_fusion_indexes", "") or "").strip()
+    vision_layer_fusion_type = str(saved_args.get("vision_layer_fusion_type", "mean") or "mean").strip().lower()
     vision_model_name_or_path = str(
         saved_args.get("vision_model_name_or_path") or saved_args.get("dinov2_model_name_or_path", "")
     ).strip()
@@ -621,6 +623,8 @@ def main() -> None:
         vision_model_name_or_path=vision_model_name_or_path,
         vision_patch_size=int(vision_patch_size),
         vision_num_prefix_tokens=int(vision_num_prefix_tokens),
+        vision_layer_fusion_indexes=vision_layer_fusion_indexes,
+        vision_layer_fusion_type=vision_layer_fusion_type,
         visual_encoder_checkpoint_path=str(saved_args.get("visual_encoder_checkpoint_path", "")),
         modules_state_path=modules_state_for(checkpoint_dir, run_root, saved_args),
         num_visual_tokens=int(num_visual_tokens),

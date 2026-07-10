@@ -88,6 +88,8 @@ IMAGE_SIZE=${IMAGE_SIZE:-512}
 ENCODER_INPUT_PAD_SIZE=${ENCODER_INPUT_PAD_SIZE:-518}
 VISION_PATCH_SIZE=${VISION_PATCH_SIZE:-14}
 VISION_NUM_PREFIX_TOKENS=${VISION_NUM_PREFIX_TOKENS:--1}
+VISION_LAYER_FUSION_INDEXES=${VISION_LAYER_FUSION_INDEXES:-}
+VISION_LAYER_FUSION_TYPE=${VISION_LAYER_FUSION_TYPE:-mean}
 FREEZE_LANGUAGE_MODEL=${FREEZE_LANGUAGE_MODEL:-false}
 NO_LORA=${NO_LORA:-false}
 FREEZE_VISION_ENCODER=${FREEZE_VISION_ENCODER:-true}
@@ -376,6 +378,14 @@ if [ -n "${VISION_ENCODER_LR}" ]; then
   LR_GROUP_ARGS+=(--vision-encoder-lr "${VISION_ENCODER_LR}")
 fi
 
+VISION_LAYER_FUSION_ARGS=()
+if [ -n "${VISION_LAYER_FUSION_INDEXES}" ]; then
+  VISION_LAYER_FUSION_ARGS=(
+    --vision-layer-fusion-indexes "${VISION_LAYER_FUSION_INDEXES}"
+    --vision-layer-fusion-type "${VISION_LAYER_FUSION_TYPE}"
+  )
+fi
+
 PROMPT_ARGS=()
 if [ -n "${SYSTEM_PROMPT}" ]; then
   PROMPT_ARGS+=(--system-prompt "${SYSTEM_PROMPT}")
@@ -389,6 +399,7 @@ echo "Run id:       ${RUN_ID}"
 echo "Trainroot:    ${TRAINROOT}"
 echo "Qwen:         ${QWEN_PATH}"
 echo "Vision:       ${VISION_PATH} (${VISION_MODEL_FAMILY}, patch=${VISION_PATCH_SIZE}, prefix=${VISION_NUM_PREFIX_TOKENS})"
+echo "Layer fusion: ${VISION_LAYER_FUSION_INDEXES:-off} (${VISION_LAYER_FUSION_TYPE})"
 echo "Visual ckpt:  ${VISUAL_ENCODER_CHECKPOINT_PATH}"
 echo "Bridge state: ${BRIDGE_MODULES_STATE_PATH}"
 echo "Pretrained visual bridge: ${USE_PRETRAINED_VISUAL_BRIDGE}"
@@ -422,6 +433,7 @@ torchrun \
   --vision-model-name-or-path "${VISION_PATH}" \
   --vision-patch-size "${VISION_PATCH_SIZE}" \
   --vision-num-prefix-tokens "${VISION_NUM_PREFIX_TOKENS}" \
+  "${VISION_LAYER_FUSION_ARGS[@]}" \
   "${VISUAL_BRIDGE_ARGS[@]}" \
   --output-dir "${OUTPUT_PATH}" \
   --num-train-epochs "${NUM_TRAIN_EPOCHS}" \

@@ -44,7 +44,6 @@ GLOBAL_LOCAL_VIEW_PROMPT = (
 )
 
 
-
 def _env_bool(name: str, default: bool = False) -> bool:
     value = str(os.environ.get(name, "")).strip()
     if not value:
@@ -118,6 +117,19 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--vision-model-name-or-path", type=str, default="", help="Generic DINO-family vision checkpoint path. Defaults to --dinov2-model-name-or-path.")
     parser.add_argument("--vision-patch-size", type=int, default=14, help="Vision encoder patch size. Use 14 for DINOv2-L/14 and 16 for DINOv3 ViT/16.")
     parser.add_argument("--vision-num-prefix-tokens", type=int, default=-1, help="Number of non-patch tokens to drop before patch tokens. -1 auto-detects CLS/register tokens.")
+    parser.add_argument(
+        "--vision-layer-fusion-indexes",
+        type=str,
+        default="",
+        help="Optional comma/space-separated ViT hidden-state indexes fused into the main visual stream, e.g. '6,12,18,23'.",
+    )
+    parser.add_argument(
+        "--vision-layer-fusion-type",
+        type=str,
+        default="mean",
+        choices=["mean", "sum", "learned_weighted", "weighted", "softmax_weighted"],
+        help="Fusion mode used with --vision-layer-fusion-indexes.",
+    )
     parser.add_argument("--visual-encoder-checkpoint-path", type=str, default="")
     parser.add_argument("--bridge-modules-state-path", type=str, default="")
     parser.add_argument("--local-files-only", action="store_true")
@@ -444,6 +456,8 @@ def main() -> None:
     args.dinov2_model_name_or_path = str(args.dinov2_model_name_or_path).strip() or vision_model_name_or_path
     args.vision_patch_size = int(args.vision_patch_size)
     args.vision_num_prefix_tokens = int(args.vision_num_prefix_tokens)
+    args.vision_layer_fusion_indexes = str(args.vision_layer_fusion_indexes).strip()
+    args.vision_layer_fusion_type = str(args.vision_layer_fusion_type).strip().lower() or "mean"
 
     encoder_input_pad_size = int(args.encoder_input_pad_size)
     if encoder_input_pad_size <= 0:
@@ -495,6 +509,8 @@ def main() -> None:
                 "vision_model": vision_model_name_or_path,
                 "vision_patch_size": int(args.vision_patch_size),
                 "vision_num_prefix_tokens": int(args.vision_num_prefix_tokens),
+                "vision_layer_fusion_indexes": str(args.vision_layer_fusion_indexes),
+                "vision_layer_fusion_type": str(args.vision_layer_fusion_type),
                 "dataset_jsonl": str(dataset_path),
                 "dataset_meta_jsonl": str(dataset_meta_path or ""),
                 "eval_dataset_jsonl": str(eval_dataset_path or ""),
@@ -594,6 +610,8 @@ def main() -> None:
         vision_model_name_or_path=str(args.vision_model_name_or_path),
         vision_patch_size=int(args.vision_patch_size),
         vision_num_prefix_tokens=int(args.vision_num_prefix_tokens),
+        vision_layer_fusion_indexes=str(args.vision_layer_fusion_indexes),
+        vision_layer_fusion_type=str(args.vision_layer_fusion_type),
         visual_encoder_checkpoint_path=visual_encoder_checkpoint_path,
         modules_state_path=str(args.bridge_modules_state_path).strip(),
         num_visual_tokens=int(num_visual_tokens),

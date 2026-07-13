@@ -5,6 +5,10 @@ They mirror the train recipe matrix, download checkpoints/datasets when needed,
 run patch or state-update inference, write visualizations and metrics, and
 upload outputs.
 
+The explicit `smoke_train_*` entrypoint is the exception: it verifies the
+private DINOv2 segmentation pretraining path before that visual tower is used
+by the SFT recipes.
+
 ## Comment Style
 
 Formal test scripts keep editable paths and knobs as shell variables near the
@@ -59,6 +63,7 @@ test recipe matrix and evaluate checkpoints trained by
 
 | Script | Purpose |
 |---|---|
+| `smoke_train_dinov2_private_seg_full_finetune_npu.sh` | 8-NPU, 20-step smoke test for full-parameter private RC DINOv2 segmentation pretraining and HF vision-tower export. |
 | `test_multivision_qwen3vl_nodeepstack_npu.sh` | General older multi-vision Qwen3-VL no-DeepStack inference/eval launcher; prefer explicit stage/task recipe scripts for production. |
 | `test_stage_a_lane_dinov2_qwen3_5_deepstack_npu.sh` | inference/eval: Stage A, lane-only, DINOv2, DeepStack, Qwen3.5 text LLM. |
 | `test_stage_a_lane_dinov2_qwen3_5_layer_fusion_nodeepstack_npu.sh` | inference/eval: Stage A, lane-only, DINOv2, ViT direct layer fusion, no DeepStack, Qwen3.5 text LLM. |

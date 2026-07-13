@@ -1,0 +1,605 @@
+from __future__ import annotations
+
+import argparse
+import contextlib
+import json
+import math
+import os
+import random
+import time
+from pathlib import Path
+import numpy as np
+import torch
+import torch.distributed as dist
+from torch.nn.parallel import DistributedDataParallel
+from torch.optim import AdamW
+from torch.optim.lr_scheduler import LambdaLR
+from torch.utils.data import DataLoader, DistributedSampler
+
+from .data import (
+    RoadLaneSegmentationDataset,
+    discover_segmentation_samples,
+    save_split_manifest,
+    seed_worker,
+)
+from .dinov2_segmentation import Dinov2RoadSegmentationModel
+from .metrics import confusion_matrix, metrics_from_confusion, segmentation_loss
+
+
+def parse_bool(value: str | bool) -> bool:
+    if isinstance(value, bool):
+        return value
+    normalized = str(value).strip().lower()
+    if normalized in {"1", "true", "yes", "y", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "n", "off"}:
+        return False
+    raise argparse.ArgumentTypeError(f"Expected a boolean value, got {value!r}")
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        description="Full-parameter Hugging Face DINOv2 road-lane segmentation pretraining."
+    )
+    parser.add_argument("--model_name_or_path", required=True)
+    parser.add_argument("--dataset_roots", nargs="+", required=True)
+    parser.add_argument("--output_dir", required=True)
+    parser.add_argument("--input_size", type=int, default=518)
+    parser.add_argument("--hidden_state_indices", nargs="+", type=int, default=[6, 12, 18, 24])
+    parser.add_argument("--projection_channels", type=int, default=256)
+    parser.add_argument("--num_train_epochs", type=int, default=20)
+    parser.add_argument("--max_steps", type=int, default=-1)
+    parser.add_argument("--per_device_train_batch_size", type=int, default=2)
+    parser.add_argument("--per_device_eval_batch_size", type=int, default=2)
+    parser.add_argument("--gradient_accumulation_steps", type=int, default=4)
+    parser.add_argument("--learning_rate", type=float, default=5e-6)
+    parser.add_argument("--decoder_learning_rate", type=float, default=1e-4)
+    parser.add_argument("--weight_decay", type=float, default=0.05)
+    parser.add_argument("--warmup_ratio", type=float, default=0.05)
+    parser.add_argument("--min_lr_ratio", type=float, default=0.1)
+    parser.add_argument("--max_grad_norm", type=float, default=1.0)
+    parser.add_argument("--foreground_ce_weight", type=float, default=1.0)
+    parser.add_argument("--dice_loss_weight", type=float, default=0.5)
+    parser.add_argument("--val_fraction", type=float, default=0.1)
+    parser.add_argument("--split_seed", type=int, default=42)
+    parser.add_argument("--max_train_samples", type=int, default=0)
+    parser.add_argument("--max_val_samples", type=int, default=0)
+    parser.add_argument("--ignore_mask_value", type=int, default=None)
+    parser.add_argument("--num_workers", type=int, default=8)
+    parser.add_argument("--logging_steps", type=int, default=1)
+    parser.add_argument("--eval_every_epochs", type=int, default=1)
+    parser.add_argument("--gradient_checkpointing", type=parse_bool, default=True)
+    parser.add_argument("--bf16", type=parse_bool, default=True)
+    parser.add_argument("--augment", type=parse_bool, default=True)
+    parser.add_argument("--device", choices=("auto", "npu", "cuda", "cpu"), default="auto")
+    return parser
+
+
+def _npu_available() -> bool:
+    try:
+        import torch_npu  # noqa: F401
+    except ImportError:
+        return False
+    return hasattr(torch, "npu") and torch.npu.is_available()
+
+
+def initialize_runtime(requested_device: str) -> tuple[torch.device, int, int, int]:
+    local_rank = int(os.environ.get("LOCAL_RANK", "0"))
+    rank = int(os.environ.get("RANK", "0"))
+    world_size = int(os.environ.get("WORLD_SIZE", "1"))
+
+    device_type = requested_device
+    if device_type == "auto":
+        if _npu_available():
+            device_type = "npu"
+        elif torch.cuda.is_available():
+            device_type = "cuda"
+        else:
+            device_type = "cpu"
+
+    if device_type == "npu":
+        if not _npu_available():
+            raise RuntimeError("NPU was requested, but torch_npu/NPU is not available.")
+        torch.npu.set_device(local_rank)
+        device = torch.device(f"npu:{local_rank}")
+        backend = "hccl"
+    elif device_type == "cuda":
+        if not torch.cuda.is_available():
+            raise RuntimeError("CUDA was requested, but CUDA is not available.")
+        torch.cuda.set_device(local_rank)
+        device = torch.device(f"cuda:{local_rank}")
+        backend = "nccl"
+    else:
+        device = torch.device("cpu")
+        backend = "gloo"
+
+    if world_size > 1 and not dist.is_initialized():
+        dist.init_process_group(backend=backend, init_method="env://")
+    return device, rank, local_rank, world_size
+
+
+def set_seed(seed: int, rank: int) -> None:
+    actual_seed = int(seed) + int(rank)
+    random.seed(actual_seed)
+    np.random.seed(actual_seed)
+    torch.manual_seed(actual_seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(actual_seed)
+
+
+def rank0_print(rank: int, message: str) -> None:
+    if rank == 0:
+        print(message, flush=True)
+
+
+def reduce_mean(value: torch.Tensor, world_size: int) -> torch.Tensor:
+    value = value.detach().clone()
+    if world_size > 1:
+        dist.all_reduce(value, op=dist.ReduceOp.SUM)
+        value /= world_size
+    return value
+
+
+def _parameter_groups(
+    module: torch.nn.Module,
+    *,
+    learning_rate: float,
+    weight_decay: float,
+    prefix: str,
+) -> list[dict]:
+    decay_parameters = []
+    no_decay_parameters = []
+    for name, parameter in module.named_parameters():
+        if not parameter.requires_grad:
+            continue
+        if parameter.ndim <= 1 or name.endswith(".bias"):
+            no_decay_parameters.append(parameter)
+        else:
+            decay_parameters.append(parameter)
+    groups = []
+    if decay_parameters:
+        groups.append(
+            {
+                "params": decay_parameters,
+                "lr": float(learning_rate),
+                "weight_decay": float(weight_decay),
+                "group_name": f"{prefix}_decay",
+            }
+        )
+    if no_decay_parameters:
+        groups.append(
+            {
+                "params": no_decay_parameters,
+                "lr": float(learning_rate),
+                "weight_decay": 0.0,
+                "group_name": f"{prefix}_no_decay",
+            }
+        )
+    return groups
+
+
+def build_optimizer(model: Dinov2RoadSegmentationModel, args: argparse.Namespace) -> AdamW:
+    groups = _parameter_groups(
+        model.vision_encoder,
+        learning_rate=args.learning_rate,
+        weight_decay=args.weight_decay,
+        prefix="vision_encoder",
+    )
+    groups.extend(
+        _parameter_groups(
+            model.decoder,
+            learning_rate=args.decoder_learning_rate,
+            weight_decay=args.weight_decay,
+            prefix="segmentation_decoder",
+        )
+    )
+    return AdamW(groups, betas=(0.9, 0.999), eps=1e-8)
+
+
+def build_scheduler(
+    optimizer: AdamW,
+    *,
+    total_steps: int,
+    warmup_ratio: float,
+    min_lr_ratio: float,
+) -> LambdaLR:
+    warmup_steps = max(0, round(total_steps * float(warmup_ratio)))
+
+    def lr_lambda(step: int) -> float:
+        if warmup_steps > 0 and step < warmup_steps:
+            return max(1e-8, float(step + 1) / float(warmup_steps))
+        progress = (step - warmup_steps) / max(1, total_steps - warmup_steps)
+        progress = min(1.0, max(0.0, progress))
+        cosine = 0.5 * (1.0 + math.cos(math.pi * progress))
+        return float(min_lr_ratio) + (1.0 - float(min_lr_ratio)) * cosine
+
+    return LambdaLR(optimizer, lr_lambda=lr_lambda)
+
+
+def _autocast_context(device: torch.device, enabled: bool):
+    if not enabled or device.type == "cpu":
+        return contextlib.nullcontext()
+    return torch.autocast(device_type=device.type, dtype=torch.bfloat16)
+
+
+def evaluate(
+    model: torch.nn.Module,
+    dataloader: DataLoader,
+    *,
+    device: torch.device,
+    args: argparse.Namespace,
+    world_size: int,
+) -> dict:
+    model.eval()
+    matrix = torch.zeros((2, 2), dtype=torch.float64, device=device)
+    loss_sum = torch.zeros((), dtype=torch.float64, device=device)
+    sample_count = torch.zeros((), dtype=torch.float64, device=device)
+    local_samples = 0
+    started = time.perf_counter()
+    with torch.no_grad():
+        for batch in dataloader:
+            pixel_values = batch["pixel_values"].to(device, non_blocking=True)
+            labels = batch["labels"].to(device, non_blocking=True)
+            with _autocast_context(device, args.bf16):
+                logits = model(pixel_values)
+                loss, _ = segmentation_loss(
+                    logits,
+                    labels,
+                    foreground_weight=args.foreground_ce_weight,
+                    dice_weight=args.dice_loss_weight,
+                )
+            batch_size = labels.shape[0]
+            loss_sum += loss.detach().double() * batch_size
+            sample_count += batch_size
+            matrix += confusion_matrix(logits, labels).to(device=device)
+            local_samples += batch_size
+
+    if world_size > 1:
+        dist.all_reduce(loss_sum, op=dist.ReduceOp.SUM)
+        dist.all_reduce(sample_count, op=dist.ReduceOp.SUM)
+        dist.all_reduce(matrix, op=dist.ReduceOp.SUM)
+    metrics = metrics_from_confusion(matrix)
+    metrics["loss"] = float((loss_sum / sample_count.clamp_min(1.0)).item())
+    elapsed = max(time.perf_counter() - started, 1e-6)
+    metrics["throughput_samples_per_second_per_npu"] = local_samples / elapsed
+    return metrics
+
+
+def save_best_artifacts(
+    model: Dinov2RoadSegmentationModel,
+    image_processor: object,
+    output_dir: Path,
+    *,
+    args: argparse.Namespace,
+    epoch: int,
+    global_step: int,
+    metrics: dict,
+    dataset_report: dict,
+) -> None:
+    best_dir = output_dir / "best"
+    vision_dir = best_dir / "vision_tower"
+    best_dir.mkdir(parents=True, exist_ok=True)
+    metadata = {
+        "base_model": args.model_name_or_path,
+        "architecture": "Dinov2RoadSegmentationModel",
+        "input_size": args.input_size,
+        "patch_size": model.patch_size,
+        "visual_grid_size": args.input_size // model.patch_size,
+        "hidden_state_indices": list(model.hidden_state_indices),
+        "training": "full_parameter",
+        "epoch": int(epoch),
+        "global_step": int(global_step),
+        "validation_metrics": metrics,
+        "dataset_report": dataset_report,
+    }
+    model.save_vision_tower(vision_dir, image_processor, metadata)
+    torch.save(
+        {
+            "decoder": model.head_state_dict(),
+            "metadata": metadata,
+        },
+        best_dir / "segmentation_head.pt",
+    )
+    (best_dir / "metrics.json").write_text(
+        json.dumps(metrics, indent=2, ensure_ascii=True),
+        encoding="utf-8",
+    )
+
+
+def main() -> None:
+    args = build_parser().parse_args()
+    device, rank, local_rank, world_size = initialize_runtime(args.device)
+    set_seed(args.split_seed, rank)
+    output_dir = Path(args.output_dir).expanduser().resolve()
+    if rank == 0:
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+    from transformers import AutoImageProcessor
+
+    image_processor = AutoImageProcessor.from_pretrained(
+        args.model_name_or_path,
+        local_files_only=True,
+    )
+    image_processor.size = {"shortest_edge": int(args.input_size)}
+    image_processor.crop_size = {"height": int(args.input_size), "width": int(args.input_size)}
+    image_mean = getattr(image_processor, "image_mean", [0.485, 0.456, 0.406])
+    image_std = getattr(image_processor, "image_std", [0.229, 0.224, 0.225])
+
+    train_samples, val_samples, discovery_report = discover_segmentation_samples(
+        args.dataset_roots,
+        val_fraction=args.val_fraction,
+        split_seed=args.split_seed,
+        max_train_samples=args.max_train_samples,
+        max_val_samples=args.max_val_samples,
+    )
+    if rank == 0:
+        save_split_manifest(
+            output_dir / "split_manifest.json",
+            train_samples,
+            val_samples,
+            discovery_report,
+        )
+    dataset_report = {
+        "roots": list(discovery_report.roots),
+        "total_samples": discovery_report.total_samples,
+        "train_samples": len(train_samples),
+        "val_samples": len(val_samples),
+        "groups": discovery_report.groups,
+        "missing_images": discovery_report.missing_images,
+    }
+    rank0_print(rank, f"[dinov2-seg] dataset={json.dumps(dataset_report, ensure_ascii=True)}")
+
+    train_dataset = RoadLaneSegmentationDataset(
+        train_samples,
+        input_size=args.input_size,
+        image_mean=image_mean,
+        image_std=image_std,
+        augment=args.augment,
+        ignore_mask_value=args.ignore_mask_value,
+    )
+    val_dataset = RoadLaneSegmentationDataset(
+        val_samples,
+        input_size=args.input_size,
+        image_mean=image_mean,
+        image_std=image_std,
+        augment=False,
+        ignore_mask_value=args.ignore_mask_value,
+    )
+    train_sampler = (
+        DistributedSampler(
+            train_dataset,
+            num_replicas=world_size,
+            rank=rank,
+            shuffle=True,
+            seed=args.split_seed,
+        )
+        if world_size > 1
+        else None
+    )
+    val_sampler = (
+        DistributedSampler(
+            val_dataset,
+            num_replicas=world_size,
+            rank=rank,
+            shuffle=False,
+        )
+        if world_size > 1
+        else None
+    )
+    loader_kwargs = {
+        "num_workers": int(args.num_workers),
+        "pin_memory": device.type != "cpu",
+        "worker_init_fn": seed_worker,
+        "persistent_workers": int(args.num_workers) > 0,
+    }
+    train_loader = DataLoader(
+        train_dataset,
+        batch_size=args.per_device_train_batch_size,
+        sampler=train_sampler,
+        shuffle=train_sampler is None,
+        drop_last=True,
+        **loader_kwargs,
+    )
+    val_loader = DataLoader(
+        val_dataset,
+        batch_size=args.per_device_eval_batch_size,
+        sampler=val_sampler,
+        shuffle=False,
+        drop_last=False,
+        **loader_kwargs,
+    )
+    if not len(train_loader):
+        raise RuntimeError("Training dataloader is empty. Reduce batch size or provide more samples.")
+
+    raw_model = Dinov2RoadSegmentationModel.from_pretrained(
+        args.model_name_or_path,
+        input_size=args.input_size,
+        hidden_state_indices=args.hidden_state_indices,
+        projection_channels=args.projection_channels,
+        gradient_checkpointing=args.gradient_checkpointing,
+    )
+    raw_model.to(device)
+    trainable_parameters = sum(parameter.numel() for parameter in raw_model.parameters() if parameter.requires_grad)
+    total_parameters = sum(parameter.numel() for parameter in raw_model.parameters())
+    rank0_print(
+        rank,
+        f"[dinov2-seg] parameters trainable={trainable_parameters:,} total={total_parameters:,} "
+        f"full_unfreeze={trainable_parameters == total_parameters}",
+    )
+    optimizer = build_optimizer(raw_model, args)
+    updates_per_epoch = math.ceil(len(train_loader) / args.gradient_accumulation_steps)
+    total_steps = (
+        int(args.max_steps)
+        if int(args.max_steps) > 0
+        else int(args.num_train_epochs) * updates_per_epoch
+    )
+    scheduler = build_scheduler(
+        optimizer,
+        total_steps=total_steps,
+        warmup_ratio=args.warmup_ratio,
+        min_lr_ratio=args.min_lr_ratio,
+    )
+    model: torch.nn.Module = raw_model
+    if world_size > 1:
+        device_ids = [local_rank] if device.type in {"npu", "cuda"} else None
+        model = DistributedDataParallel(
+            raw_model,
+            device_ids=device_ids,
+            broadcast_buffers=False,
+            find_unused_parameters=False,
+        )
+
+    resolved = vars(args).copy()
+    resolved.update(
+        {
+            "device": str(device),
+            "rank": rank,
+            "world_size": world_size,
+            "total_steps": total_steps,
+            "effective_global_batch_size": (
+                args.per_device_train_batch_size * args.gradient_accumulation_steps * world_size
+            ),
+        }
+    )
+    rank0_print(rank, f"[dinov2-seg] config={json.dumps(resolved, ensure_ascii=True, default=str)}")
+    if rank == 0:
+        (output_dir / "training_args.json").write_text(
+            json.dumps(resolved, indent=2, ensure_ascii=True, default=str),
+            encoding="utf-8",
+        )
+
+    global_step = 0
+    best_mean_iou = -1.0
+    best_metrics: dict | None = None
+    stop_training = False
+    optimizer.zero_grad(set_to_none=True)
+    for epoch in range(1, int(args.num_train_epochs) + 1):
+        if train_sampler is not None:
+            train_sampler.set_epoch(epoch)
+        model.train()
+        group_loss = 0.0
+        group_ce = 0.0
+        group_dice = 0.0
+        group_samples = 0
+        group_started = time.perf_counter()
+        for batch_index, batch in enumerate(train_loader):
+            group_start = (batch_index // args.gradient_accumulation_steps) * args.gradient_accumulation_steps
+            group_size = min(args.gradient_accumulation_steps, len(train_loader) - group_start)
+            should_update = (batch_index + 1) % args.gradient_accumulation_steps == 0 or (
+                batch_index + 1 == len(train_loader)
+            )
+            sync_context = contextlib.nullcontext()
+            if isinstance(model, DistributedDataParallel) and not should_update:
+                sync_context = model.no_sync()
+
+            pixel_values = batch["pixel_values"].to(device, non_blocking=True)
+            labels = batch["labels"].to(device, non_blocking=True)
+            with sync_context:
+                with _autocast_context(device, args.bf16):
+                    logits = model(pixel_values)
+                    loss, components = segmentation_loss(
+                        logits,
+                        labels,
+                        foreground_weight=args.foreground_ce_weight,
+                        dice_weight=args.dice_loss_weight,
+                    )
+                (loss / group_size).backward()
+
+            group_loss += float(loss.detach().item())
+            group_ce += float(components["cross_entropy"].item())
+            group_dice += float(components["dice_loss"].item())
+            group_samples += int(labels.shape[0])
+            if not should_update:
+                continue
+
+            gradient_norm = torch.nn.utils.clip_grad_norm_(raw_model.parameters(), args.max_grad_norm)
+            optimizer.step()
+            scheduler.step()
+            optimizer.zero_grad(set_to_none=True)
+            global_step += 1
+
+            if global_step % args.logging_steps == 0:
+                averaged_loss = reduce_mean(
+                    torch.tensor(group_loss / group_size, device=device),
+                    world_size,
+                )
+                elapsed = max(time.perf_counter() - group_started, 1e-6)
+                throughput = group_samples / elapsed
+                if rank == 0:
+                    log_payload = {
+                        "epoch": epoch,
+                        "step": global_step,
+                        "loss": float(averaged_loss.item()),
+                        "cross_entropy": group_ce / group_size,
+                        "dice_loss": group_dice / group_size,
+                        "gradient_norm": float(gradient_norm.detach().float().item()),
+                        "vision_lr": optimizer.param_groups[0]["lr"],
+                        "DI_throughput": f"{throughput:.2f} samples/s/npu",
+                    }
+                    print(json.dumps(log_payload, ensure_ascii=True), flush=True)
+                    print(f"DI_throughput: {throughput:.2f} samples/s/npu", flush=True)
+            group_loss = 0.0
+            group_ce = 0.0
+            group_dice = 0.0
+            group_samples = 0
+            group_started = time.perf_counter()
+            if global_step >= total_steps:
+                stop_training = True
+                break
+
+        should_evaluate = epoch % args.eval_every_epochs == 0 or stop_training
+        if should_evaluate:
+            metrics = evaluate(
+                model,
+                val_loader,
+                device=device,
+                args=args,
+                world_size=world_size,
+            )
+            if rank == 0:
+                print(f"[dinov2-seg] eval={json.dumps(metrics, ensure_ascii=True)}", flush=True)
+                print(
+                    "DI_throughput: "
+                    f"{metrics['throughput_samples_per_second_per_npu']:.2f} samples/s/npu",
+                    flush=True,
+                )
+                if metrics["mean_iou"] > best_mean_iou:
+                    best_mean_iou = metrics["mean_iou"]
+                    best_metrics = metrics
+                    save_best_artifacts(
+                        raw_model,
+                        image_processor,
+                        output_dir,
+                        args=args,
+                        epoch=epoch,
+                        global_step=global_step,
+                        metrics=metrics,
+                        dataset_report=dataset_report,
+                    )
+                    print(
+                        f"[dinov2-seg] saved best vision tower: {output_dir / 'best' / 'vision_tower'}",
+                        flush=True,
+                    )
+            if world_size > 1:
+                dist.barrier()
+        if stop_training:
+            break
+
+    if rank == 0:
+        summary = {
+            "global_step": global_step,
+            "best_mean_iou": best_mean_iou,
+            "best_metrics": best_metrics,
+            "vision_tower": str(output_dir / "best" / "vision_tower"),
+        }
+        (output_dir / "train_summary.json").write_text(
+            json.dumps(summary, indent=2, ensure_ascii=True),
+            encoding="utf-8",
+        )
+        print(f"[dinov2-seg] complete={json.dumps(summary, ensure_ascii=True)}", flush=True)
+    if world_size > 1:
+        dist.destroy_process_group()
+
+
+if __name__ == "__main__":
+    main()

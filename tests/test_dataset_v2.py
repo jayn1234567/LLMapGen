@@ -1,4 +1,5 @@
 import unittest
+from unittest.mock import patch
 
 import numpy as np
 
@@ -11,6 +12,10 @@ from data_process.state_update_dataset_common import (
     build_sft_record,
     centered_target_roi,
     extract_centered_context,
+)
+from scripts.tools.build_rc_dataset_v2_from_obs import (
+    DEFAULT_OUTPUT_OBS_ROOT,
+    ObsutilBackend,
 )
 
 
@@ -115,6 +120,30 @@ class DatasetV2BalancingTest(unittest.TestCase):
         )
         self.assertLess(sum(counts.values()), 20)
         self.assertFalse(report["allow_oversample"])
+
+
+class DatasetV2ObsutilTest(unittest.TestCase):
+    def test_obsutil_recursive_copy_uses_config_and_parallel_jobs(self):
+        backend = ObsutilBackend(
+            r"C:\tools\obsutil.exe",
+            r"C:\Users\tester\.obsutilconfig",
+            jobs=6,
+        )
+        with patch("scripts.tools.build_rc_dataset_v2_from_obs.subprocess.run") as run:
+            backend.download_tree("obs://bucket/source/", r"D:\rcv2\raw")
+        command = run.call_args.args[0]
+        self.assertEqual(command[:3], [r"C:\tools\obsutil.exe", "cp", "obs://bucket/source/"])
+        self.assertIn("-r", command)
+        self.assertIn("-f", command)
+        self.assertIn("-j=6", command)
+        self.assertIn(r"-config=C:\Users\tester\.obsutilconfig", command)
+        self.assertTrue(run.call_args.kwargs["check"])
+
+    def test_default_output_is_scoped_under_the_user_data_prefix(self):
+        self.assertEqual(
+            DEFAULT_OUTPUT_OBS_ROOT,
+            "obs://yw-ads-training-gy1/data/external/personal/h58801830/whu/jn/data/rc_dataset_v2/",
+        )
 
 
 if __name__ == "__main__":

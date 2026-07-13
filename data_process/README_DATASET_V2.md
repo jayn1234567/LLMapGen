@@ -93,8 +93,13 @@ cd /cache/jn/MLLM_project-unimapgen_v7
 
 python scripts/tools/build_rc_dataset_v2_from_obs.py \
   --work-root /cache/rc_dataset_v2 \
-  --output-obs-root obs://YOUR_BUCKET/YOUR_PATH/rc_dataset_v2 \
   --resume
+```
+
+The default destination is:
+
+```text
+obs://yw-ads-training-gy1/data/external/personal/h58801830/whu/jn/data/rc_dataset_v2/
 ```
 
 `--resume` reuses downloads with a completed marker, keeps existing PNGs, and
@@ -104,11 +109,12 @@ reuses completed tar packages. Do not treat a directory without its
 The default upload mode creates:
 
 ```text
-obs://YOUR_BUCKET/YOUR_PATH/rc_dataset_v2/
+obs://yw-ads-training-gy1/data/external/personal/h58801830/whu/jn/data/rc_dataset_v2/
 |-- local256.tar
 |-- context512_roi256.tar
 |-- build_summary.json
-`-- split_manifest.json
+|-- split_manifest.json
+`-- balance_report.json
 ```
 
 Each tar contains one top-level directory with the same variant name. Point a
@@ -164,3 +170,69 @@ full lattice and apply weighting in the sampler instead of deleting patches.
 - `balance_report.json`: requested versus actual counts, unique counts,
   oversampling, and intersection ratio.
 - `split_manifest.json`: source roots, duplicate ids, and raw sample split.
+
+## Local Windows build
+
+Use a separate data-preparation environment. PyTorch, torch_npu, Transformers,
+and the training environment are not required.
+
+Create or update the Conda environment from PowerShell or Anaconda Prompt:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\tools\setup_rc_dataset_v2_windows.ps1
+conda activate rc-dataset-v2
+```
+
+The script installs Python 3.11, NumPy 1.26, Pillow, tqdm, GeoPandas, Rasterio,
+Shapely, and pyproj. If `conda-forge` is unavailable on the intranet, pass the
+company Conda channel with `-Channel YOUR_CHANNEL`.
+
+For local Windows OBS access, use Huawei `obsutil.exe` instead of installing a
+package named `moxing` from public PyPI. Add `obsutil.exe` to `PATH`, then use
+interactive configuration so AK/SK do not appear in shell history:
+
+```powershell
+obsutil config -interactive
+obsutil ls obs://yw-ncasd-result-gy1/data/RCDataset/BaseModel/
+```
+
+First run a local-only structure smoke test from the repository root:
+
+```powershell
+python .\scripts\tools\build_rc_dataset_v2_from_obs.py `
+  --work-root "D:\rcv2_smoke" `
+  --obs-backend obsutil `
+  --limit-samples 12 `
+  --train-target-samples 200 `
+  --skip-upload `
+  --resume
+```
+
+After the smoke build finishes, run the full build:
+
+```powershell
+python .\scripts\tools\build_rc_dataset_v2_from_obs.py `
+  --work-root "D:\rcv2" `
+  --obs-backend obsutil `
+  --resume `
+  --remove-package-after-upload
+```
+
+`D:\rcv2` is an example. Use a short path on a large NTFS disk. Avoid FAT32
+because each tar can exceed 4 GiB. A short path also reduces the risk of the
+Windows 260-character path limit with long raw sample ids. The pipeline stores
+seven raw sources, both generated image variants, and temporarily one tar, so
+several hundred GiB of free space may be required. The command prints detected
+free space before downloading. OBS object names are case-sensitive while
+Windows paths are not; review the source task if obsutil reports case-collision
+warnings rather than allowing one object to overwrite another silently.
+
+The default OBS upload directory is already set to:
+
+```text
+obs://yw-ads-training-gy1/data/external/personal/h58801830/whu/jn/data/rc_dataset_v2/
+```
+
+Use `--obsutil-path "C:\path\to\obsutil.exe"` if it is not on `PATH`. Use
+`--obsutil-config "C:\path\to\.obsutilconfig"` when the config file is not in
+the current Windows user's home directory.

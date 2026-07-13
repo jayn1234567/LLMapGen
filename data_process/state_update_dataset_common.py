@@ -318,6 +318,47 @@ def pad_image_to_patch_grid(image: np.ndarray, patch_size: int):
     return padded, [width, height]
 
 
+def centered_target_roi(target_size: int, context_size: int):
+    """Return the target ROI inside a centered square context image."""
+    if target_size <= 0 or context_size <= 0:
+        raise ValueError("target_size and context_size must be positive")
+    if context_size < target_size:
+        raise ValueError("context_size must be greater than or equal to target_size")
+    if (context_size - target_size) % 2:
+        raise ValueError("context_size - target_size must be even for a centered target ROI")
+    margin = (context_size - target_size) // 2
+    return [margin, margin, margin + target_size, margin + target_size]
+
+
+def extract_centered_context(
+    image: np.ndarray,
+    target_x0: int,
+    target_y0: int,
+    target_size: int,
+    context_size: int,
+):
+    """Extract a centered context crop and use black padding outside the source image."""
+    roi = centered_target_roi(target_size, context_size)
+    context_x0 = int(target_x0) - roi[0]
+    context_y0 = int(target_y0) - roi[1]
+    _, source_height, source_width = image.shape
+    result = np.zeros((image.shape[0], context_size, context_size), dtype=image.dtype)
+
+    source_x0 = max(0, context_x0)
+    source_y0 = max(0, context_y0)
+    source_x1 = min(source_width, context_x0 + context_size)
+    source_y1 = min(source_height, context_y0 + context_size)
+    if source_x0 >= source_x1 or source_y0 >= source_y1:
+        return result
+
+    dest_x0 = source_x0 - context_x0
+    dest_y0 = source_y0 - context_y0
+    dest_x1 = dest_x0 + (source_x1 - source_x0)
+    dest_y1 = dest_y0 + (source_y1 - source_y0)
+    result[:, dest_y0:dest_y1, dest_x0:dest_x1] = image[:, source_y0:source_y1, source_x0:source_x1]
+    return result
+
+
 def coord_to_pixel(coord, inverse_transform):
     x, y = float(coord[0]), float(coord[1])
     px, py = inverse_transform * (x, y)
@@ -1021,16 +1062,37 @@ def sort_target_lines(lines, patch_size, boundary_tol):
 
 
 def make_prompt(include_intersections: bool, incoming_traces, incoming_intersections=None, phase="a",
-                coord_mode: str = COORD_MODE_NORM1000, coord_range: int = DEFAULT_COORD_RANGE, patch_size: int = 256):
+                coord_mode: str = COORD_MODE_NORM1000, coord_range: int = DEFAULT_COORD_RANGE,
+                patch_size: int = 256, context_size=None):
+    context_size = patch_size if context_size is None else int(context_size)
+    target_roi = centered_target_roi(patch_size, context_size)
     trace_json = json.dumps(incoming_traces, ensure_ascii=False, separators=(",", ":"))
     parts = [
         "<image>",
         TASK_TEXT,
-        coord_description(coord_mode, coord_range, patch_size),
-        "",
-        "Incoming traces JSON:",
-        trace_json,
     ]
+    if context_size > patch_size:
+        if normalize_coord_mode(coord_mode) == COORD_MODE_NORM1000:
+            context_coord_description = (
+                f"Coordinates use a normalized 0-{coord_range} grid over the {patch_size}x{patch_size} target ROI."
+            )
+        else:
+            context_coord_description = (
+                f"Coordinates use target-ROI pixel coordinates in [0,{patch_size - 1}]."
+            )
+        parts.extend([
+            f"The input is a {context_size}x{context_size} context image centered on the target region.",
+            (
+                f"Predict only map elements clipped to the central {patch_size}x{patch_size} target ROI "
+                f"[{target_roi[0]},{target_roi[1]},{target_roi[2]},{target_roi[3]})."
+            ),
+            context_coord_description,
+            "Coordinates are relative to the target ROI, not the full context image.",
+            "Do not output geometry that lies only outside the target ROI.",
+        ])
+    else:
+        parts.append(coord_description(coord_mode, coord_range, patch_size))
+    parts.extend(["", "Incoming traces JSON:", trace_json])
     if include_intersections:
         inter_json = json.dumps(incoming_intersections or [], ensure_ascii=False, separators=(",", ":"))
         parts.extend(["", "Incoming intersections JSON:", inter_json])
@@ -1045,8 +1107,11 @@ def make_prompt(include_intersections: bool, incoming_traces, incoming_intersect
     return "\n".join(parts)
 
 
-def build_sft_record(row, patch_size, include_intersections, phase, coord_mode=COORD_MODE_NORM1000, coord_range=DEFAULT_COORD_RANGE):
+def build_sft_record(row, patch_size, include_intersections, phase, coord_mode=COORD_MODE_NORM1000,
+                     coord_range=DEFAULT_COORD_RANGE, context_size=None, view_mode=None):
     coord_mode = normalize_coord_mode(coord_mode)
+    context_size = patch_size if context_size is None else int(context_size)
+    target_roi = centered_target_roi(patch_size, context_size)
     incoming_traces = row["incoming_traces"] if phase == "b" else []
     incoming_intersections = row.get("incoming_intersections", []) if phase == "b" else []
     incoming_traces = [
@@ -1069,6 +1134,7 @@ def build_sft_record(row, patch_size, include_intersections, phase, coord_mode=C
         coord_mode=coord_mode,
         coord_range=coord_range,
         patch_size=patch_size,
+        context_size=context_size,
     )
     meta = dict(row["meta"])
     meta.update({
@@ -1084,6 +1150,10 @@ def build_sft_record(row, patch_size, include_intersections, phase, coord_mode=C
         "pixel_patch_size": patch_size,
         "patch_width": patch_size,
         "patch_height": patch_size,
+        "target_size": patch_size,
+        "context_image_size": context_size,
+        "target_roi_in_image": target_roi,
+        "view_mode": view_mode or ("local" if context_size == patch_size else "context_center_roi"),
     })
     if include_intersections:
         meta["intersection_hint_source_train"] = "gt_left_top_neighbors" if phase == "b" else "none"

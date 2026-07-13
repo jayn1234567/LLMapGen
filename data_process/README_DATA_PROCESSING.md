@@ -2,6 +2,10 @@
 
 This folder contains the current RC raw-data processors for the UniMapGen-style training flow.
 
+For the seven-source, difficulty-balanced local-256 versus context-512
+controlled experiment, see `README_DATASET_V2.md` and
+`build_dataset_v2.py`.
+
 ## Entrypoints
 
 - `build_lane_dataset.py`

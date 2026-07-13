@@ -1,8 +1,12 @@
+import tempfile
 import unittest
+from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import numpy as np
 
+from data_process import state_update_dataset_common as dataset_common
 from data_process.build_dataset_v2 import (
     DEFAULT_DIFFICULTY_RATIOS,
     DIFFICULTY_ORDER,
@@ -12,6 +16,8 @@ from data_process.state_update_dataset_common import (
     build_sft_record,
     centered_target_roi,
     extract_centered_context,
+    lane_type_name,
+    normalize_lane_type_code,
 )
 from scripts.tools.build_rc_dataset_v2_from_obs import (
     DEFAULT_OUTPUT_OBS_ROOT,
@@ -20,6 +26,63 @@ from scripts.tools.build_rc_dataset_v2_from_obs import (
 
 
 class DatasetV2ContextTest(unittest.TestCase):
+    def test_u_turn_reference_lane_type_is_excluded(self):
+        self.assertIsNone(lane_type_name(3))
+        self.assertIsNone(lane_type_name("3"))
+        self.assertIsNone(lane_type_name("3.0"))
+
+    def test_lane_type_metadata_keeps_right_turn_and_common_lines(self):
+        self.assertEqual(lane_type_name(2), "right_turn")
+        self.assertEqual(lane_type_name("2.0"), "right_turn")
+        self.assertEqual(lane_type_name(1), "common")
+        self.assertEqual(lane_type_name(None), "common")
+        self.assertEqual(normalize_lane_type_code(" 2.0 "), 2)
+
+    def test_line_loader_drops_u_turn_reference_geometry(self):
+        class FakeLineString:
+            def __init__(self, offset):
+                self.coords = [(offset, 0), (offset + 1, 1)]
+                self.is_empty = False
+
+        class FakeMultiLineString:
+            pass
+
+        class FakeGeoDataFrame:
+            def to_crs(self, crs):
+                del crs
+                return self
+
+            def iterrows(self):
+                rows = [
+                    SimpleNamespace(LaneType=3, geometry=FakeLineString(0)),
+                    SimpleNamespace(LaneType=2, geometry=FakeLineString(10)),
+                    SimpleNamespace(LaneType=1, geometry=FakeLineString(20)),
+                ]
+                return iter(enumerate(rows))
+
+        class FakeGeoPandas:
+            @staticmethod
+            def read_file(path):
+                del path
+                return FakeGeoDataFrame()
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "lane.geojson"
+            path.touch()
+            with (
+                patch.object(dataset_common, "gpd", FakeGeoPandas),
+                patch.object(dataset_common, "LineString", FakeLineString),
+                patch.object(dataset_common, "MultiLineString", FakeMultiLineString),
+            ):
+                lines = dataset_common.load_line_geometries(path, "EPSG:4326", None, 0.0)
+
+        self.assertEqual(len(lines), 2)
+        self.assertEqual(
+            [line["_source_lane_type"] for line in lines],
+            ["right_turn", "common"],
+        )
+        self.assertEqual([line["_source_lane_type_code"] for line in lines], [2, 1])
+
     def test_centered_context_uses_black_padding(self):
         image = np.arange(1, 17, dtype=np.uint8).reshape(1, 4, 4)
         context = extract_centered_context(image, 0, 0, 2, 4)

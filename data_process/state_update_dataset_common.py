@@ -43,6 +43,8 @@ from mllm.coord_utils import (
 
 TASK_TEXT = "Please construct the complete road map in the current BEV (Bird's Eye View) image patch."
 INSIDE, LEFT, RIGHT, BOTTOM, TOP = 0, 1, 2, 4, 8
+LANE_TYPE_NAMES = {2: "right_turn"}
+IGNORED_LANE_TYPE_CODES = frozenset({3})
 
 
 def require_geo_dependencies():
@@ -378,12 +380,43 @@ def polygon_to_pixel_polygon(poly: Polygon, inverse_transform):
     return Polygon(exterior, interiors)
 
 
+def normalize_lane_type_code(value):
+    if value is None:
+        return None
+    if isinstance(value, str):
+        value = value.strip()
+        if not value:
+            return None
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return str(value)
+    if math.isfinite(numeric) and numeric.is_integer():
+        return int(numeric)
+    return str(value)
+
+
+def lane_type_name(value):
+    lane_type_code = normalize_lane_type_code(value)
+    if lane_type_code in IGNORED_LANE_TYPE_CODES:
+        return None
+    return LANE_TYPE_NAMES.get(lane_type_code, "common")
+
+
 def load_line_geometries(path: Path, crs, transform, simplify_tolerance: float):
     if not path.exists():
         return []
     gdf = gpd.read_file(path).to_crs(crs)
     lines = []
     for index, row in gdf.iterrows():
+        raw_lane_type = (
+            row.get("LaneType")
+            if hasattr(row, "get")
+            else getattr(row, "LaneType", None)
+        )
+        source_lane_type = lane_type_name(raw_lane_type)
+        if source_lane_type is None:
+            continue
         geom = row.geometry
         if geom is None or geom.is_empty:
             continue
@@ -401,6 +434,8 @@ def load_line_geometries(path: Path, crs, transform, simplify_tolerance: float):
                     "geometry": line,
                     "_source_line_index": int(index),
                     "_source_part_index": part_idx,
+                    "_source_lane_type": source_lane_type,
+                    "_source_lane_type_code": normalize_lane_type_code(raw_lane_type),
                 })
     return lines
 
@@ -623,6 +658,8 @@ def clip_lanes_to_patch(lines, transform, x0, y0, patch_size, line_sample_distan
                 "points": local_points,
                 "_source_line_index": line.get("_source_line_index", idx),
                 "_source_part_index": line.get("_source_part_index", part_idx),
+                "_source_lane_type": line.get("_source_lane_type", "common"),
+                "_source_lane_type_code": line.get("_source_lane_type_code"),
                 "_source_points": global_pixel_points,
                 "_patch_x0": x0,
                 "_patch_y0": y0,

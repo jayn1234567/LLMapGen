@@ -202,11 +202,17 @@ First run a local-only structure smoke test from the repository root:
 python .\scripts\tools\build_rc_dataset_v2_from_obs.py `
   --work-root "D:\rcv2_smoke" `
   --obs-backend obsutil `
+  --source-obs-root "obs://yw-ncasd-result-gy1/data/RCDataset/BaseModel/rc_airflow_task_0426_1639/" `
   --limit-samples 12 `
   --train-target-samples 200 `
   --skip-upload `
   --resume
 ```
+
+`--limit-samples` limits processing after download; it does not limit objects
+downloaded from a supplied OBS prefix. The example downloads one task instead
+of all seven. For a truly small download, first inspect the task with obsutil or
+OBS Browser+, then set `--source-obs-root` to one complete raw-sample subfolder.
 
 After the smoke build finishes, run the full build:
 

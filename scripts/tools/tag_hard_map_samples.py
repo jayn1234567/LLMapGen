@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import random
 import re
 import sys
 from collections import Counter, defaultdict
@@ -38,6 +39,19 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-samples", type=int, default=0, help="0 means all samples.")
     parser.add_argument("--visualize-top-k", type=int, default=80)
     parser.add_argument("--visualize-random-k", type=int, default=0)
+    parser.add_argument(
+        "--visualize-per-difficulty",
+        type=int,
+        default=0,
+        help="Randomly visualize this many samples for each requested difficulty; 0 disables stratified output.",
+    )
+    parser.add_argument(
+        "--visualize-difficulties",
+        nargs="+",
+        default=["easy", "medium", "hard", "very_hard"],
+        choices=["easy", "medium", "hard", "very_hard"],
+        help="Difficulty buckets used by --visualize-per-difficulty.",
+    )
     parser.add_argument("--coord-mode", default="auto", choices=["auto", "pixel", "norm1000"])
     parser.add_argument("--coord-range", type=float, default=1000.0)
     parser.add_argument("--junction-tol", type=float, default=36.0, help="Node snapping tolerance in normalized coords.")
@@ -590,6 +604,32 @@ def make_contact_sheet(image_paths: list[Path], out_path: Path, thumb_width: int
     sheet.save(out_path)
 
 
+def select_by_difficulty(
+    reports: list[dict[str, Any]],
+    difficulties: list[str],
+    per_difficulty: int,
+    seed: int,
+    include_empty: bool,
+) -> dict[str, list[dict[str, Any]]]:
+    """Select a deterministic random sample from each difficulty bucket."""
+    if per_difficulty <= 0:
+        return {}
+    rng = random.Random(seed)
+    selected: dict[str, list[dict[str, Any]]] = {}
+    for difficulty in difficulties:
+        bucket = [
+            item
+            for item in reports
+            if item.get("difficulty") == difficulty
+            and (include_empty or item.get("tags") != ["empty_patch"])
+        ]
+        if len(bucket) > per_difficulty:
+            bucket = rng.sample(bucket, per_difficulty)
+        bucket.sort(key=lambda item: int(item.get("index", 0)))
+        selected[difficulty] = bucket
+    return selected
+
+
 def main() -> None:
     args = parse_args()
     dataset_root = Path(args.dataset_root)
@@ -658,7 +698,38 @@ def main() -> None:
         viz_paths.append(out_path)
     make_contact_sheet(viz_paths[: min(len(viz_paths), 48)], output_dir / "contact_sheet_top.png")
 
+    stratified = select_by_difficulty(
+        reports,
+        difficulties=list(dict.fromkeys(args.visualize_difficulties)),
+        per_difficulty=args.visualize_per_difficulty,
+        seed=args.seed,
+        include_empty=args.include_empty,
+    )
+    stratified_counts = {}
+    stratified_root = output_dir / "viz_by_difficulty"
+    for difficulty, bucket in stratified.items():
+        difficulty_dir = stratified_root / difficulty
+        difficulty_paths = []
+        for rank, metrics in enumerate(bucket):
+            record = rows[metrics["index"]]
+            image_path = Path(metrics["image_resolved_path"]) if metrics.get("image_resolved_path") else None
+            score = str(metrics.get("difficulty_score", 0)).replace(".", "p")
+            out_path = difficulty_dir / (
+                f"{rank:03d}_index-{metrics['index']:07d}_score-{score}_{safe_name(metrics.get('id'))}.png"
+            )
+            draw_overlay(record, metrics, image_path, out_path, args)
+            difficulty_paths.append(out_path)
+        contact_path = output_dir / f"contact_sheet_{difficulty}.png"
+        make_contact_sheet(difficulty_paths, contact_path)
+        stratified_counts[difficulty] = len(difficulty_paths)
+        print(
+            f"[hard-tags] {difficulty}: {len(difficulty_paths)} images -> {difficulty_dir}; "
+            f"contact -> {contact_path}"
+        )
+
     print(json.dumps({k: summary[k] for k in ("num_samples", "tag_counts", "difficulty_counts")}, ensure_ascii=False, indent=2))
+    if stratified_counts:
+        print(f"[hard-tags] stratified counts: {json.dumps(stratified_counts, ensure_ascii=False)}")
     print(f"[hard-tags] sample tags: {output_dir / 'sample_tags.jsonl'}")
     print(f"[hard-tags] summary:     {output_dir / 'summary.json'}")
     print(f"[hard-tags] viz dir:     {viz_dir}")

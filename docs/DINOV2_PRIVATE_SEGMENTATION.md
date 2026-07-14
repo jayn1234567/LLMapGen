@@ -110,6 +110,8 @@ The effective global batch in this example is `8 * 2 * 4 = 64`.
 - Input: 518x518
 - Patch grid: 37x37, 1369 patch tokens
 - Features: hidden states 6, 12, 18, and 24
+- Trainable backbone: all parameters except the unused masked-image `mask_token`;
+  layer 24 uses `last_hidden_state` so the final DINOv2 LayerNorm is trained
 - Vision learning rate: `5e-6`
 - Decoder learning rate: `1e-4`
 - Loss: weighted cross entropy plus foreground Dice

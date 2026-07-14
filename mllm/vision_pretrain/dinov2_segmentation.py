@@ -105,6 +105,12 @@ class Dinov2RoadSegmentationModel(nn.Module):
     ) -> None:
         super().__init__()
         self.vision_encoder = vision_encoder
+        embeddings = getattr(self.vision_encoder, "embeddings", None)
+        mask_token = getattr(embeddings, "mask_token", None)
+        if isinstance(mask_token, nn.Parameter):
+            # Supervised segmentation never supplies bool_masked_pos, so this
+            # token is outside the forward graph and must not enter DDP buckets.
+            mask_token.requires_grad_(False)
         self.input_size = int(input_size)
         self.hidden_state_indices = tuple(int(index) for index in hidden_state_indices)
         config = vision_encoder.config
@@ -169,7 +175,12 @@ class Dinov2RoadSegmentationModel(nn.Module):
                     f"hidden_state_index={index} resolves to {resolved_index}, but model returned "
                     f"{len(hidden_states)} hidden states."
                 )
-            selected.append(hidden_states[resolved_index])
+            if resolved_index == len(hidden_states) - 1:
+                # Dinov2Model applies its final LayerNorm only to
+                # last_hidden_state, not to the final hidden_states entry.
+                selected.append(outputs.last_hidden_state)
+            else:
+                selected.append(hidden_states[resolved_index])
         patch_height = pixel_values.shape[-2] // self.patch_size
         patch_width = pixel_values.shape[-1] // self.patch_size
         return self.decoder(

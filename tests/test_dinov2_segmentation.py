@@ -41,7 +41,10 @@ class FakeVisionEncoder(nn.Module):
         for layer in self.layers:
             hidden = layer(hidden)
             hidden_states.append(hidden)
-        return SimpleNamespace(hidden_states=tuple(hidden_states))
+        return SimpleNamespace(
+            hidden_states=tuple(hidden_states),
+            last_hidden_state=hidden_states[-1],
+        )
 
     def save_pretrained(self, output_dir, state_dict=None, safe_serialization=True):
         del safe_serialization
@@ -129,7 +132,10 @@ class Dinov2SegmentationTests(unittest.TestCase):
         output = model(torch.randn(1, 3, 8, 8))
         self.assertEqual(tuple(output.shape), (1, 2, 8, 8))
         output.square().mean().backward()
+        self.assertFalse(model.vision_encoder.embeddings.mask_token.requires_grad)
         self.assertIsNotNone(model.vision_encoder.embeddings.patch_embeddings.projection.weight.grad)
+        self.assertIsNotNone(model.vision_encoder.layernorm.weight.grad)
+        self.assertIsNotNone(model.vision_encoder.layernorm.bias.grad)
 
     def test_fixed_two_class_confusion_metrics(self):
         logits = torch.tensor(

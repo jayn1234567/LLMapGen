@@ -286,7 +286,7 @@ def save_best_artifacts(
         "patch_size": model.patch_size,
         "visual_grid_size": args.input_size // model.patch_size,
         "hidden_state_indices": list(model.hidden_state_indices),
-        "training": "full_parameter",
+        "training": "full_parameter_except_unused_mask_token",
         "epoch": int(epoch),
         "global_step": int(global_step),
         "validation_metrics": metrics,
@@ -319,6 +319,7 @@ def main() -> None:
     image_processor = AutoImageProcessor.from_pretrained(
         args.model_name_or_path,
         local_files_only=True,
+        use_fast=False,
     )
     image_processor.size = {"shortest_edge": int(args.input_size)}
     image_processor.crop_size = {"height": int(args.input_size), "width": int(args.input_size)}
@@ -421,10 +422,14 @@ def main() -> None:
     raw_model.to(device)
     trainable_parameters = sum(parameter.numel() for parameter in raw_model.parameters() if parameter.requires_grad)
     total_parameters = sum(parameter.numel() for parameter in raw_model.parameters())
+    frozen_parameters = [
+        name for name, parameter in raw_model.named_parameters() if not parameter.requires_grad
+    ]
     rank0_print(
         rank,
         f"[dinov2-seg] parameters trainable={trainable_parameters:,} total={total_parameters:,} "
-        f"full_unfreeze={trainable_parameters == total_parameters}",
+        f"active_backbone_full_unfreeze={frozen_parameters == ['vision_encoder.embeddings.mask_token']} "
+        f"intentionally_frozen={json.dumps(frozen_parameters)}",
     )
     optimizer = build_optimizer(raw_model, args)
     updates_per_epoch = math.ceil(len(train_loader) / args.gradient_accumulation_steps)

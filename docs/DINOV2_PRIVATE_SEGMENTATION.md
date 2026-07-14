@@ -42,9 +42,45 @@ patches from the same inferred scene group stay in the same split.
 The seven `RCDataset/BaseModel/rc_airflow_task_*` OBS roots are raw Dataset V2
 sources. They are not used directly by this segmentation pretraining job.
 
+## Environments
+
+Dataset V2 generation and NPU segmentation training use separate environments.
+Do not install GeoPandas/Rasterio into the NPU training environment.
+
+For local Windows Dataset V2 generation, open Anaconda Prompt or PowerShell
+with `conda` available and run:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/tools/setup_rc_dataset_v2_windows.ps1
+conda activate rc-dataset-v2
+```
+
+For Ascend DINOv2 segmentation training, create the isolated Python 3.11
+environment once:
+
+```bash
+cd /cache/jn/MLLM_project-unimapgen_v7
+bash scripts/npu/setup/create_mllm_dinov2_seg_npu_env.sh
+source /home/ma-user/.conda/envs/mllm-dinov2-seg-npu-py311/activate_mllm_dinov2_seg_npu.sh
+```
+
+The NPU setup downloads the known Huawei `moxing-framework` and cp311
+`torch_npu` wheels from OBS, pins NumPy to 1.26.4, and runs an actual NPU tensor
+smoke test. It does not install DeepSpeed, bitsandbytes, SwanLab, or the
+geospatial data-building stack.
+
+If the configured Conda channel cannot provide Python 3.11, clone an existing
+Python 3.11 Conda environment while still installing this recipe's pinned
+packages into the new target:
+
+```bash
+CLONE_FROM=/home/ma-user/anaconda3/envs/PyTorch-2.5.1 \
+bash scripts/npu/setup/create_mllm_dinov2_seg_npu_env.sh
+```
+
 ## Ascend smoke test
 
-Activate the existing Python 3.11 NPU environment, then run:
+Activate the environment above, then run:
 
 ```bash
 cd /cache/jn/MLLM_project-unimapgen_v7

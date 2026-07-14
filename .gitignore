@@ -3,6 +3,8 @@ data/
 !scripts/data/
 !scripts/data/build_sft_dataset.py
 !scripts/data/split_av2_perlog_to_patches.py
+!scripts/npu/data/
+!scripts/npu/data/*.sh
 outputs/
 *.egg-info/
 __pycache__/

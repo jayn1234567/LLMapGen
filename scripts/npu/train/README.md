@@ -79,17 +79,32 @@ Qwen text LLM overrides:
 
 `train_sft_stage_a_lane_intersection_typeclean512_dinov2_caprl4b_nodeepstack_npu.sh`
 reproduces the Jiangjihua v9-best architecture and optimization recipe while
-using the 512x512 type-clean lane/intersection dataset. Before model downloads,
-it scans every target JSON record, samples images from every split, requires
-`intersectiontype` and `intersectionsubtype` in train assistant targets, checks norm1000 coordinates, and
-rejects any remaining centerline `LaneType=3`. The report is saved as
-`dataset_inspection_rank*.json` with the run artifacts.
+using the 512x512 type-clean lane/intersection dataset. The raw archive is
+normalized once with
+`scripts/npu/data/prepare_upload_typeclean512_lane_intersection_sft_npu.sh` and
+uploaded to the configured `whu/jn/data` OBS directory. The conversion maps
+lane type 1 to `common`, type 2 to `right_turn`, drops type 3 U-turn reference
+lines, and maps every other or missing value, including values above 20, to
+`other`. It also canonicalizes intersection pairs to `1|1`, `1|2`, `1|3`, and
+`4|1`, and adds their output contract to every human prompt.
+
+Prepare, validate, package, and upload the dataset once on the Ascend server:
+
+```bash
+bash scripts/npu/data/prepare_upload_typeclean512_lane_intersection_sft_npu.sh
+```
+
+The DI training launcher downloads the prepared archive. Before model downloads,
+it scans every target JSON record, samples images from every split, requires a
+complete class field on every centerline and intersection, checks norm1000
+coordinates and valid class values, and rejects any remaining centerline
+`LaneType=3`. Conversion and inspection reports are retained with the run
+artifacts.
 
 Run only the dataset download and preflight with:
 
 ```bash
 INSPECT_ONLY=True \
-DATASET_INSPECT_STRICT=False \
 bash scripts/npu/train/train_sft_stage_a_lane_intersection_typeclean512_dinov2_caprl4b_nodeepstack_npu.sh
 ```
 

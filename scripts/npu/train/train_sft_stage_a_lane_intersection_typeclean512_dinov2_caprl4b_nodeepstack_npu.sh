@@ -46,8 +46,8 @@ fi
 RUN_ID=${RUN_ID:-${DEFAULT_RUN_ID}}                                               # Unique run id for local cache and cloud output folders.
 OBS_CACHE=${OBS_CACHE:-/cache}                                                    # Local worker cache root for models, datasets, checkpoints, and outputs.
 MODEL_OBS_PATH=${MODEL_OBS_PATH:-obs://yw-ads-training-gy1/data/external/personal/h58801830/whu/jjh/checkpoints}  # OBS directory that stores model and vision checkpoint assets.
-DATASET_OBS_PATH=${DATASET_OBS_PATH:-obs://yw-ads-training-gy1/data/external/personal/h58801830/whu/xxh/data_lane_intersection_norm_sample_512_typeclean.zip}  # Type-clean 512 dataset zip.
-DATASET_DIR_NAME=${DATASET_DIR_NAME:-data_lane_intersection_norm_sample_512_typeclean}  # Preferred zip root; the launcher also auto-detects it.
+DATASET_OBS_PATH=${DATASET_OBS_PATH:-obs://yw-ads-training-gy1/data/external/personal/h58801830/whu/jn/data/data_lane_intersection_norm_sample_512_typeclean_sft_taxonomy.zip}  # One-time normalized type-clean 512 dataset zip.
+DATASET_DIR_NAME=${DATASET_DIR_NAME:-data_lane_intersection_norm_sample_512_typeclean}  # Root stored in the prepared zip; the launcher also auto-detects it.
 
 VISION_TOWER=${VISION_TOWER:-${OBS_CACHE}/checkpoints/${VISION_TOWER_NAME}}       # Vision tower path passed to the model loader. Multi-vision uses a comma list.
 # Local dataset and output paths for this run.
@@ -194,7 +194,7 @@ echo "Cloud output path: ${CLOUD_OUTPUT_PATH}"
 SWANLAB_LOG_DIR=${SWANLAB_LOG_DIR:-${OUTPUT_PATH}/swanlab}                        # Local SwanLab log directory.
 
 # ====================== dataset download and preflight ======================
-# Inspect the new data before downloading model weights or occupying torchrun workers.
+# The one-time data job already normalized target classes. DI only extracts and verifies them.
 python -c "import moxing as mox; mox.file.copy('${DATASET_OBS_PATH}', '${DATASET_ZIP_PATH}')"
 mkdir -p "${DATASET_EXTRACT_ROOT}"
 unzip -q "${DATASET_ZIP_PATH}" -d "${DATASET_EXTRACT_ROOT}"
@@ -254,6 +254,11 @@ INSPECT_ARGS=(
   --forbid-lane-type 3
   --require-centerline-type-field
   --require-intersection-type-fields
+  --require-taxonomy-prompt
+  --allowed-intersection-pair '1|1'
+  --allowed-intersection-pair '1|2'
+  --allowed-intersection-pair '1|3'
+  --allowed-intersection-pair '4|1'
   --print-representative-samples
   --report "${DATASET_INSPECTION_REPORT}"
 )
@@ -286,6 +291,9 @@ if [ "${INSPECT_EXIT}" -ne 0 ]; then
   echo "[dataset-inspect] preflight failed with exit code ${INSPECT_EXIT}; training is blocked."
   persist_inspection_output || true
   exit "${INSPECT_EXIT}"
+fi
+if [ -f "${DATASET_PATH}/dataset_conversion_summary.json" ]; then
+  cp "${DATASET_PATH}/dataset_conversion_summary.json" "${OUTPUT_PATH}/"
 fi
 
 if [[ "${INSPECT_ONLY}" =~ ^(1|true|True|TRUE|yes|YES)$ ]]; then

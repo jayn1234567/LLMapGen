@@ -21,6 +21,11 @@ HUMAN_ROLES = {"human", "user"}
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--dataset-root", required=True, help="Dataset root or extraction root.")
+    parser.add_argument(
+        "--image-root",
+        default="",
+        help="Optional root used to resolve record image paths instead of dataset-root.",
+    )
     parser.add_argument("--phase", default="phase_a", help="Preferred phase directory.")
     parser.add_argument("--splits", nargs="+", default=["train", "eval", "test"])
     parser.add_argument("--max-samples-per-split", type=int, default=0)
@@ -30,8 +35,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--coord-max", type=float, default=1000.0)
     parser.add_argument("--forbid-lane-type", action="append", default=[])
     parser.add_argument("--allowed-centerline-type", action="append", default=[])
+    parser.add_argument("--allowed-intersection-pair", action="append", default=[])
     parser.add_argument("--require-centerline-type-field", action="store_true")
     parser.add_argument("--require-intersection-type-fields", action="store_true")
+    parser.add_argument("--require-taxonomy-prompt", action="store_true")
     parser.add_argument("--representative-sample-limit", type=int, default=32)
     parser.add_argument("--preview-chars", type=int, default=1600)
     parser.add_argument("--print-representative-samples", action="store_true")
@@ -288,7 +295,7 @@ def representative_sample(
 
 def inspect_split(
     path: Path,
-    dataset_root: Path,
+    image_root: Path,
     args: argparse.Namespace,
     rng: random.Random,
 ) -> dict[str, Any]:
@@ -306,6 +313,9 @@ def inspect_split(
         "centerline_lines": 0,
         "centerline_lines_missing_type": 0,
         "centerline_type_values": Counter(),
+        "intersection_lines": 0,
+        "intersection_lines_missing_type": 0,
+        "intersection_lines_missing_subtype": 0,
         "intersection_type_values": Counter(),
         "intersection_subtype_values": Counter(),
         "intersection_type_pairs": Counter(),
@@ -317,6 +327,7 @@ def inspect_split(
         "meta_intersection_type_pairs": Counter(),
         "lane_type_values": Counter(),
         "forbidden_lane_type_samples": 0,
+        "prompt_mentions_lane_type": 0,
         "prompt_mentions_intersection_type": 0,
         "prompt_mentions_intersection_subtype": 0,
         "coordinate_pairs": 0,
@@ -361,6 +372,8 @@ def inspect_split(
         stats["conversation_role_sequences"]["->".join(roles) or "<none>"] += 1
 
         human_text = conversation_text(record, HUMAN_ROLES).lower()
+        if "lanetype" in normalized_key(human_text):
+            stats["prompt_mentions_lane_type"] += 1
         if "intersectiontype" in normalized_key(human_text):
             stats["prompt_mentions_intersection_type"] += 1
         if "intersectionsubtype" in normalized_key(human_text):
@@ -414,6 +427,12 @@ def inspect_split(
                         forbidden_found = True
                 else:
                     stats["centerline_lines_missing_type"] += 1
+            elif category == "intersection":
+                stats["intersection_lines"] += 1
+                if "intersectiontype" not in normalized:
+                    stats["intersection_lines_missing_type"] += 1
+                if "intersectionsubtype" not in normalized:
+                    stats["intersection_lines_missing_subtype"] += 1
 
         for value in target_fields["intersection_type"]:
             stats["target_intersection_type_values"][stable_value(value)] += 1
@@ -474,7 +493,7 @@ def inspect_split(
         except ImportError as exc:
             raise RuntimeError("Pillow is required for image-size inspection") from exc
         for rel_path in stats["sample_image_paths"]:
-            full_path = dataset_root / rel_path
+            full_path = image_root / rel_path
             if not full_path.is_file():
                 missing_images.append(rel_path)
                 continue
@@ -563,6 +582,47 @@ def build_failures(report: dict[str, Any], args: argparse.Namespace) -> list[str
                     f"{split}: centerline target lanetype values are not normalized to "
                     f"{sorted(allowed)}: {unexpected}"
                 )
+        if args.require_intersection_type_fields:
+            if stats["intersection_lines_missing_type"]:
+                failures.append(
+                    f"{split}: {stats['intersection_lines_missing_type']} of "
+                    f"{stats['intersection_lines']} intersection targets have no intersectiontype"
+                )
+            if stats["intersection_lines_missing_subtype"]:
+                failures.append(
+                    f"{split}: {stats['intersection_lines_missing_subtype']} of "
+                    f"{stats['intersection_lines']} intersection targets have no intersectionsubtype"
+                )
+        if args.allowed_intersection_pair:
+            allowed_pairs = {
+                str(value).strip().lower() for value in args.allowed_intersection_pair
+            }
+            unexpected_pairs = {
+                key: value
+                for key, value in stats["target_intersection_type_pairs"].items()
+                if str(key).strip().lower() not in allowed_pairs
+            }
+            if unexpected_pairs:
+                failures.append(
+                    f"{split}: intersection target pairs are not normalized to "
+                    f"{sorted(allowed_pairs)}: {unexpected_pairs}"
+                )
+        if args.require_taxonomy_prompt:
+            if stats["prompt_mentions_lane_type"] != stats["samples"]:
+                failures.append(
+                    f"{split}: only {stats['prompt_mentions_lane_type']} of "
+                    f"{stats['samples']} prompts mention lanetype"
+                )
+            if stats["prompt_mentions_intersection_type"] != stats["samples"]:
+                failures.append(
+                    f"{split}: only {stats['prompt_mentions_intersection_type']} of "
+                    f"{stats['samples']} prompts mention intersectiontype"
+                )
+            if stats["prompt_mentions_intersection_subtype"] != stats["samples"]:
+                failures.append(
+                    f"{split}: only {stats['prompt_mentions_intersection_subtype']} of "
+                    f"{stats['samples']} prompts mention intersectionsubtype"
+                )
 
     if args.require_intersection_type_fields:
         train_report = splits.get("train", {})
@@ -579,10 +639,16 @@ def main() -> None:
     args = parse_args()
     input_root = Path(args.dataset_root)
     dataset_root, layout = resolve_dataset_root(input_root, args.phase)
+    image_root = (
+        Path(args.image_root).expanduser().resolve() if args.image_root else dataset_root
+    )
+    if not image_root.exists():
+        raise FileNotFoundError(f"image root does not exist: {image_root}")
     rng = random.Random(args.seed)
     report: dict[str, Any] = {
         "input_root": str(input_root.expanduser().resolve()),
         "dataset_root": str(dataset_root),
+        "image_root": str(image_root),
         "layout": layout,
         "phase": args.phase,
         "constraints": {
@@ -592,6 +658,8 @@ def main() -> None:
             "require_intersection_type_fields": args.require_intersection_type_fields,
             "require_centerline_type_field": args.require_centerline_type_field,
             "allowed_centerline_types": args.allowed_centerline_type,
+            "allowed_intersection_pairs": args.allowed_intersection_pair,
+            "require_taxonomy_prompt": args.require_taxonomy_prompt,
         },
         "splits": {},
     }
@@ -602,7 +670,7 @@ def main() -> None:
             print(f"[dataset-inspect] split not found: {split}", flush=True)
             continue
         print(f"[dataset-inspect] scanning {split}: {split_path}", flush=True)
-        report["splits"][split] = inspect_split(split_path, dataset_root, args, rng)
+        report["splits"][split] = inspect_split(split_path, image_root, args, rng)
 
     failures = build_failures(report, args)
     report["status"] = "failed" if failures else "passed"

@@ -69,6 +69,7 @@ DATASET_INSPECT_MAX_SAMPLES=${DATASET_INSPECT_MAX_SAMPLES:-0}                   
 DATASET_IMAGE_CHECKS_PER_SPLIT=${DATASET_IMAGE_CHECKS_PER_SPLIT:-64}              # Uniformly sampled images opened per split.
 DATASET_EXPECTED_IMAGE_SIZE=${DATASET_EXPECTED_IMAGE_SIZE:-512}                  # Raw image width and height expected in the new dataset.
 DATASET_COORD_MAX=${DATASET_COORD_MAX:-1000}                                     # Expected norm1000 target-coordinate upper bound.
+DATASET_ALLOWED_TARGET_LANE_TYPES=${DATASET_ALLOWED_TARGET_LANE_TYPES:-"common right_turn other"}  # Final three-way lane taxonomy.
 
 # ====================== training params ======================
 # Main knobs for this SFT recipe. Edit values here instead of passing one-off shell prefixes.
@@ -251,29 +252,45 @@ INSPECT_ARGS=(
   --coord-max "${DATASET_COORD_MAX}"
   --image-checks-per-split "${DATASET_IMAGE_CHECKS_PER_SPLIT}"
   --forbid-lane-type 3
+  --require-centerline-type-field
   --require-intersection-type-fields
+  --print-representative-samples
   --report "${DATASET_INSPECTION_REPORT}"
 )
+for lane_type in ${DATASET_ALLOWED_TARGET_LANE_TYPES}; do
+  INSPECT_ARGS+=(--allowed-centerline-type "${lane_type}")
+done
 if [ "${DATASET_INSPECT_MAX_SAMPLES}" -gt 0 ]; then
   INSPECT_ARGS+=(--max-samples-per-split "${DATASET_INSPECT_MAX_SAMPLES}")
 fi
 if [[ "${DATASET_INSPECT_STRICT}" =~ ^(1|true|True|TRUE|yes|YES)$ ]]; then
   INSPECT_ARGS+=(--strict)
 fi
+
+persist_inspection_output() {
+  if [ "${NODE_RANK}" != "0" ]; then
+    echo "[dataset-inspect] non-master node ${NODE_RANK}: skip report upload."
+    return 0
+  fi
+  if [ -e "${CLOUD_OUTPUT_PATH}" ]; then
+    echo "ERROR: inspection output path already exists: ${CLOUD_OUTPUT_PATH}"
+    return 1
+  fi
+  echo "[dataset-inspect] moving report to cloud output: ${OUTPUT_PATH} -> ${CLOUD_OUTPUT_PATH}"
+  mv "${OUTPUT_PATH}" "${CLOUD_OUTPUT_PATH}"
+}
+
 python scripts/tools/inspect_lane_intersection_training_dataset.py "${INSPECT_ARGS[@]}"
+INSPECT_EXIT=$?
+if [ "${INSPECT_EXIT}" -ne 0 ]; then
+  echo "[dataset-inspect] preflight failed with exit code ${INSPECT_EXIT}; training is blocked."
+  persist_inspection_output || true
+  exit "${INSPECT_EXIT}"
+fi
 
 if [[ "${INSPECT_ONLY}" =~ ^(1|true|True|TRUE|yes|YES)$ ]]; then
   echo "[dataset-inspect] INSPECT_ONLY=True; dataset passed preflight, skipping model downloads and training."
-  if [ "${NODE_RANK}" = "0" ]; then
-    if [ -e "${CLOUD_OUTPUT_PATH}" ]; then
-      echo "ERROR: inspection output path already exists: ${CLOUD_OUTPUT_PATH}"
-      exit 1
-    fi
-    echo "[dataset-inspect] moving report to cloud output: ${OUTPUT_PATH} -> ${CLOUD_OUTPUT_PATH}"
-    mv "${OUTPUT_PATH}" "${CLOUD_OUTPUT_PATH}"
-  else
-    echo "[dataset-inspect] non-master node ${NODE_RANK}: skip report upload."
-  fi
+  persist_inspection_output
   exit 0
 fi
 

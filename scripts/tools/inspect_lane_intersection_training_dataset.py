@@ -29,7 +29,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--coord-min", type=float, default=0.0)
     parser.add_argument("--coord-max", type=float, default=1000.0)
     parser.add_argument("--forbid-lane-type", action="append", default=[])
+    parser.add_argument("--allowed-centerline-type", action="append", default=[])
+    parser.add_argument("--require-centerline-type-field", action="store_true")
     parser.add_argument("--require-intersection-type-fields", action="store_true")
+    parser.add_argument("--representative-sample-limit", type=int, default=32)
+    parser.add_argument("--preview-chars", type=int, default=1600)
+    parser.add_argument("--print-representative-samples", action="store_true")
     parser.add_argument("--strict", action="store_true")
     parser.add_argument("--report", default="")
     parser.add_argument("--progress-every", type=int, default=50000)
@@ -250,6 +255,37 @@ def update_coordinates(
             split_stats["out_of_range_points"] += 1
 
 
+def compact_line_schema(line: dict[str, Any]) -> dict[str, Any]:
+    compact: dict[str, Any] = {}
+    for key, value in line.items():
+        if normalized_key(key) == "points":
+            compact[key] = f"<{len(value) if isinstance(value, list) else 0} points>"
+        elif isinstance(value, (str, int, float, bool)) or value is None:
+            compact[key] = value
+        else:
+            compact[key] = f"<{type(value).__name__}>"
+    return compact
+
+
+def representative_sample(
+    record: dict[str, Any],
+    human_text: str,
+    assistant_text: str,
+    lines: list[dict[str, Any]],
+    preview_chars: int,
+) -> dict[str, Any]:
+    rel_image, image_field = image_relpath(record)
+    return {
+        "id": str(record.get("id", record.get("sample_id", ""))),
+        "image": rel_image,
+        "image_field": image_field,
+        "top_level_keys": sorted(record.keys()),
+        "human_preview": human_text[:preview_chars],
+        "assistant_preview": assistant_text[:preview_chars],
+        "line_schemas": [compact_line_schema(line) for line in lines[:12]],
+    }
+
+
 def inspect_split(
     path: Path,
     dataset_root: Path,
@@ -267,6 +303,8 @@ def inspect_split(
         "missing_assistant": 0,
         "invalid_assistant_json": 0,
         "target_categories": Counter(),
+        "centerline_lines": 0,
+        "centerline_lines_missing_type": 0,
         "centerline_type_values": Counter(),
         "intersection_type_values": Counter(),
         "intersection_subtype_values": Counter(),
@@ -289,6 +327,7 @@ def inspect_split(
         "lines_without_points": 0,
         "sample_image_paths": [],
         "sample_ids_with_errors": [],
+        "representative_samples": {},
     }
     forbidden_types = [str(value) for value in args.forbid_lane_type]
 
@@ -367,11 +406,14 @@ def inspect_split(
             update_coordinates(line, stats, args.coord_min, args.coord_max)
             normalized = {normalized_key(key): value for key, value in line.items()}
             if category == "centerline":
+                stats["centerline_lines"] += 1
                 lane_type = normalized.get("lanetype", normalized.get("type"))
                 if lane_type is not None:
                     stats["centerline_type_values"][stable_value(lane_type)] += 1
                     if any(numeric_equal(lane_type, value) for value in forbidden_types):
                         forbidden_found = True
+                else:
+                    stats["centerline_lines_missing_type"] += 1
 
         for value in target_fields["intersection_type"]:
             stats["target_intersection_type_values"][stable_value(value)] += 1
@@ -399,6 +441,26 @@ def inspect_split(
             stats["forbidden_lane_type_samples"] += 1
             if len(stats["sample_ids_with_errors"]) < 20:
                 stats["sample_ids_with_errors"].append(sample_id)
+
+        representative_keys = []
+        for value in target_fields["lane_type"]:
+            representative_keys.append(f"lane:{stable_value(value)}")
+        for value in target_fields["intersection_pair"]:
+            representative_keys.append(f"intersection:{stable_value(value)}")
+        if not representative_keys and len(stats["representative_samples"]) < 2:
+            representative_keys.append(f"generic:{len(stats['representative_samples'])}")
+        for representative_key in representative_keys:
+            if representative_key in stats["representative_samples"]:
+                continue
+            if len(stats["representative_samples"]) >= args.representative_sample_limit:
+                break
+            stats["representative_samples"][representative_key] = representative_sample(
+                record,
+                human_text,
+                assistant_text,
+                lines,
+                args.preview_chars,
+            )
 
         if args.progress_every > 0 and stats["samples"] % args.progress_every == 0:
             print(f"[dataset-inspect] {path.name}: scanned {stats['samples']} samples", flush=True)
@@ -484,6 +546,23 @@ def build_failures(report: dict[str, Any], args: argparse.Namespace) -> list[str
                 f"{split}: {stats['forbidden_lane_type_samples']} samples contain forbidden lane type(s) "
                 f"{args.forbid_lane_type}"
             )
+        if args.require_centerline_type_field and stats["centerline_lines_missing_type"]:
+            failures.append(
+                f"{split}: {stats['centerline_lines_missing_type']} of {stats['centerline_lines']} "
+                "centerline targets have no lanetype"
+            )
+        if args.allowed_centerline_type:
+            allowed = {str(value).strip().lower() for value in args.allowed_centerline_type}
+            unexpected = {
+                key: value
+                for key, value in stats["centerline_type_values"].items()
+                if str(key).strip().lower() not in allowed
+            }
+            if unexpected:
+                failures.append(
+                    f"{split}: centerline target lanetype values are not normalized to "
+                    f"{sorted(allowed)}: {unexpected}"
+                )
 
     if args.require_intersection_type_fields:
         train_report = splits.get("train", {})
@@ -511,6 +590,8 @@ def main() -> None:
             "coordinate_range": [args.coord_min, args.coord_max],
             "forbidden_lane_types": args.forbid_lane_type,
             "require_intersection_type_fields": args.require_intersection_type_fields,
+            "require_centerline_type_field": args.require_centerline_type_field,
+            "allowed_centerline_types": args.allowed_centerline_type,
         },
         "splits": {},
     }
@@ -578,6 +659,10 @@ def main() -> None:
         "lane_type_values": {
             split: value["lane_type_values"] for split, value in report["splits"].items()
         },
+        "centerline_type_values": {
+            split: value["centerline_type_values"]
+            for split, value in report["splits"].items()
+        },
         "image_sizes": {
             split: value["checked_image_sizes"] for split, value in report["splits"].items()
         },
@@ -587,6 +672,11 @@ def main() -> None:
         },
         "failures": failures,
     }
+    if args.print_representative_samples:
+        summary["representative_samples"] = {
+            split: value["representative_samples"]
+            for split, value in report["splits"].items()
+        }
     print(json.dumps(summary, indent=2, ensure_ascii=False), flush=True)
     if failures and args.strict:
         raise SystemExit(2)

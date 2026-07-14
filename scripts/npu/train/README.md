@@ -89,6 +89,7 @@ Run only the dataset download and preflight with:
 
 ```bash
 INSPECT_ONLY=True \
+DATASET_INSPECT_STRICT=False \
 bash scripts/npu/train/train_sft_stage_a_lane_intersection_typeclean512_dinov2_caprl4b_nodeepstack_npu.sh
 ```
 

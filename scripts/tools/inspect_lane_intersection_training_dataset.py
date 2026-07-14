@@ -11,7 +11,7 @@ import re
 import sys
 from collections import Counter
 from pathlib import Path
-from typing import Any, Iterable, Iterator
+from typing import Any, Iterator
 
 
 ASSISTANT_ROLES = {"assistant", "gpt"}
@@ -271,6 +271,12 @@ def inspect_split(
         "intersection_type_values": Counter(),
         "intersection_subtype_values": Counter(),
         "intersection_type_pairs": Counter(),
+        "target_intersection_type_values": Counter(),
+        "target_intersection_subtype_values": Counter(),
+        "target_intersection_type_pairs": Counter(),
+        "meta_intersection_type_values": Counter(),
+        "meta_intersection_subtype_values": Counter(),
+        "meta_intersection_type_pairs": Counter(),
         "lane_type_values": Counter(),
         "forbidden_lane_type_samples": 0,
         "prompt_mentions_intersection_type": 0,
@@ -338,15 +344,21 @@ def inspect_split(
             lines = extract_lines(payload)
         lines = [item for item in lines if isinstance(item, dict)]
 
-        record_fields: dict[str, list[Any]] = {
+        meta_fields: dict[str, list[Any]] = {
             "intersection_type": [],
             "intersection_subtype": [],
             "intersection_pair": [],
             "lane_type": [],
         }
-        semantic_fields(record.get("meta", {}), record_fields)
+        target_fields: dict[str, list[Any]] = {
+            "intersection_type": [],
+            "intersection_subtype": [],
+            "intersection_pair": [],
+            "lane_type": [],
+        }
+        semantic_fields(record.get("meta", {}), meta_fields)
         if payload is not None:
-            semantic_fields(payload, record_fields)
+            semantic_fields(payload, target_fields)
 
         forbidden_found = False
         for line in lines:
@@ -361,13 +373,25 @@ def inspect_split(
                     if any(numeric_equal(lane_type, value) for value in forbidden_types):
                         forbidden_found = True
 
-        for value in record_fields["intersection_type"]:
+        for value in target_fields["intersection_type"]:
+            stats["target_intersection_type_values"][stable_value(value)] += 1
             stats["intersection_type_values"][stable_value(value)] += 1
-        for value in record_fields["intersection_subtype"]:
+        for value in target_fields["intersection_subtype"]:
+            stats["target_intersection_subtype_values"][stable_value(value)] += 1
             stats["intersection_subtype_values"][stable_value(value)] += 1
-        for value in record_fields["intersection_pair"]:
+        for value in target_fields["intersection_pair"]:
+            stats["target_intersection_type_pairs"][stable_value(value)] += 1
             stats["intersection_type_pairs"][stable_value(value)] += 1
-        for value in record_fields["lane_type"]:
+        for value in meta_fields["intersection_type"]:
+            stats["meta_intersection_type_values"][stable_value(value)] += 1
+            stats["intersection_type_values"][stable_value(value)] += 1
+        for value in meta_fields["intersection_subtype"]:
+            stats["meta_intersection_subtype_values"][stable_value(value)] += 1
+            stats["intersection_subtype_values"][stable_value(value)] += 1
+        for value in meta_fields["intersection_pair"]:
+            stats["meta_intersection_type_pairs"][stable_value(value)] += 1
+            stats["intersection_type_pairs"][stable_value(value)] += 1
+        for value in target_fields["lane_type"] + meta_fields["lane_type"]:
             stats["lane_type_values"][stable_value(value)] += 1
             if any(numeric_equal(value, forbidden) for forbidden in forbidden_types):
                 forbidden_found = True
@@ -411,10 +435,6 @@ def inspect_split(
         if isinstance(value, Counter):
             stats[key] = dict(value.most_common())
     return stats
-
-
-def counter_total(split_reports: Iterable[dict[str, Any]], key: str) -> int:
-    return sum(sum(int(value) for value in report.get(key, {}).values()) for report in split_reports)
 
 
 def build_failures(report: dict[str, Any], args: argparse.Namespace) -> list[str]:
@@ -466,12 +486,13 @@ def build_failures(report: dict[str, Any], args: argparse.Namespace) -> list[str
             )
 
     if args.require_intersection_type_fields:
-        type_total = counter_total(splits.values(), "intersection_type_values")
-        subtype_total = counter_total(splits.values(), "intersection_subtype_values")
+        train_report = splits.get("train", {})
+        type_total = sum(train_report.get("target_intersection_type_values", {}).values())
+        subtype_total = sum(train_report.get("target_intersection_subtype_values", {}).values())
         if type_total == 0:
-            failures.append("intersectiontype was not found in any inspected split")
+            failures.append("intersectiontype was not found in train assistant target JSON")
         if subtype_total == 0:
-            failures.append("intersectionsubtype was not found in any inspected split")
+            failures.append("intersectionsubtype was not found in train assistant target JSON")
     return failures
 
 
@@ -532,6 +553,26 @@ def main() -> None:
         },
         "intersection_type_pairs": {
             split: value["intersection_type_pairs"]
+            for split, value in report["splits"].items()
+        },
+        "target_intersection_type_values": {
+            split: value["target_intersection_type_values"]
+            for split, value in report["splits"].items()
+        },
+        "target_intersection_subtype_values": {
+            split: value["target_intersection_subtype_values"]
+            for split, value in report["splits"].items()
+        },
+        "target_intersection_type_pairs": {
+            split: value["target_intersection_type_pairs"]
+            for split, value in report["splits"].items()
+        },
+        "meta_intersection_type_values": {
+            split: value["meta_intersection_type_values"]
+            for split, value in report["splits"].items()
+        },
+        "meta_intersection_subtype_values": {
+            split: value["meta_intersection_subtype_values"]
             for split, value in report["splits"].items()
         },
         "lane_type_values": {

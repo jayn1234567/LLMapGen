@@ -81,7 +81,7 @@ Qwen text LLM overrides:
 reproduces the Jiangjihua v9-best architecture and optimization recipe while
 using the 512x512 type-clean lane/intersection dataset. Before model downloads,
 it scans every target JSON record, samples images from every split, requires
-`intersectiontype` and `intersectionsubtype`, checks norm1000 coordinates, and
+`intersectiontype` and `intersectionsubtype` in train assistant targets, checks norm1000 coordinates, and
 rejects any remaining centerline `LaneType=3`. The report is saved as
 `dataset_inspection_rank*.json` with the run artifacts.
 

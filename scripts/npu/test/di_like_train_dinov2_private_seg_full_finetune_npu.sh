@@ -65,6 +65,7 @@ OUTPUT_DIR=${OUTPUT_DIR:-${OBS_CACHE}/outputs/${RUN_ID}}
 OUTPUT_URL=${OUTPUT_URL:-obs://yw-ads-training-gy1/data/external/personal/h58801830/whu/jn/model/dinov2_private_seg_di_like}
 CLOUD_OUTPUT_PATH=${CLOUD_OUTPUT_PATH:-${OUTPUT_URL%/}/${RUN_ID}}
 UPLOAD_TO_OBS=${UPLOAD_TO_OBS:-True}
+VERIFY_ONLY=${VERIFY_ONLY:-False}
 
 mkdir -p "${OUTPUT_DIR}"
 
@@ -79,6 +80,7 @@ echo "Dataset count:    ${DATASET_LIMIT}"
 echo "Output local:     ${OUTPUT_DIR}"
 echo "Output OBS:       ${CLOUD_OUTPUT_PATH}"
 echo "Upload:           ${UPLOAD_TO_OBS}"
+echo "Verify only:      ${VERIFY_ONLY}"
 echo "Topology:         nnodes=${NNODES} node_rank=${NODE_RANK} nproc=${NPROC_PER_NODE}"
 echo "Rendezvous:       ${MASTER_ADDR}:${MASTER_PORT}"
 echo "Max steps:        ${MAX_STEPS}"
@@ -128,7 +130,7 @@ if strict:
         raise SystemExit("DI-like version check failed: " + "; ".join(failures))
 PY
 
-if [ ! -f "${MODEL_LOCAL_PATH}/config.json" ]; then
+if [[ ! "${VERIFY_ONLY}" =~ ^(1|true|True|TRUE|yes|YES|on|ON)$ ]] && [ ! -f "${MODEL_LOCAL_PATH}/config.json" ]; then
   mkdir -p "${MODEL_LOCAL_PATH}"
   MODEL_OBS_PATH="${MODEL_OBS_PATH}" MODEL_LOCAL_PATH="${MODEL_LOCAL_PATH}" "${PYTHON}" - <<'PY'
 import os
@@ -139,62 +141,66 @@ target = os.environ["MODEL_LOCAL_PATH"]
 print(f"[di-like-model-download] {source} -> {target}", flush=True)
 mox.file.copy_parallel(source, target, threads=64)
 PY
-else
+elif [[ ! "${VERIFY_ONLY}" =~ ^(1|true|True|TRUE|yes|YES|on|ON)$ ]]; then
   echo "[di-like-model-download] reuse ${MODEL_LOCAL_PATH}"
 fi
 
-"${PYTHON}" scripts/tools/download_rc_lane_segmentation_obs.py \
-  --output-root "${DATA_LOCAL_ROOT}" \
-  --limit "${DATASET_LIMIT}" \
-  --threads 64
+if [[ "${VERIFY_ONLY}" =~ ^(1|true|True|TRUE|yes|YES|on|ON)$ ]]; then
+  echo "[di-like-train] skipped; reusing completed output ${OUTPUT_DIR}"
+else
+  "${PYTHON}" scripts/tools/download_rc_lane_segmentation_obs.py \
+    --output-root "${DATA_LOCAL_ROOT}" \
+    --limit "${DATASET_LIMIT}" \
+    --threads 64
 
-mapfile -t DATASET_ROOTS < "${DATA_LOCAL_ROOT}/train_roots.txt"
-if [ "${#DATASET_ROOTS[@]}" -eq 0 ]; then
-  echo "ERROR: no dataset train roots were produced."
-  exit 1
+  mapfile -t DATASET_ROOTS < "${DATA_LOCAL_ROOT}/train_roots.txt"
+  if [ "${#DATASET_ROOTS[@]}" -eq 0 ]; then
+    echo "ERROR: no dataset train roots were produced."
+    exit 1
+  fi
+
+  TORCHRUN_ARGS=(
+    --nnodes="${NNODES}"
+    --nproc_per_node="${NPROC_PER_NODE}"
+    --node_rank="${NODE_RANK}"
+    --master_addr="${MASTER_ADDR}"
+    --master_port="${MASTER_PORT}"
+  )
+
+  set -o pipefail
+  "${PYTHON}" -m torch.distributed.run \
+    "${TORCHRUN_ARGS[@]}" \
+    -m mllm.vision_pretrain.train_dinov2_segmentation \
+    --model_name_or_path "${MODEL_LOCAL_PATH}" \
+    --dataset_roots "${DATASET_ROOTS[@]}" \
+    --output_dir "${OUTPUT_DIR}" \
+    --input_size 518 \
+    --hidden_state_indices 6 12 18 24 \
+    --projection_channels 256 \
+    --num_train_epochs "${NUM_TRAIN_EPOCHS}" \
+    --max_steps "${MAX_STEPS}" \
+    --per_device_train_batch_size "${PER_DEVICE_TRAIN_BATCH_SIZE}" \
+    --per_device_eval_batch_size "${PER_DEVICE_EVAL_BATCH_SIZE}" \
+    --gradient_accumulation_steps "${GRADIENT_ACCUMULATION_STEPS}" \
+    --learning_rate 5e-6 \
+    --decoder_learning_rate 1e-4 \
+    --weight_decay 0.05 \
+    --warmup_ratio 0.05 \
+    --max_grad_norm 1.0 \
+    --foreground_ce_weight 1.0 \
+    --dice_loss_weight 0.5 \
+    --val_fraction 0.1 \
+    --split_seed 42 \
+    --max_train_samples "${MAX_TRAIN_SAMPLES}" \
+    --max_val_samples "${MAX_VAL_SAMPLES}" \
+    --num_workers "${NUM_WORKERS}" \
+    --logging_steps 1 \
+    --eval_every_epochs 1 \
+    --gradient_checkpointing true \
+    --bf16 true \
+    --augment true \
+    --device npu 2>&1 | tee "${OUTPUT_DIR}/di_like_train.log"
 fi
-
-TORCHRUN_ARGS=(
-  --nnodes="${NNODES}"
-  --nproc_per_node="${NPROC_PER_NODE}"
-  --node_rank="${NODE_RANK}"
-  --master_addr="${MASTER_ADDR}"
-  --master_port="${MASTER_PORT}"
-)
-
-set -o pipefail
-"${PYTHON}" -m torch.distributed.run \
-  "${TORCHRUN_ARGS[@]}" \
-  -m mllm.vision_pretrain.train_dinov2_segmentation \
-  --model_name_or_path "${MODEL_LOCAL_PATH}" \
-  --dataset_roots "${DATASET_ROOTS[@]}" \
-  --output_dir "${OUTPUT_DIR}" \
-  --input_size 518 \
-  --hidden_state_indices 6 12 18 24 \
-  --projection_channels 256 \
-  --num_train_epochs "${NUM_TRAIN_EPOCHS}" \
-  --max_steps "${MAX_STEPS}" \
-  --per_device_train_batch_size "${PER_DEVICE_TRAIN_BATCH_SIZE}" \
-  --per_device_eval_batch_size "${PER_DEVICE_EVAL_BATCH_SIZE}" \
-  --gradient_accumulation_steps "${GRADIENT_ACCUMULATION_STEPS}" \
-  --learning_rate 5e-6 \
-  --decoder_learning_rate 1e-4 \
-  --weight_decay 0.05 \
-  --warmup_ratio 0.05 \
-  --max_grad_norm 1.0 \
-  --foreground_ce_weight 1.0 \
-  --dice_loss_weight 0.5 \
-  --val_fraction 0.1 \
-  --split_seed 42 \
-  --max_train_samples "${MAX_TRAIN_SAMPLES}" \
-  --max_val_samples "${MAX_VAL_SAMPLES}" \
-  --num_workers "${NUM_WORKERS}" \
-  --logging_steps 1 \
-  --eval_every_epochs 1 \
-  --gradient_checkpointing true \
-  --bf16 true \
-  --augment true \
-  --device npu 2>&1 | tee "${OUTPUT_DIR}/di_like_train.log"
 
 if [ "${NODE_RANK}" -eq 0 ]; then
   VISION_TOWER_DIR="${OUTPUT_DIR}/best/vision_tower"

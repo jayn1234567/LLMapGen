@@ -83,30 +83,78 @@ def main() -> None:
     device = resolve_device(args.device)
     dtype = torch.bfloat16 if device.type in {"npu", "cuda"} else torch.float32
 
-    from mllm.model.multimodal_encoder.dinov2_encoder import DINOv2VisionTower
+    loader_name = "mllm.DINOv2VisionTower"
+    loader_fallback_reason = None
+    try:
+        from mllm.model.multimodal_encoder.dinov2_encoder import DINOv2VisionTower
 
-    wrapper_args = SimpleNamespace(
-        mm_vision_select_layer=int(args.select_layer),
-        mm_vision_select_feature="patch",
-        unfreeze_mm_vision_tower=False,
-        input_image_size=int(args.input_size),
-        deepstack_visual_indexes=None,
-        vision_layer_fusion_indexes=None,
-        vision_layer_fusion_type="mean",
-    )
-    tower = DINOv2VisionTower(str(vision_tower_path), wrapper_args, delay_load=False)
-    tower.to(device=device, dtype=dtype)
-    tower.eval()
+        wrapper_args = SimpleNamespace(
+            mm_vision_select_layer=int(args.select_layer),
+            mm_vision_select_feature="patch",
+            unfreeze_mm_vision_tower=False,
+            input_image_size=int(args.input_size),
+            deepstack_visual_indexes=None,
+            vision_layer_fusion_indexes=None,
+            vision_layer_fusion_type="mean",
+        )
+        tower = DINOv2VisionTower(str(vision_tower_path), wrapper_args, delay_load=False)
+        tower.to(device=device, dtype=dtype)
+        tower.eval()
+        config = tower.config
+        num_layers = int(len(tower.vision_tower.encoder.layer))
+        num_patches_per_side = int(tower.num_patches_per_side)
+        num_patches = int(tower.num_patches)
 
-    config = tower.config
+        def run_forward(pixel_values: torch.Tensor) -> tuple[torch.Tensor, object, int]:
+            main_features, deepstack_features = tower(pixel_values)
+            return main_features, deepstack_features, int(tower.select_layer_idx)
+
+    except ModuleNotFoundError as exc:
+        if exc.name and exc.name.startswith("mllm"):
+            raise
+        # The isolated segmentation environment intentionally omits optional
+        # towers such as MobileCLIP. Use the same HF loader and mirror the
+        # current DINOv2 wrapper's layer selection without importing them.
+        from transformers import AutoImageProcessor, Dinov2Model
+
+        loader_name = "transformers.Dinov2Model (MLLM-compatible fallback)"
+        loader_fallback_reason = repr(exc)
+        print(
+            f"[verify-dinov2-tower] optional MLLM import unavailable; "
+            f"using HF-compatible fallback: {loader_fallback_reason}",
+            flush=True,
+        )
+        AutoImageProcessor.from_pretrained(str(vision_tower_path), local_files_only=True)
+        hf_model = Dinov2Model.from_pretrained(str(vision_tower_path), local_files_only=True)
+        hf_model.to(device=device, dtype=dtype)
+        hf_model.eval()
+        config = hf_model.config
+        num_layers = int(len(hf_model.encoder.layer))
+        num_patches_per_side = int(args.input_size) // int(config.patch_size)
+        num_patches = num_patches_per_side**2
+        raw_select_layer = int(args.select_layer)
+        resolved_select_layer = (
+            raw_select_layer if raw_select_layer >= 0 else num_layers + raw_select_layer
+        )
+        resolved_select_layer = max(0, min(resolved_select_layer, num_layers - 1))
+
+        def run_forward(pixel_values: torch.Tensor) -> tuple[torch.Tensor, object, int]:
+            outputs = hf_model(
+                pixel_values=pixel_values,
+                output_hidden_states=True,
+                return_dict=True,
+            )
+            main_features = outputs.hidden_states[resolved_select_layer][:, 1:]
+            return main_features, None, resolved_select_layer
+
     checks = {
         "hidden_size": int(config.hidden_size),
-        "num_layers": int(len(tower.vision_tower.encoder.layer)),
+        "num_layers": num_layers,
         "patch_size": int(config.patch_size),
         "num_register_tokens": int(getattr(config, "num_register_tokens", 0) or 0),
         "input_size": int(args.input_size),
-        "num_patches_per_side": int(tower.num_patches_per_side),
-        "num_patches": int(tower.num_patches),
+        "num_patches_per_side": num_patches_per_side,
+        "num_patches": num_patches,
     }
     expected = {
         "hidden_size": int(args.expected_hidden_size),
@@ -132,7 +180,7 @@ def main() -> None:
     )
     started = time.perf_counter()
     with torch.no_grad():
-        main_features, deepstack_features = tower(pixel_values)
+        main_features, deepstack_features, resolved_select_layer = run_forward(pixel_values)
         if device.type == "npu":
             torch.npu.synchronize()
         elif device.type == "cuda":
@@ -154,7 +202,10 @@ def main() -> None:
         "vision_tower": str(vision_tower_path),
         "device": str(device),
         "dtype": str(dtype),
+        "loader": loader_name,
+        "loader_fallback_reason": loader_fallback_reason,
         "select_layer": int(args.select_layer),
+        "resolved_select_layer": resolved_select_layer,
         "feature_shape": actual_shape,
         "forward_seconds": elapsed,
         "throughput_samples_per_second_per_npu": throughput,

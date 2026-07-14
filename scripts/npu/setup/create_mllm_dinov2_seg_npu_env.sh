@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# Isolated Ascend environment for full-parameter DINOv2 segmentation pretraining.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

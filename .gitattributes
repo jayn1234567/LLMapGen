@@ -1,0 +1,30 @@
+* text=auto
+
+# Linux and repository source files must stay LF on every platform.
+*.sh text eol=lf
+*.py text eol=lf
+*.json text eol=lf
+*.jsonl text eol=lf
+*.toml text eol=lf
+*.yaml text eol=lf
+*.yml text eol=lf
+*.jinja text eol=lf
+*.md text eol=lf
+
+# Windows command entrypoints keep native CRLF endings.
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
+
+# Binary artifacts must never undergo line-ending conversion.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.tif binary
+*.tiff binary
+*.pt binary
+*.pth binary
+*.bin binary
+*.safetensors binary
+*.tar binary
+*.zip binary

@@ -21,12 +21,31 @@ PROGRESS_EVERY=${PROGRESS_EVERY:-50000}
 
 mkdir -p "${WORK_ROOT}" "${EXTRACT_ROOT}" "${NORMALIZED_ROOT}"
 
+for required_command in unzip zip sha256sum; do
+  if ! command -v "${required_command}" >/dev/null 2>&1; then
+    echo "ERROR: required command is unavailable: ${required_command}" >&2
+    exit 1
+  fi
+done
+
+python - <<'PY'
+import sys
+
+if sys.version_info < (3, 10):
+    raise SystemExit(f"Python >= 3.10 is required, found {sys.version}")
+import moxing  # noqa: F401
+from PIL import Image  # noqa: F401
+
+print(f"[typeclean-package] python preflight passed: {sys.version.split()[0]}")
+PY
+
 echo "============================================================"
 echo "[typeclean-package] repository: ${REPO_ROOT}"
 echo "[typeclean-package] raw OBS:    ${RAW_DATASET_OBS_PATH}"
 echo "[typeclean-package] output OBS: ${PREPARED_DATASET_OBS_PATH}"
 echo "[typeclean-package] work root:  ${WORK_ROOT}"
 echo "============================================================"
+df -h "${WORK_ROOT}"
 
 python - "${RAW_DATASET_OBS_PATH}" "${RAW_ARCHIVE}" <<'PY'
 import sys
@@ -112,11 +131,6 @@ python scripts/tools/inspect_lane_intersection_training_dataset.py \
   --require-taxonomy-prompt \
   --strict \
   --report "${INSPECTION_REPORT}"
-
-if ! command -v zip >/dev/null 2>&1; then
-  echo "ERROR: zip is required to package the prepared dataset." >&2
-  exit 1
-fi
 
 DATASET_PARENT=$(dirname "${RAW_DATASET_ROOT}")
 DATASET_NAME=$(basename "${RAW_DATASET_ROOT}")

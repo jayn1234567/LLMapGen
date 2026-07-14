@@ -264,6 +264,16 @@ python scripts/tools/inspect_lane_intersection_training_dataset.py "${INSPECT_AR
 
 if [[ "${INSPECT_ONLY}" =~ ^(1|true|True|TRUE|yes|YES)$ ]]; then
   echo "[dataset-inspect] INSPECT_ONLY=True; dataset passed preflight, skipping model downloads and training."
+  if [ "${NODE_RANK}" = "0" ]; then
+    if [ -e "${CLOUD_OUTPUT_PATH}" ]; then
+      echo "ERROR: inspection output path already exists: ${CLOUD_OUTPUT_PATH}"
+      exit 1
+    fi
+    echo "[dataset-inspect] moving report to cloud output: ${OUTPUT_PATH} -> ${CLOUD_OUTPUT_PATH}"
+    mv "${OUTPUT_PATH}" "${CLOUD_OUTPUT_PATH}"
+  else
+    echo "[dataset-inspect] non-master node ${NODE_RANK}: skip report upload."
+  fi
   exit 0
 fi
 

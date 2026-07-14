@@ -143,6 +143,7 @@ class Dinov2SegmentationTests(unittest.TestCase):
         )
         labels = torch.tensor([[[0, 1], [1, 1]]])
         matrix = confusion_matrix(logits, labels)
+        self.assertEqual(matrix.dtype, torch.float32)
         self.assertEqual(matrix.tolist(), [[1.0, 0.0], [1.0, 2.0]])
         metrics = metrics_from_confusion(matrix)
         self.assertAlmostEqual(metrics["lane_precision"], 1.0)

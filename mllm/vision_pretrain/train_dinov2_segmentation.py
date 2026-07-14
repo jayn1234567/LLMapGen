@@ -231,9 +231,10 @@ def evaluate(
     world_size: int,
 ) -> dict:
     model.eval()
-    matrix = torch.zeros((2, 2), dtype=torch.float64, device=device)
-    loss_sum = torch.zeros((), dtype=torch.float64, device=device)
-    sample_count = torch.zeros((), dtype=torch.float64, device=device)
+    # HCCL supports float32 reduction but not torch.float64.
+    matrix = torch.zeros((2, 2), dtype=torch.float32, device=device)
+    loss_sum = torch.zeros((), dtype=torch.float32, device=device)
+    sample_count = torch.zeros((), dtype=torch.float32, device=device)
     local_samples = 0
     started = time.perf_counter()
     with torch.no_grad():
@@ -249,7 +250,7 @@ def evaluate(
                     dice_weight=args.dice_loss_weight,
                 )
             batch_size = labels.shape[0]
-            loss_sum += loss.detach().double() * batch_size
+            loss_sum += loss.detach().float() * batch_size
             sample_count += batch_size
             matrix += confusion_matrix(logits, labels).to(device=device)
             local_samples += batch_size

@@ -53,7 +53,9 @@ def confusion_matrix(
 ) -> torch.Tensor:
     predictions = logits.argmax(dim=1)
     valid = targets != ignore_index
-    matrix = torch.zeros((num_classes, num_classes), dtype=torch.float64, device=logits.device)
+    # HCCL does not support float64 AllReduce. Accumulate on device in
+    # float32, then metrics_from_confusion promotes the reduced matrix on CPU.
+    matrix = torch.zeros((num_classes, num_classes), dtype=torch.float32, device=logits.device)
     for target_class in range(num_classes):
         target_mask = valid & (targets == target_class)
         for predicted_class in range(num_classes):
@@ -64,7 +66,7 @@ def confusion_matrix(
 
 
 def metrics_from_confusion(matrix: torch.Tensor, eps: float = 1e-12) -> dict[str, Any]:
-    matrix = matrix.to(dtype=torch.float64)
+    matrix = matrix.detach().to(device="cpu", dtype=torch.float64)
     true_positive = matrix.diag()
     target_total = matrix.sum(dim=1)
     prediction_total = matrix.sum(dim=0)

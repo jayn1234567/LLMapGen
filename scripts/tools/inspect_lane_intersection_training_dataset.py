@@ -35,9 +35,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--coord-max", type=float, default=1000.0)
     parser.add_argument("--forbid-lane-type", action="append", default=[])
     parser.add_argument("--allowed-centerline-type", action="append", default=[])
+    parser.add_argument("--allowed-intersection-type", action="append", default=[])
     parser.add_argument("--allowed-intersection-pair", action="append", default=[])
     parser.add_argument("--require-centerline-type-field", action="store_true")
+    parser.add_argument("--require-intersection-type-field", action="store_true")
     parser.add_argument("--require-intersection-type-fields", action="store_true")
+    parser.add_argument("--forbid-intersection-subtype-field", action="store_true")
     parser.add_argument("--require-taxonomy-prompt", action="store_true")
     parser.add_argument("--representative-sample-limit", type=int, default=32)
     parser.add_argument("--preview-chars", type=int, default=1600)
@@ -316,6 +319,7 @@ def inspect_split(
         "intersection_lines": 0,
         "intersection_lines_missing_type": 0,
         "intersection_lines_missing_subtype": 0,
+        "intersection_lines_with_subtype": 0,
         "intersection_type_values": Counter(),
         "intersection_subtype_values": Counter(),
         "intersection_type_pairs": Counter(),
@@ -433,6 +437,8 @@ def inspect_split(
                     stats["intersection_lines_missing_type"] += 1
                 if "intersectionsubtype" not in normalized:
                     stats["intersection_lines_missing_subtype"] += 1
+                else:
+                    stats["intersection_lines_with_subtype"] += 1
 
         for value in target_fields["intersection_type"]:
             stats["target_intersection_type_values"][stable_value(value)] += 1
@@ -582,16 +588,36 @@ def build_failures(report: dict[str, Any], args: argparse.Namespace) -> list[str
                     f"{split}: centerline target lanetype values are not normalized to "
                     f"{sorted(allowed)}: {unexpected}"
                 )
-        if args.require_intersection_type_fields:
+        if args.require_intersection_type_field or args.require_intersection_type_fields:
             if stats["intersection_lines_missing_type"]:
                 failures.append(
                     f"{split}: {stats['intersection_lines_missing_type']} of "
                     f"{stats['intersection_lines']} intersection targets have no intersectiontype"
                 )
+        if args.require_intersection_type_fields:
             if stats["intersection_lines_missing_subtype"]:
                 failures.append(
                     f"{split}: {stats['intersection_lines_missing_subtype']} of "
                     f"{stats['intersection_lines']} intersection targets have no intersectionsubtype"
+                )
+        if args.forbid_intersection_subtype_field and stats["intersection_lines_with_subtype"]:
+            failures.append(
+                f"{split}: {stats['intersection_lines_with_subtype']} intersection targets "
+                "still contain the forbidden intersectionsubtype field"
+            )
+        if args.allowed_intersection_type:
+            allowed_types = {
+                str(value).strip().lower() for value in args.allowed_intersection_type
+            }
+            unexpected_types = {
+                key: value
+                for key, value in stats["target_intersection_type_values"].items()
+                if str(key).strip().lower() not in allowed_types
+            }
+            if unexpected_types:
+                failures.append(
+                    f"{split}: intersection target types are not normalized to "
+                    f"{sorted(allowed_types)}: {unexpected_types}"
                 )
         if args.allowed_intersection_pair:
             allowed_pairs = {
@@ -618,18 +644,23 @@ def build_failures(report: dict[str, Any], args: argparse.Namespace) -> list[str
                     f"{split}: only {stats['prompt_mentions_intersection_type']} of "
                     f"{stats['samples']} prompts mention intersectiontype"
                 )
-            if stats["prompt_mentions_intersection_subtype"] != stats["samples"]:
+            if (
+                args.require_intersection_type_fields
+                and stats["prompt_mentions_intersection_subtype"] != stats["samples"]
+            ):
                 failures.append(
                     f"{split}: only {stats['prompt_mentions_intersection_subtype']} of "
                     f"{stats['samples']} prompts mention intersectionsubtype"
                 )
 
-    if args.require_intersection_type_fields:
+    if args.require_intersection_type_field or args.require_intersection_type_fields:
         train_report = splits.get("train", {})
         type_total = sum(train_report.get("target_intersection_type_values", {}).values())
-        subtype_total = sum(train_report.get("target_intersection_subtype_values", {}).values())
         if type_total == 0:
             failures.append("intersectiontype was not found in train assistant target JSON")
+    if args.require_intersection_type_fields:
+        train_report = splits.get("train", {})
+        subtype_total = sum(train_report.get("target_intersection_subtype_values", {}).values())
         if subtype_total == 0:
             failures.append("intersectionsubtype was not found in train assistant target JSON")
     return failures
@@ -656,8 +687,11 @@ def main() -> None:
             "coordinate_range": [args.coord_min, args.coord_max],
             "forbidden_lane_types": args.forbid_lane_type,
             "require_intersection_type_fields": args.require_intersection_type_fields,
+            "require_intersection_type_field": args.require_intersection_type_field,
+            "forbid_intersection_subtype_field": args.forbid_intersection_subtype_field,
             "require_centerline_type_field": args.require_centerline_type_field,
             "allowed_centerline_types": args.allowed_centerline_type,
+            "allowed_intersection_types": args.allowed_intersection_type,
             "allowed_intersection_pairs": args.allowed_intersection_pair,
             "require_taxonomy_prompt": args.require_taxonomy_prompt,
         },

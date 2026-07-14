@@ -6,8 +6,7 @@ import unittest
 from pathlib import Path
 
 from scripts.tools.prepare_typeclean_lane_intersection_sft import (
-    PROMPT_MARKER,
-    append_taxonomy_prompt,
+    STAGE_A_USER_PROMPT,
     convert_dataset,
 )
 
@@ -51,6 +50,18 @@ class TypeCleanLaneIntersectionPreparationTest(unittest.TestCase):
                                 {
                                     "category": "centerline",
                                     "points": [[0, 4], [1000, 996]],
+                                },
+                                {
+                                    "category": "intersection",
+                                    "points": [[0, 0], [1, 0], [0, 0]],
+                                    "intersection_type": 1,
+                                    "intersection_subtype": 1,
+                                },
+                                {
+                                    "category": "intersection",
+                                    "points": [[0, 0], [1, 0], [0, 0]],
+                                    "intersection_type": 1,
+                                    "intersection_subtype": 2,
                                 },
                                 {
                                     "category": "intersection",
@@ -104,30 +115,33 @@ class TypeCleanLaneIntersectionPreparationTest(unittest.TestCase):
         intersections = [
             line for line in target["lines"] if line["category"] == "intersection"
         ]
-        self.assertIn(PROMPT_MARKER, prompt)
+        self.assertEqual(prompt, STAGE_A_USER_PROMPT)
         self.assertIn("lane_type", prompt)
+        self.assertNotIn("Incoming traces", prompt)
+        self.assertNotIn("Incoming intersections", prompt)
         self.assertEqual(
             [line["lane_type"] for line in centerlines],
             ["common", "right_turn", "other", "other"],
         )
         self.assertEqual(
-            [
-                (line["intersection_type"], line["intersection_subtype"])
-                for line in intersections
-            ],
-            [(1, 3), (4, 1)],
+            [line["intersection_type"] for line in intersections],
+            ["common", "t_intersection", "small_untyped", "t_lane_change_area"],
         )
+        self.assertTrue(all("intersection_subtype" not in line for line in intersections))
         self.assertEqual(
             report["splits"]["train"]["source_lane_types"]["25"], 1
         )
         self.assertEqual(report["splits"]["train"]["dropped_u_turn_centerlines"], 1)
         self.assertEqual(report["splits"]["train"]["restored_type4_subtype1"], 1)
-
-    def test_prompt_update_is_idempotent(self):
-        once = append_taxonomy_prompt("<image>\nPrompt")
-        twice = append_taxonomy_prompt(once)
-        self.assertEqual(once, twice)
-        self.assertEqual(twice.count(PROMPT_MARKER), 1)
+        self.assertEqual(
+            report["splits"]["train"]["target_intersection_types"],
+            {
+                "common": 1,
+                "t_intersection": 1,
+                "small_untyped": 1,
+                "t_lane_change_area": 1,
+            },
+        )
 
     def test_normalized_dataset_passes_strict_inspection(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -170,16 +184,17 @@ class TypeCleanLaneIntersectionPreparationTest(unittest.TestCase):
                     "right_turn",
                     "--allowed-centerline-type",
                     "other",
-                    "--allowed-intersection-pair",
-                    "1|1",
-                    "--allowed-intersection-pair",
-                    "1|2",
-                    "--allowed-intersection-pair",
-                    "1|3",
-                    "--allowed-intersection-pair",
-                    "4|1",
+                    "--allowed-intersection-type",
+                    "common",
+                    "--allowed-intersection-type",
+                    "t_intersection",
+                    "--allowed-intersection-type",
+                    "small_untyped",
+                    "--allowed-intersection-type",
+                    "t_lane_change_area",
                     "--require-centerline-type-field",
-                    "--require-intersection-type-fields",
+                    "--require-intersection-type-field",
+                    "--forbid-intersection-subtype-field",
                     "--require-taxonomy-prompt",
                     "--strict",
                 ],

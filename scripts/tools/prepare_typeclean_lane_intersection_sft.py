@@ -15,19 +15,20 @@ from typing import Any, Iterator
 
 HUMAN_ROLES = {"human", "user"}
 ASSISTANT_ROLES = {"assistant", "gpt"}
-PROMPT_MARKER = "Output taxonomy JSON schema:"
-TAXONOMY_VERSION = "typeclean512_lane_intersection_v1"
-VALID_INTERSECTION_PAIRS = {
-    (1, 1): "common intersection",
-    (1, 2): "T-intersection",
-    (1, 3): "small untyped intersection",
-    (4, 1): "T-shaped lane-change area",
+TAXONOMY_VERSION = "typeclean512_lane_intersection_semantic_v2"
+INTERSECTION_TYPE_BY_SOURCE_PAIR = {
+    (1, 1): "common",
+    (1, 2): "t_intersection",
+    (1, 3): "small_untyped",
+    (4, 1): "t_lane_change_area",
 }
-TAXONOMY_PROMPT = """Output taxonomy JSON schema:
+STAGE_A_USER_PROMPT = """<image>
+Please construct the complete road map in the current BEV (Bird's Eye View) image patch.
+Coordinates use a normalized 0-1000 grid over the original 512x512 image patch.
+
 Return only valid JSON in the form {\"lines\":[...]} with no extra explanation.
 For every centerline, include \"lane_type\" with exactly one of: \"common\" for a regular centerline, \"right_turn\" for a right-turn-only centerline, or \"other\" for any remaining lane class. Do not output U-turn reference lines.
-For every intersection, include integer \"intersection_type\" and integer \"intersection_subtype\".
-The only valid intersection pairs are: [1,1] common intersection; [1,2] T-intersection; [1,3] small untyped intersection; [4,1] T-shaped lane-change area.
+For every intersection, include \"intersection_type\" with exactly one of: \"common\" for a common intersection, \"t_intersection\" for a T-intersection, \"small_untyped\" for a small untyped intersection, or \"t_lane_change_area\" for a T-shaped lane-change area.
 Keep all coordinates in the normalized 0-1000 patch-local coordinate system."""
 
 
@@ -204,17 +205,17 @@ def normalize_intersection(
         subtype = 1
         stats["restored_type4_subtype1"] += 1
 
-    pair = (main_type, subtype)
-    if pair not in VALID_INTERSECTION_PAIRS:
+    source_pair = (main_type, subtype)
+    if source_pair not in INTERSECTION_TYPE_BY_SOURCE_PAIR:
         raise ValueError(
             f"sample={sample_id} has unsupported intersection pair "
             f"{stable_value(raw_type)}|{stable_value(raw_subtype)}"
         )
 
     remove_semantic_keys(line, {"intersectiontype", "intersectionsubtype"})
-    line["intersection_type"] = main_type
-    line["intersection_subtype"] = subtype
-    stats["target_intersection_pairs"][f"{main_type}|{subtype}"] += 1
+    target_type = INTERSECTION_TYPE_BY_SOURCE_PAIR[source_pair]
+    line["intersection_type"] = target_type
+    stats["target_intersection_types"][target_type] += 1
     return line
 
 
@@ -251,14 +252,6 @@ def normalize_payload(payload: Any, sample_id: str, stats: dict[str, Any]) -> An
     return normalized_lines
 
 
-def append_taxonomy_prompt(text: str) -> str:
-    base = text
-    marker_position = base.find(PROMPT_MARKER)
-    if marker_position >= 0:
-        base = base[:marker_position]
-    return f"{base.rstrip()}\n\n{TAXONOMY_PROMPT}"
-
-
 def normalize_record(record: dict[str, Any], stats: dict[str, Any]) -> dict[str, Any]:
     sample_id = str(record.get("id", record.get("sample_id", stats["records"] + 1)))
     conversations = record.get("conversations")
@@ -279,7 +272,7 @@ def normalize_record(record: dict[str, Any], stats: dict[str, Any]) -> dict[str,
         if role in HUMAN_ROLES:
             if not isinstance(value, str):
                 raise ValueError(f"sample={sample_id} human prompt is not text")
-            message[value_key] = append_taxonomy_prompt(value)
+            message[value_key] = STAGE_A_USER_PROMPT
             human_messages += 1
         elif role in ASSISTANT_ROLES:
             if not isinstance(value, str):
@@ -317,7 +310,7 @@ def empty_stats() -> dict[str, Any]:
         "samples_with_dropped_u_turn_centerlines": 0,
         "missing_lane_types_mapped_to_other": 0,
         "source_intersection_pairs": Counter(),
-        "target_intersection_pairs": Counter(),
+        "target_intersection_types": Counter(),
         "restored_type4_subtype1": 0,
     }
 
@@ -393,7 +386,7 @@ def convert_dataset(
         },
         "intersection_policy": {
             f"{main}|{sub}": name
-            for (main, sub), name in VALID_INTERSECTION_PAIRS.items()
+            for (main, sub), name in INTERSECTION_TYPE_BY_SOURCE_PAIR.items()
         },
         "splits": {},
     }

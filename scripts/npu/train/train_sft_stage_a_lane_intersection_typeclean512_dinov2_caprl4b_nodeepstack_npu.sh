@@ -41,12 +41,12 @@ echo "System defined obs share path: ${OSB_SHARE_PATH}"
 if [ -n "${MA_VJ_NAME:-}" ]; then
   DEFAULT_RUN_ID=$(printf '%s' "${MA_VJ_NAME}" | tr -c 'A-Za-z0-9_.-' '_')        # Stable across every node in one DI job.
 else
-  DEFAULT_RUN_ID=typeclean512_caprl4b_$(date -u +%Y%m%d_%H%M%S)
+  DEFAULT_RUN_ID=typeclean512_semantic_v2_caprl4b_$(date -u +%Y%m%d_%H%M%S)
 fi
 RUN_ID=${RUN_ID:-${DEFAULT_RUN_ID}}                                               # Unique run id for local cache and cloud output folders.
 OBS_CACHE=${OBS_CACHE:-/cache}                                                    # Local worker cache root for models, datasets, checkpoints, and outputs.
 MODEL_OBS_PATH=${MODEL_OBS_PATH:-obs://yw-ads-training-gy1/data/external/personal/h58801830/whu/jjh/checkpoints}  # OBS directory that stores model and vision checkpoint assets.
-DATASET_OBS_PATH=${DATASET_OBS_PATH:-obs://yw-ads-training-gy1/data/external/personal/h58801830/whu/jn/data/data_lane_intersection_norm_sample_512_typeclean_sft_taxonomy.zip}  # One-time normalized type-clean 512 dataset zip.
+DATASET_OBS_PATH=${DATASET_OBS_PATH:-obs://yw-ads-training-gy1/data/external/personal/h58801830/whu/jn/data/data_lane_intersection_norm_sample_512_typeclean_sft_semantic_v2.zip}  # One-time normalized type-clean 512 dataset zip.
 DATASET_DIR_NAME=${DATASET_DIR_NAME:-data_lane_intersection_norm_sample_512_typeclean}  # Root stored in the prepared zip; the launcher also auto-detects it.
 
 VISION_TOWER=${VISION_TOWER:-${OBS_CACHE}/checkpoints/${VISION_TOWER_NAME}}       # Vision tower path passed to the model loader. Multi-vision uses a comma list.
@@ -107,8 +107,8 @@ VISION_LAYER_FUSION_TYPE=${VISION_LAYER_FUSION_TYPE:-mean}                      
 SWANLAB_ENABLE=${SWANLAB_ENABLE:-True}                                            # Enable SwanLab experiment logging.
 export SWANLAB_API_KEY=${SWANLAB_API_KEY:-}                                      # Optional SwanLab key; keep secrets in the DI environment.
 SWANLAB_PROJECT=${SWANLAB_PROJECT:-unimapgen_v9}                                  # SwanLab project used by the reference CapRL experiment.
-SWANLAB_GROUP=${SWANLAB_GROUP:-sft_phase_a_lane_intersection_typeclean512_dinov2_caprl4b}  # Group for the clean-label rerun.
-SWANLAB_EXPERIMENT_NAME=${SWANLAB_EXPERIMENT_NAME:-sft_phase_a_lane_intersection_typeclean512_dinov2_caprl4b_ep8}  # Experiment display name.
+SWANLAB_GROUP=${SWANLAB_GROUP:-sft_phase_a_lane_intersection_typeclean512_semantic_v2_dinov2_caprl4b}  # Group for the clean-label rerun.
+SWANLAB_EXPERIMENT_NAME=${SWANLAB_EXPERIMENT_NAME:-sft_phase_a_lane_intersection_typeclean512_semantic_v2_dinov2_caprl4b_ep8}  # Experiment display name.
 SWANLAB_TAGS=${SWANLAB_TAGS:-sft,phase_a,lane_intersection,typeclean,512,dinov2,caprl4b,nodeepstack,unimapgen_v9}  # Comma-separated SwanLab tags.
 SWANLAB_MODE=${SWANLAB_MODE:-offline}                                             # SwanLab mode, for example offline on restricted cloud networks.
 SWANLAB_API_HOST=${SWANLAB_API_HOST:-}                                            # Optional SwanLab private API host.
@@ -253,12 +253,13 @@ INSPECT_ARGS=(
   --image-checks-per-split "${DATASET_IMAGE_CHECKS_PER_SPLIT}"
   --forbid-lane-type 3
   --require-centerline-type-field
-  --require-intersection-type-fields
+  --require-intersection-type-field
+  --forbid-intersection-subtype-field
   --require-taxonomy-prompt
-  --allowed-intersection-pair '1|1'
-  --allowed-intersection-pair '1|2'
-  --allowed-intersection-pair '1|3'
-  --allowed-intersection-pair '4|1'
+  --allowed-intersection-type common
+  --allowed-intersection-type t_intersection
+  --allowed-intersection-type small_untyped
+  --allowed-intersection-type t_lane_change_area
   --print-representative-samples
   --report "${DATASET_INSPECTION_REPORT}"
 )

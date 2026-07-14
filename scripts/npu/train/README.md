@@ -85,8 +85,10 @@ normalized once with
 uploaded to the configured `whu/jn/data` OBS directory. The conversion maps
 lane type 1 to `common`, type 2 to `right_turn`, drops type 3 U-turn reference
 lines, and maps every other or missing value, including values above 20, to
-`other`. It also canonicalizes intersection pairs to `1|1`, `1|2`, `1|3`, and
-`4|1`, and adds their output contract to every human prompt.
+`other`. It maps source intersection pairs `1|1`, `1|2`, `1|3`, and `4|1` to
+the semantic output values `common`, `t_intersection`, `small_untyped`, and
+`t_lane_change_area`. Stage-A prompts omit the always-empty incoming trace and
+intersection sections and state the complete output taxonomy explicitly.
 
 Prepare, validate, package, and upload the dataset once on the Ascend server:
 

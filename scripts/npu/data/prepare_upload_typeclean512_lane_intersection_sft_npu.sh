@@ -10,12 +10,12 @@ REPO_ROOT=$(readlink -f "${SCRIPT_DIR}/../../..")
 cd "${REPO_ROOT}"
 
 RAW_DATASET_OBS_PATH=${RAW_DATASET_OBS_PATH:-obs://yw-ads-training-gy1/data/external/personal/h58801830/whu/xxh/data_lane_intersection_norm_sample_512_typeclean.zip}
-PREPARED_DATASET_OBS_PATH=${PREPARED_DATASET_OBS_PATH:-obs://yw-ads-training-gy1/data/external/personal/h58801830/whu/jn/data/data_lane_intersection_norm_sample_512_typeclean_sft_taxonomy.zip}
+PREPARED_DATASET_OBS_PATH=${PREPARED_DATASET_OBS_PATH:-obs://yw-ads-training-gy1/data/external/personal/h58801830/whu/jn/data/data_lane_intersection_norm_sample_512_typeclean_sft_semantic_v2.zip}
 WORK_ROOT=${WORK_ROOT:-/cache/jn/typeclean512_sft_prepare_$(date -u +%Y%m%d_%H%M%S)}
 RAW_ARCHIVE=${RAW_ARCHIVE:-${WORK_ROOT}/raw_typeclean512.zip}
 EXTRACT_ROOT=${EXTRACT_ROOT:-${WORK_ROOT}/extract}
 NORMALIZED_ROOT=${NORMALIZED_ROOT:-${WORK_ROOT}/normalized}
-PREPARED_ARCHIVE=${PREPARED_ARCHIVE:-${WORK_ROOT}/data_lane_intersection_norm_sample_512_typeclean_sft_taxonomy.zip}
+PREPARED_ARCHIVE=${PREPARED_ARCHIVE:-${WORK_ROOT}/data_lane_intersection_norm_sample_512_typeclean_sft_semantic_v2.zip}
 PHASE=${PHASE:-phase_a}
 PROGRESS_EVERY=${PROGRESS_EVERY:-50000}
 
@@ -102,12 +102,13 @@ python scripts/tools/inspect_lane_intersection_training_dataset.py \
   --allowed-centerline-type common \
   --allowed-centerline-type right_turn \
   --allowed-centerline-type other \
-  --allowed-intersection-pair '1|1' \
-  --allowed-intersection-pair '1|2' \
-  --allowed-intersection-pair '1|3' \
-  --allowed-intersection-pair '4|1' \
+  --allowed-intersection-type common \
+  --allowed-intersection-type t_intersection \
+  --allowed-intersection-type small_untyped \
+  --allowed-intersection-type t_lane_change_area \
   --require-centerline-type-field \
-  --require-intersection-type-fields \
+  --require-intersection-type-field \
+  --forbid-intersection-subtype-field \
   --require-taxonomy-prompt \
   --strict \
   --report "${INSPECTION_REPORT}"

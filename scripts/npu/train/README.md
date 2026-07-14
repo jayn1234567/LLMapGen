@@ -75,6 +75,23 @@ Qwen text LLM overrides:
 | `TRANSFORMERS_SPEC` | Transformers package spec installed by the script. Qwen3.5 defaults to `transformers>=5.7.0`. |
 | `TOKENIZERS_SPEC` | Tokenizers package spec. Qwen3.5 scripts keep this open-ended by default to avoid conflicts with newer Transformers. |
 
+## Type-Clean 512 CapRL Rerun
+
+`train_sft_stage_a_lane_intersection_typeclean512_dinov2_caprl4b_nodeepstack_npu.sh`
+reproduces the Jiangjihua v9-best architecture and optimization recipe while
+using the 512x512 type-clean lane/intersection dataset. Before model downloads,
+it scans every target JSON record, samples images from every split, requires
+`intersectiontype` and `intersectionsubtype`, checks norm1000 coordinates, and
+rejects any remaining centerline `LaneType=3`. The report is saved as
+`dataset_inspection_rank*.json` with the run artifacts.
+
+Run only the dataset download and preflight with:
+
+```bash
+INSPECT_ONLY=True \
+bash scripts/npu/train/train_sft_stage_a_lane_intersection_typeclean512_dinov2_caprl4b_nodeepstack_npu.sh
+```
+
 ## Script Catalog
 
 | Script | Purpose |
@@ -123,6 +140,7 @@ Qwen text LLM overrides:
 | `train_sft_stage_a_lane_intersection_dinov2_qwen3_nodeepstack_npu.sh` | SFT training: Stage A, lane+intersection, DINOv2, no DeepStack, Qwen3 text LLM. |
 | `train_sft_stage_a_lane_intersection_dinov2_qwen3vl_nodeepstack_lora_llm_npu.sh` | SFT training: LLM LoRA, Stage A, lane+intersection, DINOv2, no DeepStack, Qwen3-VL-derived Qwen3 LLM. |
 | `train_sft_stage_a_lane_intersection_dinov2_qwen3vl_nodeepstack_npu.sh` | SFT training: Stage A, lane+intersection, DINOv2, no DeepStack, Qwen3-VL-derived Qwen3 LLM. |
+| `train_sft_stage_a_lane_intersection_typeclean512_dinov2_caprl4b_nodeepstack_npu.sh` | Jiangjihua v9-best rerun: type-clean 512 lane+intersection data, DINOv2, CapRL-Qwen3VL-4B-derived LLM, no DeepStack, with strict dataset preflight. |
 | `train_sft_stage_a_lane_intersection_dinov2_siglip_concat_qwen3_5_nodeepstack_npu.sh` | SFT training: Stage A, lane+intersection, DINOv2+SigLIP concat, no DeepStack, Qwen3.5 text LLM. |
 | `train_sft_stage_a_lane_intersection_dinov2_siglip_concat_qwen3_nodeepstack_npu.sh` | SFT training: Stage A, lane+intersection, DINOv2+SigLIP concat, no DeepStack, Qwen3 text LLM. |
 | `train_sft_stage_a_lane_intersection_dinov2_siglip_concat_qwen3vl_nodeepstack_npu.sh` | SFT training: Stage A, lane+intersection, DINOv2+SigLIP concat, no DeepStack, Qwen3-VL-derived Qwen3 LLM. |

@@ -54,9 +54,9 @@ from scripts.tools.tag_hard_map_samples import sample_metrics
 
 DEFAULT_DIFFICULTY_RATIOS = {
     "empty": 0.00,
-    "easy": 0.35,
-    "medium": 0.30,
-    "hard": 0.25,
+    "easy": 0.30,
+    "medium": 0.33,
+    "hard": 0.27,
     "very_hard": 0.10,
 }
 DIFFICULTY_ORDER = tuple(DEFAULT_DIFFICULTY_RATIOS)
@@ -525,10 +525,10 @@ def parse_args(argv=None):
     parser.add_argument("--stride", type=int, default=256)
     parser.add_argument("--coord-mode", choices=[COORD_MODE_NORM1000], default=COORD_MODE_NORM1000)
     parser.add_argument("--coord-range", type=int, default=DEFAULT_COORD_RANGE)
-    parser.add_argument("--train-target-samples", type=int, default=450000)
+    parser.add_argument("--train-target-samples", type=int, default=550000)
     parser.add_argument(
         "--difficulty-ratios",
-        default="empty=0,easy=0.35,medium=0.30,hard=0.25,very_hard=0.10",
+        default="empty=0,easy=0.30,medium=0.33,hard=0.27,very_hard=0.10",
     )
     parser.add_argument("--intersection-target-ratio", type=float, default=0.30)
     parser.add_argument("--no-oversample-short-buckets", action="store_true")

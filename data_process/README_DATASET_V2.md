@@ -59,17 +59,19 @@ to `518x518`. Therefore:
 
 ## Train distribution
 
-Default Stage-A train size is 450,000 records:
+Default Stage-A train size is 550,000 records. Compared with the earlier
+450,000-record recipe, most of the extra 100,000 records are assigned to the
+medium and hard buckets:
 
 | Stratum | Ratio | Records |
 |---|---:|---:|
 | empty | 0% | 0 |
-| easy, non-empty | 35% | 157,500 |
-| medium | 30% | 135,000 |
-| hard | 25% | 112,500 |
-| very hard | 10% | 45,000 |
+| easy, non-empty | 30% | 165,000 |
+| medium | 33% | 181,500 |
+| hard | 27% | 148,500 |
+| very hard | 10% | 55,000 |
 
-The target overall intersection share is 30% (135,000 records). This is one
+The target overall intersection share is 30% (165,000 records). This is one
 global constraint, not a separate 30% requirement inside every difficulty
 bucket. The allocator follows the natural intersection density of each bucket
 and prefers unique records before introducing repeats. `balance_report.json`
@@ -79,7 +81,7 @@ every bucket.
 If a difficulty bucket has too few unique samples, the builder repeats records
 in `train.jsonl`; the PNG is stored once. Repeated records receive ids such as
 `...__repeat001` and retain `meta.base_sample_id`. Disable this behavior with
-`--no-oversample-short-buckets` (the build then fails if 450,000 cannot be
+`--no-oversample-short-buckets` (the build then fails if 550,000 cannot be
 filled).
 
 The zero-empty rule applies to train selection. Eval and test retain their
@@ -115,7 +117,7 @@ recipe and uses a versioned OBS destination:
 ```bash
 cd /cache/jn/MLLM_project-unimapgen_v7
 
-WORK_ROOT=/cache/jn/rc_dataset_v2_noempty_i30 \
+WORK_ROOT=/cache/jn/rc_dataset_v2_550k_noempty_i30 \
 bash scripts/npu/data/build_rc_dataset_v2_balanced_noempty_i30_npu.sh
 ```
 
@@ -123,7 +125,7 @@ Set `INSTALL_DATA_DEPS=true` only when the active Python is missing GeoPandas,
 Rasterio, Shapely, or the other packages in `data_process/requirements.txt`.
 The script uses Huawei MoXing by default and does not initialize NPU devices.
 Its default destination is
-`obs://yw-ads-training-gy1/data/external/personal/h58801830/whu/jn/data/rc_dataset_v2_noempty_i30/`.
+`obs://yw-ads-training-gy1/data/external/personal/h58801830/whu/jn/data/rc_dataset_v2_550k_noempty_i30/`.
 
 The default destination is:
 

@@ -10,10 +10,10 @@ REPO_ROOT=$(readlink -f "${SCRIPT_DIR}/../../..")
 cd "${REPO_ROOT}"
 
 PYTHON_BIN=${PYTHON_BIN:-python}
-WORK_ROOT=${WORK_ROOT:-/cache/jn/rc_dataset_v2_noempty_i30}
-OUTPUT_OBS_ROOT=${OUTPUT_OBS_ROOT:-obs://yw-ads-training-gy1/data/external/personal/h58801830/whu/jn/data/rc_dataset_v2_noempty_i30/}
-TRAIN_TARGET_SAMPLES=${TRAIN_TARGET_SAMPLES:-450000}
-DIFFICULTY_RATIOS=${DIFFICULTY_RATIOS:-empty=0,easy=0.35,medium=0.30,hard=0.25,very_hard=0.10}
+WORK_ROOT=${WORK_ROOT:-/cache/jn/rc_dataset_v2_550k_noempty_i30}
+OUTPUT_OBS_ROOT=${OUTPUT_OBS_ROOT:-obs://yw-ads-training-gy1/data/external/personal/h58801830/whu/jn/data/rc_dataset_v2_550k_noempty_i30/}
+TRAIN_TARGET_SAMPLES=${TRAIN_TARGET_SAMPLES:-550000}
+DIFFICULTY_RATIOS=${DIFFICULTY_RATIOS:-empty=0,easy=0.30,medium=0.33,hard=0.27,very_hard=0.10}
 INTERSECTION_TARGET_RATIO=${INTERSECTION_TARGET_RATIO:-0.30}
 VIEWS=${VIEWS:-both}
 OBS_BACKEND=${OBS_BACKEND:-moxing}

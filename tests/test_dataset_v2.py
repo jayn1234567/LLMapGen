@@ -146,9 +146,9 @@ class DatasetV2BalancingTest(unittest.TestCase):
         self.assertEqual(report["selected_total"], 100)
         self.assertEqual(report["target_quotas"], {
             "empty": 0,
-            "easy": 35,
-            "medium": 30,
-            "hard": 25,
+            "easy": 30,
+            "medium": 33,
+            "hard": 27,
             "very_hard": 10,
         })
         self.assertAlmostEqual(report["actual_intersection_ratio"], 0.30, places=2)

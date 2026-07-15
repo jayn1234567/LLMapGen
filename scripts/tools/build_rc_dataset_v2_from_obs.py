@@ -52,8 +52,8 @@ def parse_args(argv=None):
         help=f"Destination OBS directory. Default: {DEFAULT_OUTPUT_OBS_ROOT}",
     )
     parser.add_argument("--views", choices=["both", "local", "context"], default="both")
-    parser.add_argument("--train-target-samples", type=int, default=450000)
-    parser.add_argument("--difficulty-ratios", default="empty=0,easy=0.35,medium=0.30,hard=0.25,very_hard=0.10")
+    parser.add_argument("--train-target-samples", type=int, default=550000)
+    parser.add_argument("--difficulty-ratios", default="empty=0,easy=0.30,medium=0.33,hard=0.27,very_hard=0.10")
     parser.add_argument("--intersection-target-ratio", type=float, default=0.30)
     parser.add_argument("--split-seed", type=int, default=42)
     parser.add_argument("--difficulty-seed", type=int, default=20260713)

@@ -9,8 +9,7 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/../../.." && pwd)"
 
 ENV_DIR="${ENV_DIR:-/home/ma-user/.conda/envs/rc-dataset-v2-py311}"
 PYTHON_VERSION="${RC_DATASET_PYTHON_VERSION:-3.11}"
-CLONE_FROM="${CLONE_FROM:-}"
-FALLBACK_PYTHON="${FALLBACK_PYTHON:-}"
+CLONE_FROM="${CLONE_FROM:-/home/ma-user/.conda/envs/mllm-npu-py311}"
 HOST_PYTHON="${HOST_PYTHON:-}"
 RUN_BUILD="${RUN_BUILD:-false}"
 
@@ -36,36 +35,6 @@ import moxing
 
 assert hasattr(moxing, "file")
 PY
-}
-
-resolve_existing_python311() {
-  local candidate=""
-  local resolved=""
-  local candidates=()
-  if [ -n "${FALLBACK_PYTHON}" ]; then
-    candidates+=("${FALLBACK_PYTHON}")
-  fi
-  candidates+=(
-    "/home/ma-user/.conda/envs/mllm-npu-py311/bin/python"
-    "/home/ma-user/.conda/envs/llmapgen-npu-py311/bin/python"
-    "/home/ma-user/anaconda3/envs/PyTorch-2.5.1/bin/python"
-    "/modelarts/authoring/notebook-conda/bin/python"
-    "python3.11"
-    "python3"
-    "python"
-  )
-  for candidate in "${candidates[@]}"; do
-    if [[ "${candidate}" == */* ]]; then
-      resolved="${candidate}"
-    else
-      resolved="$(command -v "${candidate}" 2>/dev/null || true)"
-    fi
-    if [ -n "${resolved}" ] && [ -x "${resolved}" ] && python_is_requested_version "${resolved}"; then
-      printf '%s\n' "${resolved}"
-      return 0
-    fi
-  done
-  return 1
 }
 
 resolve_host_python_with_moxing() {
@@ -118,38 +87,19 @@ fi
 
 ENV_KIND="existing"
 if [ ! -x "${ENV_DIR}/bin/python" ]; then
-  if [ -n "${CLONE_FROM}" ]; then
-    if [ -z "${CONDA_SH}" ] || [ ! -f "${CONDA_SH}" ]; then
-      echo "[dataset-v2-env] conda is required when CLONE_FROM is set." >&2
-      exit 2
-    fi
-    if [ ! -x "${CLONE_FROM}/bin/python" ]; then
-      echo "[dataset-v2-env] CLONE_FROM has no Python: ${CLONE_FROM}" >&2
-      exit 2
-    fi
-    echo "[dataset-v2-env] cloning ${CLONE_FROM} -> ${ENV_DIR}"
-    conda create -y -p "${ENV_DIR}" --clone "${CLONE_FROM}"
-    ENV_KIND="conda"
-  elif [ -n "${CONDA_SH}" ] && [ -f "${CONDA_SH}" ]; then
-    echo "[dataset-v2-env] creating Conda environment: ${ENV_DIR} (Python ${PYTHON_VERSION})"
-    if conda create -y -p "${ENV_DIR}" "python=${PYTHON_VERSION}" pip; then
-      ENV_KIND="conda"
-    else
-      echo "[dataset-v2-env] Conda could not obtain Python ${PYTHON_VERSION}; trying an existing Python." >&2
-    fi
+  if [ -z "${CONDA_SH}" ] || [ ! -f "${CONDA_SH}" ]; then
+    echo "[dataset-v2-env] conda is required to clone the existing Python environment." >&2
+    exit 2
   fi
-
-  if [ ! -x "${ENV_DIR}/bin/python" ]; then
-    BASE_PYTHON="$(resolve_existing_python311 || true)"
-    if [ -z "${BASE_PYTHON}" ]; then
-      echo "[dataset-v2-env] no reusable Python ${PYTHON_VERSION} was found." >&2
-      echo "[dataset-v2-env] Set FALLBACK_PYTHON=/path/to/python3.11 or CLONE_FROM=/path/to/conda/env." >&2
-      exit 2
-    fi
-    echo "[dataset-v2-env] creating venv from ${BASE_PYTHON}: ${ENV_DIR}"
-    "${BASE_PYTHON}" -m venv "${ENV_DIR}"
-    ENV_KIND="venv"
+  if [ ! -x "${CLONE_FROM}/bin/python" ]; then
+    echo "[dataset-v2-env] CLONE_FROM has no Python: ${CLONE_FROM}" >&2
+    exit 2
   fi
+  echo "[dataset-v2-env] cloning existing environment"
+  echo "[dataset-v2-env] source: ${CLONE_FROM}"
+  echo "[dataset-v2-env] target: ${ENV_DIR}"
+  conda create -y -p "${ENV_DIR}" --clone "${CLONE_FROM}"
+  ENV_KIND="conda-clone"
 else
   echo "[dataset-v2-env] reusing existing environment: ${ENV_DIR}"
 fi
@@ -250,6 +200,7 @@ PY
 
 echo "============================================================"
 echo "[dataset-v2-env] environment kind: ${ENV_KIND}"
+echo "[dataset-v2-env] cloned from: ${CLONE_FROM}"
 echo "[dataset-v2-env] environment ready: ${ENV_DIR}"
 echo "[dataset-v2-env] activate with: source ${ACTIVATE_SCRIPT}"
 echo "[dataset-v2-env] build with: bash ${REPO_ROOT}/scripts/npu/data/build_rc_dataset_v2_balanced_noempty_i30_npu.sh"

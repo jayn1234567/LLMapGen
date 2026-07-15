@@ -111,12 +111,13 @@ bash scripts/npu/setup/create_rc_dataset_v2_env.sh
 source /home/ma-user/.conda/envs/rc-dataset-v2-py311/activate_rc_dataset_v2.sh
 ```
 
-The setup script installs Python 3.11, the geospatial dependencies, and the
-pinned Huawei `moxing-framework` wheel. It does not install or initialize
-PyTorch, torch_npu, or CANN. If Conda cannot download Python, it automatically
-tries an existing Python 3.11; set `FALLBACK_PYTHON` or `CLONE_FROM` to select
-one explicitly. Set `RUN_BUILD=true` to start the formal build immediately
-after setup.
+The setup script clones the existing
+`/home/ma-user/.conda/envs/mllm-npu-py311` environment into the isolated
+`rc-dataset-v2-py311` environment, then installs the geospatial dependencies
+and pinned Huawei `moxing-framework` wheel only in that clone. It never asks
+Conda to download Python and does not modify the source training environment.
+Set `CLONE_FROM` to override the source environment. Set `RUN_BUILD=true` to
+start the formal build immediately after setup.
 
 Confirm the active environment can import Huawei MoXing:
 

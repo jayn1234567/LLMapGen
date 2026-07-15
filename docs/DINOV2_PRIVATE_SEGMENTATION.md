@@ -157,3 +157,28 @@ bash scripts/npu/test/smoke_train_dinov2_private_seg_legacy_head_last12_npu.sh
 `HIDDEN_STATE_INDEX=23` can be used for a later penultimate-layer ablation, but
 the default of 24 first reproduces the feature consumed by the older successful
 segmentation head.
+
+## DINOv3-style LoRA comparison recipe
+
+To compare against the pasted private DINOv3 segmentation method, use:
+
+```bash
+bash scripts/npu/train/train_dinov2_private_seg_dinov3style_lora_di_npu.sh
+```
+
+This recipe keeps the exported model compatible with Jiangjihua's DINOv2 route:
+
+- Backbone: Hugging Face non-register `facebook/dinov2-large`
+- Input: 518x518, producing the usual 37x37 = 1369 DINOv2 tokens
+- Vision adaptation: LoRA on DINOv2 attention `query,value` linear layers
+- LoRA defaults: `VISION_LORA_R=8`, `VISION_LORA_ALPHA=16`,
+  `VISION_LORA_DROPOUT=0.0`
+- Decoder: FPN-style segmentation head modelled after the pasted DINOv3 code
+- Normalization: `image / 255 - 0.5` via `NORMALIZATION_MODE=minus_half`
+- Split: ordered 90/10 per source dataset via `SPLIT_STRATEGY=ordered_per_root`
+- Best checkpoint: highest validation `lane_iou`
+
+Only the segmentation head is discarded later. The saved
+`best/vision_tower/` contains a normal merged DINOv2 checkpoint: LoRA weights
+are folded into the exported `model.safetensors`, so SFT can simply set
+`VISION_TOWER` to that directory or OBS path.

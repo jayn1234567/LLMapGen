@@ -84,14 +84,21 @@ def discover_segmentation_samples(
     *,
     val_fraction: float = 0.1,
     split_seed: int = 42,
+    split_strategy: str = "hash_group",
     max_train_samples: int = 0,
     max_val_samples: int = 0,
 ) -> tuple[list[SegmentationSample], list[SegmentationSample], DatasetDiscoveryReport]:
     if not 0.0 < float(val_fraction) < 1.0:
         raise ValueError(f"val_fraction must be between 0 and 1, got {val_fraction}")
+    split_strategy = str(split_strategy or "hash_group").strip().lower()
+    if split_strategy not in {"hash_group", "ordered_per_root"}:
+        raise ValueError(
+            f"Unsupported split_strategy={split_strategy!r}; expected hash_group or ordered_per_root."
+        )
 
     resolved_roots = [_resolve_dataset_root(root) for root in roots]
     samples: list[SegmentationSample] = []
+    samples_by_root: list[list[SegmentationSample]] = []
     missing_images = 0
     for root in resolved_roots:
         labels_dir = root / "labels_lane"
@@ -102,6 +109,7 @@ def discover_segmentation_samples(
             for path in labels_dir.rglob("*")
             if path.is_file() and path.suffix.lower() in IMAGE_EXTENSIONS
         )
+        root_samples: list[SegmentationSample] = []
         for mask_path in masks:
             relative_mask = mask_path.relative_to(labels_dir)
             image_path = _find_image(images_dir, relative_mask)
@@ -110,7 +118,7 @@ def discover_segmentation_samples(
                 continue
             sample_id = relative_mask.with_suffix("").as_posix()
             group_id = infer_group_id(relative_mask.stem)
-            samples.append(
+            root_samples.append(
                 SegmentationSample(
                     source=source,
                     image_path=str(image_path),
@@ -119,17 +127,33 @@ def discover_segmentation_samples(
                     group_id=group_id,
                 )
             )
+        root_samples.sort(key=lambda item: item.sample_id)
+        samples.extend(root_samples)
+        samples_by_root.append(root_samples)
 
     if not samples:
         raise RuntimeError(f"No paired images and labels_lane masks found under: {resolved_roots}")
 
     samples.sort(key=lambda item: item.sample_id)
-    train_samples = [
-        sample for sample in samples if _split_value(sample.group_id, split_seed) >= val_fraction
-    ]
-    val_samples = [
-        sample for sample in samples if _split_value(sample.group_id, split_seed) < val_fraction
-    ]
+    if split_strategy == "ordered_per_root":
+        train_samples = []
+        val_samples = []
+        for root_samples in samples_by_root:
+            if not root_samples:
+                continue
+            val_count = max(1, round(len(root_samples) * float(val_fraction)))
+            train_count = max(0, len(root_samples) - val_count)
+            if train_count == 0 and len(root_samples) > 1:
+                train_count = len(root_samples) - 1
+            train_samples.extend(root_samples[:train_count])
+            val_samples.extend(root_samples[train_count:])
+    else:
+        train_samples = [
+            sample for sample in samples if _split_value(sample.group_id, split_seed) >= val_fraction
+        ]
+        val_samples = [
+            sample for sample in samples if _split_value(sample.group_id, split_seed) < val_fraction
+        ]
     if not train_samples or not val_samples:
         groups = sorted({sample.group_id for sample in samples})
         if len(groups) < 2:

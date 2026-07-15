@@ -49,8 +49,20 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--projection_channels", type=int, default=256)
     parser.add_argument(
         "--decoder_type",
-        choices=("multilayer_weighted", "legacy_single_layer"),
+        choices=("multilayer_weighted", "legacy_single_layer", "dinov3_style_fpn"),
         default="multilayer_weighted",
+    )
+    parser.add_argument(
+        "--normalization_mode",
+        choices=("processor", "minus_half"),
+        default="processor",
+        help="processor uses the HF image processor stats; minus_half applies image / 255 - 0.5.",
+    )
+    parser.add_argument(
+        "--split_strategy",
+        choices=("hash_group", "ordered_per_root"),
+        default="hash_group",
+        help="hash_group is the existing group split; ordered_per_root mirrors the pasted DINOv3 recipe.",
     )
     parser.add_argument(
         "--vision_unfreeze_last_n_blocks",
@@ -58,6 +70,11 @@ def build_parser() -> argparse.ArgumentParser:
         default=-1,
         help="Negative trains the full backbone; otherwise train only the final N blocks and final norm.",
     )
+    parser.add_argument("--vision_lora_enable", type=parse_bool, default=False)
+    parser.add_argument("--vision_lora_r", type=int, default=8)
+    parser.add_argument("--vision_lora_alpha", type=float, default=16.0)
+    parser.add_argument("--vision_lora_dropout", type=float, default=0.0)
+    parser.add_argument("--vision_lora_target_modules", default="query,value")
     parser.add_argument("--num_train_epochs", type=int, default=20)
     parser.add_argument("--max_steps", type=int, default=-1)
     parser.add_argument("--per_device_train_batch_size", type=int, default=2)
@@ -324,16 +341,30 @@ def save_best_artifacts(
         "visual_grid_size": args.input_size // model.patch_size,
         "hidden_state_indices": list(model.hidden_state_indices),
         "decoder_type": model.decoder_type,
+        "normalization_mode": args.normalization_mode,
+        "image_mean": list(image_processor.image_mean),
+        "image_std": list(image_processor.image_std),
+        "split_strategy": args.split_strategy,
         "vision_unfreeze_last_n_blocks": model.vision_unfreeze_last_n_blocks,
+        "vision_lora_enable": model.vision_lora_enable,
+        "vision_lora_r": model.vision_lora_r,
+        "vision_lora_alpha": model.vision_lora_alpha,
+        "vision_lora_dropout": model.vision_lora_dropout,
+        "vision_lora_target_modules": model.vision_lora_target_modules,
+        "vision_lora_modules": list(model.vision_lora_modules),
         "trainable_vision_block_indices": (
             None
             if model.trainable_vision_block_indices is None
             else list(model.trainable_vision_block_indices)
         ),
         "vision_training": (
+            "lora_merged_on_export"
+            if model.vision_lora_enable
+            else (
             "full_parameter_except_unused_mask_token"
             if model.vision_unfreeze_last_n_blocks < 0
             else f"last_{model.vision_unfreeze_last_n_blocks}_blocks_plus_final_norm"
+            )
         ),
         "best_metric": args.best_metric,
         "epoch": int(epoch),
@@ -374,11 +405,17 @@ def main() -> None:
     image_processor.crop_size = {"height": int(args.input_size), "width": int(args.input_size)}
     image_mean = getattr(image_processor, "image_mean", [0.485, 0.456, 0.406])
     image_std = getattr(image_processor, "image_std", [0.229, 0.224, 0.225])
+    if args.normalization_mode == "minus_half":
+        image_mean = [0.5, 0.5, 0.5]
+        image_std = [1.0, 1.0, 1.0]
+        image_processor.image_mean = list(image_mean)
+        image_processor.image_std = list(image_std)
 
     train_samples, val_samples, discovery_report = discover_segmentation_samples(
         args.dataset_roots,
         val_fraction=args.val_fraction,
         split_seed=args.split_seed,
+        split_strategy=args.split_strategy,
         max_train_samples=args.max_train_samples,
         max_val_samples=args.max_val_samples,
     )
@@ -469,6 +506,11 @@ def main() -> None:
         gradient_checkpointing=args.gradient_checkpointing,
         decoder_type=args.decoder_type,
         vision_unfreeze_last_n_blocks=args.vision_unfreeze_last_n_blocks,
+        vision_lora_enable=args.vision_lora_enable,
+        vision_lora_r=args.vision_lora_r,
+        vision_lora_alpha=args.vision_lora_alpha,
+        vision_lora_dropout=args.vision_lora_dropout,
+        vision_lora_target_modules=args.vision_lora_target_modules,
     )
     raw_model.to(device)
     trainable_parameters = sum(parameter.numel() for parameter in raw_model.parameters() if parameter.requires_grad)
@@ -481,6 +523,8 @@ def main() -> None:
         f"[dinov2-seg] parameters trainable={trainable_parameters:,} total={total_parameters:,} "
         f"decoder_type={raw_model.decoder_type} "
         f"vision_unfreeze_last_n_blocks={raw_model.vision_unfreeze_last_n_blocks} "
+        f"vision_lora_enable={raw_model.vision_lora_enable} "
+        f"vision_lora_modules={raw_model.vision_lora_modules[:12]} "
         f"trainable_vision_block_indices={raw_model.trainable_vision_block_indices} "
         f"frozen_parameter_tensors={len(frozen_parameters)} "
         f"frozen_preview={json.dumps(frozen_parameters[:20])}",

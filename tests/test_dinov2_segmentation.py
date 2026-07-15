@@ -15,7 +15,10 @@ from mllm.vision_pretrain.data import (
     discover_segmentation_samples,
     infer_group_id,
 )
-from mllm.vision_pretrain.dinov2_segmentation import Dinov2RoadSegmentationModel
+from mllm.vision_pretrain.dinov2_segmentation import (
+    Dinov2RoadSegmentationModel,
+    merged_lora_state_dict,
+)
 from mllm.vision_pretrain.metrics import confusion_matrix, metrics_from_confusion
 
 
@@ -98,6 +101,22 @@ class Dinov2SegmentationTests(unittest.TestCase):
             self.assertEqual(tuple(item["pixel_values"].shape), (3, 14, 14))
             self.assertEqual(tuple(item["labels"].shape), (14, 14))
             self.assertEqual(set(item["labels"].unique().tolist()), {0, 1})
+
+    def test_ordered_per_root_split_matches_private_dino_recipe(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir) / "source"
+            self._make_dataset(root, count=10)
+            train, val, _ = discover_segmentation_samples(
+                [root],
+                val_fraction=0.2,
+                split_seed=17,
+                split_strategy="ordered_per_root",
+            )
+            self.assertEqual(len(train), 8)
+            self.assertEqual(len(val), 2)
+            self.assertTrue(train[0].sample_id.endswith("scene_000_r000_c000"))
+            self.assertTrue(train[-1].sample_id.endswith("scene_007_r000_c000"))
+            self.assertTrue(val[0].sample_id.endswith("scene_008_r000_c000"))
 
     def test_model_forward_uses_raw_two_class_logits(self):
         model = Dinov2RoadSegmentationModel(
@@ -221,6 +240,38 @@ class Dinov2SegmentationTests(unittest.TestCase):
                 decoder_type="legacy_single_layer",
                 vision_unfreeze_last_n_blocks=2,
             )
+
+    def test_dinov2_lora_merges_to_hf_state_dict_keys(self):
+        from transformers import Dinov2Config, Dinov2Model
+
+        config = Dinov2Config(
+            image_size=8,
+            patch_size=2,
+            num_channels=3,
+            hidden_size=8,
+            num_hidden_layers=2,
+            num_attention_heads=2,
+            intermediate_size=16,
+        )
+        model = Dinov2RoadSegmentationModel(
+            Dinov2Model(config),
+            input_size=8,
+            hidden_state_indices=[1, 2],
+            projection_channels=16,
+            vision_lora_enable=True,
+            vision_lora_r=2,
+            vision_lora_alpha=4,
+            vision_lora_target_modules="query,value",
+        )
+        self.assertTrue(model.vision_lora_modules)
+        self.assertFalse(model.vision_encoder.embeddings.patch_embeddings.projection.weight.requires_grad)
+        self.assertTrue(any("lora_A" in name for name, _ in model.vision_encoder.named_parameters()))
+        state_dict, merged_count = merged_lora_state_dict(model.vision_encoder)
+        self.assertGreater(merged_count, 0)
+        self.assertIn("encoder.layer.0.attention.attention.query.weight", state_dict)
+        self.assertIn("encoder.layer.0.attention.attention.value.weight", state_dict)
+        self.assertFalse(any("lora_A" in key or "lora_B" in key for key in state_dict))
+        self.assertFalse(any("base_layer" in key for key in state_dict))
 
     def test_fixed_two_class_confusion_metrics(self):
         logits = torch.tensor(

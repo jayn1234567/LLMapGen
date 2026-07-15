@@ -46,11 +46,12 @@ fi
 RUN_ID=${RUN_ID:-${DEFAULT_RUN_ID}}                                               # Unique run id for local cache and cloud output folders.
 OBS_CACHE=${OBS_CACHE:-/cache}                                                    # Local worker cache root for models, datasets, checkpoints, and outputs.
 MODEL_OBS_PATH=${MODEL_OBS_PATH:-obs://yw-ads-training-gy1/data/external/personal/h58801830/whu/jjh/checkpoints}  # OBS directory that stores model and vision checkpoint assets.
-DINOV2_TRAIN_OUTPUT_OBS_PATH=${DINOV2_TRAIN_OUTPUT_OBS_PATH:-}                    # Formal segmentation run root or its best/vision_tower directory.
+DINOV2_TRAIN_OUTPUT_OBS_PATH=${DINOV2_TRAIN_OUTPUT_OBS_PATH:-auto}                # auto selects the latest completed registry run; explicit run/best path is also accepted.
+DINOV2_TRAIN_OUTPUT_OBS_ROOT=${DINOV2_TRAIN_OUTPUT_OBS_ROOT:-obs://yw-ads-training-gy1/data/external/personal/h58801830/whu/jn/model/dinov2_private_seg_dinov3style_lora}  # Stable registry published by the formal segmentation DI script.
 DATASET_OBS_PATH=${DATASET_OBS_PATH:-obs://yw-ads-training-gy1/data/external/personal/h58801830/whu/jn/data/rc_dataset_v2_550k_noempty_i30_shift128/local256.tar}  # Balanced Dataset V2 local256 package.
 DATASET_DIR_NAME=${DATASET_DIR_NAME:-local256}                                    # Top-level directory stored in local256.tar.
 
-VISION_TOWER=${VISION_TOWER:-${OBS_CACHE}/checkpoints/${VISION_TOWER_NAME}}       # Vision tower path passed to the model loader. Multi-vision uses a comma list.
+VISION_TOWER=${VISION_TOWER:-}                                                    # Optional local override; auto mode derives a run-specific cache path.
 # Local dataset and output paths for this run.
 DATASET_ARCHIVE_PATH=${DATASET_ARCHIVE_PATH:-${OBS_CACHE}/dataset_${RUN_ID}.tar}  # Local path for the downloaded Dataset V2 package.
 DATASET_EXTRACT_ROOT=${DATASET_EXTRACT_ROOT:-${OBS_CACHE}/dataset_extract_${RUN_ID}}  # Local directory where the dataset zip is extracted.
@@ -324,18 +325,26 @@ if [[ "${INSPECT_ONLY}" =~ ^(1|true|True|TRUE|yes|YES)$ ]]; then
 fi
 
 # ====================== model downloads ======================
-if [ -z "${DINOV2_TRAIN_OUTPUT_OBS_PATH}" ]; then
-  echo "ERROR: set DINOV2_TRAIN_OUTPUT_OBS_PATH to the formal DINOv2 segmentation run root or best/vision_tower directory."
-  exit 1
+DINOV2_SELECTION_REPORT=${DINOV2_SELECTION_REPORT:-${OUTPUT_PATH}/dinov2_obs_selection.json}
+if [[ "${DINOV2_TRAIN_OUTPUT_OBS_PATH}" =~ ^(auto|latest)$ ]]; then
+  echo "[dinov2-resolver] scanning latest completed run under ${DINOV2_TRAIN_OUTPUT_OBS_ROOT}"
+  DINOV2_VISION_TOWER_OBS_PATH=$(python scripts/tools/resolve_latest_dinov2_vision_tower_obs.py \
+    --obs-root "${DINOV2_TRAIN_OUTPUT_OBS_ROOT}" \
+    --report "${DINOV2_SELECTION_REPORT}")
+else
+  case "${DINOV2_TRAIN_OUTPUT_OBS_PATH%/}" in
+    */best/vision_tower)
+      DINOV2_VISION_TOWER_OBS_PATH="${DINOV2_TRAIN_OUTPUT_OBS_PATH%/}"
+      ;;
+    *)
+      DINOV2_VISION_TOWER_OBS_PATH="${DINOV2_TRAIN_OUTPUT_OBS_PATH%/}/best/vision_tower"
+      ;;
+  esac
 fi
-case "${DINOV2_TRAIN_OUTPUT_OBS_PATH%/}" in
-  */best/vision_tower)
-    DINOV2_VISION_TOWER_OBS_PATH="${DINOV2_TRAIN_OUTPUT_OBS_PATH%/}"
-    ;;
-  *)
-    DINOV2_VISION_TOWER_OBS_PATH="${DINOV2_TRAIN_OUTPUT_OBS_PATH%/}/best/vision_tower"
-    ;;
-esac
+if [ -z "${VISION_TOWER}" ]; then
+  DINOV2_SELECTED_RUN_ID=$(basename "$(dirname "$(dirname "${DINOV2_VISION_TOWER_OBS_PATH}")")")
+  VISION_TOWER="${OBS_CACHE}/checkpoints/${VISION_TOWER_NAME}/${DINOV2_SELECTED_RUN_ID}"
+fi
 
 model_asset_is_complete() {
   local model_dir="$1"

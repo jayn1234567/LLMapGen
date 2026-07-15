@@ -73,6 +73,9 @@ DATASET_LIMIT=${DATASET_LIMIT:-0}
 EXPECTED_FULL_DATASET_COUNT=16
 
 NUM_TRAIN_EPOCHS=${NUM_TRAIN_EPOCHS:-20}
+MAX_STEPS=${MAX_STEPS:--1}
+MAX_TRAIN_SAMPLES=${MAX_TRAIN_SAMPLES:-0}
+MAX_VAL_SAMPLES=${MAX_VAL_SAMPLES:-0}
 TARGET_GLOBAL_BATCH_SIZE=${TARGET_GLOBAL_BATCH_SIZE:-64}
 PER_DEVICE_TRAIN_BATCH_SIZE=${PER_DEVICE_TRAIN_BATCH_SIZE:-2}
 PER_DEVICE_EVAL_BATCH_SIZE=${PER_DEVICE_EVAL_BATCH_SIZE:-2}
@@ -123,6 +126,8 @@ if [ -z "${OUTPUT_URL:-}" ]; then
   OUTPUT_URL=obs://yw-ads-training-gy1/data/external/personal/h58801830/whu/jn/model/dinov2_private_seg_dinov3style_lora
 fi
 CLOUD_OUTPUT_PATH=${CLOUD_OUTPUT_PATH:-${OUTPUT_URL%/}/${RUN_ID}}
+DINOV2_REGISTRY_OBS_ROOT=${DINOV2_REGISTRY_OBS_ROOT:-obs://yw-ads-training-gy1/data/external/personal/h58801830/whu/jn/model/dinov2_private_seg_dinov3style_lora}
+DINOV2_REGISTRY_RUN_PATH=${DINOV2_REGISTRY_RUN_PATH:-${DINOV2_REGISTRY_OBS_ROOT%/}/${RUN_ID}}
 
 TOTAL_DEVICES=$((NNODES * NPROC_PER_NODE))
 MICRO_GLOBAL_BATCH=$((TOTAL_DEVICES * PER_DEVICE_TRAIN_BATCH_SIZE))
@@ -143,9 +148,12 @@ echo "Dataset local:    ${DATA_LOCAL_ROOT}"
 echo "Dataset limit:    ${DATASET_LIMIT} (0 means all ${EXPECTED_FULL_DATASET_COUNT})"
 echo "Output local:     ${OUTPUT_DIR}"
 echo "Output OBS:       ${CLOUD_OUTPUT_PATH}"
+echo "Registry OBS:     ${DINOV2_REGISTRY_RUN_PATH}"
 echo "Topology:         nnodes=${NNODES} node_rank=${NODE_RANK} nproc=${NPROC_PER_NODE}"
 echo "Rendezvous:       ${MASTER_ADDR}:${MASTER_PORT}"
 echo "Epochs:           ${NUM_TRAIN_EPOCHS}"
+echo "Max steps:        ${MAX_STEPS} (-1 means epoch schedule)"
+echo "Sample limits:    train=${MAX_TRAIN_SAMPLES}, val=${MAX_VAL_SAMPLES} (0 means all)"
 echo "Per-device batch: ${PER_DEVICE_TRAIN_BATCH_SIZE}"
 echo "Grad accumulation:${GRADIENT_ACCUMULATION_STEPS}"
 echo "Effective batch:  ${EFFECTIVE_GLOBAL_BATCH_SIZE}"
@@ -317,7 +325,7 @@ set -o pipefail
   --vision_lora_dropout "${VISION_LORA_DROPOUT}" \
   --vision_lora_target_modules "${VISION_LORA_TARGET_MODULES}" \
   --num_train_epochs "${NUM_TRAIN_EPOCHS}" \
-  --max_steps -1 \
+  --max_steps "${MAX_STEPS}" \
   --per_device_train_batch_size "${PER_DEVICE_TRAIN_BATCH_SIZE}" \
   --per_device_eval_batch_size "${PER_DEVICE_EVAL_BATCH_SIZE}" \
   --gradient_accumulation_steps "${GRADIENT_ACCUMULATION_STEPS}" \
@@ -332,8 +340,8 @@ set -o pipefail
   --dice_loss_weight "${DICE_LOSS_WEIGHT}" \
   --val_fraction "${VAL_FRACTION}" \
   --split_seed "${SPLIT_SEED}" \
-  --max_train_samples 0 \
-  --max_val_samples 0 \
+  --max_train_samples "${MAX_TRAIN_SAMPLES}" \
+  --max_val_samples "${MAX_VAL_SAMPLES}" \
   --num_workers "${NUM_WORKERS}" \
   --logging_steps "${LOGGING_STEPS}" \
   --eval_every_epochs "${EVAL_EVERY_EPOCHS}" \
@@ -371,7 +379,7 @@ if [ "${NODE_RANK}" -eq 0 ]; then
     --expected-num-layers 24 \
     --output-json "${OUTPUT_DIR}/best/vision_tower_verify.json"
 
-  RUN_ID="${RUN_ID}" OUTPUT_DIR="${OUTPUT_DIR}" CLOUD_OUTPUT_PATH="${CLOUD_OUTPUT_PATH}" "${PYTHON}" - <<'PY'
+  RUN_ID="${RUN_ID}" OUTPUT_DIR="${OUTPUT_DIR}" CLOUD_OUTPUT_PATH="${CLOUD_OUTPUT_PATH}" DINOV2_REGISTRY_RUN_PATH="${DINOV2_REGISTRY_RUN_PATH}" "${PYTHON}" - <<'PY'
 import json
 import os
 import time
@@ -384,8 +392,11 @@ payload = {
     "run_id": os.environ["RUN_ID"],
     "local_output": str(output_dir),
     "cloud_output": os.environ["CLOUD_OUTPUT_PATH"],
+    "registry_output": os.environ["DINOV2_REGISTRY_RUN_PATH"],
     "completed_unix_time": time.time(),
     "global_step": summary.get("global_step"),
+    "best_metric": summary.get("best_metric"),
+    "best_metric_value": summary.get("best_metric_value"),
     "best_mean_iou": summary.get("best_mean_iou"),
     "vision_tower": str(output_dir / "best" / "vision_tower"),
 }
@@ -408,6 +419,7 @@ required = (
     f"{target}/train_summary.json",
     f"{target}/best/metrics.json",
     f"{target}/best/vision_tower/config.json",
+    f"{target}/best/vision_tower/preprocessor_config.json",
     f"{target}/best/vision_tower/model.safetensors",
     f"{target}/best/vision_tower_verify.json",
 )
@@ -417,9 +429,55 @@ if missing:
 print(f"[di-upload] verified {len(required)} required OBS artifacts", flush=True)
 PY
 
+  OUTPUT_DIR="${OUTPUT_DIR}" CLOUD_OUTPUT_PATH="${CLOUD_OUTPUT_PATH}" DINOV2_REGISTRY_RUN_PATH="${DINOV2_REGISTRY_RUN_PATH}" "${PYTHON}" - <<'PY'
+import os
+from pathlib import Path
+
+import moxing as mox
+
+source = Path(os.environ["OUTPUT_DIR"])
+cloud_target = os.environ["CLOUD_OUTPUT_PATH"].rstrip("/")
+registry_target = os.environ["DINOV2_REGISTRY_RUN_PATH"].rstrip("/")
+if registry_target == cloud_target:
+    print(f"[dinov2-registry] reuse primary upload {registry_target}", flush=True)
+else:
+    print(f"[dinov2-registry] publish verified best vision tower -> {registry_target}", flush=True)
+    mox.file.copy_parallel(
+        str(source / "best" / "vision_tower"),
+        f"{registry_target}/best/vision_tower",
+        threads=128,
+    )
+    for relative in (
+        "train_summary.json",
+        "best/metrics.json",
+        "best/vision_tower_verify.json",
+    ):
+        mox.file.copy(str(source / relative), f"{registry_target}/{relative}")
+    # Publish the success marker last so downstream jobs never select a partial run.
+    mox.file.copy(
+        str(source / "DI_TRAIN_SUCCESS.json"),
+        f"{registry_target}/DI_TRAIN_SUCCESS.json",
+    )
+
+required = (
+    f"{registry_target}/DI_TRAIN_SUCCESS.json",
+    f"{registry_target}/train_summary.json",
+    f"{registry_target}/best/metrics.json",
+    f"{registry_target}/best/vision_tower/config.json",
+    f"{registry_target}/best/vision_tower/preprocessor_config.json",
+    f"{registry_target}/best/vision_tower/model.safetensors",
+    f"{registry_target}/best/vision_tower_verify.json",
+)
+missing = [path for path in required if not mox.file.exists(path)]
+if missing:
+    raise SystemExit(f"DINOv2 registry publish verification failed; missing: {missing}")
+print(f"[dinov2-registry] verified {len(required)} registry artifacts", flush=True)
+PY
+
   echo "============================================================"
   echo "Formal DI DINOv2 DINOv3-style LoRA segmentation training PASSED"
   echo "Best vision tower: ${VISION_TOWER_DIR}"
   echo "OBS output:        ${CLOUD_OUTPUT_PATH}"
+  echo "Registry run:      ${DINOV2_REGISTRY_RUN_PATH}"
   echo "============================================================"
 fi

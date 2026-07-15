@@ -25,6 +25,7 @@ class FakeVisionEncoder(nn.Module):
         self.config = SimpleNamespace(patch_size=2, hidden_size=8, num_register_tokens=0)
         self.patch_embed = nn.Conv2d(3, 8, kernel_size=2, stride=2)
         self.layers = nn.ModuleList([nn.Linear(8, 8) for _ in range(4)])
+        self.norm = nn.LayerNorm(8)
 
     def forward(
         self,
@@ -43,7 +44,7 @@ class FakeVisionEncoder(nn.Module):
             hidden_states.append(hidden)
         return SimpleNamespace(
             hidden_states=tuple(hidden_states),
-            last_hidden_state=hidden_states[-1],
+            last_hidden_state=self.norm(hidden_states[-1]),
         )
 
     def save_pretrained(self, output_dir, state_dict=None, safe_serialization=True):
@@ -136,6 +137,42 @@ class Dinov2SegmentationTests(unittest.TestCase):
         self.assertIsNotNone(model.vision_encoder.embeddings.patch_embeddings.projection.weight.grad)
         self.assertIsNotNone(model.vision_encoder.layernorm.weight.grad)
         self.assertIsNotNone(model.vision_encoder.layernorm.bias.grad)
+
+    def test_legacy_decoder_trains_only_tail_blocks_and_final_norm(self):
+        model = Dinov2RoadSegmentationModel(
+            FakeVisionEncoder(),
+            input_size=8,
+            hidden_state_indices=[4],
+            projection_channels=16,
+            decoder_type="legacy_single_layer",
+            vision_unfreeze_last_n_blocks=2,
+        )
+        self.assertEqual(model.trainable_vision_block_indices, (2, 3))
+        self.assertEqual(len(model.decoder.stages), 4)
+        self.assertFalse(model.vision_encoder.patch_embed.weight.requires_grad)
+        self.assertFalse(next(model.vision_encoder.layers[0].parameters()).requires_grad)
+        self.assertFalse(next(model.vision_encoder.layers[1].parameters()).requires_grad)
+        self.assertTrue(next(model.vision_encoder.layers[2].parameters()).requires_grad)
+        self.assertTrue(next(model.vision_encoder.layers[3].parameters()).requires_grad)
+        self.assertTrue(model.vision_encoder.norm.weight.requires_grad)
+
+        output = model(torch.randn(1, 3, 8, 8))
+        self.assertEqual(tuple(output.shape), (1, 2, 8, 8))
+        output.square().mean().backward()
+        self.assertIsNone(model.vision_encoder.layers[1].weight.grad)
+        self.assertIsNotNone(model.vision_encoder.layers[2].weight.grad)
+        self.assertIsNotNone(model.vision_encoder.norm.weight.grad)
+
+    def test_legacy_decoder_rejects_multiple_hidden_layers(self):
+        with self.assertRaisesRegex(ValueError, "requires exactly one"):
+            Dinov2RoadSegmentationModel(
+                FakeVisionEncoder(),
+                input_size=8,
+                hidden_state_indices=[3, 4],
+                projection_channels=16,
+                decoder_type="legacy_single_layer",
+                vision_unfreeze_last_n_blocks=2,
+            )
 
     def test_fixed_two_class_confusion_metrics(self):
         logits = torch.tensor(

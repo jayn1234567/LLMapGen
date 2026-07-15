@@ -39,7 +39,7 @@ def parse_bool(value: str | bool) -> bool:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Full-parameter Hugging Face DINOv2 road-lane segmentation pretraining."
+        description="Hugging Face DINOv2 road-lane segmentation pretraining."
     )
     parser.add_argument("--model_name_or_path", required=True)
     parser.add_argument("--dataset_roots", nargs="+", required=True)
@@ -47,6 +47,17 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--input_size", type=int, default=518)
     parser.add_argument("--hidden_state_indices", nargs="+", type=int, default=[6, 12, 18, 24])
     parser.add_argument("--projection_channels", type=int, default=256)
+    parser.add_argument(
+        "--decoder_type",
+        choices=("multilayer_weighted", "legacy_single_layer"),
+        default="multilayer_weighted",
+    )
+    parser.add_argument(
+        "--vision_unfreeze_last_n_blocks",
+        type=int,
+        default=-1,
+        help="Negative trains the full backbone; otherwise train only the final N blocks and final norm.",
+    )
     parser.add_argument("--num_train_epochs", type=int, default=20)
     parser.add_argument("--max_steps", type=int, default=-1)
     parser.add_argument("--per_device_train_batch_size", type=int, default=2)
@@ -56,6 +67,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--decoder_learning_rate", type=float, default=1e-4)
     parser.add_argument("--weight_decay", type=float, default=0.05)
     parser.add_argument("--warmup_ratio", type=float, default=0.05)
+    parser.add_argument(
+        "--warmup_steps",
+        type=int,
+        default=-1,
+        help="Non-negative overrides warmup_ratio with a fixed optimizer-step count.",
+    )
     parser.add_argument("--min_lr_ratio", type=float, default=0.1)
     parser.add_argument("--max_grad_norm", type=float, default=1.0)
     parser.add_argument("--foreground_ce_weight", type=float, default=1.0)
@@ -68,6 +85,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--num_workers", type=int, default=8)
     parser.add_argument("--logging_steps", type=int, default=1)
     parser.add_argument("--eval_every_epochs", type=int, default=1)
+    parser.add_argument(
+        "--best_metric",
+        choices=("loss", "mean_iou", "lane_iou", "lane_f1"),
+        default="mean_iou",
+    )
     parser.add_argument("--gradient_checkpointing", type=parse_bool, default=True)
     parser.add_argument("--bf16", type=parse_bool, default=True)
     parser.add_argument("--augment", type=parse_bool, default=True)
@@ -201,19 +223,33 @@ def build_scheduler(
     *,
     total_steps: int,
     warmup_ratio: float,
+    warmup_steps: int = -1,
     min_lr_ratio: float,
 ) -> LambdaLR:
-    warmup_steps = max(0, round(total_steps * float(warmup_ratio)))
+    resolved_warmup_steps = (
+        int(warmup_steps)
+        if int(warmup_steps) >= 0
+        else max(0, round(total_steps * float(warmup_ratio)))
+    )
 
     def lr_lambda(step: int) -> float:
-        if warmup_steps > 0 and step < warmup_steps:
-            return max(1e-8, float(step + 1) / float(warmup_steps))
-        progress = (step - warmup_steps) / max(1, total_steps - warmup_steps)
+        if resolved_warmup_steps > 0 and step < resolved_warmup_steps:
+            return max(1e-8, float(step + 1) / float(resolved_warmup_steps))
+        progress = (step - resolved_warmup_steps) / max(
+            1,
+            total_steps - resolved_warmup_steps,
+        )
         progress = min(1.0, max(0.0, progress))
         cosine = 0.5 * (1.0 + math.cos(math.pi * progress))
         return float(min_lr_ratio) + (1.0 - float(min_lr_ratio)) * cosine
 
     return LambdaLR(optimizer, lr_lambda=lr_lambda)
+
+
+def is_better_metric(metric_name: str, candidate: float, incumbent: float) -> bool:
+    if metric_name == "loss":
+        return candidate < incumbent
+    return candidate > incumbent
 
 
 def _autocast_context(device: torch.device, enabled: bool):
@@ -287,7 +323,19 @@ def save_best_artifacts(
         "patch_size": model.patch_size,
         "visual_grid_size": args.input_size // model.patch_size,
         "hidden_state_indices": list(model.hidden_state_indices),
-        "training": "full_parameter_except_unused_mask_token",
+        "decoder_type": model.decoder_type,
+        "vision_unfreeze_last_n_blocks": model.vision_unfreeze_last_n_blocks,
+        "trainable_vision_block_indices": (
+            None
+            if model.trainable_vision_block_indices is None
+            else list(model.trainable_vision_block_indices)
+        ),
+        "vision_training": (
+            "full_parameter_except_unused_mask_token"
+            if model.vision_unfreeze_last_n_blocks < 0
+            else f"last_{model.vision_unfreeze_last_n_blocks}_blocks_plus_final_norm"
+        ),
+        "best_metric": args.best_metric,
         "epoch": int(epoch),
         "global_step": int(global_step),
         "validation_metrics": metrics,
@@ -419,6 +467,8 @@ def main() -> None:
         hidden_state_indices=args.hidden_state_indices,
         projection_channels=args.projection_channels,
         gradient_checkpointing=args.gradient_checkpointing,
+        decoder_type=args.decoder_type,
+        vision_unfreeze_last_n_blocks=args.vision_unfreeze_last_n_blocks,
     )
     raw_model.to(device)
     trainable_parameters = sum(parameter.numel() for parameter in raw_model.parameters() if parameter.requires_grad)
@@ -429,8 +479,11 @@ def main() -> None:
     rank0_print(
         rank,
         f"[dinov2-seg] parameters trainable={trainable_parameters:,} total={total_parameters:,} "
-        f"active_backbone_full_unfreeze={frozen_parameters == ['vision_encoder.embeddings.mask_token']} "
-        f"intentionally_frozen={json.dumps(frozen_parameters)}",
+        f"decoder_type={raw_model.decoder_type} "
+        f"vision_unfreeze_last_n_blocks={raw_model.vision_unfreeze_last_n_blocks} "
+        f"trainable_vision_block_indices={raw_model.trainable_vision_block_indices} "
+        f"frozen_parameter_tensors={len(frozen_parameters)} "
+        f"frozen_preview={json.dumps(frozen_parameters[:20])}",
     )
     optimizer = build_optimizer(raw_model, args)
     updates_per_epoch = math.ceil(len(train_loader) / args.gradient_accumulation_steps)
@@ -443,6 +496,7 @@ def main() -> None:
         optimizer,
         total_steps=total_steps,
         warmup_ratio=args.warmup_ratio,
+        warmup_steps=args.warmup_steps,
         min_lr_ratio=args.min_lr_ratio,
     )
     model: torch.nn.Module = raw_model
@@ -475,7 +529,7 @@ def main() -> None:
         )
 
     global_step = 0
-    best_mean_iou = -1.0
+    best_metric_value = math.inf if args.best_metric == "loss" else -math.inf
     best_metrics: dict | None = None
     stop_training = False
     optimizer.zero_grad(set_to_none=True)
@@ -569,8 +623,9 @@ def main() -> None:
                     f"{metrics['throughput_samples_per_second_per_npu']:.2f} samples/s/npu",
                     flush=True,
                 )
-                if metrics["mean_iou"] > best_mean_iou:
-                    best_mean_iou = metrics["mean_iou"]
+                candidate_metric = float(metrics[args.best_metric])
+                if is_better_metric(args.best_metric, candidate_metric, best_metric_value):
+                    best_metric_value = candidate_metric
                     best_metrics = metrics
                     save_best_artifacts(
                         raw_model,
@@ -583,7 +638,9 @@ def main() -> None:
                         dataset_report=dataset_report,
                     )
                     print(
-                        f"[dinov2-seg] saved best vision tower: {output_dir / 'best' / 'vision_tower'}",
+                        f"[dinov2-seg] saved best vision tower: "
+                        f"metric={args.best_metric} value={candidate_metric:.8f} "
+                        f"path={output_dir / 'best' / 'vision_tower'}",
                         flush=True,
                     )
             if world_size > 1:
@@ -594,7 +651,9 @@ def main() -> None:
     if rank == 0:
         summary = {
             "global_step": global_step,
-            "best_mean_iou": best_mean_iou,
+            "best_metric": args.best_metric,
+            "best_metric_value": best_metric_value,
+            "best_mean_iou": None if best_metrics is None else best_metrics.get("mean_iou"),
             "best_metrics": best_metrics,
             "vision_tower": str(output_dir / "best" / "vision_tower"),
         }

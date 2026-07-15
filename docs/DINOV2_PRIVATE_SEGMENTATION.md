@@ -121,3 +121,39 @@ The effective global batch in this example is `8 * 2 * 4 = 64`.
 
 The previous per-device batch size of 48 was for a frozen vision backbone and
 must not be reused for full-parameter DINOv2-L training.
+
+## Legacy-head last-12-block recipe
+
+The public-data road-structure segmentation experiment used one final DINOv2
+feature map and a deeper spatial decoder rather than learned fusion of layers
+6, 12, 18, and 24. The private-data comparison recipe is available as:
+
+```bash
+bash scripts/npu/train/train_dinov2_private_seg_legacy_head_last12_di_npu.sh
+```
+
+Its defaults intentionally form a separate experiment:
+
+- Feature: hidden state 24 (`last_hidden_state`), no cross-layer fusion
+- Decoder: 1x1 projection followed by four `2x upsample + 2x Conv/GN/SiLU`
+  stages
+- Trainable vision parameters: final 12 transformer blocks and final LayerNorm
+- Gradient checkpointing: disabled for the partially frozen backbone
+- Vision learning rate: `1e-5`
+- Decoder learning rate: `1e-4`
+- Weight decay: `0.01`
+- Foreground CE weight: `5.0`, equivalent to binary class weights `[0.2, 1.0]`
+- Dice loss weight: `1.0`
+- Fixed warmup: 500 optimizer steps, followed by cosine decay to zero
+- Best checkpoint: highest validation `lane_iou`; background IoU is excluded
+  from checkpoint selection
+
+Run the matching single-node Ascend smoke without package installation using:
+
+```bash
+bash scripts/npu/test/smoke_train_dinov2_private_seg_legacy_head_last12_npu.sh
+```
+
+`HIDDEN_STATE_INDEX=23` can be used for a later penultimate-layer ablation, but
+the default of 24 first reproduces the feature consumed by the older successful
+segmentation head.

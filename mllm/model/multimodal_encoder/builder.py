@@ -1,10 +1,34 @@
 import os
-from .clip_encoder import CLIPVisionTower, CLIPVisionTowerS2
 from .dinov2_encoder import DINOv2VisionTower
-from .dinov3_encoder import DINOv3VisionTower
-from .mobileclip_encoder import MobileCLIPVisionTower
-from .siglip_encoder import SigLIPVisionTower
 from .dino_config import get_dino_config
+
+
+def _build_dinov3_vision_tower(vision_tower, vision_tower_cfg, **kwargs):
+    # Keep DINOv2-only environments usable when their Transformers build does
+    # not export the newer DINOv3 classes. DINOv3 still fails immediately with
+    # its original actionable import error when that backbone is requested.
+    from .dinov3_encoder import DINOv3VisionTower
+
+    return DINOv3VisionTower(vision_tower, args=vision_tower_cfg, **kwargs)
+
+
+def _build_siglip_vision_tower(vision_tower, vision_tower_cfg, **kwargs):
+    from .siglip_encoder import SigLIPVisionTower
+
+    return SigLIPVisionTower(vision_tower, args=vision_tower_cfg, **kwargs)
+
+
+def _build_clip_vision_tower(vision_tower, vision_tower_cfg, use_s2, **kwargs):
+    from .clip_encoder import CLIPVisionTower, CLIPVisionTowerS2
+
+    tower_class = CLIPVisionTowerS2 if use_s2 else CLIPVisionTower
+    return tower_class(vision_tower, args=vision_tower_cfg, **kwargs)
+
+
+def _build_mobileclip_vision_tower(vision_tower, vision_tower_cfg, **kwargs):
+    from .mobileclip_encoder import MobileCLIPVisionTower
+
+    return MobileCLIPVisionTower(vision_tower, args=vision_tower_cfg, **kwargs)
 
 
 def _normalize_dino_type(vision_tower_type):
@@ -74,19 +98,19 @@ def _build_single_vision_tower(vision_tower_cfg, **kwargs):
             vision_tower_cfg.mm_vision_tower_type = vit_type
 
     if vit_type == "dinov3":
-        return DINOv3VisionTower(vision_tower, args=vision_tower_cfg, **kwargs)
+        return _build_dinov3_vision_tower(vision_tower, vision_tower_cfg, **kwargs)
     if vit_type == "dinov2":
         return DINOv2VisionTower(vision_tower, args=vision_tower_cfg, **kwargs)
 
     if _normalize_siglip_type(getattr(vision_tower_cfg, 'mm_vision_tower_type', '')):
         vision_tower_cfg.mm_vision_tower_type = "siglip"
-        return SigLIPVisionTower(vision_tower, args=vision_tower_cfg, **kwargs)
+        return _build_siglip_vision_tower(vision_tower, vision_tower_cfg, **kwargs)
 
     if "dinov3" in vision_tower_lower or "dinov2" in vision_tower_lower:
         dino_cfg = get_dino_config(vision_tower_str, input_image_size=img_size)
         _apply_dino_config(vision_tower_cfg, dino_cfg)
         if dino_cfg.encoder_type == "dinov3":
-            return DINOv3VisionTower(vision_tower, args=vision_tower_cfg, **kwargs)
+            return _build_dinov3_vision_tower(vision_tower, vision_tower_cfg, **kwargs)
         return DINOv2VisionTower(vision_tower, args=vision_tower_cfg, **kwargs)
 
     if "dinov" in vision_tower_lower:
@@ -98,15 +122,17 @@ def _build_single_vision_tower(vision_tower_cfg, **kwargs):
 
     if "siglip" in vision_tower_lower:
         vision_tower_cfg.mm_vision_tower_type = "siglip"
-        return SigLIPVisionTower(vision_tower, args=vision_tower_cfg, **kwargs)
+        return _build_siglip_vision_tower(vision_tower, vision_tower_cfg, **kwargs)
 
     if is_absolute_path_exists or vision_tower_str.startswith("openai") or vision_tower_str.startswith("laion") or "ShareGPT4V" in vision_tower_str:
-        if use_s2:
-            return CLIPVisionTowerS2(vision_tower, args=vision_tower_cfg, **kwargs)
-        else:
-            return CLIPVisionTower(vision_tower, args=vision_tower_cfg, **kwargs)
+        return _build_clip_vision_tower(
+            vision_tower,
+            vision_tower_cfg,
+            use_s2,
+            **kwargs,
+        )
     elif "mobileclip" in vision_tower.lower():
-        return MobileCLIPVisionTower(vision_tower, args=vision_tower_cfg, **kwargs)
+        return _build_mobileclip_vision_tower(vision_tower, vision_tower_cfg, **kwargs)
 
     raise ValueError(f'Unknown vision tower: {vision_tower}')
 

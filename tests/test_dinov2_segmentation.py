@@ -138,6 +138,54 @@ class Dinov2SegmentationTests(unittest.TestCase):
         self.assertIsNotNone(model.vision_encoder.layernorm.weight.grad)
         self.assertIsNotNone(model.vision_encoder.layernorm.bias.grad)
 
+    def test_mllm_dinov2_wrapper_unfreezes_only_last_two_blocks(self):
+        from transformers import Dinov2Config, Dinov2Model
+
+        from mllm.model.multimodal_encoder.dinov2_encoder import DINOv2VisionTower
+
+        config = Dinov2Config(
+            image_size=8,
+            patch_size=2,
+            num_channels=3,
+            hidden_size=8,
+            num_hidden_layers=4,
+            num_attention_heads=2,
+            intermediate_size=16,
+        )
+        tower = DINOv2VisionTower.__new__(DINOv2VisionTower)
+        nn.Module.__init__(tower)
+        tower.vision_tower = Dinov2Model(config)
+        tower.unfreeze_last_n_blocks = -1
+        tower.select_feature = "patch"
+        tower.select_layer = 4
+        tower.num_layers = 4
+        tower.vision_layer_fusion = None
+        tower.deepstack_mergers = None
+        tower.set_vision_tower_trainable(True, last_n_blocks=2)
+        tower._resolve_select_layer_index()
+
+        blocks = tower.vision_tower.encoder.layer
+        self.assertEqual(tower.trainable_vision_block_indices, [2, 3])
+        self.assertFalse(next(blocks[0].parameters()).requires_grad)
+        self.assertFalse(next(blocks[1].parameters()).requires_grad)
+        self.assertTrue(next(blocks[2].parameters()).requires_grad)
+        self.assertTrue(next(blocks[3].parameters()).requires_grad)
+        self.assertFalse(
+            tower.vision_tower.embeddings.patch_embeddings.projection.weight.requires_grad
+        )
+        self.assertTrue(tower.vision_tower.layernorm.weight.requires_grad)
+
+        hidden_states = tuple(torch.zeros(1, 5, 8) for _ in range(5))
+        final_output = torch.full((1, 5, 8), 7.0)
+        selected, deepstack = tower.feature_select(
+            SimpleNamespace(
+                hidden_states=hidden_states,
+                last_hidden_state=final_output,
+            )
+        )
+        self.assertIsNone(deepstack)
+        self.assertTrue(torch.equal(selected, final_output[:, 1:]))
+
     def test_legacy_decoder_trains_only_tail_blocks_and_final_norm(self):
         model = Dinov2RoadSegmentationModel(
             FakeVisionEncoder(),

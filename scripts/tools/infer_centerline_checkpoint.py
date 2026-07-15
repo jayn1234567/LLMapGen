@@ -40,6 +40,13 @@ from mllm.coord_utils import (
     payload_to_text,
     record_coord_config,
 )
+from mllm.coordinate_tokens import (
+    COORDINATE_TOKEN_MODE_ANGLE,
+    append_coordinate_token_instruction,
+    decode_coordinate_tokens,
+    normalize_coordinate_token_mode,
+    tokenizer_has_coordinate_vocabulary,
+)
 from mllm.mm_utils import process_images, tokenizer_image_token
 from mllm.model.builder import load_pretrained_model
 from mllm.model.language_model.qwen_family import (
@@ -81,8 +88,8 @@ def rank_json_path(path: Path, rank: int) -> Path:
     return path.with_name(f"{path.stem}_rank{rank:05d}{path.suffix}")
 
 
-def normalize_prediction_text(text: str) -> str:
-    cleaned = text.strip()
+def normalize_prediction_text(text: str, max_coordinate: int = 1000) -> str:
+    cleaned = decode_coordinate_tokens(text, max_coordinate=max_coordinate).strip()
     for token in ("<|im_end|>", "<|endoftext|>", "</s>"):
         cleaned = cleaned.replace(token, "")
     cleaned = cleaned.strip()
@@ -93,6 +100,19 @@ def normalize_prediction_text(text: str) -> str:
     if cleaned.endswith("```"):
         cleaned = cleaned[:-3].strip()
     return cleaned
+
+
+def resolve_coordinate_token_settings(tokenizer, config) -> tuple[str, int]:
+    max_coordinate = int(getattr(config, "coordinate_token_max", 1000) or 1000)
+    mode = normalize_coordinate_token_mode(
+        getattr(config, "coordinate_token_mode", "none")
+    )
+    if mode != COORDINATE_TOKEN_MODE_ANGLE and tokenizer_has_coordinate_vocabulary(
+        tokenizer,
+        max_coordinate=max_coordinate,
+    ):
+        mode = COORDINATE_TOKEN_MODE_ANGLE
+    return mode, max_coordinate
 
 
 def extract_json_array(text: str) -> str:
@@ -995,6 +1015,14 @@ def main():
     )
     tokenizer, model, image_processor = load_model_components(
         checkpoint_dir, manifest, args.device, config_overrides=config_overrides)
+    coordinate_token_mode, coordinate_token_max = resolve_coordinate_token_settings(
+        tokenizer,
+        model.config,
+    )
+    print(
+        "[infer] coordinate tokens: "
+        f"mode={coordinate_token_mode}, max={coordinate_token_max}"
+    )
     if args.test_json:
         with open(args.test_json, "r", encoding="utf-8") as f:
             first_char = f.read(1)
@@ -1047,6 +1075,11 @@ def main():
             prompt_text = record["conversations"][0]["value"]
         else:
             prompt_text = args.prompt
+        if coordinate_token_mode == COORDINATE_TOKEN_MODE_ANGLE:
+            prompt_text = append_coordinate_token_instruction(
+                prompt_text,
+                max_coordinate=coordinate_token_max,
+            )
         prompt = build_prompt(prompt_text, conv_template)
 
         input_ids = tokenizer_image_token(prompt, tokenizer, IMAGE_TOKEN_INDEX, return_tensors="pt")
@@ -1079,7 +1112,10 @@ def main():
             decoded_ids.unsqueeze(0),
             skip_special_tokens=False,
         )[0].strip()
-        prediction = normalize_prediction_text(raw_prediction)
+        prediction = normalize_prediction_text(
+            raw_prediction,
+            max_coordinate=coordinate_token_max,
+        )
         prediction_json = extract_json_payload(prediction)
         coord_cfg = resolve_coord_config(record, args)
 

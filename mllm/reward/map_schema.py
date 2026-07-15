@@ -5,6 +5,7 @@ import json
 from typing import Any
 
 from mllm.coord_utils import COORD_MODE_NORM1000, COORD_MODE_PIXEL, DEFAULT_COORD_RANGE, normalize_coord_mode
+from mllm.coordinate_tokens import decode_coordinate_tokens
 
 
 @dataclass
@@ -76,7 +77,9 @@ def parse_map_json(
     coord_mode: str = COORD_MODE_PIXEL,
     coord_range: int = DEFAULT_COORD_RANGE,
 ) -> MapParseResult:
-    payload_text = extract_json_payload(prediction_text)
+    payload_text = extract_json_payload(
+        decode_coordinate_tokens(prediction_text, max_coordinate=coord_range)
+    )
     try:
         parsed = json.loads(payload_text)
         if isinstance(parsed, list):

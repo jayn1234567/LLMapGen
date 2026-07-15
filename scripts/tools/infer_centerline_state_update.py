@@ -28,6 +28,10 @@ from mllm.coord_utils import (
     payload_to_text,
     record_coord_config,
 )
+from mllm.coordinate_tokens import (
+    COORDINATE_TOKEN_MODE_ANGLE,
+    append_coordinate_token_instruction,
+)
 from mllm.mm_utils import process_images, tokenizer_image_token
 from scripts.tools.infer_centerline_checkpoint import (
     build_prompt,
@@ -38,6 +42,7 @@ from scripts.tools.infer_centerline_checkpoint import (
     normalize_prediction_text,
     parse_map_json,
     read_manifest,
+    resolve_coordinate_token_settings,
 )
 from scripts.tools.map_visualization import (
     record_tile_id,
@@ -611,6 +616,15 @@ def run_patch_inference(record, prompt_text, image_folder, tokenizer, model, ima
     else:
         images_tensor = images_tensor.to(dtype=dtype, device=image_device)
 
+    coordinate_token_mode, coordinate_token_max = resolve_coordinate_token_settings(
+        tokenizer,
+        model.config,
+    )
+    if coordinate_token_mode == COORDINATE_TOKEN_MODE_ANGLE:
+        prompt_text = append_coordinate_token_instruction(
+            prompt_text,
+            max_coordinate=coordinate_token_max,
+        )
     prompt = build_prompt(prompt_text, conv_template)
     input_ids = tokenizer_image_token(prompt, tokenizer, IMAGE_TOKEN_INDEX, return_tensors="pt")
     input_ids = input_ids.unsqueeze(0).to(model.device)
@@ -638,7 +652,10 @@ def run_patch_inference(record, prompt_text, image_folder, tokenizer, model, ima
 
     decoded_ids, decoded_mode = completion_token_ids(output_ids, input_ids)
     raw_prediction = tokenizer.batch_decode(decoded_ids.unsqueeze(0), skip_special_tokens=False)[0].strip()
-    prediction = normalize_prediction_text(raw_prediction)
+    prediction = normalize_prediction_text(
+        raw_prediction,
+        max_coordinate=coordinate_token_max,
+    )
     return image_path, prompt, raw_prediction, prediction, int(input_ids.shape[1]), int(output_ids.shape[1]), int(decoded_ids.numel()), decoded_mode
 
 

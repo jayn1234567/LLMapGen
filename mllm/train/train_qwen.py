@@ -64,6 +64,12 @@ from transformers import TrainerCallback
 from transformers.trainer_callback import PrinterCallback, ProgressCallback
 
 from mllm import conversation as conversation_lib
+from mllm.coordinate_tokens import (
+    COORDINATE_TOKEN_MODE_ANGLE,
+    encode_coordinate_conversations,
+    normalize_coordinate_token_mode,
+    register_coordinate_vocabulary,
+)
 from mllm.model import *
 from mllm.mm_utils import tokenizer_image_token, process_anyres_image
 from mllm.model.builder import _load_multimodal_weights_if_present, _load_tokenizer_with_fast_fallback
@@ -1126,6 +1132,15 @@ class ModelArguments:
     mm_patch_merge_type: Optional[str] = field(default='flat')
     mm_vision_select_feature: Optional[str] = field(default="patch")
     unfreeze_mm_vision_tower: bool = field(default=False)
+    mm_vision_unfreeze_last_n_blocks: int = field(
+        default=-1,
+        metadata={
+            "help": (
+                "When the vision tower is unfrozen, train only its final N transformer "
+                "blocks plus final norm. -1 keeps the historical full-tower behavior."
+            )
+        },
+    )
     deepstack_visual_indexes: Optional[List[int]] = field(default=None)
     disable_deepstack: bool = field(default=True)
     vision_layer_fusion_indexes: Optional[List[int]] = field(
@@ -1188,6 +1203,14 @@ class DataArguments:
     train_sample_limit: Optional[int] = field(default=None)
     eval_sample_limit: Optional[int] = field(default=None)
     sample_seed: int = field(default=42)
+    coordinate_token_mode: str = field(
+        default="none",
+        metadata={"help": "none or angle; angle emits one <n> token per map coordinate."},
+    )
+    coordinate_token_max: int = field(
+        default=1000,
+        metadata={"help": "Largest discrete coordinate token when angle mode is enabled."},
+    )
 
 
 @dataclass
@@ -2199,6 +2222,16 @@ class LazySupervisedDataset(Dataset):
         if isinstance(i, int):
             sources = [sources]
         assert len(sources) == 1, "Don't know why it is wrapped to a list"  # FIXME
+        source_conversations = copy.deepcopy([e["conversations"] for e in sources])
+        if self.data_args.coordinate_token_mode == COORDINATE_TOKEN_MODE_ANGLE:
+            source_conversations = [
+                encode_coordinate_conversations(
+                    conversation,
+                    max_coordinate=self.data_args.coordinate_token_max,
+                )
+                for conversation in source_conversations
+            ]
+
         if 'image' in sources[0]:
             image_file = self.list_data_dict[i]['image']
             img_path_idx = self.list_data_dict[i]['img_path_idx']
@@ -2226,11 +2259,9 @@ class LazySupervisedDataset(Dataset):
                 image = process_anyres_image(image, self.data_args.image_processor, self.data_args.image_grid_pinpoints)
             else:
                 image = processor.preprocess(image, return_tensors='pt')['pixel_values'][0]
-            sources = preprocess_multimodal(
-                copy.deepcopy([e["conversations"] for e in sources]),
-                self.data_args)
+            sources = preprocess_multimodal(source_conversations, self.data_args)
         else:
-            sources = copy.deepcopy([e["conversations"] for e in sources])
+            sources = source_conversations
         data_dict = preprocess(
             sources,
             self.tokenizer,
@@ -2343,6 +2374,11 @@ def train(attn_implementation=None):
     model_args, data_args, training_args = parser.parse_args_into_dataclasses()
     local_rank = training_args.local_rank
     silence_non_primary_rank_output()
+    data_args.coordinate_token_mode = normalize_coordinate_token_mode(
+        data_args.coordinate_token_mode
+    )
+    if data_args.coordinate_token_max < 0:
+        raise ValueError("--coordinate_token_max must be non-negative.")
     if model_args.disable_deepstack:
         model_args.deepstack_visual_indexes = None
         rank0_print("DeepStack disabled: using ViT main feature + mm_projector only.")
@@ -2588,6 +2624,23 @@ def train(attn_implementation=None):
         model_name_or_path=model_args.model_name_or_path,
     )
 
+    if data_args.coordinate_token_mode == COORDINATE_TOKEN_MODE_ANGLE:
+        coordinate_token_report = register_coordinate_vocabulary(
+            tokenizer,
+            model,
+            max_coordinate=data_args.coordinate_token_max,
+        )
+        model.config.coordinate_token_mode = data_args.coordinate_token_mode
+        model.config.coordinate_token_max = int(data_args.coordinate_token_max)
+        model.config.coordinate_token_report = coordinate_token_report
+        rank0_print(
+            "Discrete coordinate vocabulary enabled: "
+            + json.dumps(coordinate_token_report, ensure_ascii=True)
+        )
+    else:
+        model.config.coordinate_token_mode = "none"
+        model.config.coordinate_token_max = int(data_args.coordinate_token_max)
+
     if model_args.vision_tower is not None:
         model.get_model().initialize_vision_modules(
             model_args=model_args,
@@ -2597,7 +2650,23 @@ def train(attn_implementation=None):
         vision_tower = model.get_vision_tower()
         # The pretrained config can carry its own unfreeze flag; enforce the CLI choice here.
         vision_tower.tune_vision_tower = model_args.unfreeze_mm_vision_tower
-        if hasattr(vision_tower, "set_vision_tower_trainable"):
+        partial_vision_blocks = int(model_args.mm_vision_unfreeze_last_n_blocks)
+        if partial_vision_blocks >= 0 and not model_args.unfreeze_mm_vision_tower:
+            raise ValueError(
+                "--mm_vision_unfreeze_last_n_blocks requires "
+                "--unfreeze_mm_vision_tower True."
+            )
+        if partial_vision_blocks >= 0:
+            if not hasattr(vision_tower, "set_vision_tower_trainable"):
+                raise ValueError(
+                    "Partial vision unfreezing is not supported by "
+                    f"{type(vision_tower).__name__}."
+                )
+            vision_tower.set_vision_tower_trainable(
+                True,
+                last_n_blocks=partial_vision_blocks,
+            )
+        elif hasattr(vision_tower, "set_vision_tower_trainable"):
             vision_tower.set_vision_tower_trainable(model_args.unfreeze_mm_vision_tower)
         elif hasattr(vision_tower, "vision_tower"):
             vision_tower.vision_tower.requires_grad_(model_args.unfreeze_mm_vision_tower)
@@ -2613,6 +2682,7 @@ def train(attn_implementation=None):
 
         model.config.image_grid_pinpoints = data_args.image_grid_pinpoints
         model.config.image_aspect_ratio = data_args.image_aspect_ratio
+        model.config.mm_vision_unfreeze_last_n_blocks = partial_vision_blocks
         model.config.tokenizer_padding_side = tokenizer.padding_side
         model.config.tokenizer_model_max_length = tokenizer.model_max_length
 
@@ -2625,8 +2695,14 @@ def train(attn_implementation=None):
         # freeze llm
         if training_args.freeze_llm:
             model.requires_grad_(False)
-            for p in model.get_model().vision_tower.parameters():
-                p.requires_grad = True
+            if partial_vision_blocks >= 0:
+                vision_tower.set_vision_tower_trainable(
+                    True,
+                    last_n_blocks=partial_vision_blocks,
+                )
+            else:
+                for p in model.get_model().vision_tower.parameters():
+                    p.requires_grad = True
             for p in model.get_model().mm_projector.parameters():
                 p.requires_grad = True
 

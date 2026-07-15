@@ -19,6 +19,9 @@ class DINOv2VisionTower(nn.Module):
         self.select_layer = args.mm_vision_select_layer
         self.select_feature = getattr(args, 'mm_vision_select_feature', 'patch')
         self.tune_vision_tower = getattr(args, 'unfreeze_mm_vision_tower', False)
+        self.unfreeze_last_n_blocks = int(
+            getattr(args, 'mm_vision_unfreeze_last_n_blocks', -1)
+        )
         self.input_image_size = getattr(args, 'input_image_size', None)
 
         self.deepstack_visual_indexes = getattr(args, 'deepstack_visual_indexes', None)
@@ -52,8 +55,7 @@ class DINOv2VisionTower(nn.Module):
             device_map=device_map,
             local_files_only=True,
         )
-        if not self.tune_vision_tower:
-            self.vision_tower.requires_grad_(False)
+        self.set_vision_tower_trainable(self.tune_vision_tower)
 
         target_size = self.input_image_size or self.vision_tower.config.image_size
         if target_size is not None:
@@ -81,8 +83,7 @@ class DINOv2VisionTower(nn.Module):
 
         self.image_processor = AutoImageProcessor.from_pretrained(checkpoint_dir, local_files_only=True)
         self.vision_tower = Dinov2Model(vit_config)
-        if not self.tune_vision_tower:
-            self.vision_tower.requires_grad_(False)
+        self.set_vision_tower_trainable(self.tune_vision_tower)
 
         target_size = self.input_image_size or self.vision_tower.config.image_size
         if target_size is not None:
@@ -102,13 +103,60 @@ class DINOv2VisionTower(nn.Module):
         self.cfg_only = self.vision_tower.config
         self.is_loaded = True
 
+    def set_vision_tower_trainable(self, trainable, last_n_blocks=None):
+        """Apply full, frozen, or tail-block-only DINOv2 fine-tuning."""
+        if last_n_blocks is not None:
+            self.unfreeze_last_n_blocks = int(last_n_blocks)
+
+        trainable = bool(trainable)
+        if not trainable:
+            self.vision_tower.requires_grad_(False)
+            self.tune_vision_tower = False
+            self.trainable_vision_block_indices = []
+            return
+
+        if self.unfreeze_last_n_blocks < 0:
+            self.vision_tower.requires_grad_(True)
+            self.tune_vision_tower = True
+            self.trainable_vision_block_indices = list(
+                range(len(self.vision_tower.encoder.layer))
+            )
+            return
+
+        blocks = self.vision_tower.encoder.layer
+        if self.unfreeze_last_n_blocks > len(blocks):
+            raise ValueError(
+                "mm_vision_unfreeze_last_n_blocks="
+                f"{self.unfreeze_last_n_blocks} exceeds DINOv2 depth {len(blocks)}."
+            )
+
+        self.vision_tower.requires_grad_(False)
+        start = len(blocks) - self.unfreeze_last_n_blocks
+        for block in blocks[start:]:
+            block.requires_grad_(True)
+
+        if self.unfreeze_last_n_blocks > 0:
+            final_norm = getattr(self.vision_tower, 'layernorm', None)
+            if final_norm is not None:
+                final_norm.requires_grad_(True)
+
+        self.trainable_vision_block_indices = list(range(start, len(blocks)))
+        self.tune_vision_tower = bool(self.trainable_vision_block_indices)
+        print(
+            "DINOv2 partial fine-tuning: "
+            f"blocks={self.trainable_vision_block_indices}, "
+            f"final_norm={self.unfreeze_last_n_blocks > 0}"
+        )
+
     def _resolve_select_layer_index(self):
         raw = self.select_layer
         if raw >= 0:
             self.select_layer_idx = raw
+            max_index = self.num_layers
         else:
             self.select_layer_idx = self.num_layers + raw
-        self.select_layer_idx = max(0, min(self.select_layer_idx, self.num_layers - 1))
+            max_index = self.num_layers - 1
+        self.select_layer_idx = max(0, min(self.select_layer_idx, max_index))
 
     def _build_deepstack(self):
         vit_hidden_size = self.vision_tower.config.hidden_size
@@ -151,7 +199,10 @@ class DINOv2VisionTower(nn.Module):
 
         def select_features_from_layer(layer_idx):
             layer_idx = max(0, min(layer_idx, len(hidden_states) - 1))
-            features = hidden_states[layer_idx]
+            if layer_idx == len(hidden_states) - 1:
+                features = image_forward_outs.last_hidden_state
+            else:
+                features = hidden_states[layer_idx]
             if self.select_feature == 'patch':
                 return features[:, 1:]
             if self.select_feature == 'cls_patch':

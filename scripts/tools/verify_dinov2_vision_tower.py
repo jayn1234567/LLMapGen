@@ -133,10 +133,11 @@ def main() -> None:
         num_patches_per_side = int(args.input_size) // int(config.patch_size)
         num_patches = num_patches_per_side**2
         raw_select_layer = int(args.select_layer)
-        resolved_select_layer = (
-            raw_select_layer if raw_select_layer >= 0 else num_layers + raw_select_layer
-        )
-        resolved_select_layer = max(0, min(resolved_select_layer, num_layers - 1))
+        if raw_select_layer >= 0:
+            resolved_select_layer = min(raw_select_layer, num_layers)
+        else:
+            resolved_select_layer = min(num_layers + raw_select_layer, num_layers - 1)
+        resolved_select_layer = max(0, resolved_select_layer)
 
         def run_forward(pixel_values: torch.Tensor) -> tuple[torch.Tensor, object, int]:
             outputs = hf_model(
@@ -144,7 +145,10 @@ def main() -> None:
                 output_hidden_states=True,
                 return_dict=True,
             )
-            main_features = outputs.hidden_states[resolved_select_layer][:, 1:]
+            if resolved_select_layer == len(outputs.hidden_states) - 1:
+                main_features = outputs.last_hidden_state[:, 1:]
+            else:
+                main_features = outputs.hidden_states[resolved_select_layer][:, 1:]
             return main_features, None, resolved_select_layer
 
     checks = {

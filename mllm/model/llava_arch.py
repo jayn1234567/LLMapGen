@@ -125,6 +125,7 @@ class LlavaMetaModel:
             'multi_vision_dropout',
             'vision_layer_fusion_indexes',
             'vision_layer_fusion_type',
+            'mm_vision_unfreeze_last_n_blocks',
         ):
             if hasattr(model_args, attr):
                 setattr(self.config, attr, getattr(model_args, attr))

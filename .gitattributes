@@ -2,6 +2,7 @@
 
 # Linux and repository source files must stay LF on every platform.
 *.sh text eol=lf
+*.sbatch text eol=lf
 *.py text eol=lf
 *.json text eol=lf
 *.jsonl text eol=lf

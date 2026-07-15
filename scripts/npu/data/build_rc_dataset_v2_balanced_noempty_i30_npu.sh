@@ -10,9 +10,10 @@ REPO_ROOT=$(readlink -f "${SCRIPT_DIR}/../../..")
 cd "${REPO_ROOT}"
 
 PYTHON_BIN=${PYTHON_BIN:-python}
-WORK_ROOT=${WORK_ROOT:-/cache/jn/rc_dataset_v2_550k_noempty_i30}
-OUTPUT_OBS_ROOT=${OUTPUT_OBS_ROOT:-obs://yw-ads-training-gy1/data/external/personal/h58801830/whu/jn/data/rc_dataset_v2_550k_noempty_i30/}
+WORK_ROOT=${WORK_ROOT:-/cache/jn/rc_dataset_v2_550k_noempty_i30_shift128}
+OUTPUT_OBS_ROOT=${OUTPUT_OBS_ROOT:-obs://yw-ads-training-gy1/data/external/personal/h58801830/whu/jn/data/rc_dataset_v2_550k_noempty_i30_shift128/}
 TRAIN_TARGET_SAMPLES=${TRAIN_TARGET_SAMPLES:-550000}
+TRAIN_STRIDE=${TRAIN_STRIDE:-128}
 DIFFICULTY_RATIOS=${DIFFICULTY_RATIOS:-empty=0,easy=0.30,medium=0.33,hard=0.27,very_hard=0.10}
 INTERSECTION_TARGET_RATIO=${INTERSECTION_TARGET_RATIO:-0.30}
 VIEWS=${VIEWS:-both}
@@ -67,6 +68,7 @@ echo "[dataset-v2-npu] repository:          ${REPO_ROOT}"
 echo "[dataset-v2-npu] work root:           ${WORK_ROOT}"
 echo "[dataset-v2-npu] output OBS:          ${OUTPUT_OBS_ROOT}"
 echo "[dataset-v2-npu] train records:       ${TRAIN_TARGET_SAMPLES}"
+echo "[dataset-v2-npu] train crop stride:   ${TRAIN_STRIDE}"
 echo "[dataset-v2-npu] difficulty ratios:   ${DIFFICULTY_RATIOS}"
 echo "[dataset-v2-npu] global intersection: ${INTERSECTION_TARGET_RATIO}"
 echo "[dataset-v2-npu] views:               ${VIEWS}"
@@ -80,6 +82,7 @@ command=(
   --output-obs-root "${OUTPUT_OBS_ROOT}"
   --views "${VIEWS}"
   --train-target-samples "${TRAIN_TARGET_SAMPLES}"
+  --train-stride "${TRAIN_STRIDE}"
   --difficulty-ratios "${DIFFICULTY_RATIOS}"
   --intersection-target-ratio "${INTERSECTION_TARGET_RATIO}"
   --obs-backend "${OBS_BACKEND}"

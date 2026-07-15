@@ -45,9 +45,13 @@ internally as `right_turn`; the public centerline JSON schema remains unchanged.
 - There is no visible ROI border in this first ablation. The prompt states the
   exact ROI. A border/corner-marker experiment should be separate.
 
-The target geometry, patch ids, raw-sample split, train selection, and repeated
-sampling counts are identical between the two variants. Rotation and offset
-grids are disabled so visible context is the only A/B variable.
+The target geometry, patch ids, raw-sample split, and train selection are
+identical between the two variants. Training starts from the native 256-pixel
+grid. If those unique windows cannot fill the target, the builder adds windows
+from the half-patch translation grid (`--train-stride 128`) and clips the raw
+GeoJSON geometry again at each translated window. Exact repeats and rotation
+are disabled, so visible context remains the only difference between the two
+output variants.
 
 For Jiangjihua's DINOv2-L recipe, the processor resizes the complete input view
 to `518x518`. Therefore:
@@ -74,15 +78,22 @@ medium and hard buckets:
 The target overall intersection share is 30% (165,000 records). This is one
 global constraint, not a separate 30% requirement inside every difficulty
 bucket. The allocator follows the natural intersection density of each bucket
-and prefers unique records before introducing repeats. `balance_report.json`
-records available, planned, selected, and repeated intersection counts for
-every bucket.
+while satisfying the global target with unique crop windows.
 
-If a difficulty bucket has too few unique samples, the builder repeats records
-in `train.jsonl`; the PNG is stored once. Repeated records receive ids such as
-`...__repeat001` and retain `meta.base_sample_id`. Disable this behavior with
-`--no-oversample-short-buckets` (the build then fails if 550,000 cannot be
-filled).
+Selection uses the following fallback order:
+
+1. Fill the requested difficulty quotas from unique native-grid windows.
+2. Move any unfilled quota to available `medium` and `hard` windows first,
+   followed by `easy`, then `very_hard`.
+3. If the native grid still has fewer than 550,000 usable windows, fill the
+   remaining shortage from translated windows with offsets `(128,0)`,
+   `(0,128)`, and `(128,128)`.
+4. Fail explicitly if the requested total or exact global intersection ratio
+   is still infeasible. The builder never duplicates a patch id.
+
+The translated samples are genuine crops from the source raster rather than
+shifted 256 PNGs: their centerline/intersection geometries, endpoint types, and
+norm1000 coordinates are recomputed for the translated crop boundary.
 
 The zero-empty rule applies to train selection. Eval and test retain their
 natural, complete non-black patch distributions, including valid negative
@@ -111,13 +122,14 @@ python scripts/tools/build_rc_dataset_v2_from_obs.py \
   --resume
 ```
 
-The formal Ascend-side entrypoint pins the no-empty, globally 30%-intersection
-recipe and uses a versioned OBS destination:
+The formal Ascend-side entrypoint pins the no-empty, globally 30%-intersection,
+half-patch-translation recipe and uses a versioned OBS destination:
 
 ```bash
 cd /cache/jn/MLLM_project-unimapgen_v7
 
-WORK_ROOT=/cache/jn/rc_dataset_v2_550k_noempty_i30 \
+WORK_ROOT=/cache/jn/rc_dataset_v2_550k_noempty_i30_shift128 \
+TRAIN_STRIDE=128 \
 bash scripts/npu/data/build_rc_dataset_v2_balanced_noempty_i30_npu.sh
 ```
 
@@ -125,13 +137,7 @@ Set `INSTALL_DATA_DEPS=true` only when the active Python is missing GeoPandas,
 Rasterio, Shapely, or the other packages in `data_process/requirements.txt`.
 The script uses Huawei MoXing by default and does not initialize NPU devices.
 Its default destination is
-`obs://yw-ads-training-gy1/data/external/personal/h58801830/whu/jn/data/rc_dataset_v2_550k_noempty_i30/`.
-
-The default destination is:
-
-```text
-obs://yw-ads-training-gy1/data/external/personal/h58801830/whu/jn/data/rc_dataset_v2/
-```
+`obs://yw-ads-training-gy1/data/external/personal/h58801830/whu/jn/data/rc_dataset_v2_550k_noempty_i30_shift128/`.
 
 `--resume` reuses downloads with a completed marker, keeps existing PNGs, and
 reuses completed tar packages. Do not treat a directory without its
@@ -140,7 +146,7 @@ reuses completed tar packages. Do not treat a directory without its
 The default upload mode creates:
 
 ```text
-obs://yw-ads-training-gy1/data/external/personal/h58801830/whu/jn/data/rc_dataset_v2/
+obs://yw-ads-training-gy1/data/external/personal/h58801830/whu/jn/data/rc_dataset_v2_550k_noempty_i30_shift128/
 |-- local256.tar
 |-- context512_roi256.tar
 |-- build_summary.json
@@ -164,7 +170,8 @@ python scripts/tools/build_rc_dataset_v2_from_obs.py \
 ```
 
 For a small end-to-end smoke build, add `--limit-samples 12` and lower
-`--train-target-samples` if oversampling is not desired.
+`--train-target-samples` to the number of unique crop windows that those raw
+samples can provide.
 
 ## Output layout
 
@@ -197,10 +204,11 @@ full lattice and apply weighting in the sampler instead of deleting patches.
 
 - `train_candidates.jsonl`: geometry metrics and difficulty tag for every
   unique train candidate.
-- `train_selection.jsonl`: selected patch ids and repeat counts.
-- `balance_report.json`: requested versus actual counts, unique counts,
-  oversampling, global intersection plan, and per-bucket natural/selected
-  intersection ratios.
+- `train_selection.jsonl`: selected unique patch ids, grid kind, difficulty,
+  and intersection flag.
+- `balance_report.json`: requested versus actual counts, native/translated
+  counts, difficulty redistribution, global intersection plan, and per-bucket
+  natural/selected intersection ratios.
 - `split_manifest.json`: source roots, duplicate ids, and raw sample split.
 
 ## Local Windows build
@@ -268,7 +276,7 @@ warnings rather than allowing one object to overwrite another silently.
 The default OBS upload directory is already set to:
 
 ```text
-obs://yw-ads-training-gy1/data/external/personal/h58801830/whu/jn/data/rc_dataset_v2/
+obs://yw-ads-training-gy1/data/external/personal/h58801830/whu/jn/data/rc_dataset_v2_550k_noempty_i30_shift128/
 ```
 
 Use `--obsutil-path "C:\path\to\obsutil.exe"` if it is not on `PATH`. Use

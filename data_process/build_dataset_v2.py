@@ -14,6 +14,7 @@ norm1000 conversion stay aligned with the Jiangjihua data pipeline.
 """
 
 import argparse
+import copy
 import json
 import random
 import sys
@@ -60,6 +61,7 @@ DEFAULT_DIFFICULTY_RATIOS = {
     "very_hard": 0.10,
 }
 DIFFICULTY_ORDER = tuple(DEFAULT_DIFFICULTY_RATIOS)
+DIFFICULTY_REDISTRIBUTION_GROUPS = (("medium", "hard"), ("easy",), ("very_hard",))
 DIFFICULTY_ARGS = SimpleNamespace(
     coord_mode=COORD_MODE_NORM1000,
     coord_range=float(DEFAULT_COORD_RANGE),
@@ -105,38 +107,71 @@ def allocate_quotas(total, ratios):
     return quotas
 
 
-def take_with_optional_replacement(pool, count, rng, allow_oversample):
+def take_without_replacement(pool, count, rng):
     if count <= 0 or not pool:
         return []
     shuffled = list(pool)
     rng.shuffle(shuffled)
-    if count <= len(shuffled):
-        return shuffled[:count]
-    if not allow_oversample:
-        return shuffled
-    result = list(shuffled)
-    while len(result) < count:
-        cycle = list(shuffled)
-        rng.shuffle(cycle)
-        result.extend(cycle[:count - len(result)])
-    return result
+    return shuffled[:count]
 
 
-def _repeat_cost(quota, intersection_count, intersection_unique, plain_unique):
-    plain_count = quota - intersection_count
-    return (
-        max(0, intersection_count - intersection_unique)
-        + max(0, plain_count - plain_unique)
-    )
+def empty_candidate_pools():
+    return {
+        name: {"intersection": [], "plain": []}
+        for name in DIFFICULTY_ORDER
+    }
+
+
+def available_counts(pools):
+    return {
+        name: len(pools[name]["intersection"]) + len(pools[name]["plain"])
+        for name in DIFFICULTY_ORDER
+    }
+
+
+def resolve_unique_difficulty_quotas(pools, target_total, ratios, use_target_ratios=True):
+    available = available_counts(pools)
+    requested = allocate_quotas(target_total, ratios) if use_target_ratios else {
+        name: 0 for name in DIFFICULTY_ORDER
+    }
+    resolved = {
+        name: min(requested[name], available[name])
+        for name in DIFFICULTY_ORDER
+    }
+    shifted_in = {name: 0 for name in DIFFICULTY_ORDER}
+    shortage = target_total - sum(resolved.values())
+
+    for group in DIFFICULTY_REDISTRIBUTION_GROUPS:
+        while shortage > 0:
+            candidates = [name for name in group if resolved[name] < available[name]]
+            if not candidates:
+                break
+            chosen = min(
+                candidates,
+                key=lambda name: (
+                    (shifted_in[name] + 1) / max(ratios[name], 1e-12),
+                    DIFFICULTY_ORDER.index(name),
+                ),
+            )
+            resolved[chosen] += 1
+            shifted_in[chosen] += 1
+            shortage -= 1
+
+    return resolved, {
+        "requested_quotas": requested,
+        "resolved_quotas": resolved,
+        "available_unique": available,
+        "shifted_in": shifted_in,
+        "unfilled": shortage,
+        "redistribution_groups": [list(group) for group in DIFFICULTY_REDISTRIBUTION_GROUPS],
+    }
 
 
 def allocate_global_intersection_quotas(
     pools,
     quotas,
-    target_total,
-    intersection_target_ratio,
+    requested_intersections,
     rng,
-    allow_oversample,
 ):
     """Allocate one global intersection target while preserving difficulty quotas.
 
@@ -144,7 +179,7 @@ def allocate_global_intersection_quotas(
     allocations that do not require repeated records. It intentionally does not
     impose the same intersection percentage on every difficulty bucket.
     """
-    requested = int(round(target_total * intersection_target_ratio))
+    requested = int(requested_intersections)
     lower = {}
     upper = {}
     natural_ratios = {}
@@ -159,16 +194,8 @@ def allocate_global_intersection_quotas(
         natural_ratios[name] = natural_ratio
         weights[name] = quota * natural_ratio
 
-        if quota <= 0 or intersection_unique == 0:
-            lower[name] = 0
-            upper[name] = 0
-            continue
-        if allow_oversample:
-            lower[name] = quota if plain_unique == 0 else 0
-            upper[name] = quota
-        else:
-            upper[name] = min(quota, intersection_unique)
-            lower[name] = upper[name] if plain_unique == 0 else 0
+        lower[name] = max(0, quota - plain_unique)
+        upper[name] = min(quota, intersection_unique)
 
     minimum = sum(lower.values())
     maximum = sum(upper.values())
@@ -182,17 +209,10 @@ def allocate_global_intersection_quotas(
             break
 
         def allocation_priority(name):
-            quota = quotas[name]
             current = planned[name]
-            intersection_unique = len(pools[name]["intersection"])
-            plain_unique = len(pools[name]["plain"])
-            repeat_delta = (
-                _repeat_cost(quota, current + 1, intersection_unique, plain_unique)
-                - _repeat_cost(quota, current, intersection_unique, plain_unique)
-            )
             weight = max(weights[name], 1e-12)
             weighted_progress = (current + 1) / weight
-            return repeat_delta, weighted_progress, tie_breakers[name]
+            return weighted_progress, tie_breakers[name]
 
         chosen_name = min(candidates, key=allocation_priority)
         planned[chosen_name] += 1
@@ -202,22 +222,29 @@ def allocate_global_intersection_quotas(
         "planned_records": sum(planned.values()),
         "minimum_feasible_records": minimum,
         "maximum_feasible_records": maximum,
-        "requested_ratio": intersection_target_ratio,
         "natural_ratios_by_bucket": natural_ratios,
         "constraint_scope": "global",
     }
 
 
-def select_balanced_candidates(pools, target_total, ratios, intersection_target_ratio, seed, allow_oversample):
-    quotas = allocate_quotas(target_total, ratios)
-    rng = random.Random(seed)
+def intersection_feasible_range(pools, quotas):
+    minimum = 0
+    maximum = 0
+    for name in DIFFICULTY_ORDER:
+        quota = quotas[name]
+        intersection_unique = len(pools[name]["intersection"])
+        plain_unique = len(pools[name]["plain"])
+        minimum += max(0, quota - plain_unique)
+        maximum += min(quota, intersection_unique)
+    return minimum, maximum
+
+
+def select_unique_pool_records(pools, quotas, requested_intersections, rng):
     planned_intersections, intersection_plan = allocate_global_intersection_quotas(
         pools,
         quotas,
-        target_total,
-        intersection_target_ratio,
+        requested_intersections,
         rng,
-        allow_oversample,
     )
     selected = []
     bucket_report = {}
@@ -229,18 +256,13 @@ def select_balanced_candidates(pools, target_total, ratios, intersection_target_
         desired_intersection = planned_intersections[name]
         desired_plain = quota - desired_intersection
 
-        chosen_intersection = take_with_optional_replacement(
-            intersection_pool, desired_intersection, rng, allow_oversample
-        )
-        chosen_plain = take_with_optional_replacement(plain_pool, desired_plain, rng, allow_oversample)
+        chosen_intersection = take_without_replacement(intersection_pool, desired_intersection, rng)
+        chosen_plain = take_without_replacement(plain_pool, desired_plain, rng)
         chosen = chosen_intersection + chosen_plain
-
-        if len(chosen) < quota:
-            chosen_ids = set(chosen)
-            leftovers = [item for item in intersection_pool + plain_pool if item not in chosen_ids]
-            chosen.extend(take_with_optional_replacement(
-                leftovers, quota - len(chosen), rng, allow_oversample
-            ))
+        if len(chosen) != quota:
+            raise ValueError(
+                f"unique candidate selection failed for {name}: selected={len(chosen)}, quota={quota}"
+            )
         rng.shuffle(chosen)
         selected.extend(chosen)
         intersection_id_set = set(intersection_pool)
@@ -256,48 +278,115 @@ def select_balanced_candidates(pools, target_total, ratios, intersection_target_
             "planned_intersection_ratio": desired_intersection / max(1, quota),
             "selected": len(chosen),
             "selected_intersection": sum(item in intersection_id_set for item in chosen),
-            "oversampled_records": max(0, len(chosen) - len(set(chosen))),
         }
+    return selected, intersection_plan, bucket_report
 
-    if len(selected) < target_total and allow_oversample:
-        selected_set = set(selected)
-        global_pool = []
-        for name in DIFFICULTY_ORDER:
-            global_pool.extend(pools[name]["intersection"])
-            global_pool.extend(pools[name]["plain"])
-        leftovers = [item for item in global_pool if item not in selected_set]
-        selected.extend(take_with_optional_replacement(
-            leftovers or global_pool,
-            target_total - len(selected),
-            rng,
-            allow_oversample,
-        ))
 
-    rng.shuffle(selected)
-    counts = Counter(selected)
-    selected_intersections = 0
-    intersection_ids = {
+def select_balanced_candidates(
+    base_pools,
+    translated_pools,
+    target_total,
+    ratios,
+    intersection_target_ratio,
+    seed,
+):
+    rng = random.Random(seed)
+    base_quotas, base_difficulty_plan = resolve_unique_difficulty_quotas(
+        base_pools,
+        target_total,
+        ratios,
+        use_target_ratios=True,
+    )
+    base_total = sum(base_quotas.values())
+    translated_needed = target_total - base_total
+    translated_quotas, translated_difficulty_plan = resolve_unique_difficulty_quotas(
+        translated_pools,
+        translated_needed,
+        ratios,
+        use_target_ratios=False,
+    )
+    final_intersection_target = int(round(target_total * intersection_target_ratio))
+    base_min, base_max = intersection_feasible_range(base_pools, base_quotas)
+    translated_min, translated_max = intersection_feasible_range(translated_pools, translated_quotas)
+    preferred_base_target = int(round(base_total * intersection_target_ratio))
+    compatible_base_min = max(base_min, final_intersection_target - translated_max)
+    compatible_base_max = min(base_max, final_intersection_target - translated_min)
+    if compatible_base_min <= compatible_base_max:
+        base_intersection_target = min(
+            max(preferred_base_target, compatible_base_min),
+            compatible_base_max,
+        )
+    else:
+        base_intersection_target = preferred_base_target
+
+    base_selected, base_intersection_plan, base_bucket_report = select_unique_pool_records(
+        base_pools,
+        base_quotas,
+        base_intersection_target,
+        rng,
+    )
+    base_intersection_ids = {
         item
         for name in DIFFICULTY_ORDER
-        for item in pools[name]["intersection"]
+        for item in base_pools[name]["intersection"]
     }
-    for item, count in counts.items():
-        if item in intersection_ids:
-            selected_intersections += count
+    base_intersections = sum(item in base_intersection_ids for item in base_selected)
+    translated_intersection_target = final_intersection_target - base_intersections
+    translated_selected, translated_intersection_plan, translated_bucket_report = select_unique_pool_records(
+        translated_pools,
+        translated_quotas,
+        translated_intersection_target,
+        rng,
+    )
+
+    selected = base_selected + translated_selected
+    rng.shuffle(selected)
+    counts = Counter(selected)
+    if len(counts) != len(selected):
+        raise ValueError("duplicate patch ids detected across base and translated grids")
+    intersection_ids = base_intersection_ids | {
+        item
+        for name in DIFFICULTY_ORDER
+        for item in translated_pools[name]["intersection"]
+    }
+    selected_intersections = sum(item in intersection_ids for item in selected)
+    final_bucket_counts = Counter()
+    for name in DIFFICULTY_ORDER:
+        selected_in_bucket = set(base_pools[name]["intersection"] + base_pools[name]["plain"])
+        selected_in_bucket.update(translated_pools[name]["intersection"])
+        selected_in_bucket.update(translated_pools[name]["plain"])
+        final_bucket_counts[name] = sum(item in selected_in_bucket for item in selected)
+
     report = {
         "target_total": target_total,
         "selected_total": len(selected),
         "selected_unique": len(counts),
-        "oversampled_records": len(selected) - len(counts),
+        "exact_repeated_records": 0,
+        "base_grid_records": len(base_selected),
+        "translated_grid_records": len(translated_selected),
         "target_ratios": ratios,
-        "target_quotas": quotas,
+        "target_quotas": allocate_quotas(target_total, ratios),
+        "final_bucket_counts": dict(final_bucket_counts),
         "target_intersection_ratio": intersection_target_ratio,
         "actual_intersection_ratio": selected_intersections / max(1, len(selected)),
         "intersection_constraint_scope": "global",
-        "intersection_plan": intersection_plan,
-        "allow_oversample": allow_oversample,
+        "combined_intersection_feasible_records": {
+            "minimum": base_min + translated_min,
+            "maximum": base_max + translated_max,
+            "target": final_intersection_target,
+        },
+        "base_grid": {
+            "difficulty_plan": base_difficulty_plan,
+            "intersection_plan": base_intersection_plan,
+            "buckets": base_bucket_report,
+        },
+        "translation_grid": {
+            "difficulty_plan": translated_difficulty_plan,
+            "intersection_plan": translated_intersection_plan,
+            "buckets": translated_bucket_report,
+        },
+        "selection_policy": "unique_base_then_medium_hard_then_translated_grid",
         "seed": seed,
-        "buckets": bucket_report,
     }
     return counts, report
 
@@ -373,7 +462,28 @@ def discover_multi_source_samples(input_roots, source_uris, keep_archives, dupli
     return samples, chosen_source, collisions, source_reports
 
 
-def variant_row(row, target_size, context_size, view_mode, repeat_index=0):
+def annotate_translation_grid(row, patch_size):
+    row = dict(row)
+    row["meta"] = dict(row.get("meta", {}))
+    x0 = int(row["meta"]["x0"])
+    y0 = int(row["meta"]["y0"])
+    offset = [
+        x0 % patch_size,
+        y0 % patch_size,
+    ]
+    grid_patch_id = str(row["id"])
+    tile_id = str(row.get("tile_id") or row["meta"].get("tile_id") or "patch")
+    stable_patch_id = f"{tile_id}_x{x0:05d}_y{y0:05d}"
+    row["id"] = stable_patch_id
+    row["image"] = Path(row["image"]).with_name(f"{stable_patch_id}.png").as_posix()
+    row["meta"]["grid_patch_id"] = grid_patch_id
+    row["meta"]["stable_patch_id"] = stable_patch_id
+    row["meta"]["translation_offset"] = offset
+    row["meta"]["grid_kind"] = "base" if offset == [0, 0] else "translated"
+    return row
+
+
+def variant_row(row, target_size, context_size, view_mode):
     result = dict(row)
     result["meta"] = dict(row.get("meta", {}))
     x0 = int(result["meta"]["x0"])
@@ -382,10 +492,9 @@ def variant_row(row, target_size, context_size, view_mode, repeat_index=0):
     context_x0 = x0 - roi[0]
     context_y0 = y0 - roi[1]
     base_id = str(row["id"])
-    result["id"] = base_id if repeat_index == 0 else f"{base_id}__repeat{repeat_index:03d}"
     result["meta"].update({
-        "base_sample_id": base_id,
-        "oversample_copy_index": repeat_index,
+        "base_patch_id": base_id,
+        "exact_repeat": False,
         "view_mode": view_mode,
         "target_size": target_size,
         "context_image_size": context_size,
@@ -464,6 +573,7 @@ def materialize_split(samples, split_name, selected_counts, variant_specs, sourc
                 max_empty_ratio=-1.0,
             )
             validate_rows(rows, True, args.patch_size)
+            rows = [annotate_translation_grid(row, args.patch_size) for row in rows]
             for row in rows:
                 row["meta"] = dict(row.get("meta", {}))
                 row["meta"]["source_uri"] = source_by_id.get(sample.sample_id, str(sample.root))
@@ -482,29 +592,28 @@ def materialize_split(samples, split_name, selected_counts, variant_specs, sourc
             )
             unique_image_count += len(rows)
             for row in rows:
-                repeat_count = selected_counts[row["id"]] if selected_counts is not None else 1
-                for repeat_index in range(repeat_count):
-                    for name, spec in variant_specs.items():
-                        rendered_row = variant_row(
-                            row,
-                            args.patch_size,
-                            spec["context_size"],
-                            spec["view_mode"],
-                            repeat_index=repeat_index,
-                        )
-                        sft = build_sft_record(
-                            rendered_row,
-                            args.patch_size,
-                            True,
-                            "a",
-                            coord_mode=args.coord_mode,
-                            coord_range=args.coord_range,
-                            context_size=spec["context_size"],
-                            view_mode=spec["view_mode"],
-                        )
-                        write_jsonl_item(writers[name]["sft"], sft)
-                        write_jsonl_item(writers[name]["meta"], rendered_row)
-                        record_counts[name] += 1
+                if selected_counts is not None and selected_counts[row["id"]] != 1:
+                    raise ValueError(f"selected patch must appear exactly once: {row['id']}")
+                for name, spec in variant_specs.items():
+                    rendered_row = variant_row(
+                        row,
+                        args.patch_size,
+                        spec["context_size"],
+                        spec["view_mode"],
+                    )
+                    sft = build_sft_record(
+                        rendered_row,
+                        args.patch_size,
+                        True,
+                        "a",
+                        coord_mode=args.coord_mode,
+                        coord_range=args.coord_range,
+                        context_size=spec["context_size"],
+                        view_mode=spec["view_mode"],
+                    )
+                    write_jsonl_item(writers[name]["sft"], sft)
+                    write_jsonl_item(writers[name]["meta"], rendered_row)
+                    record_counts[name] += 1
     finally:
         close_variant_writers(writers)
     return {
@@ -522,7 +631,13 @@ def parse_args(argv=None):
     parser.add_argument("--views", choices=["both", "local", "context"], default="both")
     parser.add_argument("--patch-size", type=int, default=256, help="Supervised target patch size.")
     parser.add_argument("--context-size", type=int, default=512, help="Context-view image size.")
-    parser.add_argument("--stride", type=int, default=256)
+    parser.add_argument("--stride", type=int, default=256, help="Eval/test and base-grid stride.")
+    parser.add_argument(
+        "--train-stride",
+        type=int,
+        default=128,
+        help="Train candidate stride. 128 adds half-patch translation grids without synthetic padding.",
+    )
     parser.add_argument("--coord-mode", choices=[COORD_MODE_NORM1000], default=COORD_MODE_NORM1000)
     parser.add_argument("--coord-range", type=int, default=DEFAULT_COORD_RANGE)
     parser.add_argument("--train-target-samples", type=int, default=550000)
@@ -531,7 +646,6 @@ def parse_args(argv=None):
         default="empty=0,easy=0.30,medium=0.33,hard=0.27,very_hard=0.10",
     )
     parser.add_argument("--intersection-target-ratio", type=float, default=0.30)
-    parser.add_argument("--no-oversample-short-buckets", action="store_true")
     parser.add_argument("--difficulty-seed", type=int, default=20260713)
     parser.add_argument("--train-ratio", type=float, default=0.90)
     parser.add_argument("--eval-ratio", type=float, default=0.05)
@@ -563,7 +677,9 @@ def main(argv=None):
             "The controlled Dataset V2 baseline is fixed to target patch 256 and context image 512."
         )
     if args.patch_size != args.stride:
-        raise ValueError("Dataset V2 baseline requires stride == patch_size; offset grids are a later ablation.")
+        raise ValueError("--stride must equal --patch-size so eval/test retain the base grid")
+    if not 0 < args.train_stride <= args.patch_size or args.patch_size % args.train_stride:
+        raise ValueError("--train-stride must be a positive divisor of --patch-size")
     centered_target_roi(args.patch_size, args.context_size)
     if args.coord_range != DEFAULT_COORD_RANGE:
         raise ValueError(
@@ -594,13 +710,13 @@ def main(argv=None):
         args.eval_count,
         args.split_seed,
     )
+    train_process_args = copy.copy(args)
+    train_process_args.stride = args.train_stride
 
     manifest_dir = output_root / "manifests"
     manifest_dir.mkdir(parents=True, exist_ok=True)
-    pools = {
-        name: {"intersection": [], "plain": []}
-        for name in DIFFICULTY_ORDER
-    }
+    base_pools = empty_candidate_pools()
+    translated_pools = empty_candidate_pools()
     candidate_counts = Counter()
     candidate_path = manifest_dir / "train_candidates.jsonl"
     train_samples_without_rows = []
@@ -611,7 +727,7 @@ def main(argv=None):
                 output_root,
                 "train",
                 True,
-                args,
+                train_process_args,
                 write_images=False,
                 max_empty_ratio=-1.0,
             )
@@ -619,40 +735,50 @@ def main(argv=None):
             if not rows:
                 train_samples_without_rows.append(sample.sample_id)
             for row in rows:
+                row = annotate_translation_grid(row, args.patch_size)
                 metrics = classify_row(row, args.patch_size, args.coord_range)
                 metrics["source_uri"] = source_by_id.get(sample.sample_id, str(sample.root))
+                metrics["translation_offset"] = row["meta"]["translation_offset"]
+                metrics["grid_kind"] = row["meta"]["grid_kind"]
                 pool_type = "intersection" if metrics["has_intersection"] else "plain"
-                pools[metrics["stratum"]][pool_type].append(row["id"])
+                target_pools = base_pools if metrics["grid_kind"] == "base" else translated_pools
+                target_pools[metrics["stratum"]][pool_type].append(row["id"])
                 candidate_counts[metrics["stratum"]] += 1
                 candidate_writer.write(json.dumps(metrics, ensure_ascii=False, separators=(",", ":")) + "\n")
 
     selected_counts, balance_report = select_balanced_candidates(
-        pools,
+        base_pools,
+        translated_pools,
         args.train_target_samples,
         ratios,
         args.intersection_target_ratio,
         args.difficulty_seed,
-        not args.no_oversample_short_buckets,
     )
     if balance_report["selected_total"] != args.train_target_samples:
         raise ValueError(
             f"unable to select {args.train_target_samples} train records; got {balance_report['selected_total']}. "
-            "Keep oversampling enabled or lower --train-target-samples."
+            "Lower --train-stride to add more translated crop windows or lower --train-target-samples."
+        )
+    if abs(balance_report["actual_intersection_ratio"] - args.intersection_target_ratio) > 1e-8:
+        raise ValueError(
+            "unable to satisfy the global intersection target with unique crop windows: "
+            f"target={args.intersection_target_ratio}, actual={balance_report['actual_intersection_ratio']}"
         )
 
     selection_path = manifest_dir / "train_selection.jsonl"
     with selection_path.open("w", encoding="utf-8") as selection_writer:
         for name in DIFFICULTY_ORDER:
-            for pool_type in ("intersection", "plain"):
-                for patch_id in pools[name][pool_type]:
-                    repeat_count = selected_counts.get(patch_id, 0)
-                    if repeat_count:
-                        write_jsonl_item(selection_writer, {
-                            "id": patch_id,
-                            "stratum": name,
-                            "has_intersection": pool_type == "intersection",
-                            "repeat_count": repeat_count,
-                        })
+            for grid_kind, pools in (("base", base_pools), ("translated", translated_pools)):
+                for pool_type in ("intersection", "plain"):
+                    for patch_id in pools[name][pool_type]:
+                        if selected_counts.get(patch_id, 0):
+                            write_jsonl_item(selection_writer, {
+                                "id": patch_id,
+                                "stratum": name,
+                                "has_intersection": pool_type == "intersection",
+                                "grid_kind": grid_kind,
+                                "exact_repeat": False,
+                            })
 
     variant_specs = {}
     if args.views in {"both", "local"}:
@@ -669,7 +795,14 @@ def main(argv=None):
         }
 
     split_results = {
-        "train": materialize_split(train_samples, "train", selected_counts, variant_specs, source_by_id, args),
+        "train": materialize_split(
+            train_samples,
+            "train",
+            selected_counts,
+            variant_specs,
+            source_by_id,
+            train_process_args,
+        ),
         "eval": materialize_split(eval_samples, "eval", None, variant_specs, source_by_id, args),
         "test": materialize_split(test_samples, "test", None, variant_specs, source_by_id, args),
     }
@@ -704,6 +837,7 @@ def main(argv=None):
         "coord_range": args.coord_range,
         "target_patch_size": args.patch_size,
         "stride": args.stride,
+        "train_stride": args.train_stride,
         "candidate_train_counts": dict(candidate_counts),
         "balance": balance_report,
         "splits": split_results,
@@ -723,9 +857,15 @@ def main(argv=None):
             "same_labels": True,
             "same_train_selection": True,
             "rotation_enabled": False,
-            "offset_grid_enabled": False,
+            "offset_grid_enabled": args.train_stride < args.patch_size,
+            "translation_offsets": [
+                [x_offset, y_offset]
+                for y_offset in range(0, args.patch_size, args.train_stride)
+                for x_offset in range(0, args.patch_size, args.train_stride)
+            ],
             "visible_roi_border_enabled": False,
-            "only_changed_variable": "visible_context_window",
+            "exact_repeat_enabled": False,
+            "only_ab_difference": "visible_context_window",
         },
     }
     write_json(output_root / "build_summary.json", build_summary)

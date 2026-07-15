@@ -26,7 +26,8 @@ DEFAULT_SOURCE_OBS_ROOTS = [
     "obs://yw-ncasd-result-gy1/data/RCDataset/BaseModel/rc_airflow_task_1120_2889/",
 ]
 DEFAULT_OUTPUT_OBS_ROOT = (
-    "obs://yw-ads-training-gy1/data/external/personal/h58801830/whu/jn/data/rc_dataset_v2/"
+    "obs://yw-ads-training-gy1/data/external/personal/h58801830/whu/jn/data/"
+    "rc_dataset_v2_550k_noempty_i30_shift128/"
 )
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -53,6 +54,12 @@ def parse_args(argv=None):
     )
     parser.add_argument("--views", choices=["both", "local", "context"], default="both")
     parser.add_argument("--train-target-samples", type=int, default=550000)
+    parser.add_argument(
+        "--train-stride",
+        type=int,
+        default=128,
+        help="Train crop stride; 128 enables half-patch translated windows as a unique-data fallback.",
+    )
     parser.add_argument("--difficulty-ratios", default="empty=0,easy=0.30,medium=0.33,hard=0.27,very_hard=0.10")
     parser.add_argument("--intersection-target-ratio", type=float, default=0.30)
     parser.add_argument("--split-seed", type=int, default=42)
@@ -74,7 +81,6 @@ def parse_args(argv=None):
     parser.add_argument("--skip-upload", action="store_true")
     parser.add_argument("--resume", action="store_true", help="Reuse completed downloads, packages, and existing PNG files.")
     parser.add_argument("--keep-archives", action="store_true")
-    parser.add_argument("--no-oversample-short-buckets", action="store_true")
     return parser.parse_args(argv)
 
 
@@ -196,6 +202,8 @@ def run_builder(args, sources, local_roots, output_root):
         args.views,
         "--train-target-samples",
         str(args.train_target_samples),
+        "--train-stride",
+        str(args.train_stride),
         "--difficulty-ratios",
         args.difficulty_ratios,
         "--intersection-target-ratio",
@@ -213,8 +221,6 @@ def run_builder(args, sources, local_roots, output_root):
         command.extend(["--limit-samples", str(args.limit_samples)])
     if args.keep_archives:
         command.append("--keep-archives")
-    if args.no_oversample_short_buckets:
-        command.append("--no-oversample-short-buckets")
     if args.resume:
         command.append("--skip-existing-images")
     print("[dataset-v2] build command:", shlex.join(command), flush=True)

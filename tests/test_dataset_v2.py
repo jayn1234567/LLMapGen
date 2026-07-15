@@ -12,6 +12,8 @@ from data_process.build_dataset_v2 import (
     DEFAULT_DIFFICULTY_RATIOS,
     DIFFICULTY_ORDER,
     allocate_global_intersection_quotas,
+    annotate_translation_grid,
+    empty_candidate_pools,
     select_balanced_candidates,
 )
 from data_process.state_update_dataset_common import (
@@ -136,11 +138,11 @@ class DatasetV2BalancingTest(unittest.TestCase):
         pools["empty"]["intersection"] = []
         counts, report = select_balanced_candidates(
             pools,
+            empty_candidate_pools(),
             100,
             DEFAULT_DIFFICULTY_RATIOS,
             0.30,
             42,
-            True,
         )
         self.assertEqual(sum(counts.values()), 100)
         self.assertEqual(report["selected_total"], 100)
@@ -153,6 +155,8 @@ class DatasetV2BalancingTest(unittest.TestCase):
         })
         self.assertAlmostEqual(report["actual_intersection_ratio"], 0.30, places=2)
         self.assertEqual(report["intersection_constraint_scope"], "global")
+        self.assertEqual(report["exact_repeated_records"], 0)
+        self.assertEqual(report["translated_grid_records"], 0)
 
     def test_global_intersection_target_does_not_force_each_bucket_to_same_ratio(self):
         ratios = {
@@ -175,15 +179,18 @@ class DatasetV2BalancingTest(unittest.TestCase):
                 "plain": [],
             },
         }
-        counts, report = select_balanced_candidates(pools, 100, ratios, 0.30, 11, True)
+        counts, report = select_balanced_candidates(
+            pools, empty_candidate_pools(), 100, ratios, 0.30, 11
+        )
         self.assertEqual(sum(counts.values()), 100)
-        self.assertEqual(report["buckets"]["easy"]["selected_intersection"], 0)
-        self.assertEqual(report["buckets"]["hard"]["selected_intersection"], 20)
-        self.assertEqual(report["buckets"]["very_hard"]["selected_intersection"], 10)
-        self.assertEqual(report["buckets"]["medium"]["selected_intersection"], 0)
+        buckets = report["base_grid"]["buckets"]
+        self.assertEqual(buckets["easy"]["selected_intersection"], 0)
+        self.assertEqual(buckets["hard"]["selected_intersection"], 20)
+        self.assertEqual(buckets["very_hard"]["selected_intersection"], 10)
+        self.assertEqual(buckets["medium"]["selected_intersection"], 0)
         self.assertAlmostEqual(report["actual_intersection_ratio"], 0.30, places=2)
 
-    def test_global_allocator_prefers_unique_records_before_repetition(self):
+    def test_global_allocator_respects_limited_unique_intersection_records(self):
         pools = {
             "empty": {"intersection": [], "plain": []},
             "easy": {
@@ -201,48 +208,90 @@ class DatasetV2BalancingTest(unittest.TestCase):
         plan, report = allocate_global_intersection_quotas(
             pools,
             quotas,
-            40,
-            0.50,
+            20,
             random.Random(7),
-            True,
         )
         self.assertEqual(sum(plan.values()), 20)
         self.assertLessEqual(plan["easy"], 5)
         self.assertGreaterEqual(plan["medium"], 15)
         self.assertEqual(report["constraint_scope"], "global")
 
-    def test_short_hard_bucket_is_oversampled_without_duplicate_images(self):
-        pools = {
-            name: {"intersection": [], "plain": [f"{name}_only"]}
-            for name in DIFFICULTY_ORDER
-        }
+    def test_short_bucket_is_redistributed_to_medium_and_hard(self):
+        pools = empty_candidate_pools()
+        pools["easy"]["plain"] = [f"easy_{idx}" for idx in range(5)]
+        pools["medium"]["plain"] = [f"medium_{idx}" for idx in range(30)]
+        pools["hard"]["plain"] = [f"hard_{idx}" for idx in range(30)]
+        pools["very_hard"]["plain"] = [f"very_hard_{idx}" for idx in range(5)]
         counts, report = select_balanced_candidates(
             pools,
-            20,
+            empty_candidate_pools(),
+            40,
             DEFAULT_DIFFICULTY_RATIOS,
             0.0,
             7,
-            True,
         )
-        self.assertEqual(sum(counts.values()), 20)
-        self.assertGreater(report["oversampled_records"], 0)
-        self.assertEqual(len(counts), len(DIFFICULTY_ORDER) - 1)
+        self.assertEqual(sum(counts.values()), 40)
+        self.assertTrue(all(count == 1 for count in counts.values()))
+        self.assertEqual(report["translated_grid_records"], 0)
+        self.assertGreater(report["final_bucket_counts"]["medium"], 13)
+        self.assertGreater(report["final_bucket_counts"]["hard"], 11)
 
-    def test_short_buckets_remain_short_when_oversampling_is_disabled(self):
-        pools = {
-            name: {"intersection": [], "plain": [f"{name}_only"]}
-            for name in DIFFICULTY_ORDER
-        }
+    def test_translation_grid_fills_remaining_unique_shortage(self):
+        base = empty_candidate_pools()
+        for name in ("easy", "medium", "hard", "very_hard"):
+            base[name]["plain"] = [f"base_{name}"]
+        translated = empty_candidate_pools()
+        translated["medium"]["plain"] = [f"shift_medium_{idx}" for idx in range(10)]
+        translated["hard"]["plain"] = [f"shift_hard_{idx}" for idx in range(10)]
         counts, report = select_balanced_candidates(
-            pools,
-            20,
+            base,
+            translated,
+            12,
             DEFAULT_DIFFICULTY_RATIOS,
             0.0,
             7,
-            False,
         )
-        self.assertLess(sum(counts.values()), 20)
-        self.assertFalse(report["allow_oversample"])
+        self.assertEqual(sum(counts.values()), 12)
+        self.assertEqual(report["base_grid_records"], 4)
+        self.assertEqual(report["translated_grid_records"], 8)
+        self.assertEqual(report["exact_repeated_records"], 0)
+        self.assertTrue(all(count == 1 for count in counts.values()))
+
+    def test_global_intersection_target_is_coordinated_across_grid_kinds(self):
+        base = empty_candidate_pools()
+        base["medium"]["plain"] = [f"base_p_{idx}" for idx in range(8)]
+        translated = empty_candidate_pools()
+        translated["medium"]["intersection"] = ["shift_i_0", "shift_i_1"]
+        ratios = {name: 0.0 for name in DIFFICULTY_ORDER}
+        ratios["medium"] = 1.0
+        counts, report = select_balanced_candidates(
+            base,
+            translated,
+            10,
+            ratios,
+            0.20,
+            17,
+        )
+        self.assertEqual(sum(counts.values()), 10)
+        self.assertEqual(report["base_grid_records"], 8)
+        self.assertEqual(report["translated_grid_records"], 2)
+        self.assertEqual(report["base_grid"]["intersection_plan"]["planned_records"], 0)
+        self.assertEqual(report["translation_grid"]["intersection_plan"]["planned_records"], 2)
+        self.assertAlmostEqual(report["actual_intersection_ratio"], 0.20)
+
+    def test_translation_grid_metadata_uses_half_patch_offsets(self):
+        row = {
+            "id": "sample_r003_c001",
+            "image": "images/train/sample/sample_r003_c001.png",
+            "tile_id": "sample",
+            "meta": {"x0": 384, "y0": 128},
+        }
+        tagged = annotate_translation_grid(row, 256)
+        self.assertEqual(tagged["id"], "sample_x00384_y00128")
+        self.assertEqual(tagged["image"], "images/train/sample/sample_x00384_y00128.png")
+        self.assertEqual(tagged["meta"]["grid_patch_id"], "sample_r003_c001")
+        self.assertEqual(tagged["meta"]["translation_offset"], [128, 128])
+        self.assertEqual(tagged["meta"]["grid_kind"], "translated")
 
 
 class DatasetV2ObsutilTest(unittest.TestCase):
@@ -265,7 +314,8 @@ class DatasetV2ObsutilTest(unittest.TestCase):
     def test_default_output_is_scoped_under_the_user_data_prefix(self):
         self.assertEqual(
             DEFAULT_OUTPUT_OBS_ROOT,
-            "obs://yw-ads-training-gy1/data/external/personal/h58801830/whu/jn/data/rc_dataset_v2/",
+            "obs://yw-ads-training-gy1/data/external/personal/h58801830/whu/jn/data/"
+            "rc_dataset_v2_550k_noempty_i30_shift128/",
         )
 
 

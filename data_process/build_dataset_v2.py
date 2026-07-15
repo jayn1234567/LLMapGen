@@ -124,7 +124,10 @@ def take_with_optional_replacement(pool, count, rng, allow_oversample):
 
 def _repeat_cost(quota, intersection_count, intersection_unique, plain_unique):
     plain_count = quota - intersection_count
-    return max(0, intersection_count - intersection_unique) + max(0, plain_count - plain_unique)
+    return (
+        max(0, intersection_count - intersection_unique)
+        + max(0, plain_count - plain_unique)
+    )
 
 
 def allocate_global_intersection_quotas(

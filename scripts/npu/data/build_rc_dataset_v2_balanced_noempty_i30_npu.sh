@@ -36,6 +36,7 @@ is_true() {
 mkdir -p "${WORK_ROOT}"
 
 if is_true "${INSTALL_DATA_DEPS}"; then
+  "${PYTHON_BIN}" -m pip install "setuptools<81"
   "${PYTHON_BIN}" -m pip install -r data_process/requirements.txt
 fi
 

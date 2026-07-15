@@ -1,3 +1,4 @@
+import random
 import tempfile
 import unittest
 from pathlib import Path
@@ -202,7 +203,7 @@ class DatasetV2BalancingTest(unittest.TestCase):
             quotas,
             40,
             0.50,
-            __import__("random").Random(7),
+            random.Random(7),
             True,
         )
         self.assertEqual(sum(plan.values()), 20)

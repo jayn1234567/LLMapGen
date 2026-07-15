@@ -81,6 +81,12 @@ def parse_args(argv=None):
     parser.add_argument("--skip-upload", action="store_true")
     parser.add_argument("--resume", action="store_true", help="Reuse completed downloads, packages, and existing PNG files.")
     parser.add_argument("--keep-archives", action="store_true")
+    parser.add_argument(
+        "--archive-workers",
+        type=int,
+        default=16,
+        help="Number of independent .tar.gz archives to extract concurrently.",
+    )
     return parser.parse_args(argv)
 
 
@@ -214,6 +220,8 @@ def run_builder(args, sources, local_roots, output_root):
         str(args.difficulty_seed),
         "--duplicate-policy",
         args.duplicate_policy,
+        "--archive-workers",
+        str(args.archive_workers),
     ]
     for source, local_root in zip(sources, local_roots):
         command.extend(["--input-root", str(local_root), "--source-uri", source])

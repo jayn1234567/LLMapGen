@@ -415,7 +415,14 @@ def classify_row(row, patch_size, coord_range):
     return metrics
 
 
-def discover_multi_source_samples(input_roots, source_uris, keep_archives, duplicate_policy, limit_samples):
+def discover_multi_source_samples(
+    input_roots,
+    source_uris,
+    keep_archives,
+    duplicate_policy,
+    limit_samples,
+    archive_workers,
+):
     chosen = {}
     chosen_source = {}
     collisions = []
@@ -428,6 +435,7 @@ def discover_multi_source_samples(input_roots, source_uris, keep_archives, dupli
             delete_archives=not keep_archives,
             limit_samples=None,
             require_intersection_features=False,
+            archive_workers=archive_workers,
         )
         source_uri = source_uris[index] if index < len(source_uris) else str(root)
         if not samples:
@@ -664,6 +672,12 @@ def parse_args(argv=None):
     parser.add_argument("--png-compress-level", type=int, choices=range(0, 10), default=4)
     parser.add_argument("--skip-existing-images", action="store_true")
     parser.add_argument("--keep-archives", action="store_true")
+    parser.add_argument(
+        "--archive-workers",
+        type=int,
+        default=16,
+        help="Number of independent .tar.gz archives to extract concurrently.",
+    )
     return parser.parse_args(argv)
 
 
@@ -700,6 +714,7 @@ def main(argv=None):
         args.keep_archives,
         args.duplicate_policy,
         args.limit_samples,
+        args.archive_workers,
     )
     if not samples:
         raise FileNotFoundError("no valid raw samples found across the supplied input roots")

@@ -1,4 +1,5 @@
 import random
+import tarfile
 import tempfile
 import unittest
 from pathlib import Path
@@ -30,6 +31,46 @@ from scripts.tools.build_rc_dataset_v2_from_obs import (
 
 
 class DatasetV2ContextTest(unittest.TestCase):
+    def test_parallel_archive_extraction_writes_and_reuses_completion_markers(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            archives = []
+            for index in range(3):
+                source = root / f"payload_{index}.txt"
+                source.write_text(f"payload {index}", encoding="utf-8")
+                archive = root / f"sample_{index}.tar.gz"
+                with tarfile.open(archive, "w:gz") as tar:
+                    tar.add(source, arcname=source.name)
+                source.unlink()
+                archives.append(archive)
+
+            dataset_common.extract_archives(root, delete_archive=False, workers=3)
+
+            for index, archive in enumerate(archives):
+                target = root / f"sample_{index}"
+                self.assertEqual(
+                    (target / f"payload_{index}.txt").read_text(encoding="utf-8"),
+                    f"payload {index}",
+                )
+                self.assertTrue(dataset_common.archive_extract_is_complete(archive))
+
+            adopted_archive = archives[0]
+            dataset_common.archive_extract_marker_path(adopted_archive).unlink()
+            with patch.object(
+                dataset_common.tarfile.TarFile,
+                "extractall",
+                side_effect=AssertionError("a complete legacy extraction must be adopted"),
+            ):
+                dataset_common.safe_extract_tar_gz(adopted_archive, delete_archive=False)
+            self.assertTrue(dataset_common.archive_extract_is_complete(adopted_archive))
+
+            with patch.object(
+                dataset_common.tarfile,
+                "open",
+                side_effect=AssertionError("completed archives must not be opened again"),
+            ):
+                dataset_common.extract_archives(root, delete_archive=False, workers=3)
+
     def test_u_turn_reference_lane_type_is_excluded(self):
         self.assertIsNone(lane_type_name(3))
         self.assertIsNone(lane_type_name("3"))

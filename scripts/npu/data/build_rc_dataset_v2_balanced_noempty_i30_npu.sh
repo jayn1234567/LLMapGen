@@ -16,6 +16,7 @@ TRAIN_TARGET_SAMPLES=${TRAIN_TARGET_SAMPLES:-550000}
 TRAIN_STRIDE=${TRAIN_STRIDE:-128}
 DIFFICULTY_RATIOS=${DIFFICULTY_RATIOS:-empty=0,easy=0.30,medium=0.33,hard=0.27,very_hard=0.10}
 INTERSECTION_TARGET_RATIO=${INTERSECTION_TARGET_RATIO:-0.30}
+ARCHIVE_WORKERS=${ARCHIVE_WORKERS:-16}
 VIEWS=${VIEWS:-both}
 OBS_BACKEND=${OBS_BACKEND:-moxing}
 OBSUTIL_PATH=${OBSUTIL_PATH:-}
@@ -71,6 +72,7 @@ echo "[dataset-v2-npu] train records:       ${TRAIN_TARGET_SAMPLES}"
 echo "[dataset-v2-npu] train crop stride:   ${TRAIN_STRIDE}"
 echo "[dataset-v2-npu] difficulty ratios:   ${DIFFICULTY_RATIOS}"
 echo "[dataset-v2-npu] global intersection: ${INTERSECTION_TARGET_RATIO}"
+echo "[dataset-v2-npu] archive workers:      ${ARCHIVE_WORKERS}"
 echo "[dataset-v2-npu] views:               ${VIEWS}"
 echo "[dataset-v2-npu] OBS backend:         ${OBS_BACKEND}"
 echo "============================================================"
@@ -85,6 +87,7 @@ command=(
   --train-stride "${TRAIN_STRIDE}"
   --difficulty-ratios "${DIFFICULTY_RATIOS}"
   --intersection-target-ratio "${INTERSECTION_TARGET_RATIO}"
+  --archive-workers "${ARCHIVE_WORKERS}"
   --obs-backend "${OBS_BACKEND}"
   --upload-mode tar
 )

@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 import argparse
+import concurrent.futures
 import json
 import math
 import random
 import sys
 import tarfile
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -45,6 +47,8 @@ TASK_TEXT = "Please construct the complete road map in the current BEV (Bird's E
 INSIDE, LEFT, RIGHT, BOTTOM, TOP = 0, 1, 2, 4, 8
 LANE_TYPE_NAMES = {2: "right_turn"}
 IGNORED_LANE_TYPE_CODES = frozenset({3})
+DEFAULT_ARCHIVE_WORKERS = 16
+ARCHIVE_EXTRACT_MARKER = ".archive_extract_complete.json"
 
 
 def require_geo_dependencies():
@@ -163,9 +167,91 @@ def is_valid_sample_root(root: Path, require_intersection: bool = False) -> bool
     return all(path.exists() for path in required)
 
 
+def archive_signature(archive_path: Path) -> dict:
+    stat = archive_path.stat()
+    return {
+        "archive_path": str(archive_path.resolve()),
+        "archive_size": stat.st_size,
+        "archive_mtime_ns": stat.st_mtime_ns,
+    }
+
+
+def archive_extract_marker_path(archive_path: Path) -> Path:
+    target_dir = archive_path.with_suffix("").with_suffix("")
+    return target_dir / ARCHIVE_EXTRACT_MARKER
+
+
+def write_archive_extract_marker(archive_path: Path, adopted_existing: bool = False):
+    marker_path = archive_extract_marker_path(archive_path)
+    marker_path.parent.mkdir(parents=True, exist_ok=True)
+    temporary_marker = marker_path.with_suffix(marker_path.suffix + ".tmp")
+    temporary_marker.write_text(
+        json.dumps(
+            {
+                **archive_signature(archive_path),
+                "completed_at_unix": time.time(),
+                "adopted_existing_extraction": adopted_existing,
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    temporary_marker.replace(marker_path)
+
+
+def archive_extract_is_complete(archive_path: Path) -> bool:
+    marker_path = archive_extract_marker_path(archive_path)
+    if not marker_path.is_file():
+        return False
+    try:
+        marker = json.loads(marker_path.read_text(encoding="utf-8"))
+        return all(marker.get(key) == value for key, value in archive_signature(archive_path).items())
+    except (OSError, ValueError, TypeError, json.JSONDecodeError):
+        return False
+
+
+def extracted_tree_matches_archive(archive_path: Path, target_dir: Path) -> bool:
+    """Validate a pre-marker extraction so interrupted runs can resume safely."""
+    marker_path = archive_extract_marker_path(archive_path)
+    if not target_dir.is_dir() or not any(path != marker_path for path in target_dir.iterdir()):
+        return False
+    target_resolved = target_dir.resolve()
+    try:
+        with tarfile.open(archive_path, "r:gz") as tar:
+            for member in tar:
+                member_path = (target_dir / member.name).resolve()
+                try:
+                    member_path.relative_to(target_resolved)
+                except ValueError:
+                    raise ValueError(f"unsafe archive member path: {member.name}")
+                if member.isdir():
+                    if not member_path.is_dir():
+                        return False
+                elif member.isfile():
+                    if not member_path.is_file() or member_path.stat().st_size != member.size:
+                        return False
+                elif not member_path.exists() and not member_path.is_symlink():
+                    return False
+    except (OSError, tarfile.TarError):
+        return False
+    return True
+
+
 def safe_extract_tar_gz(archive_path: Path, delete_archive: bool) -> Path:
     target_dir = archive_path.with_suffix("").with_suffix("")
     target_dir.mkdir(parents=True, exist_ok=True)
+    if archive_extract_is_complete(archive_path):
+        return target_dir
+
+    if extracted_tree_matches_archive(archive_path, target_dir):
+        write_archive_extract_marker(archive_path, adopted_existing=True)
+        if delete_archive and find_sample_roots(target_dir, require_intersection=False):
+            archive_path.unlink()
+        return target_dir
+
+    marker_path = archive_extract_marker_path(archive_path)
+    marker_path.unlink(missing_ok=True)
     target_resolved = target_dir.resolve()
     with tarfile.open(archive_path, "r:gz") as tar:
         for member in tar.getmembers():
@@ -175,15 +261,68 @@ def safe_extract_tar_gz(archive_path: Path, delete_archive: bool) -> Path:
             except ValueError:
                 raise ValueError(f"unsafe archive member path: {member.name}")
         tar.extractall(path=target_dir)
+
+    write_archive_extract_marker(archive_path)
     if delete_archive and find_sample_roots(target_dir, require_intersection=False):
         archive_path.unlink()
     return target_dir
 
 
-def extract_archives(input_root: Path, delete_archive: bool):
+def extract_archives(
+    input_root: Path,
+    delete_archive: bool,
+    workers: int = DEFAULT_ARCHIVE_WORKERS,
+):
     archives = sorted(input_root.rglob("*.tar.gz"))
-    for archive in archives:
-        safe_extract_tar_gz(archive, delete_archive=delete_archive)
+    if not archives:
+        print(f"[archive-extract] no .tar.gz archives under {input_root}", flush=True)
+        return
+
+    pending = [archive for archive in archives if not archive_extract_is_complete(archive)]
+    skipped = len(archives) - len(pending)
+    worker_count = min(max(1, int(workers)), max(1, len(pending)))
+    print(
+        f"[archive-extract] root={input_root} archives={len(archives)} "
+        f"pending={len(pending)} skipped={skipped} workers={worker_count}",
+        flush=True,
+    )
+    if not pending:
+        return
+
+    started_at = time.monotonic()
+    report_every = max(1, math.ceil(len(pending) / 20))
+
+    def report_progress(completed: int, archive: Path):
+        if completed == 1 or completed == len(pending) or completed % report_every == 0:
+            elapsed = time.monotonic() - started_at
+            rate = completed / elapsed if elapsed > 0 else 0.0
+            print(
+                f"[archive-extract] completed={completed}/{len(pending)} "
+                f"rate={rate:.2f} archives/s last={archive.name}",
+                flush=True,
+            )
+
+    if worker_count == 1:
+        for completed, archive in enumerate(pending, start=1):
+            safe_extract_tar_gz(archive, delete_archive=delete_archive)
+            report_progress(completed, archive)
+        return
+
+    with concurrent.futures.ThreadPoolExecutor(
+        max_workers=worker_count,
+        thread_name_prefix="tar-extract",
+    ) as executor:
+        future_to_archive = {
+            executor.submit(safe_extract_tar_gz, archive, delete_archive): archive
+            for archive in pending
+        }
+        for completed, future in enumerate(concurrent.futures.as_completed(future_to_archive), start=1):
+            archive = future_to_archive[future]
+            try:
+                future.result()
+            except Exception as exc:
+                raise RuntimeError(f"failed to extract archive: {archive}") from exc
+            report_progress(completed, archive)
 
 
 def find_sample_roots(input_root: Path, require_intersection: bool = False):
@@ -201,8 +340,9 @@ def discover_samples(
     delete_archives: bool,
     limit_samples=None,
     require_intersection_features: bool = False,
+    archive_workers: int = DEFAULT_ARCHIVE_WORKERS,
 ):
-    extract_archives(input_root, delete_archive=delete_archives)
+    extract_archives(input_root, delete_archive=delete_archives, workers=archive_workers)
     # Lane+intersection training still needs lane-only negative examples:
     # an empty or missing Intersection.geojson means "no intersection target",
     # not "invalid raw sample". Only lane/image/mask are required here.
@@ -1386,6 +1526,7 @@ def build_dataset(include_intersections: bool, args):
         delete_archives=not args.keep_archives,
         limit_samples=args.limit_samples,
         require_intersection_features=False,
+        archive_workers=args.archive_workers,
     )
     if not samples:
         raise FileNotFoundError(f"no valid samples found under {input_root}")
@@ -1626,6 +1767,12 @@ def add_common_args(parser):
         help="Allow empty eval/test JSONL outputs. Intended only for one-sample format smoke tests.",
     )
     parser.add_argument("--keep-archives", action="store_true", help="Do not delete .tar.gz archives after successful extraction.")
+    parser.add_argument(
+        "--archive-workers",
+        type=int,
+        default=DEFAULT_ARCHIVE_WORKERS,
+        help="Number of independent .tar.gz archives to extract concurrently.",
+    )
 
 
 def run_cli(include_intersections: bool, description: str):

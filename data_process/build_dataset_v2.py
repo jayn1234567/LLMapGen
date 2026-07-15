@@ -53,8 +53,8 @@ from scripts.tools.tag_hard_map_samples import sample_metrics
 
 
 DEFAULT_DIFFICULTY_RATIOS = {
-    "empty": 0.05,
-    "easy": 0.30,
+    "empty": 0.00,
+    "easy": 0.35,
     "medium": 0.30,
     "hard": 0.25,
     "very_hard": 0.10,
@@ -122,11 +122,100 @@ def take_with_optional_replacement(pool, count, rng, allow_oversample):
     return result
 
 
+def _repeat_cost(quota, intersection_count, intersection_unique, plain_unique):
+    plain_count = quota - intersection_count
+    return max(0, intersection_count - intersection_unique) + max(0, plain_count - plain_unique)
+
+
+def allocate_global_intersection_quotas(
+    pools,
+    quotas,
+    target_total,
+    intersection_target_ratio,
+    rng,
+    allow_oversample,
+):
+    """Allocate one global intersection target while preserving difficulty quotas.
+
+    The allocation follows each bucket's natural intersection density and favors
+    allocations that do not require repeated records. It intentionally does not
+    impose the same intersection percentage on every difficulty bucket.
+    """
+    requested = int(round(target_total * intersection_target_ratio))
+    lower = {}
+    upper = {}
+    natural_ratios = {}
+    weights = {}
+
+    for name in DIFFICULTY_ORDER:
+        quota = quotas[name]
+        intersection_unique = len(pools[name]["intersection"])
+        plain_unique = len(pools[name]["plain"])
+        available = intersection_unique + plain_unique
+        natural_ratio = intersection_unique / available if available else 0.0
+        natural_ratios[name] = natural_ratio
+        weights[name] = quota * natural_ratio
+
+        if quota <= 0 or intersection_unique == 0:
+            lower[name] = 0
+            upper[name] = 0
+            continue
+        if allow_oversample:
+            lower[name] = quota if plain_unique == 0 else 0
+            upper[name] = quota
+        else:
+            upper[name] = min(quota, intersection_unique)
+            lower[name] = upper[name] if plain_unique == 0 else 0
+
+    minimum = sum(lower.values())
+    maximum = sum(upper.values())
+    planned_target = min(max(requested, minimum), maximum)
+    planned = dict(lower)
+    tie_breakers = {name: rng.random() for name in DIFFICULTY_ORDER}
+
+    while sum(planned.values()) < planned_target:
+        candidates = [name for name in DIFFICULTY_ORDER if planned[name] < upper[name]]
+        if not candidates:
+            break
+
+        def allocation_priority(name):
+            quota = quotas[name]
+            current = planned[name]
+            intersection_unique = len(pools[name]["intersection"])
+            plain_unique = len(pools[name]["plain"])
+            repeat_delta = (
+                _repeat_cost(quota, current + 1, intersection_unique, plain_unique)
+                - _repeat_cost(quota, current, intersection_unique, plain_unique)
+            )
+            weight = max(weights[name], 1e-12)
+            weighted_progress = (current + 1) / weight
+            return repeat_delta, weighted_progress, tie_breakers[name]
+
+        chosen_name = min(candidates, key=allocation_priority)
+        planned[chosen_name] += 1
+
+    return planned, {
+        "requested_records": requested,
+        "planned_records": sum(planned.values()),
+        "minimum_feasible_records": minimum,
+        "maximum_feasible_records": maximum,
+        "requested_ratio": intersection_target_ratio,
+        "natural_ratios_by_bucket": natural_ratios,
+        "constraint_scope": "global",
+    }
+
+
 def select_balanced_candidates(pools, target_total, ratios, intersection_target_ratio, seed, allow_oversample):
     quotas = allocate_quotas(target_total, ratios)
-    empty_ratio = ratios["empty"]
-    nonempty_intersection_ratio = min(1.0, intersection_target_ratio / max(1e-8, 1.0 - empty_ratio))
     rng = random.Random(seed)
+    planned_intersections, intersection_plan = allocate_global_intersection_quotas(
+        pools,
+        quotas,
+        target_total,
+        intersection_target_ratio,
+        rng,
+        allow_oversample,
+    )
     selected = []
     bucket_report = {}
 
@@ -134,15 +223,8 @@ def select_balanced_candidates(pools, target_total, ratios, intersection_target_
         quota = quotas[name]
         intersection_pool = pools[name]["intersection"]
         plain_pool = pools[name]["plain"]
-        desired_intersection = 0 if name == "empty" else int(round(quota * nonempty_intersection_ratio))
+        desired_intersection = planned_intersections[name]
         desired_plain = quota - desired_intersection
-
-        if desired_intersection and not intersection_pool:
-            desired_plain = quota
-            desired_intersection = 0
-        if desired_plain and not plain_pool:
-            desired_intersection = quota
-            desired_plain = 0
 
         chosen_intersection = take_with_optional_replacement(
             intersection_pool, desired_intersection, rng, allow_oversample
@@ -163,6 +245,12 @@ def select_balanced_candidates(pools, target_total, ratios, intersection_target_
             "quota": quota,
             "available_unique": len(intersection_pool) + len(plain_pool),
             "available_intersection_unique": len(intersection_pool),
+            "available_plain_unique": len(plain_pool),
+            "available_intersection_ratio": (
+                len(intersection_pool) / max(1, len(intersection_pool) + len(plain_pool))
+            ),
+            "planned_intersection": desired_intersection,
+            "planned_intersection_ratio": desired_intersection / max(1, quota),
             "selected": len(chosen),
             "selected_intersection": sum(item in intersection_id_set for item in chosen),
             "oversampled_records": max(0, len(chosen) - len(set(chosen))),
@@ -202,6 +290,8 @@ def select_balanced_candidates(pools, target_total, ratios, intersection_target_
         "target_quotas": quotas,
         "target_intersection_ratio": intersection_target_ratio,
         "actual_intersection_ratio": selected_intersections / max(1, len(selected)),
+        "intersection_constraint_scope": "global",
+        "intersection_plan": intersection_plan,
         "allow_oversample": allow_oversample,
         "seed": seed,
         "buckets": bucket_report,
@@ -435,9 +525,9 @@ def parse_args(argv=None):
     parser.add_argument("--train-target-samples", type=int, default=450000)
     parser.add_argument(
         "--difficulty-ratios",
-        default="empty=0.05,easy=0.30,medium=0.30,hard=0.25,very_hard=0.10",
+        default="empty=0,easy=0.35,medium=0.30,hard=0.25,very_hard=0.10",
     )
-    parser.add_argument("--intersection-target-ratio", type=float, default=0.38)
+    parser.add_argument("--intersection-target-ratio", type=float, default=0.30)
     parser.add_argument("--no-oversample-short-buckets", action="store_true")
     parser.add_argument("--difficulty-seed", type=int, default=20260713)
     parser.add_argument("--train-ratio", type=float, default=0.90)

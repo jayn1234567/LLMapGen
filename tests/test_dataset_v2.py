@@ -10,6 +10,7 @@ from data_process import state_update_dataset_common as dataset_common
 from data_process.build_dataset_v2 import (
     DEFAULT_DIFFICULTY_RATIOS,
     DIFFICULTY_ORDER,
+    allocate_global_intersection_quotas,
     select_balanced_candidates,
 )
 from data_process.state_update_dataset_common import (
@@ -136,20 +137,78 @@ class DatasetV2BalancingTest(unittest.TestCase):
             pools,
             100,
             DEFAULT_DIFFICULTY_RATIOS,
-            0.38,
+            0.30,
             42,
             True,
         )
         self.assertEqual(sum(counts.values()), 100)
         self.assertEqual(report["selected_total"], 100)
         self.assertEqual(report["target_quotas"], {
-            "empty": 5,
-            "easy": 30,
+            "empty": 0,
+            "easy": 35,
             "medium": 30,
             "hard": 25,
             "very_hard": 10,
         })
-        self.assertAlmostEqual(report["actual_intersection_ratio"], 0.38, places=2)
+        self.assertAlmostEqual(report["actual_intersection_ratio"], 0.30, places=2)
+        self.assertEqual(report["intersection_constraint_scope"], "global")
+
+    def test_global_intersection_target_does_not_force_each_bucket_to_same_ratio(self):
+        ratios = {
+            "empty": 0.0,
+            "easy": 0.5,
+            "medium": 0.2,
+            "hard": 0.2,
+            "very_hard": 0.1,
+        }
+        pools = {
+            "empty": {"intersection": [], "plain": []},
+            "easy": {"intersection": [], "plain": [f"easy_p_{idx}" for idx in range(100)]},
+            "medium": {
+                "intersection": [f"medium_i_{idx}" for idx in range(20)],
+                "plain": [f"medium_p_{idx}" for idx in range(80)],
+            },
+            "hard": {"intersection": [f"hard_i_{idx}" for idx in range(100)], "plain": []},
+            "very_hard": {
+                "intersection": [f"very_hard_i_{idx}" for idx in range(100)],
+                "plain": [],
+            },
+        }
+        counts, report = select_balanced_candidates(pools, 100, ratios, 0.30, 11, True)
+        self.assertEqual(sum(counts.values()), 100)
+        self.assertEqual(report["buckets"]["easy"]["selected_intersection"], 0)
+        self.assertEqual(report["buckets"]["hard"]["selected_intersection"], 20)
+        self.assertEqual(report["buckets"]["very_hard"]["selected_intersection"], 10)
+        self.assertEqual(report["buckets"]["medium"]["selected_intersection"], 0)
+        self.assertAlmostEqual(report["actual_intersection_ratio"], 0.30, places=2)
+
+    def test_global_allocator_prefers_unique_records_before_repetition(self):
+        pools = {
+            "empty": {"intersection": [], "plain": []},
+            "easy": {
+                "intersection": [f"easy_i_{idx}" for idx in range(5)],
+                "plain": [f"easy_p_{idx}" for idx in range(100)],
+            },
+            "medium": {
+                "intersection": [f"medium_i_{idx}" for idx in range(30)],
+                "plain": [f"medium_p_{idx}" for idx in range(100)],
+            },
+            "hard": {"intersection": [], "plain": []},
+            "very_hard": {"intersection": [], "plain": []},
+        }
+        quotas = {"empty": 0, "easy": 20, "medium": 20, "hard": 0, "very_hard": 0}
+        plan, report = allocate_global_intersection_quotas(
+            pools,
+            quotas,
+            40,
+            0.50,
+            __import__("random").Random(7),
+            True,
+        )
+        self.assertEqual(sum(plan.values()), 20)
+        self.assertLessEqual(plan["easy"], 5)
+        self.assertGreaterEqual(plan["medium"], 15)
+        self.assertEqual(report["constraint_scope"], "global")
 
     def test_short_hard_bucket_is_oversampled_without_duplicate_images(self):
         pools = {
@@ -166,7 +225,7 @@ class DatasetV2BalancingTest(unittest.TestCase):
         )
         self.assertEqual(sum(counts.values()), 20)
         self.assertGreater(report["oversampled_records"], 0)
-        self.assertEqual(len(counts), len(DIFFICULTY_ORDER))
+        self.assertEqual(len(counts), len(DIFFICULTY_ORDER) - 1)
 
     def test_short_buckets_remain_short_when_oversampling_is_disabled(self):
         pools = {

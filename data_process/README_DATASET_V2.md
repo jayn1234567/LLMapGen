@@ -63,20 +63,28 @@ Default Stage-A train size is 450,000 records:
 
 | Stratum | Ratio | Records |
 |---|---:|---:|
-| natural empty | 5% | 22,500 |
-| easy, non-empty | 30% | 135,000 |
+| empty | 0% | 0 |
+| easy, non-empty | 35% | 157,500 |
 | medium | 30% | 135,000 |
 | hard | 25% | 112,500 |
 | very hard | 10% | 45,000 |
 
-The target overall intersection share is 38%. If a difficulty bucket has too
-few unique samples, the builder repeats records in `train.jsonl`; the PNG is
-stored once. Repeated records receive ids such as `...__repeat001` and retain
-`meta.base_sample_id`. Disable this behavior with
+The target overall intersection share is 30% (135,000 records). This is one
+global constraint, not a separate 30% requirement inside every difficulty
+bucket. The allocator follows the natural intersection density of each bucket
+and prefers unique records before introducing repeats. `balance_report.json`
+records available, planned, selected, and repeated intersection counts for
+every bucket.
+
+If a difficulty bucket has too few unique samples, the builder repeats records
+in `train.jsonl`; the PNG is stored once. Repeated records receive ids such as
+`...__repeat001` and retain `meta.base_sample_id`. Disable this behavior with
 `--no-oversample-short-buckets` (the build then fails if 450,000 cannot be
 filled).
 
-Eval and test retain their natural, complete non-black patch distributions.
+The zero-empty rule applies to train selection. Eval and test retain their
+natural, complete non-black patch distributions, including valid negative
+patches, so false-positive behavior remains measurable.
 Splitting happens by raw sample folder before patch generation, so patches from
 one source map cannot leak across train/eval/test.
 
@@ -100,6 +108,22 @@ python scripts/tools/build_rc_dataset_v2_from_obs.py \
   --work-root /cache/rc_dataset_v2 \
   --resume
 ```
+
+The formal Ascend-side entrypoint pins the no-empty, globally 30%-intersection
+recipe and uses a versioned OBS destination:
+
+```bash
+cd /cache/jn/MLLM_project-unimapgen_v7
+
+WORK_ROOT=/cache/jn/rc_dataset_v2_noempty_i30 \
+bash scripts/npu/data/build_rc_dataset_v2_balanced_noempty_i30_npu.sh
+```
+
+Set `INSTALL_DATA_DEPS=true` only when the active Python is missing GeoPandas,
+Rasterio, Shapely, or the other packages in `data_process/requirements.txt`.
+The script uses Huawei MoXing by default and does not initialize NPU devices.
+Its default destination is
+`obs://yw-ads-training-gy1/data/external/personal/h58801830/whu/jn/data/rc_dataset_v2_noempty_i30/`.
 
 The default destination is:
 
@@ -173,7 +197,8 @@ full lattice and apply weighting in the sampler instead of deleting patches.
   unique train candidate.
 - `train_selection.jsonl`: selected patch ids and repeat counts.
 - `balance_report.json`: requested versus actual counts, unique counts,
-  oversampling, and intersection ratio.
+  oversampling, global intersection plan, and per-bucket natural/selected
+  intersection ratios.
 - `split_manifest.json`: source roots, duplicate ids, and raw sample split.
 
 ## Local Windows build

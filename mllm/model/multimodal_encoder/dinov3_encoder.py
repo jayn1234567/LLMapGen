@@ -4,7 +4,7 @@ from contextlib import nullcontext
 import torch
 import torch.nn as nn
 
-from transformers import AutoImageProcessor
+from transformers import AutoConfig, AutoImageProcessor, AutoModel
 from transformers import DINOv3ViTConfig, DINOv3ViTModel
 
 from .dinov3_checkpoint import (
@@ -33,6 +33,7 @@ class DINOv3VisionTower(nn.Module):
             or getattr(args, 'mm_vision_tower_checkpoint', None)
             or ""
         )
+        self.use_automodel_for_checkpoint = self._should_use_automodel_for_checkpoint()
 
         self.deepstack_visual_indexes = getattr(args, 'deepstack_visual_indexes', None)
         self.deepstack_mergers = None
@@ -48,11 +49,22 @@ class DINOv3VisionTower(nn.Module):
             self.load_model()
         else:
             try:
-                self.cfg_only = DINOv3ViTConfig.from_pretrained(self.vision_tower_name, local_files_only=True)
+                config_loader = AutoConfig if self.use_automodel_for_checkpoint else DINOv3ViTConfig
+                config_kwargs = {"local_files_only": True}
+                if config_loader is AutoConfig:
+                    config_kwargs["trust_remote_code"] = True
+                self.cfg_only = config_loader.from_pretrained(self.vision_tower_name, **config_kwargs)
             except (OSError, EnvironmentError):
                 self.cfg_only = None
             if self.input_image_size is not None and self.cfg_only is not None:
                 self.cfg_only.image_size = self.input_image_size
+
+    def _should_use_automodel_for_checkpoint(self):
+        checkpoint = str(self.vision_tower_checkpoint or "").strip()
+        if not checkpoint:
+            return False
+        env_value = str(os.environ.get("DINOV3_CHECKPOINT_USE_AUTOMODEL", "true")).strip().lower()
+        return env_value not in {"0", "false", "no", "off"}
 
     def _stable_dtype_for_device(self):
         if not hasattr(self, "vision_tower"):
@@ -85,11 +97,25 @@ class DINOv3VisionTower(nn.Module):
             return
 
         self.image_processor = AutoImageProcessor.from_pretrained(self.vision_tower_name, local_files_only=True)
-        self.vision_tower = DINOv3ViTModel.from_pretrained(
-            self.vision_tower_name,
-            device_map=device_map,
-            local_files_only=True,
-        )
+        if self.use_automodel_for_checkpoint:
+            print(
+                "[DINOv3VisionTower] using AutoModel(trust_remote_code=True) "
+                "for external DINOv3 checkpoint compatibility",
+                flush=True,
+            )
+            self.vision_tower = AutoModel.from_pretrained(
+                self.vision_tower_name,
+                device_map=device_map,
+                local_files_only=True,
+                trust_remote_code=True,
+                torch_dtype="auto",
+            )
+        else:
+            self.vision_tower = DINOv3ViTModel.from_pretrained(
+                self.vision_tower_name,
+                device_map=device_map,
+                local_files_only=True,
+            )
         self._load_external_checkpoint_if_present()
         self.set_vision_tower_trainable(self.tune_vision_tower)
 
@@ -101,8 +127,8 @@ class DINOv3VisionTower(nn.Module):
             if hasattr(self.image_processor, 'crop_size'):
                 self.image_processor.crop_size = {"height": target_size, "width": target_size}
 
-        self.num_layers = self.vision_tower.config.num_hidden_layers
-        self.num_register_tokens = self.vision_tower.config.num_register_tokens
+        self.num_layers = self._infer_num_layers()
+        self.num_register_tokens = self._infer_num_register_tokens()
         self.skip_tokens = 1 + self.num_register_tokens  # CLS + register
         self._target_size = target_size
         self._resolve_select_layer_index()
@@ -135,8 +161,8 @@ class DINOv3VisionTower(nn.Module):
             if hasattr(self.image_processor, 'crop_size'):
                 self.image_processor.crop_size = {"height": target_size, "width": target_size}
 
-        self.num_layers = self.vision_tower.config.num_hidden_layers
-        self.num_register_tokens = self.vision_tower.config.num_register_tokens
+        self.num_layers = self._infer_num_layers()
+        self.num_register_tokens = self._infer_num_register_tokens()
         self.skip_tokens = 1 + self.num_register_tokens
         self._target_size = target_size
         self._resolve_select_layer_index()
@@ -158,6 +184,60 @@ class DINOv3VisionTower(nn.Module):
         if selected_name == "scripted_dinov3_hf":
             apply_scripted_dinov3_processor_stats(self.image_processor)
 
+    def _find_vision_blocks(self, raise_on_missing=True):
+        candidates = (
+            ("encoder", "layer"),
+            ("encoder", "layers"),
+            ("encoder", "blocks"),
+            ("model", "layer"),
+            ("model", "layers"),
+            ("model", "blocks"),
+            ("layer",),
+            ("layers",),
+            ("blocks",),
+        )
+        for path in candidates:
+            obj = self.vision_tower
+            for attr in path:
+                obj = getattr(obj, attr, None)
+                if obj is None:
+                    break
+            if obj is not None:
+                return obj
+        if raise_on_missing:
+            raise ValueError(
+                "DINOv3 encoder blocks could not be found on the loaded vision tower."
+            )
+        return None
+
+    def _infer_num_layers(self):
+        value = getattr(getattr(self.vision_tower, "config", None), "num_hidden_layers", None)
+        if value is not None:
+            return int(value)
+        blocks = self._find_vision_blocks(raise_on_missing=False)
+        if blocks is not None:
+            return len(blocks)
+        return 0
+
+    def _infer_num_register_tokens(self):
+        config = getattr(self.vision_tower, "config", None)
+        for name in ("num_register_tokens", "num_registers", "num_reg_tokens"):
+            value = getattr(config, name, None)
+            if value is not None:
+                try:
+                    return int(value)
+                except (TypeError, ValueError):
+                    pass
+
+        embeddings = getattr(self.vision_tower, "embeddings", None)
+        reg_tokens = getattr(embeddings, "register_tokens", None)
+        if torch.is_tensor(reg_tokens):
+            if reg_tokens.ndim >= 2:
+                return int(reg_tokens.shape[-2])
+            if reg_tokens.ndim == 1:
+                return 1
+        return 0
+
     def set_vision_tower_trainable(self, trainable, last_n_blocks=None):
         """Apply full, frozen, or tail-block-only DINOv3 fine-tuning."""
         if last_n_blocks is not None:
@@ -170,11 +250,7 @@ class DINOv3VisionTower(nn.Module):
             self.trainable_vision_block_indices = []
             return
 
-        blocks = getattr(getattr(self.vision_tower, "encoder", None), "layer", None)
-        if blocks is None:
-            blocks = getattr(getattr(self.vision_tower, "encoder", None), "layers", None)
-        if blocks is None:
-            blocks = getattr(getattr(self.vision_tower, "encoder", None), "blocks", None)
+        blocks = self._find_vision_blocks(raise_on_missing=False)
 
         if self.unfreeze_last_n_blocks < 0:
             self.vision_tower.requires_grad_(True)
@@ -309,7 +385,7 @@ class DINOv3VisionTower(nn.Module):
             for image in images:
                 with vision_context:
                     image_forward_out = self.vision_tower(
-                        image.to(device=self.device, dtype=self.dtype).unsqueeze(0),
+                        pixel_values=image.to(device=self.device, dtype=self.dtype).unsqueeze(0),
                         output_hidden_states=True,
                     )
                 mf, df = self.feature_select(image_forward_out)
@@ -326,7 +402,7 @@ class DINOv3VisionTower(nn.Module):
 
         with vision_context:
             image_forward_outs = self.vision_tower(
-                images.to(device=self.device, dtype=self.dtype),
+                pixel_values=images.to(device=self.device, dtype=self.dtype),
                 output_hidden_states=True,
             )
         return self.feature_select(image_forward_outs)

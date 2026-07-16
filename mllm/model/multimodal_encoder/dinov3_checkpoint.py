@@ -84,6 +84,36 @@ def _find_target_key(
     return None
 
 
+def _candidate_tensor_values(value: torch.Tensor) -> tuple[torch.Tensor, ...]:
+    values = [value]
+    if value.ndim >= 1 and int(value.shape[0]) == 1:
+        values.append(value.squeeze(0))
+    if value.ndim == 2:
+        values.append(value.t().contiguous())
+    if value.ndim == 4:
+        values.append(value.flatten(1))
+
+    deduped = []
+    seen = set()
+    for candidate in values:
+        signature = tuple(candidate.shape)
+        if signature in seen:
+            continue
+        seen.add(signature)
+        deduped.append(candidate)
+    return tuple(deduped)
+
+
+def _format_state_examples(state_dict: Dict[str, torch.Tensor], limit: int = 8) -> str:
+    examples = []
+    for key, value in list(state_dict.items())[:limit]:
+        if torch.is_tensor(value):
+            examples.append(f"{key}:{tuple(value.shape)}")
+        else:
+            examples.append(f"{key}:{type(value).__name__}")
+    return ", ".join(examples)
+
+
 def _assign_by_suffix(
     mapped: Dict[str, torch.Tensor],
     target_state: Dict[str, torch.Tensor],
@@ -92,11 +122,13 @@ def _assign_by_suffix(
 ) -> bool:
     if value is None or not torch.is_tensor(value):
         return False
-    target_key = _find_target_key(target_state, value, suffixes)
-    if target_key is None:
-        return False
-    mapped[target_key] = value
-    return True
+    for candidate in _candidate_tensor_values(value):
+        target_key = _find_target_key(target_state, candidate, suffixes)
+        if target_key is None:
+            continue
+        mapped[target_key] = candidate
+        return True
+    return False
 
 
 def _scripted_encoder_view(raw_state: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
@@ -362,8 +394,8 @@ def _select_encoder_state(
             best_score = score
     if best_score[0] <= 0:
         lora_keys = [key for key in raw_state if "lora" in str(key).lower()]
-        source_examples = ", ".join(list(map(str, list(raw_state.keys())[:8])))
-        target_examples = ", ".join(list(map(str, list(vision_encoder.state_dict().keys())[:8])))
+        source_examples = _format_state_examples(raw_state)
+        target_examples = _format_state_examples(vision_encoder.state_dict())
         hint = ""
         if lora_keys:
             hint = (

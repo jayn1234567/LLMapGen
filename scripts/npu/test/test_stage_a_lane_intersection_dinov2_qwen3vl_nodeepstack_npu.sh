@@ -163,7 +163,19 @@ else
   NPROC_PER_NODE=${NPROC_PER_NODE:-$MA_NUM_GPUS}                                  # Number of NPU worker processes on each node.
   MASTER_ADDR=${MASTER_ADDR:-${VC_WORKER_HOSTS%%,*}}                              # Distributed rendezvous master address.
 fi
-MASTER_PORT=${MASTER_PORT:-6060}                                                  # Distributed rendezvous master port.
+if [ "${NNODES}" -eq 1 ] && [ -z "${MASTER_PORT:-}" ]; then
+  MASTER_PORT=$(python - <<'PY'
+import socket
+
+with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as server:
+    server.bind(("127.0.0.1", 0))
+    print(server.getsockname()[1])
+PY
+)
+  echo "Auto-selected free rendezvous port: ${MASTER_PORT}"
+else
+  MASTER_PORT=${MASTER_PORT:-6060}                                                # Shared multi-node rendezvous port.
+fi
 export NNODES NODE_RANK NPROC_PER_NODE MASTER_ADDR MASTER_PORT
 export RDZV_ID=${RDZV_ID:-test_phase_a_lane_intersection_dinov2_${RUN_ID}}        # Unique rendezvous id for this distributed run.
 # Download recipe-specific assets and the dataset, then verify required local paths.
@@ -365,7 +377,7 @@ run_one_checkpoint() {
       ;;
   esac
 # Launch the recipe entrypoint. Training uses HCCL/DDP and full SFT may add DeepSpeed.
-torchrun \
+if ! torchrun \
     --nnodes="${NNODES}" \
     --nproc_per_node="${NPROC_PER_NODE}" \
     --node_rank="${NODE_RANK}" \
@@ -392,9 +404,16 @@ torchrun \
     --temperature 0.0 \
     --max-new-tokens "${MAX_NEW_TOKENS}" \
     --eval-centerline \
-    --eval-output-json "${eval_json}"
+    --eval-output-json "${eval_json}"; then
+    echo "ERROR: inference failed for ${checkpoint_label}/${difficulty_label}."
+    return 1
+  fi
   if [ "${NODE_RANK}" -ne 0 ]; then
     return 0
+  fi
+  if [ ! -s "${summary_json}" ]; then
+    echo "ERROR: inference completed without a non-empty summary: ${summary_json}"
+    return 1
   fi
   visualize_args=(
       --input-dir "${output_dir}"
@@ -436,7 +455,10 @@ for index in "${!CHECKPOINT_ITEMS[@]}"; do
     else
       output_dir="${LOCAL_OUTPUT_ROOT}"
     fi
-    run_one_checkpoint "${checkpoint}" "${label}/${test_label}" "${output_dir}" "${test_json}" "${test_label}"
+    if ! run_one_checkpoint "${checkpoint}" "${label}/${test_label}" "${output_dir}" "${test_json}" "${test_label}"; then
+      echo "ERROR: evaluation aborted at checkpoint=${label}, split=${test_label}."
+      exit 1
+    fi
   done
 done
 

@@ -49,6 +49,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--image-folder", default="", help="Image root. Defaults to dataset-root.")
     parser.add_argument("--output-dir", default="", help="Output dir. Defaults to dataset-root/hard_case_report_phase_split.")
     parser.add_argument("--max-samples", type=int, default=0, help="0 means all samples.")
+    parser.add_argument("--progress-every", type=int, default=10000, help="Print progress every N records; 0 disables it.")
     parser.add_argument("--visualize-top-k", type=int, default=80)
     parser.add_argument("--visualize-random-k", type=int, default=0)
     parser.add_argument(
@@ -95,13 +96,15 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def load_jsonl(path: Path, max_samples: int = 0) -> list[dict[str, Any]]:
+def load_jsonl(path: Path, max_samples: int = 0, progress_every: int = 0) -> list[dict[str, Any]]:
     rows = []
     with path.open("r", encoding="utf-8") as fh:
         for line in fh:
             if not line.strip():
                 continue
             rows.append(json.loads(line))
+            if progress_every and len(rows) % progress_every == 0:
+                print(f"[hard-tags] read {len(rows)} records from {path}", flush=True)
             if max_samples and len(rows) >= max_samples:
                 break
     return rows
@@ -812,7 +815,7 @@ def main() -> None:
     image_folder = Path(args.image_folder) if args.image_folder else dataset_root
     output_dir = Path(args.output_dir) if args.output_dir else dataset_root / f"hard_case_report_{args.phase}_{args.split}"
     viz_dir = output_dir / "viz"
-    rows = load_jsonl(jsonl_path, args.max_samples)
+    rows = load_jsonl(jsonl_path, args.max_samples, args.progress_every)
     print(f"[hard-tags] loaded {len(rows)} samples from {jsonl_path}")
 
     reports = []
@@ -833,6 +836,8 @@ def main() -> None:
         metrics["image_size"] = list(image_size) if image_size else None
         metrics["image_resolved_path"] = str(image_path) if image_path else ""
         reports.append(metrics)
+        if args.progress_every and (idx + 1) % args.progress_every == 0:
+            print(f"[hard-tags] classified {idx + 1}/{len(rows)} records", flush=True)
 
     reports.sort(key=lambda item: (item["difficulty_score"], item["centerline_count"], item["point_count"]), reverse=True)
     report_rows = [{k: v for k, v in item.items() if k != "_payload"} for item in reports]

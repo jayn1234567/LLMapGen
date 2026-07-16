@@ -19,6 +19,7 @@ IMAGE_FOLDER=${IMAGE_FOLDER:-${DATASET_ROOT}}
 OUTPUT_DIR=${OUTPUT_DIR:-/cache/jn/outputs/jiangjihua_difficulty_${PHASE}_${SPLIT}}
 SAMPLES_PER_DIFFICULTY=${SAMPLES_PER_DIFFICULTY:-100}
 MAX_SAMPLES=${MAX_SAMPLES:-0}
+PROGRESS_EVERY=${PROGRESS_EVERY:-10000}
 SEED=${SEED:-42}
 COORD_MODE=${COORD_MODE:-auto}
 COORD_RANGE=${COORD_RANGE:-1000}
@@ -92,6 +93,7 @@ command=(
   --image-folder "${IMAGE_FOLDER}"
   --output-dir "${OUTPUT_DIR}"
   --max-samples "${MAX_SAMPLES}"
+  --progress-every "${PROGRESS_EVERY}"
   --visualize-top-k 0
   --visualize-per-difficulty "${SAMPLES_PER_DIFFICULTY}"
   --visualize-difficulties easy medium hard very_hard

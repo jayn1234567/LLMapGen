@@ -28,6 +28,18 @@ if str(REPO_ROOT) not in sys.path:
 from scripts.tools.map_visualization import resolve_image_path as resolve_map_image_path
 
 
+DIFFICULTY_RULE_VERSION = "geometry_v2_strict_easy_no_cut_score"
+DEFAULT_SHORT_LINE_THRESHOLD = 90.0
+DEFAULT_CURVED_LINE_TURN_THRESHOLD = 45.0
+DEFAULT_SHARP_TURN_THRESHOLD = 60.0
+DEFAULT_EASY_MAX_CENTERLINES = 3
+DEFAULT_EASY_MAX_POINTS = 16
+DEFAULT_EASY_MAX_TOTAL_TURN = 120.0
+DEFAULT_EASY_MAX_SINGLE_TURN = 60.0
+DEFAULT_HARD_SCORE_THRESHOLD = 2.5
+DEFAULT_VERY_HARD_SCORE_THRESHOLD = 5.5
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--dataset-root", required=True, help="Dataset root containing phase_a/phase_b and images/.")
@@ -60,6 +72,23 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--dense-point-threshold", type=int, default=34)
     parser.add_argument("--long-total-length-threshold", type=float, default=3600.0)
     parser.add_argument("--many-cut-threshold", type=int, default=6)
+    parser.add_argument("--short-line-threshold", type=float, default=DEFAULT_SHORT_LINE_THRESHOLD)
+    parser.add_argument(
+        "--curved-line-turn-threshold",
+        type=float,
+        default=DEFAULT_CURVED_LINE_TURN_THRESHOLD,
+    )
+    parser.add_argument("--sharp-turn-threshold", type=float, default=DEFAULT_SHARP_TURN_THRESHOLD)
+    parser.add_argument("--easy-max-centerlines", type=int, default=DEFAULT_EASY_MAX_CENTERLINES)
+    parser.add_argument("--easy-max-points", type=int, default=DEFAULT_EASY_MAX_POINTS)
+    parser.add_argument("--easy-max-total-turn", type=float, default=DEFAULT_EASY_MAX_TOTAL_TURN)
+    parser.add_argument("--easy-max-single-turn", type=float, default=DEFAULT_EASY_MAX_SINGLE_TURN)
+    parser.add_argument("--hard-score-threshold", type=float, default=DEFAULT_HARD_SCORE_THRESHOLD)
+    parser.add_argument(
+        "--very-hard-score-threshold",
+        type=float,
+        default=DEFAULT_VERY_HARD_SCORE_THRESHOLD,
+    )
     parser.add_argument("--min-score", type=float, default=0.0, help="Only visualize samples with score >= this value.")
     parser.add_argument("--include-empty", action="store_true", help="Also visualize empty/easy samples if selected.")
     parser.add_argument("--seed", type=int, default=42)
@@ -167,6 +196,27 @@ def category_of(item: dict[str, Any]) -> str:
 
 def line_length(points: list[tuple[float, float]]) -> float:
     return sum(math.dist(points[i - 1], points[i]) for i in range(1, len(points)))
+
+
+def polyline_turn_angles(points: list[tuple[float, float]]) -> list[float]:
+    """Return absolute turn angles in degrees; a straight continuation is zero."""
+    angles = []
+    for index in range(1, len(points) - 1):
+        incoming = unit(point_sub(points[index], points[index - 1]))
+        outgoing = unit(point_sub(points[index + 1], points[index]))
+        if incoming is None or outgoing is None:
+            continue
+        cosine = max(-1.0, min(1.0, dot(incoming, outgoing)))
+        angles.append(math.degrees(math.acos(cosine)))
+    return angles
+
+
+def arg_value(args: argparse.Namespace, name: str, default: Any) -> Any:
+    return getattr(args, name, default)
+
+
+def capped_product(count: int, weight: float, maximum: float) -> float:
+    return min(maximum, max(0, count) * weight)
 
 
 def point_sub(a: tuple[float, float], b: tuple[float, float]) -> tuple[float, float]:
@@ -482,6 +532,29 @@ def sample_metrics(record: dict[str, Any], image_size: tuple[int, int] | None, a
     cycle_count = graph_cycle_count(len(nodes), edges)
     crossing_count = count_crossings(centerlines, args.intersection_tol)
     lane_change_count = lane_change_like_count(centerlines)
+    short_line_threshold = float(arg_value(args, "short_line_threshold", DEFAULT_SHORT_LINE_THRESHOLD))
+    curved_line_turn_threshold = float(
+        arg_value(args, "curved_line_turn_threshold", DEFAULT_CURVED_LINE_TURN_THRESHOLD)
+    )
+    sharp_turn_threshold = float(arg_value(args, "sharp_turn_threshold", DEFAULT_SHARP_TURN_THRESHOLD))
+    line_turn_angles = [polyline_turn_angles(clean_points(item.get("points"))) for item in centerlines]
+    line_total_turns = [sum(angles) for angles in line_turn_angles]
+    total_turn_degrees = float(sum(line_total_turns))
+    max_turn_degrees = max((max(angles, default=0.0) for angles in line_turn_angles), default=0.0)
+    curved_line_count = sum(total >= curved_line_turn_threshold for total in line_total_turns)
+    sharp_turn_count = sum(
+        angle >= sharp_turn_threshold
+        for angles in line_turn_angles
+        for angle in angles
+    )
+    short_fragment_count = sum(
+        length < short_line_threshold
+        and not (
+            str(item.get("start_type", "")).lower() == "cut"
+            and str(item.get("end_type", "")).lower() == "cut"
+        )
+        for item, length in zip(centerlines, lengths)
+    )
     closed_intersections = sum(
         1
         for item in intersections
@@ -490,54 +563,90 @@ def sample_metrics(record: dict[str, Any], image_size: tuple[int, int] | None, a
     )
 
     tags: list[str] = []
-    score = 0.0
     if not centerlines and not intersections:
         tags.append("empty_patch")
-        score += 0.2
     if intersections:
         tags.append("intersection")
-        score += 1.8 + min(len(intersections), 3) * 0.25
     if fork_nodes:
         tags.append("multi_fork")
-        score += 2.2 + min(len(fork_nodes), 4) * 0.35
     if t_nodes:
         tags.append("t_intersection_like")
-        score += 1.4
     if cycle_count:
         tags.append("cycle_or_loop")
-        score += 1.5 + min(cycle_count, 3) * 0.25
     if lane_change_count:
         tags.append("lane_change_like")
-        score += 1.2 + min(lane_change_count, 3) * 0.25
     if crossing_count:
         tags.append("crossing_lines")
-        score += 1.0 + min(crossing_count, 4) * 0.2
     if len(centerlines) >= args.dense_line_threshold:
         tags.append("dense_lines")
-        score += 1.0
     if point_count >= args.dense_point_threshold:
         tags.append("many_points")
-        score += 0.8
     if total_length >= args.long_total_length_threshold:
         tags.append("long_total_length")
-        score += 0.6
     if cut_count >= args.many_cut_threshold:
         tags.append("many_cut_edges")
-        score += 0.5
     if closed_intersections:
         tags.append("closed_intersection_polygon")
-        score += 0.4
+    if curved_line_count:
+        tags.append("curved_lines")
+    if sharp_turn_count:
+        tags.append("sharp_turns")
+    if short_fragment_count:
+        tags.append("short_fragments")
     if len(tags) == 0:
         tags.append("plain")
 
-    if score >= 5.0:
-        difficulty = "very_hard"
-    elif score >= 3.0:
-        difficulty = "hard"
-    elif score >= 1.2:
-        difficulty = "medium"
-    else:
+    easy_max_centerlines = int(arg_value(args, "easy_max_centerlines", DEFAULT_EASY_MAX_CENTERLINES))
+    easy_max_points = int(arg_value(args, "easy_max_points", DEFAULT_EASY_MAX_POINTS))
+    easy_max_total_turn = float(arg_value(args, "easy_max_total_turn", DEFAULT_EASY_MAX_TOTAL_TURN))
+    easy_max_single_turn = float(arg_value(args, "easy_max_single_turn", DEFAULT_EASY_MAX_SINGLE_TURN))
+    hard_score_threshold = float(arg_value(args, "hard_score_threshold", DEFAULT_HARD_SCORE_THRESHOLD))
+    very_hard_score_threshold = float(
+        arg_value(args, "very_hard_score_threshold", DEFAULT_VERY_HARD_SCORE_THRESHOLD)
+    )
+    intersection_point_count = sum(len(clean_points(item.get("points"))) for item in intersections)
+    score_components = {
+        "line_instances": min(4.0, max(0, len(centerlines) - 3) * 0.5),
+        "output_points": min(3.0, max(0, point_count - easy_max_points) * 0.05),
+        "intersections": capped_product(len(intersections), 2.2, 6.6),
+        "intersection_vertices": min(
+            1.5,
+            max(0, intersection_point_count - len(intersections) * 5) * 0.08,
+        ),
+        "forks": capped_product(len(fork_nodes), 2.0, 6.0),
+        "t_junctions": capped_product(len(t_nodes), 0.6, 1.8),
+        "cycles": capped_product(cycle_count, 1.2, 3.6),
+        "lane_changes": capped_product(lane_change_count, 1.0, 3.0),
+        "line_crossings": capped_product(crossing_count, 0.8, 3.2),
+        "curved_lines": capped_product(curved_line_count, 0.35, 1.4),
+        "sharp_turns": capped_product(sharp_turn_count, 0.3, 1.8),
+        "accumulated_turn": min(1.5, max(0.0, total_turn_degrees - easy_max_total_turn) / 240.0),
+        "short_fragments": capped_product(short_fragment_count, 0.4, 2.0),
+    }
+    score = float(sum(score_components.values()))
+    strict_easy = bool(centerlines) and all((
+        len(centerlines) <= easy_max_centerlines,
+        point_count <= easy_max_points,
+        not intersections,
+        not fork_nodes,
+        not cycle_count,
+        not lane_change_count,
+        not crossing_count,
+        short_fragment_count == 0,
+        total_turn_degrees <= easy_max_total_turn,
+        max_turn_degrees <= easy_max_single_turn,
+    ))
+
+    if not centerlines and not intersections:
         difficulty = "easy"
+    elif strict_easy:
+        difficulty = "easy"
+    elif score >= very_hard_score_threshold:
+        difficulty = "very_hard"
+    elif score >= hard_score_threshold:
+        difficulty = "hard"
+    else:
+        difficulty = "medium"
     oversample_weight = 1.0
     if difficulty == "medium":
         oversample_weight = 1.5
@@ -563,10 +672,22 @@ def sample_metrics(record: dict[str, Any], image_size: tuple[int, int] | None, a
         "cycle_count": cycle_count,
         "crossing_count": crossing_count,
         "lane_change_like_count": lane_change_count,
+        "short_fragment_count": short_fragment_count,
+        "curved_line_count": curved_line_count,
+        "sharp_turn_count": sharp_turn_count,
+        "total_turn_degrees": round(total_turn_degrees, 3),
+        "max_turn_degrees": round(max_turn_degrees, 3),
         "closed_intersection_count": closed_intersections,
         "tags": tags,
         "difficulty": difficulty,
         "difficulty_score": round(score, 3),
+        "difficulty_score_components": {
+            name: round(value, 3)
+            for name, value in score_components.items()
+        },
+        "difficulty_rule_version": DIFFICULTY_RULE_VERSION,
+        "strict_easy": strict_easy,
+        "cut_affects_difficulty": False,
         "oversample_weight": oversample_weight,
         "_payload": payload,
     }

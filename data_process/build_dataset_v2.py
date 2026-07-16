@@ -50,7 +50,7 @@ from data_process.state_update_dataset_common import (
     validate_rows,
     write_json,
 )
-from scripts.tools.tag_hard_map_samples import sample_metrics
+from scripts.tools.tag_hard_map_samples import DIFFICULTY_RULE_VERSION, sample_metrics
 
 
 DEFAULT_DIFFICULTY_RATIOS = {
@@ -71,6 +71,15 @@ DIFFICULTY_ARGS = SimpleNamespace(
     dense_point_threshold=34,
     long_total_length_threshold=3600.0,
     many_cut_threshold=6,
+    short_line_threshold=90.0,
+    curved_line_turn_threshold=45.0,
+    sharp_turn_threshold=60.0,
+    easy_max_centerlines=3,
+    easy_max_points=16,
+    easy_max_total_turn=120.0,
+    easy_max_single_turn=60.0,
+    hard_score_threshold=2.5,
+    very_hard_score_threshold=5.5,
 )
 
 
@@ -769,6 +778,8 @@ def main(argv=None):
         args.intersection_target_ratio,
         args.difficulty_seed,
     )
+    balance_report["difficulty_rule_version"] = DIFFICULTY_RULE_VERSION
+    balance_report["cut_affects_difficulty"] = False
     if balance_report["selected_total"] != args.train_target_samples:
         raise ValueError(
             f"unable to select {args.train_target_samples} train records; got {balance_report['selected_total']}. "
@@ -845,6 +856,17 @@ def main(argv=None):
 
     build_summary = {
         "dataset_version": "rc_dataset_v2_stage_a",
+        "difficulty_rule_version": DIFFICULTY_RULE_VERSION,
+        "difficulty_rule": {
+            "cut_affects_difficulty": False,
+            "strict_easy_required": True,
+            "easy_max_centerlines": DIFFICULTY_ARGS.easy_max_centerlines,
+            "easy_max_points": DIFFICULTY_ARGS.easy_max_points,
+            "easy_max_total_turn": DIFFICULTY_ARGS.easy_max_total_turn,
+            "easy_max_single_turn": DIFFICULTY_ARGS.easy_max_single_turn,
+            "hard_score_threshold": DIFFICULTY_ARGS.hard_score_threshold,
+            "very_hard_score_threshold": DIFFICULTY_ARGS.very_hard_score_threshold,
+        },
         "baseline": "jiangjihua_tiff_geojson_mask_and_clipping",
         "task": "lane_intersection",
         "phase": "phase_a",

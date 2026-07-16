@@ -14,6 +14,7 @@ from data_process.build_dataset_v2 import (
     DIFFICULTY_ORDER,
     allocate_global_intersection_quotas,
     annotate_translation_grid,
+    classify_row,
     empty_candidate_pools,
     select_balanced_candidates,
 )
@@ -168,6 +169,58 @@ class DatasetV2ContextTest(unittest.TestCase):
 
 
 class DatasetV2BalancingTest(unittest.TestCase):
+    def test_production_classifier_does_not_score_cut_endpoints(self):
+        row = {
+            "id": "simple_cut_roads",
+            "image": "images/train/simple_cut_roads.png",
+            "target_lines": [
+                {
+                    "category": "centerline",
+                    "start_type": "cut",
+                    "end_type": "cut",
+                    "points": [[0, y], [255, y]],
+                }
+                for y in (50, 128, 205)
+            ],
+        }
+
+        metrics = classify_row(row, patch_size=256, coord_range=1000)
+
+        self.assertEqual(metrics["stratum"], "easy")
+        self.assertEqual(metrics["cut_endpoint_count"], 6)
+        self.assertFalse(metrics["cut_affects_difficulty"])
+
+    def test_production_classifier_requires_explicitly_simple_easy_geometry(self):
+        def classify_parallel_lines(count):
+            return classify_row(
+                {
+                    "id": f"parallel_{count}",
+                    "image": f"images/train/parallel_{count}.png",
+                    "target_lines": [
+                        {
+                            "category": "centerline",
+                            "start_type": "cut",
+                            "end_type": "cut",
+                            "points": [
+                                [0, round((index + 1) * 255 / (count + 1))],
+                                [255, round((index + 1) * 255 / (count + 1))],
+                            ],
+                        }
+                        for index in range(count)
+                    ],
+                },
+                patch_size=256,
+                coord_range=1000,
+            )
+
+        medium = classify_parallel_lines(4)
+        hard = classify_parallel_lines(8)
+
+        self.assertEqual(medium["stratum"], "medium")
+        self.assertFalse(medium["strict_easy"])
+        self.assertEqual(hard["stratum"], "hard")
+        self.assertEqual(hard["difficulty_score_components"]["line_instances"], 2.5)
+
     def test_balancing_hits_requested_distribution_and_intersection_share(self):
         pools = {
             name: {

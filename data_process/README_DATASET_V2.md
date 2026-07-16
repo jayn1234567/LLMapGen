@@ -80,6 +80,23 @@ global constraint, not a separate 30% requirement inside every difficulty
 bucket. The allocator follows the natural intersection density of each bucket
 while satisfying the global target with unique crop windows.
 
+Difficulty uses rule version `geometry_v2_strict_easy_no_cut_score`. An
+`easy` record must explicitly satisfy all simple-geometry constraints: at most
+three centerlines, at most 16 output points, no intersection/fork/cycle/lane
+change/crossing, no non-boundary short fragment, and limited accumulated and
+single-turn curvature. A non-empty record that fails any easy constraint starts
+at `medium`; continuous geometry scores then promote it to `hard` or
+`very_hard`. The score uses line instances, output points, intersections,
+forks, cycles, crossings, curvature, sharp turns, and short fragments.
+
+`cut` endpoints describe crop-boundary truncation and do not increase
+difficulty. `many_cut_edges`, `long_total_length`, `dense_lines`, and
+`many_points` remain useful audit tags, but their underlying quantities are
+either diagnostic-only or scored continuously without a second threshold
+bonus. This avoids double-counting simple parallel roads that cross the patch
+boundary. The rule version, score components, and `cut_affects_difficulty`
+flag are written to the candidate/build reports for later auditing.
+
 Selection uses the following fallback order:
 
 1. Fill the requested difficulty quotas from unique native-grid windows.

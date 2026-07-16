@@ -184,6 +184,29 @@ def _group_count(channels: int) -> int:
     return 1
 
 
+def _npu_safe_bilinear_interpolate(
+    inputs: torch.Tensor,
+    *,
+    size: tuple[int, int] | None = None,
+    scale_factor: float | None = None,
+    force_float32: bool = False,
+) -> torch.Tensor:
+    """Run bilinear resize through FP32 when Ascend does not support BF16."""
+    original_dtype = inputs.dtype
+    needs_float32 = force_float32 or (
+        inputs.device.type == "npu" and original_dtype == torch.bfloat16
+    )
+    resize_inputs = inputs.float() if needs_float32 else inputs
+    resized = F.interpolate(
+        resize_inputs,
+        size=size,
+        scale_factor=scale_factor,
+        mode="bilinear",
+        align_corners=False,
+    )
+    return resized.to(dtype=original_dtype) if needs_float32 else resized
+
+
 class ConvGroupNormGELU(nn.Sequential):
     def __init__(self, in_channels: int, out_channels: int) -> None:
         super().__init__(
@@ -293,19 +316,15 @@ class LegacySingleLayerRoadDecoder(nn.Module):
         )
         features = self.input_projection(features)
         for stage in self.stages:
-            features = F.interpolate(
+            features = _npu_safe_bilinear_interpolate(
                 features,
                 scale_factor=2.0,
-                mode="bilinear",
-                align_corners=False,
             )
             features = stage(features)
         if features.shape[-2:] != output_size:
-            features = F.interpolate(
+            features = _npu_safe_bilinear_interpolate(
                 features,
                 size=output_size,
-                mode="bilinear",
-                align_corners=False,
             )
         return self.classifier(features)
 
@@ -401,7 +420,7 @@ class Dinov3StyleFPNRoadDecoder(nn.Module):
         x = x + F.interpolate(inter, size=x.shape[-2:], mode="nearest")
         x = self.conv5(x)
         if x.shape[-2:] != output_size:
-            x = F.interpolate(x, size=output_size, mode="bilinear", align_corners=False)
+            x = _npu_safe_bilinear_interpolate(x, size=output_size)
         return x
 
 
@@ -465,11 +484,11 @@ class MultiLayerRoadDecoder(nn.Module):
         weights = torch.softmax(self.layer_weights, dim=0).to(dtype=features[0].dtype)
         fused = sum(weight * feature for weight, feature in zip(weights, features))
         fused = self.refine(fused)
-        fused = F.interpolate(fused, scale_factor=2.0, mode="bilinear", align_corners=False)
+        fused = _npu_safe_bilinear_interpolate(fused, scale_factor=2.0)
         fused = self.up_stage1(fused)
-        fused = F.interpolate(fused, scale_factor=2.0, mode="bilinear", align_corners=False)
+        fused = _npu_safe_bilinear_interpolate(fused, scale_factor=2.0)
         fused = self.up_stage2(fused)
-        fused = F.interpolate(fused, size=output_size, mode="bilinear", align_corners=False)
+        fused = _npu_safe_bilinear_interpolate(fused, size=output_size)
         return self.classifier(self.output_refine(fused))
 
 

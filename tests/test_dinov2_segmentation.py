@@ -17,6 +17,7 @@ from mllm.vision_pretrain.data import (
 )
 from mllm.vision_pretrain.dinov2_segmentation import (
     Dinov2RoadSegmentationModel,
+    _npu_safe_bilinear_interpolate,
     enable_dinov2_gradient_checkpointing,
     merged_lora_state_dict,
 )
@@ -316,6 +317,19 @@ class Dinov2SegmentationTests(unittest.TestCase):
         self.assertTrue(
             all(parameter.grad is not None for parameter in adapter_parameters.values())
         )
+
+    def test_npu_safe_bilinear_interpolate_preserves_dtype_and_gradient(self):
+        inputs = torch.randn(1, 3, 4, 4, dtype=torch.bfloat16, requires_grad=True)
+        output = _npu_safe_bilinear_interpolate(
+            inputs,
+            size=(8, 8),
+            force_float32=True,
+        )
+        self.assertEqual(output.dtype, torch.bfloat16)
+        self.assertEqual(tuple(output.shape), (1, 3, 8, 8))
+        output.float().square().mean().backward()
+        self.assertIsNotNone(inputs.grad)
+        self.assertTrue(torch.isfinite(inputs.grad.float()).all())
 
     def test_fixed_two_class_confusion_metrics(self):
         logits = torch.tensor(

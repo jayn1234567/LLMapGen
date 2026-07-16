@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 from typing import Any, Dict, Sequence, Tuple
 
@@ -73,12 +74,13 @@ def _find_target_key(
     suffixes: Sequence[str],
 ) -> str | None:
     shape = tuple(value.shape)
+    allow_zero_shape = _allow_zero_shape_targets()
     for suffix in suffixes:
         matches = [
             key
             for key, target_value in target_state.items()
             if str(key).endswith(str(suffix))
-            and (tuple(target_value.shape) == shape or int(target_value.numel()) == 0)
+            and (tuple(target_value.shape) == shape or (allow_zero_shape and int(target_value.numel()) == 0))
         ]
         if matches:
             exact = [
@@ -88,6 +90,11 @@ def _find_target_key(
             ]
             return sorted(exact or matches, key=len)[0]
     return None
+
+
+def _allow_zero_shape_targets() -> bool:
+    value = str(os.environ.get("DINOV3_CHECKPOINT_ALLOW_ZERO_SHAPE", "false")).strip().lower()
+    return value in {"1", "true", "yes", "on"}
 
 
 def _candidate_tensor_values(value: torch.Tensor) -> tuple[torch.Tensor, ...]:
@@ -377,13 +384,14 @@ def _candidate_encoder_states(
 
 def _shape_match_score(module: nn.Module, state_dict: Dict[str, torch.Tensor]) -> tuple[int, int]:
     target_state = module.state_dict()
+    allow_zero_shape = _allow_zero_shape_targets()
     matched = {
         key: value
         for key, value in state_dict.items()
         if key in target_state
         and (
             tuple(target_state[key].shape) == tuple(value.shape)
-            or int(target_state[key].numel()) == 0
+            or (allow_zero_shape and int(target_state[key].numel()) == 0)
         )
     }
     return len(matched), sum(int(value.numel()) for value in matched.values())
@@ -458,6 +466,92 @@ def _load_state_dict_allow_zero_shape(module: nn.Module, state_dict: Dict[str, t
     return list(missing), list(unexpected) + list(load_unexpected), assigned
 
 
+def _validate_loaded_encoder_state(
+    module: nn.Module,
+    selected_name: str,
+    encoder_state: Dict[str, torch.Tensor],
+) -> Dict[str, int]:
+    target_state = module.state_dict()
+    loaded_keys = [
+        key
+        for key, value in encoder_state.items()
+        if key in target_state
+        and torch.is_tensor(value)
+        and int(target_state[key].numel()) > 0
+        and tuple(target_state[key].shape) == tuple(value.shape)
+    ]
+    loaded_params = sum(int(encoder_state[key].numel()) for key in loaded_keys)
+    remaining_zero = [
+        key
+        for key in encoder_state
+        if key in target_state and int(target_state[key].numel()) == 0
+    ]
+
+    checks = {
+        "patch_embed": sum(
+            1
+            for key in loaded_keys
+            if "patch" in key and key.endswith("weight")
+        ),
+        "block_norm": sum(
+            1
+            for key in loaded_keys
+            if (".norm1." in key or ".norm2." in key) and key.endswith(("weight", "bias"))
+        ),
+        "attention": sum(
+            1
+            for key in loaded_keys
+            if ("attn" in key or "attention" in key or "self_attn" in key)
+            and key.endswith(("weight", "bias"))
+        ),
+        "mlp": sum(
+            1
+            for key in loaded_keys
+            if ".mlp." in key and key.endswith(("weight", "bias"))
+        ),
+    }
+
+    strict = str(os.environ.get("DINOV3_CHECKPOINT_STRICT_VALIDATE", "true")).strip().lower()
+    if strict in {"0", "false", "no", "off"}:
+        return {
+            "loaded_tensors": len(loaded_keys),
+            "loaded_params": loaded_params,
+            "remaining_zero": len(remaining_zero),
+            **checks,
+        }
+
+    min_tensors = int(os.environ.get("DINOV3_CHECKPOINT_MIN_TENSORS", "300"))
+    min_params = int(os.environ.get("DINOV3_CHECKPOINT_MIN_PARAMS", "100000000"))
+    errors = []
+    if len(loaded_keys) < min_tensors:
+        errors.append(f"loaded_tensors={len(loaded_keys)} < {min_tensors}")
+    if loaded_params < min_params:
+        errors.append(f"loaded_params={loaded_params} < {min_params}")
+    if remaining_zero:
+        errors.append(f"remaining_zero_shape_tensors={len(remaining_zero)}")
+    if checks["patch_embed"] < 1:
+        errors.append("patch_embed_weight_missing")
+    if checks["block_norm"] < 24:
+        errors.append(f"block_norm_tensors={checks['block_norm']} < 24")
+    if checks["attention"] < 72:
+        errors.append(f"attention_tensors={checks['attention']} < 72")
+    if checks["mlp"] < 48:
+        errors.append(f"mlp_tensors={checks['mlp']} < 48")
+    if errors:
+        raise ValueError(
+            "DINOv3 checkpoint load validation failed; refusing to train with a "
+            f"partially loaded vision tower. selected_state={selected_name} "
+            f"errors={errors} remaining_zero_examples={remaining_zero[:8]}"
+        )
+
+    return {
+        "loaded_tensors": len(loaded_keys),
+        "loaded_params": loaded_params,
+        "remaining_zero": len(remaining_zero),
+        **checks,
+    }
+
+
 def _select_encoder_state(
     vision_encoder: nn.Module,
     raw_state: Dict[str, torch.Tensor],
@@ -503,12 +597,22 @@ def load_dinov3_vision_checkpoint(
         raise ValueError(f"Unable to extract DINOv3 visual encoder weights from checkpoint: {path}")
 
     selected_name, encoder_state = _select_encoder_state(vision_encoder, raw_state)
-    missing, unexpected, zero_shape_assigned = _load_state_dict_allow_zero_shape(vision_encoder, encoder_state)
+    if _allow_zero_shape_targets():
+        missing, unexpected, zero_shape_assigned = _load_state_dict_allow_zero_shape(vision_encoder, encoder_state)
+    else:
+        missing, unexpected = vision_encoder.load_state_dict(encoder_state, strict=False)
+        zero_shape_assigned = 0
+    validation = _validate_loaded_encoder_state(vision_encoder, selected_name, encoder_state)
     print(
         "[dinov3-checkpoint] "
         f"selected_state={selected_name} tensors={len(encoder_state)} "
         f"missing={len(missing)} unexpected={len(unexpected)} "
-        f"zero_shape_assigned={zero_shape_assigned} path={path}",
+        f"zero_shape_assigned={zero_shape_assigned} "
+        f"loaded_tensors={validation['loaded_tensors']} "
+        f"loaded_params={validation['loaded_params']} "
+        f"required={{patch_embed:{validation['patch_embed']}, "
+        f"block_norm:{validation['block_norm']}, attention:{validation['attention']}, "
+        f"mlp:{validation['mlp']}}} path={path}",
         flush=True,
     )
     return selected_name

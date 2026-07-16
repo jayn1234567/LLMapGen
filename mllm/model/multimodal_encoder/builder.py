@@ -12,6 +12,12 @@ def _build_dinov3_vision_tower(vision_tower, vision_tower_cfg, **kwargs):
     return DINOv3VisionTower(vision_tower, args=vision_tower_cfg, **kwargs)
 
 
+def _build_dinov3_private_seg_vision_tower(vision_tower, vision_tower_cfg, **kwargs):
+    from .dinov3_private_seg_encoder import DINOv3PrivateSegVisionTower
+
+    return DINOv3PrivateSegVisionTower(vision_tower, args=vision_tower_cfg, **kwargs)
+
+
 def _build_siglip_vision_tower(vision_tower, vision_tower_cfg, **kwargs):
     from .siglip_encoder import SigLIPVisionTower
 
@@ -37,6 +43,13 @@ def _normalize_dino_type(vision_tower_type):
         return "dinov2"
     if vision_tower_type in ("dinov3", "dino_v3", "dino3"):
         return "dinov3"
+    if vision_tower_type in (
+        "dinov3_private_seg",
+        "dinov3_private",
+        "private_dinov3",
+        "dinov3_seg",
+    ):
+        return "dinov3_private_seg"
     return ""
 
 
@@ -87,16 +100,26 @@ def _build_single_vision_tower(vision_tower_cfg, **kwargs):
     img_size = getattr(vision_tower_cfg, 'input_image_size', None) or None
 
     vit_type = _normalize_dino_type(getattr(vision_tower_cfg, 'mm_vision_tower_type', ''))
-    if vit_type in ("dinov2", "dinov3"):
+    if vit_type in ("dinov2", "dinov3", "dinov3_private_seg"):
         if "dinov2" in vision_tower_lower or "dinov3" in vision_tower_lower:
             try:
                 dino_cfg = get_dino_config(vision_tower_str, input_image_size=img_size)
-                _apply_dino_config(vision_tower_cfg, dino_cfg)
+                if vit_type == "dinov3_private_seg":
+                    if getattr(vision_tower_cfg, 'input_image_size', None) is None:
+                        vision_tower_cfg.input_image_size = dino_cfg.image_size
+                    vision_tower_cfg.mm_vision_tower_type = "dinov3_private_seg"
+                    vision_tower_cfg.deepstack_visual_indexes = None
+                else:
+                    _apply_dino_config(vision_tower_cfg, dino_cfg)
             except KeyError:
                 vision_tower_cfg.mm_vision_tower_type = vit_type
         else:
             vision_tower_cfg.mm_vision_tower_type = vit_type
 
+    if vit_type == "dinov3_private_seg":
+        vision_tower_cfg.mm_vision_tower_type = "dinov3_private_seg"
+        vision_tower_cfg.deepstack_visual_indexes = None
+        return _build_dinov3_private_seg_vision_tower(vision_tower, vision_tower_cfg, **kwargs)
     if vit_type == "dinov3":
         return _build_dinov3_vision_tower(vision_tower, vision_tower_cfg, **kwargs)
     if vit_type == "dinov2":

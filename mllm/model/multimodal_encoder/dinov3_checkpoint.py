@@ -77,10 +77,16 @@ def _find_target_key(
         matches = [
             key
             for key, target_value in target_state.items()
-            if str(key).endswith(str(suffix)) and tuple(target_value.shape) == shape
+            if str(key).endswith(str(suffix))
+            and (tuple(target_value.shape) == shape or int(target_value.numel()) == 0)
         ]
         if matches:
-            return sorted(matches, key=len)[0]
+            exact = [
+                key
+                for key in matches
+                if tuple(target_state[key].shape) == shape
+            ]
+            return sorted(exact or matches, key=len)[0]
     return None
 
 
@@ -374,9 +380,82 @@ def _shape_match_score(module: nn.Module, state_dict: Dict[str, torch.Tensor]) -
     matched = {
         key: value
         for key, value in state_dict.items()
-        if key in target_state and tuple(target_state[key].shape) == tuple(value.shape)
+        if key in target_state
+        and (
+            tuple(target_state[key].shape) == tuple(value.shape)
+            or int(target_state[key].numel()) == 0
+        )
     }
     return len(matched), sum(int(value.numel()) for value in matched.values())
+
+
+def _resolve_tensor_parent(module: nn.Module, key: str) -> tuple[Any, str]:
+    obj: Any = module
+    parts = str(key).split(".")
+    for part in parts[:-1]:
+        if part.isdigit() and isinstance(obj, (nn.ModuleList, nn.Sequential, list, tuple)):
+            obj = obj[int(part)]
+        else:
+            obj = getattr(obj, part)
+    return obj, parts[-1]
+
+
+def _assign_tensor_to_module(module: nn.Module, key: str, value: torch.Tensor) -> bool:
+    parent, name = _resolve_tensor_parent(module, key)
+    tensor = value.detach().clone()
+    parameters = getattr(parent, "_parameters", {})
+    if name in parameters:
+        old = parameters.get(name)
+        requires_grad = True if old is None else bool(old.requires_grad)
+        parameters[name] = nn.Parameter(tensor, requires_grad=requires_grad)
+        return True
+    buffers = getattr(parent, "_buffers", {})
+    if name in buffers:
+        buffers[name] = tensor
+        return True
+    current = getattr(parent, name, None)
+    if torch.is_tensor(current):
+        setattr(parent, name, tensor)
+        return True
+    return False
+
+
+def _load_state_dict_allow_zero_shape(module: nn.Module, state_dict: Dict[str, torch.Tensor]) -> tuple[list[str], list[str], int]:
+    target_state = module.state_dict()
+    zero_shape_targets = {
+        key
+        for key, value in target_state.items()
+        if int(value.numel()) == 0 and key in state_dict
+    }
+    if not zero_shape_targets:
+        missing, unexpected = module.load_state_dict(state_dict, strict=False)
+        return list(missing), list(unexpected), 0
+
+    assigned = 0
+    unexpected: list[str] = []
+    for key, value in state_dict.items():
+        if key not in target_state:
+            unexpected.append(key)
+            continue
+        if tuple(target_state[key].shape) == tuple(value.shape):
+            continue
+        if int(target_state[key].numel()) != 0:
+            unexpected.append(key)
+            continue
+        if _assign_tensor_to_module(module, key, value):
+            assigned += 1
+        else:
+            unexpected.append(key)
+
+    exact_state = {
+        key: value
+        for key, value in state_dict.items()
+        if key in module.state_dict()
+        and tuple(module.state_dict()[key].shape) == tuple(value.shape)
+        and key not in unexpected
+    }
+    missing, load_unexpected = module.load_state_dict(exact_state, strict=False)
+    return list(missing), list(unexpected) + list(load_unexpected), assigned
 
 
 def _select_encoder_state(
@@ -424,11 +503,12 @@ def load_dinov3_vision_checkpoint(
         raise ValueError(f"Unable to extract DINOv3 visual encoder weights from checkpoint: {path}")
 
     selected_name, encoder_state = _select_encoder_state(vision_encoder, raw_state)
-    missing, unexpected = vision_encoder.load_state_dict(encoder_state, strict=False)
+    missing, unexpected, zero_shape_assigned = _load_state_dict_allow_zero_shape(vision_encoder, encoder_state)
     print(
         "[dinov3-checkpoint] "
         f"selected_state={selected_name} tensors={len(encoder_state)} "
-        f"missing={len(missing)} unexpected={len(unexpected)} path={path}",
+        f"missing={len(missing)} unexpected={len(unexpected)} "
+        f"zero_shape_assigned={zero_shape_assigned} path={path}",
         flush=True,
     )
     return selected_name

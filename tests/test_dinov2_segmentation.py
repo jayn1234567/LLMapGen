@@ -210,7 +210,7 @@ class Dinov2SegmentationTests(unittest.TestCase):
     def test_legacy_decoder_trains_only_tail_blocks_and_final_norm(self):
         model = Dinov2RoadSegmentationModel(
             FakeVisionEncoder(),
-            input_size=8,
+            input_size=16,
             hidden_state_indices=[4],
             projection_channels=16,
             decoder_type="legacy_single_layer",
@@ -342,6 +342,24 @@ class Dinov2SegmentationTests(unittest.TestCase):
         metrics = metrics_from_confusion(matrix)
         self.assertAlmostEqual(metrics["lane_precision"], 1.0)
         self.assertAlmostEqual(metrics["lane_recall"], 2.0 / 3.0)
+        self.assertAlmostEqual(metrics["target_foreground_ratio"], 3.0 / 4.0)
+        self.assertAlmostEqual(metrics["predicted_foreground_ratio"], 2.0 / 4.0)
+
+    def test_dinov3_style_fpn_normalizes_each_selected_layer(self):
+        model = Dinov2RoadSegmentationModel(
+            FakeVisionEncoder(),
+            input_size=8,
+            hidden_state_indices=[1, 2, 3, 4],
+            projection_channels=16,
+            decoder_type="dinov3_style_fpn",
+            vision_lora_enable=True,
+            vision_lora_r=2,
+            vision_lora_alpha=2,
+            vision_lora_target_modules="layers.0,layers.1,layers.2,layers.3",
+        )
+        self.assertEqual(len(model.decoder.input_norms), 4)
+        output = model(torch.randn(2, 3, 16, 16))
+        self.assertEqual(tuple(output.shape), (2, 2, 16, 16))
 
     def test_obs_source_manifest_has_all_private_segmentation_sets(self):
         script_path = (

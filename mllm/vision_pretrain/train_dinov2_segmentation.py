@@ -636,7 +636,13 @@ def main() -> None:
             if not should_update:
                 continue
 
-            gradient_norm = torch.nn.utils.clip_grad_norm_(raw_model.parameters(), args.max_grad_norm)
+            if float(args.max_grad_norm) > 0:
+                gradient_norm = torch.nn.utils.clip_grad_norm_(
+                    raw_model.parameters(),
+                    args.max_grad_norm,
+                )
+            else:
+                gradient_norm = torch.tensor(float("nan"), device=device)
             optimizer.step()
             scheduler.step()
             optimizer.zero_grad(set_to_none=True)
@@ -650,6 +656,15 @@ def main() -> None:
                 elapsed = max(time.perf_counter() - group_started, 1e-6)
                 throughput = group_samples / elapsed
                 if rank == 0:
+                    valid_pixels = labels != 255
+                    target_foreground_ratio = (
+                        ((labels == 1) & valid_pixels).sum().float()
+                        / valid_pixels.sum().clamp_min(1).float()
+                    )
+                    predicted_foreground_ratio = (
+                        ((logits.argmax(dim=1) == 1) & valid_pixels).sum().float()
+                        / valid_pixels.sum().clamp_min(1).float()
+                    )
                     log_payload = {
                         "epoch": epoch,
                         "step": global_step,
@@ -657,6 +672,8 @@ def main() -> None:
                         "cross_entropy": group_ce / group_size,
                         "dice_loss": group_dice / group_size,
                         "gradient_norm": float(gradient_norm.detach().float().item()),
+                        "target_foreground_ratio": float(target_foreground_ratio.item()),
+                        "predicted_foreground_ratio": float(predicted_foreground_ratio.item()),
                         "vision_lr": optimizer.param_groups[0]["lr"],
                         "DI_throughput": f"{throughput:.2f} samples/s/npu",
                     }

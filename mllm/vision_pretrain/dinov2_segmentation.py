@@ -350,6 +350,12 @@ class Dinov3StyleFPNRoadDecoder(nn.Module):
             max(1, int(projection_channels) // 4),
             max(1, int(projection_channels) // 6),
         ]
+        # timm/DINO get_intermediate_layers(norm=True) normalizes every
+        # returned layer. Hugging Face hidden_states are unnormalized except
+        # for last_hidden_state, so reproduce that contract in the decoder.
+        self.input_norms = nn.ModuleList(
+            [nn.LayerNorm(hidden_size) for _ in range(num_layers)]
+        )
         self.conv1 = ConvBNReLU(hidden_size, inner_channels[0], 3)
         self.conv2 = ConvBNReLU(inner_channels[0], inner_channels[1], 3)
         self.conv3 = ConvBNReLU(inner_channels[1], inner_channels[2], 3)
@@ -396,12 +402,12 @@ class Dinov3StyleFPNRoadDecoder(nn.Module):
             )
         features = [
             self._to_feature_map(
-                hidden_state,
+                norm(hidden_state),
                 prefix_tokens=prefix_tokens,
                 patch_height=patch_height,
                 patch_width=patch_width,
             )
-            for hidden_state in hidden_states
+            for norm, hidden_state in zip(self.input_norms, hidden_states)
         ]
         x = self.conv1(features[-1])
         x = self.conv2(x)

@@ -78,6 +78,9 @@ def metrics_from_confusion(matrix: torch.Tensor, eps: float = 1e-12) -> dict[str
     valid_iou = union > 0
     mean_iou = iou[valid_iou].mean() if valid_iou.any() else iou.new_tensor(0.0)
     accuracy = true_positive.sum() / matrix.sum().clamp_min(eps)
+    total_pixels = matrix.sum().clamp_min(eps)
+    target_foreground_ratio = target_total[1] / total_pixels
+    predicted_foreground_ratio = prediction_total[1] / total_pixels
     return {
         "background_iou": float(iou[0].item()),
         "lane_iou": float(iou[1].item()),
@@ -86,5 +89,9 @@ def metrics_from_confusion(matrix: torch.Tensor, eps: float = 1e-12) -> dict[str
         "lane_recall": float(recall[1].item()),
         "lane_f1": float(f1[1].item()),
         "pixel_accuracy": float(accuracy.item()),
+        "target_foreground_ratio": float(target_foreground_ratio.item()),
+        "predicted_foreground_ratio": float(predicted_foreground_ratio.item()),
+        "target_foreground_pixels": int(target_total[1].item()),
+        "predicted_foreground_pixels": int(prediction_total[1].item()),
         "confusion_matrix": matrix.to(dtype=torch.int64).cpu().tolist(),
     }

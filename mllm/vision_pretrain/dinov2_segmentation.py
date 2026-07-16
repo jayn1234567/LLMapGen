@@ -514,6 +514,7 @@ class Dinov2RoadSegmentationModel(nn.Module):
         vision_lora_alpha: float = 16.0,
         vision_lora_dropout: float = 0.0,
         vision_lora_target_modules: str | Sequence[str] = "query,value",
+        allow_register_tokens: bool = False,
     ) -> None:
         super().__init__()
         self.vision_encoder = vision_encoder
@@ -552,10 +553,10 @@ class Dinov2RoadSegmentationModel(nn.Module):
         self.patch_size = int(config.patch_size)
         if self.input_size % self.patch_size != 0:
             raise ValueError(
-                f"input_size={self.input_size} must be divisible by DINOv2 patch_size={self.patch_size}."
+                f"input_size={self.input_size} must be divisible by DINO patch_size={self.patch_size}."
             )
         self.num_register_tokens = int(getattr(config, "num_register_tokens", 0) or 0)
-        if self.num_register_tokens:
+        if self.num_register_tokens and not bool(allow_register_tokens):
             raise ValueError(
                 "This recipe requires non-register DINOv2 to match Jiangjihua's vision tower; "
                 f"the supplied model has {self.num_register_tokens} register tokens."
@@ -608,7 +609,7 @@ class Dinov2RoadSegmentationModel(nn.Module):
             else:
                 if isinstance(node, (nn.ModuleList, list, tuple)):
                     return node
-        raise RuntimeError("Unable to find DINOv2 transformer blocks for partial unfreezing.")
+        raise RuntimeError("Unable to find DINO transformer blocks for partial unfreezing.")
 
     def _configure_vision_trainability(self) -> None:
         if self.vision_unfreeze_last_n_blocks < 0:

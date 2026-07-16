@@ -142,9 +142,11 @@ class DINOv3VisionTower(nn.Module):
         raw = self.select_layer
         if raw >= 0:
             self.select_layer_idx = raw
+            max_index = self.num_layers
         else:
             self.select_layer_idx = self.num_layers + raw
-        self.select_layer_idx = max(0, min(self.select_layer_idx, self.num_layers - 1))
+            max_index = self.num_layers - 1
+        self.select_layer_idx = max(0, min(self.select_layer_idx, max_index))
 
     def _build_deepstack(self):
         vit_hidden_size = self.vision_tower.config.hidden_size
@@ -185,7 +187,10 @@ class DINOv3VisionTower(nn.Module):
 
         def select_features_from_layer(layer_idx):
             layer_idx = max(0, min(layer_idx, len(hidden_states) - 1))
-            features = hidden_states[layer_idx]
+            if layer_idx == len(hidden_states) - 1:
+                features = image_forward_outs.last_hidden_state
+            else:
+                features = hidden_states[layer_idx]
             if self.select_feature == 'patch':
                 return features[:, self.skip_tokens:]
             if self.select_feature == 'cls_patch':

@@ -23,6 +23,7 @@ from .data import (
     seed_worker,
 )
 from .dinov2_segmentation import Dinov2RoadSegmentationModel
+from .dinov3_segmentation import Dinov3RoadSegmentationModel
 from .metrics import confusion_matrix, metrics_from_confusion, segmentation_loss
 
 
@@ -37,9 +38,14 @@ def parse_bool(value: str | bool) -> bool:
     raise argparse.ArgumentTypeError(f"Expected a boolean value, got {value!r}")
 
 
-def build_parser() -> argparse.ArgumentParser:
+def build_parser(default_vision_model_type: str = "dinov2") -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Hugging Face DINOv2 road-lane segmentation pretraining."
+        description="Hugging Face DINO road-lane segmentation pretraining."
+    )
+    parser.add_argument(
+        "--vision_model_type",
+        choices=("dinov2", "dinov3"),
+        default=str(default_vision_model_type),
     )
     parser.add_argument("--model_name_or_path", required=True)
     parser.add_argument("--dataset_roots", nargs="+", required=True)
@@ -217,7 +223,7 @@ def _parameter_groups(
     return groups
 
 
-def build_optimizer(model: Dinov2RoadSegmentationModel, args: argparse.Namespace) -> AdamW:
+def build_optimizer(model: torch.nn.Module, args: argparse.Namespace) -> AdamW:
     groups = _parameter_groups(
         model.vision_encoder,
         learning_rate=args.learning_rate,
@@ -320,7 +326,7 @@ def evaluate(
 
 
 def save_best_artifacts(
-    model: Dinov2RoadSegmentationModel,
+    model: torch.nn.Module,
     image_processor: object,
     output_dir: Path,
     *,
@@ -335,7 +341,8 @@ def save_best_artifacts(
     best_dir.mkdir(parents=True, exist_ok=True)
     metadata = {
         "base_model": args.model_name_or_path,
-        "architecture": "Dinov2RoadSegmentationModel",
+        "architecture": type(model).__name__,
+        "vision_model_type": args.vision_model_type,
         "input_size": args.input_size,
         "patch_size": model.patch_size,
         "visual_grid_size": args.input_size // model.patch_size,
@@ -387,8 +394,9 @@ def save_best_artifacts(
     )
 
 
-def main() -> None:
-    args = build_parser().parse_args()
+def main(default_vision_model_type: str = "dinov2") -> None:
+    args = build_parser(default_vision_model_type).parse_args()
+    log_prefix = f"[{args.vision_model_type}-seg]"
     device, rank, local_rank, world_size = initialize_runtime(args.device)
     set_seed(args.split_seed, rank)
     output_dir = Path(args.output_dir).expanduser().resolve()
@@ -435,7 +443,7 @@ def main() -> None:
         "groups": discovery_report.groups,
         "missing_images": discovery_report.missing_images,
     }
-    rank0_print(rank, f"[dinov2-seg] dataset={json.dumps(dataset_report, ensure_ascii=True)}")
+    rank0_print(rank, f"{log_prefix} dataset={json.dumps(dataset_report, ensure_ascii=True)}")
 
     train_dataset = RoadLaneSegmentationDataset(
         train_samples,
@@ -499,7 +507,11 @@ def main() -> None:
     if not len(train_loader):
         raise RuntimeError("Training dataloader is empty. Reduce batch size or provide more samples.")
 
-    raw_model = Dinov2RoadSegmentationModel.from_pretrained(
+    model_class = {
+        "dinov2": Dinov2RoadSegmentationModel,
+        "dinov3": Dinov3RoadSegmentationModel,
+    }[args.vision_model_type]
+    raw_model = model_class.from_pretrained(
         args.model_name_or_path,
         input_size=args.input_size,
         hidden_state_indices=args.hidden_state_indices,
@@ -521,7 +533,7 @@ def main() -> None:
     ]
     rank0_print(
         rank,
-        f"[dinov2-seg] parameters trainable={trainable_parameters:,} total={total_parameters:,} "
+        f"{log_prefix} parameters trainable={trainable_parameters:,} total={total_parameters:,} "
         f"decoder_type={raw_model.decoder_type} "
         f"vision_unfreeze_last_n_blocks={raw_model.vision_unfreeze_last_n_blocks} "
         f"vision_lora_enable={raw_model.vision_lora_enable} "
@@ -567,7 +579,7 @@ def main() -> None:
             ),
         }
     )
-    rank0_print(rank, f"[dinov2-seg] config={json.dumps(resolved, ensure_ascii=True, default=str)}")
+    rank0_print(rank, f"{log_prefix} config={json.dumps(resolved, ensure_ascii=True, default=str)}")
     if rank == 0:
         (output_dir / "training_args.json").write_text(
             json.dumps(resolved, indent=2, ensure_ascii=True, default=str),
@@ -625,7 +637,7 @@ def main() -> None:
                     )
                 rank0_print(
                     rank,
-                    "[dinov2-seg] first-backward gradient audit passed: "
+                    f"{log_prefix} first-backward gradient audit passed: "
                     f"trainable_tensors={sum(parameter.requires_grad for parameter in raw_model.parameters())}",
                 )
 
@@ -698,7 +710,7 @@ def main() -> None:
                 world_size=world_size,
             )
             if rank == 0:
-                print(f"[dinov2-seg] eval={json.dumps(metrics, ensure_ascii=True)}", flush=True)
+                print(f"{log_prefix} eval={json.dumps(metrics, ensure_ascii=True)}", flush=True)
                 print(
                     "DI_throughput: "
                     f"{metrics['throughput_samples_per_second_per_npu']:.2f} samples/s/npu",
@@ -719,7 +731,7 @@ def main() -> None:
                         dataset_report=dataset_report,
                     )
                     print(
-                        f"[dinov2-seg] saved best vision tower: "
+                        f"{log_prefix} saved best vision tower: "
                         f"metric={args.best_metric} value={candidate_metric:.8f} "
                         f"path={output_dir / 'best' / 'vision_tower'}",
                         flush=True,
@@ -742,7 +754,7 @@ def main() -> None:
             json.dumps(summary, indent=2, ensure_ascii=True),
             encoding="utf-8",
         )
-        print(f"[dinov2-seg] complete={json.dumps(summary, ensure_ascii=True)}", flush=True)
+        print(f"{log_prefix} complete={json.dumps(summary, ensure_ascii=True)}", flush=True)
     if world_size > 1:
         dist.destroy_process_group()
 

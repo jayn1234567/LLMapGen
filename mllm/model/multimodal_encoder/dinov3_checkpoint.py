@@ -99,10 +99,33 @@ def _assign_by_suffix(
     return True
 
 
+def _scripted_encoder_view(raw_state: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
+    if any(str(key).startswith("encoder.blocks.") for key in raw_state):
+        return raw_state
+
+    stripped = _strip_common_prefixes(raw_state)
+    if any(str(key).startswith("encoder.blocks.") for key in stripped):
+        return stripped
+
+    encoder_state: Dict[str, torch.Tensor] = {}
+    for key, value in raw_state.items():
+        key_str = str(key)
+        marker = ".encoder."
+        marker_pos = key_str.find(marker)
+        if marker_pos < 0:
+            continue
+        encoder_state[key_str[marker_pos + 1 :]] = value
+    if any(str(key).startswith("encoder.blocks.") for key in encoder_state):
+        return encoder_state
+
+    return raw_state
+
+
 def _scripted_dinov3_to_hf_state(
     vision_encoder: nn.Module,
     raw_state: Dict[str, torch.Tensor],
 ) -> Dict[str, torch.Tensor]:
+    raw_state = _scripted_encoder_view(raw_state)
     if not any(str(key).startswith("encoder.blocks.") for key in raw_state):
         return {}
 
@@ -121,13 +144,25 @@ def _scripted_dinov3_to_hf_state(
         mapped,
         target_state,
         raw_state.get("encoder.patch_embed.proj.weight"),
-        ("embeddings.patch_embeddings.projection.weight", "patch_embed.proj.weight"),
+        (
+            "embeddings.patch_embeddings.projection.weight",
+            "embeddings.patch_embeddings.weight",
+            "patch_embeddings.projection.weight",
+            "patch_embeddings.weight",
+            "patch_embed.proj.weight",
+        ),
     )
     _assign_by_suffix(
         mapped,
         target_state,
         raw_state.get("encoder.patch_embed.proj.bias"),
-        ("embeddings.patch_embeddings.projection.bias", "patch_embed.proj.bias"),
+        (
+            "embeddings.patch_embeddings.projection.bias",
+            "embeddings.patch_embeddings.bias",
+            "patch_embeddings.projection.bias",
+            "patch_embeddings.bias",
+            "patch_embed.proj.bias",
+        ),
     )
 
     block_indexes = sorted(
@@ -142,6 +177,9 @@ def _scripted_dinov3_to_hf_state(
     for idx in block_indexes:
         src = f"encoder.blocks.{idx}"
         target_layers = (
+            f"model.layer.{idx}",
+            f"model.layers.{idx}",
+            f"model.blocks.{idx}",
             f"encoder.layer.{idx}",
             f"encoder.layers.{idx}",
             f"encoder.blocks.{idx}",
@@ -160,11 +198,20 @@ def _scripted_dinov3_to_hf_state(
 
         for mlp_name in ("fc1", "fc2"):
             for attr in ("weight", "bias"):
+                if mlp_name == "fc1":
+                    projector_names = ("up_proj", "gate_proj")
+                else:
+                    projector_names = ("down_proj",)
                 _assign_by_suffix(
                     mapped,
                     target_state,
                     raw_state.get(f"{src}.mlp.{mlp_name}.{attr}"),
-                    tuple(f"{layer}.mlp.{mlp_name}.{attr}" for layer in target_layers),
+                    tuple(f"{layer}.mlp.{mlp_name}.{attr}" for layer in target_layers)
+                    + tuple(
+                        f"{layer}.mlp.{target_name}.{attr}"
+                        for layer in target_layers
+                        for target_name in projector_names
+                    ),
                 )
 
         for source_name, target_names in (
@@ -186,7 +233,14 @@ def _scripted_dinov3_to_hf_state(
                 tuple(
                     f"{layer}.{target}.{attr}"
                     for layer in target_layers
-                    for target in ("attention.output.dense", "attention.output.projection", "attn.proj")
+                    for target in (
+                        "attention.output.dense",
+                        "attention.output.projection",
+                        "attention.o_proj",
+                        "self_attn.o_proj",
+                        "attn.o_proj",
+                        "attn.proj",
+                    )
                 ),
             )
 
@@ -207,6 +261,7 @@ def _scripted_dinov3_to_hf_state(
                 if tuple(v_delta.shape) == tuple(v_weight.shape):
                     v_weight = v_weight + v_delta
             for name, value in (("query", q_weight), ("key", k_weight), ("value", v_weight)):
+                proj_name = {"query": "q_proj", "key": "k_proj", "value": "v_proj"}[name]
                 _assign_by_suffix(
                     mapped,
                     target_state,
@@ -214,7 +269,12 @@ def _scripted_dinov3_to_hf_state(
                     tuple(
                         f"{layer}.{target}.{name}.weight"
                         for layer in target_layers
-                        for target in ("attention.attention", "attention")
+                        for target in ("attention.attention", "attention.self", "attention")
+                    )
+                    + tuple(
+                        f"{layer}.{target}.{proj_name}.weight"
+                        for layer in target_layers
+                        for target in ("attention", "self_attn", "attn")
                     )
                     + tuple(f"{layer}.attn.{name}.weight" for layer in target_layers),
                 )
@@ -222,6 +282,7 @@ def _scripted_dinov3_to_hf_state(
         if torch.is_tensor(qkv_bias) and qkv_bias.ndim == 1 and qkv_bias.shape[0] % 3 == 0:
             q_bias, k_bias, v_bias = torch.chunk(qkv_bias, 3, dim=0)
             for name, value in (("query", q_bias), ("key", k_bias), ("value", v_bias)):
+                proj_name = {"query": "q_proj", "key": "k_proj", "value": "v_proj"}[name]
                 _assign_by_suffix(
                     mapped,
                     target_state,
@@ -229,7 +290,12 @@ def _scripted_dinov3_to_hf_state(
                     tuple(
                         f"{layer}.{target}.{name}.bias"
                         for layer in target_layers
-                        for target in ("attention.attention", "attention")
+                        for target in ("attention.attention", "attention.self", "attention")
+                    )
+                    + tuple(
+                        f"{layer}.{target}.{proj_name}.bias"
+                        for layer in target_layers
+                        for target in ("attention", "self_attn", "attn")
                     )
                     + tuple(f"{layer}.attn.{name}.bias" for layer in target_layers),
                 )
@@ -295,6 +361,8 @@ def _select_encoder_state(
             best_score = score
     if best_score[0] <= 0:
         lora_keys = [key for key in raw_state if "lora" in str(key).lower()]
+        source_examples = ", ".join(list(map(str, list(raw_state.keys())[:8])))
+        target_examples = ", ".join(list(map(str, list(vision_encoder.state_dict().keys())[:8])))
         hint = ""
         if lora_keys:
             hint = (
@@ -302,7 +370,10 @@ def _select_encoder_state(
                 "into the base DINOv3 weights first, or provide a scripted DINOv3 checkpoint "
                 "that includes encoder blocks."
             )
-        raise ValueError(f"Unable to match any DINOv3 visual encoder weights by shape.{hint}")
+        raise ValueError(
+            "Unable to match any DINOv3 visual encoder weights by shape."
+            f"{hint} source_key_examples=[{source_examples}] target_key_examples=[{target_examples}]"
+        )
     return best_name, best_state
 
 

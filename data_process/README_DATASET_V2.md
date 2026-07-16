@@ -172,6 +172,49 @@ The script uses Huawei MoXing by default and does not initialize NPU devices.
 Its default destination is
 `obs://yw-ads-training-gy1/data/external/personal/h58801830/whu/jn/data/rc_dataset_v2_550k_noempty_i30_shift128/`.
 
+For disk-limited builds, selective archive extraction is enabled by default in
+the NPU wrapper. Each `.tar.gz` is streamed independently and only these raw
+inputs are retained: `inter_patch_tif/0_inter.tif`,
+`patch_tif/0_edit_poly.tif`, and `label_check_crop/*.geojson`. The archive is
+deleted only after those files form a valid RC sample. Set `ARCHIVE_WORKERS=1`
+to process and delete strictly one package at a time. The generic Python
+entrypoint exposes the same behavior through `--selective-archive-extract`.
+
+### One-source-at-a-time build
+
+When the disk cannot hold all seven raw roots, use the staged streaming
+entrypoint. It performs this sequence for every OBS source:
+
+1. Reuse or download one raw source root.
+2. Selectively extract each nested `.tar.gz`, one package at a time.
+3. Write a verified source shard containing candidate PNGs, SFT JSONL, and a
+   compact difficulty/intersection index.
+4. Write `stage_complete.json`, then delete that raw source root.
+5. Continue with the next source.
+
+After all source shards are complete, the finalizer resolves duplicate raw
+sample ids globally and selects the final 550,000 unique train records with the
+requested difficulty distribution and 30% overall intersection share. Raw
+sample splits use a stable SHA-256 hash of `split_seed + sample_id`; this keeps
+all patches from one raw map in exactly one of train/eval/test even though the
+sources are processed at different times.
+
+The shard PNGs are candidate data rather than another copy of the raw TIFF
+tree. Final images use hard links when staging and output are on the same disk,
+so selected images do not consume a second copy of their bytes. Do not delete
+the staging root until finalization and output validation have completed.
+
+Windows/Anaconda Prompt example for the seven built-in sources and local256:
+
+```bat
+python scripts\tools\build_rc_dataset_v2_streaming_from_obs.py --work-root "D:\data\fulldata" --raw-root "D:\data\fulldata\raw_sources" --staging-root "D:\data\fulldata\staging" --output-root "D:\data\fulldata\output" --views local --train-target-samples 550000 --train-stride 128 --difficulty-ratios "empty=0,easy=0.30,medium=0.33,hard=0.27,very_hard=0.10" --intersection-target-ratio 0.30 --archive-workers 1 --obs-backend obsutil --obsutil-path "C:\Users\jWX1497058\Downloads\obsutil_windows_amd64\obsutil_windows_amd64_5.8.3\obsutil.exe" --output-obs-root "obs://yw-ads-training-gy1/data/external/personal/h58801830/whu/jn/data/rc_dataset_v2_550k_noempty_i30_shift128/" --upload-mode tar --remove-package-after-upload --resume
+```
+
+By default, each raw source root is deleted only after its completed stage is
+validated. Add `--keep-raw-source-after-stage` for a non-destructive smoke run.
+With `--resume`, a completed source stage prevents that source from being
+downloaded or rebuilt again.
+
 `--resume` reuses downloads with a completed marker, keeps existing PNGs, and
 reuses completed tar packages. Do not treat a directory without its
 `.obs_download_complete.json` marker as a complete download.

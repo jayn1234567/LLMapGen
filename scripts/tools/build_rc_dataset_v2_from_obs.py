@@ -87,6 +87,11 @@ def parse_args(argv=None):
         default=16,
         help="Number of independent .tar.gz archives to extract concurrently.",
     )
+    parser.add_argument(
+        "--selective-archive-extract",
+        action="store_true",
+        help="Keep only the TIFF, mask, and GeoJSON members consumed by Dataset V2.",
+    )
     return parser.parse_args(argv)
 
 
@@ -229,6 +234,8 @@ def run_builder(args, sources, local_roots, output_root):
         command.extend(["--limit-samples", str(args.limit_samples)])
     if args.keep_archives:
         command.append("--keep-archives")
+    if args.selective_archive_extract:
+        command.append("--selective-archive-extract")
     if args.resume:
         command.append("--skip-existing-images")
     print("[dataset-v2] build command:", shlex.join(command), flush=True)

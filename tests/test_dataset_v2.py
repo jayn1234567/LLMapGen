@@ -1,4 +1,6 @@
+import json
 import random
+import shutil
 import tarfile
 import tempfile
 import unittest
@@ -18,6 +20,7 @@ from data_process.build_dataset_v2 import (
     empty_candidate_pools,
     select_balanced_candidates,
 )
+from data_process.build_dataset_v2_staged import finalize_stages, stable_sample_split
 from data_process.state_update_dataset_common import (
     build_sft_record,
     centered_target_roi,
@@ -32,6 +35,128 @@ from scripts.tools.build_rc_dataset_v2_from_obs import (
 
 
 class DatasetV2ContextTest(unittest.TestCase):
+    def test_stable_stage_split_is_order_independent(self):
+        first = stable_sample_split("sample_123", 42, 0.9, 0.05)
+        second = stable_sample_split("sample_123", 42, 0.9, 0.05)
+        self.assertEqual(first, second)
+        self.assertIn(first, {"train", "eval", "test"})
+
+    def test_finalize_staged_sources_balances_and_materializes_candidates(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            staging_root = root / "staging"
+            output_root = root / "final"
+            rows = [
+                ("easy_plain", "easy", False),
+                ("medium_inter", "medium", True),
+                ("hard_plain", "hard", False),
+                ("very_inter", "very_hard", True),
+            ]
+            for source_index in (0, 1):
+                stage_root = staging_root / f"source_{source_index:02d}"
+                records_root = stage_root / "records"
+                variant_records = records_root / "local256"
+                records_root.mkdir(parents=True)
+                variant_records.mkdir(parents=True)
+                (stage_root / dataset_common.ARCHIVE_EXTRACT_MARKER).unlink(missing_ok=True)
+                (stage_root / "stage_complete.json").write_text(
+                    json.dumps({
+                        "source_index": source_index,
+                        "variants": ["local256"],
+                    }),
+                    encoding="utf-8",
+                )
+                for split in ("train", "eval", "test"):
+                    index_path = records_root / f"{split}.index.jsonl"
+                    sft_path = variant_records / f"{split}.jsonl"
+                    index_lines = []
+                    sft_lines = []
+                    active_rows = rows[source_index * 2:(source_index + 1) * 2] if split == "train" else []
+                    for patch_id, difficulty, has_intersection in active_rows:
+                        image = f"images/train/sample_{source_index}/{patch_id}.png"
+                        image_path = stage_root / "variants" / "local256" / image
+                        image_path.parent.mkdir(parents=True, exist_ok=True)
+                        image_path.write_bytes(b"png")
+                        index_lines.append(json.dumps({
+                            "id": patch_id,
+                            "raw_sample_id": f"sample_{source_index}_{patch_id}",
+                            "source_index": source_index,
+                            "split": "train",
+                            "stratum": difficulty,
+                            "difficulty": difficulty,
+                            "difficulty_score": 1.0,
+                            "has_intersection": has_intersection,
+                            "grid_kind": "base",
+                            "image": image,
+                        }))
+                        sft_lines.append(json.dumps({
+                            "id": patch_id,
+                            "image": image,
+                            "meta": {},
+                            "conversations": [],
+                        }))
+                    index_path.write_text("\n".join(index_lines) + ("\n" if index_lines else ""), encoding="utf-8")
+                    sft_path.write_text("\n".join(sft_lines) + ("\n" if sft_lines else ""), encoding="utf-8")
+
+            args = SimpleNamespace(
+                staging_root=str(staging_root),
+                output_root=str(output_root),
+                views="local",
+                train_target_samples=4,
+                difficulty_ratios="empty=0,easy=0.25,medium=0.25,hard=0.25,very_hard=0.25",
+                intersection_target_ratio=0.5,
+                difficulty_seed=7,
+                duplicate_policy="last",
+                copy_mode="copy",
+                resume=False,
+                coord_range=1000,
+            )
+            finalize_stages(args)
+
+            train_path = output_root / "local256" / "phase_a" / "train.jsonl"
+            records = [json.loads(line) for line in train_path.read_text(encoding="utf-8").splitlines()]
+            self.assertEqual(len(records), 4)
+            self.assertEqual({record["id"] for record in records}, {item[0] for item in rows})
+            for record in records:
+                self.assertTrue((output_root / "local256" / record["image"]).is_file())
+
+    def test_selective_archive_extraction_keeps_only_builder_inputs_and_deletes_archive(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            source_root = root / "source" / "sample_a"
+            required = {
+                "inter_patch_tif/0_inter.tif": b"image",
+                "patch_tif/0_edit_poly.tif": b"mask",
+                "label_check_crop/Lane.geojson": b'{"type":"FeatureCollection","features":[]}',
+                "label_check_crop/intersection.geojson": b'{"type":"FeatureCollection","features":[]}',
+            }
+            for relative, payload in required.items():
+                path = source_root / relative
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(payload)
+            junk = source_root / "unused" / "large_debug.bin"
+            junk.parent.mkdir(parents=True, exist_ok=True)
+            junk.write_bytes(b"unused")
+
+            archive = root / "sample_bundle.tar.gz"
+            with tarfile.open(archive, "w:gz") as tar:
+                tar.add(source_root, arcname="sample_a")
+            shutil.rmtree(root / "source")
+
+            dataset_common.extract_archives(
+                root,
+                delete_archive=True,
+                workers=1,
+                selective=True,
+            )
+
+            extracted_root = root / "sample_bundle" / "sample_a"
+            for relative, payload in required.items():
+                self.assertEqual((extracted_root / relative).read_bytes(), payload)
+            self.assertFalse((extracted_root / "unused" / "large_debug.bin").exists())
+            self.assertFalse(archive.exists())
+            self.assertEqual(len(dataset_common.find_sample_roots(root)), 1)
+
     def test_parallel_archive_extraction_writes_and_reuses_completion_markers(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)

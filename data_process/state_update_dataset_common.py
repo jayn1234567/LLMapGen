@@ -4,6 +4,7 @@ import concurrent.futures
 import json
 import math
 import random
+import shutil
 import sys
 import tarfile
 import time
@@ -181,7 +182,13 @@ def archive_extract_marker_path(archive_path: Path) -> Path:
     return target_dir / ARCHIVE_EXTRACT_MARKER
 
 
-def write_archive_extract_marker(archive_path: Path, adopted_existing: bool = False):
+def write_archive_extract_marker(
+    archive_path: Path,
+    adopted_existing: bool = False,
+    extract_mode: str = "full",
+    extracted_files: int | None = None,
+    extracted_bytes: int | None = None,
+):
     marker_path = archive_extract_marker_path(archive_path)
     marker_path.parent.mkdir(parents=True, exist_ok=True)
     temporary_marker = marker_path.with_suffix(marker_path.suffix + ".tmp")
@@ -191,6 +198,9 @@ def write_archive_extract_marker(archive_path: Path, adopted_existing: bool = Fa
                 **archive_signature(archive_path),
                 "completed_at_unix": time.time(),
                 "adopted_existing_extraction": adopted_existing,
+                "extract_mode": extract_mode,
+                "extracted_files": extracted_files,
+                "extracted_bytes": extracted_bytes,
             },
             ensure_ascii=False,
             indent=2,
@@ -200,18 +210,44 @@ def write_archive_extract_marker(archive_path: Path, adopted_existing: bool = Fa
     temporary_marker.replace(marker_path)
 
 
-def archive_extract_is_complete(archive_path: Path) -> bool:
+def archive_extract_is_complete(archive_path: Path, extract_mode: str = "full") -> bool:
     marker_path = archive_extract_marker_path(archive_path)
     if not marker_path.is_file():
         return False
     try:
         marker = json.loads(marker_path.read_text(encoding="utf-8"))
-        return all(marker.get(key) == value for key, value in archive_signature(archive_path).items())
+        signature_matches = all(
+            marker.get(key) == value for key, value in archive_signature(archive_path).items()
+        )
+        marker_mode = marker.get("extract_mode", "full")
+        mode_matches = marker_mode == "full" or marker_mode == extract_mode
+        return signature_matches and mode_matches
     except (OSError, ValueError, TypeError, json.JSONDecodeError):
         return False
 
 
-def extracted_tree_matches_archive(archive_path: Path, target_dir: Path) -> bool:
+def required_archive_member(member: tarfile.TarInfo) -> bool:
+    """Return whether an archive member is consumed by the raw RC builder."""
+    if not member.isfile():
+        return False
+    parts = tuple(part for part in member.name.replace("\\", "/").split("/") if part not in {"", "."})
+    if not parts or ".." in parts:
+        return False
+    lowered = tuple(part.lower() for part in parts)
+    if len(lowered) >= 2 and lowered[-2:] == ("inter_patch_tif", "0_inter.tif"):
+        return True
+    if len(lowered) >= 2 and lowered[-2:] == ("patch_tif", "0_edit_poly.tif"):
+        return True
+    if len(lowered) >= 2 and lowered[-2] == "label_check_crop" and lowered[-1].endswith(".geojson"):
+        return True
+    return False
+
+
+def extracted_tree_matches_archive(
+    archive_path: Path,
+    target_dir: Path,
+    extract_mode: str = "full",
+) -> bool:
     """Validate a pre-marker extraction so interrupted runs can resume safely."""
     marker_path = archive_extract_marker_path(archive_path)
     if not target_dir.is_dir() or not any(path != marker_path for path in target_dir.iterdir()):
@@ -219,8 +255,21 @@ def extracted_tree_matches_archive(archive_path: Path, target_dir: Path) -> bool
     target_resolved = target_dir.resolve()
     try:
         with tarfile.open(archive_path, "r:gz") as tar:
+            matched_files = 0
             for member in tar:
-                member_path = (target_dir / member.name).resolve()
+                if extract_mode == "required_only" and not required_archive_member(member):
+                    continue
+                if member.isfile():
+                    matched_files += 1
+                if extract_mode == "required_only":
+                    normalized_parts = [
+                        part
+                        for part in member.name.replace("\\", "/").split("/")
+                        if part not in {"", "."}
+                    ]
+                    member_path = target_dir.joinpath(*normalized_parts).resolve()
+                else:
+                    member_path = (target_dir / member.name).resolve()
                 try:
                     member_path.relative_to(target_resolved)
                 except ValueError:
@@ -233,36 +282,98 @@ def extracted_tree_matches_archive(archive_path: Path, target_dir: Path) -> bool
                         return False
                 elif not member_path.exists() and not member_path.is_symlink():
                     return False
+            if extract_mode == "required_only" and matched_files == 0:
+                return False
     except (OSError, tarfile.TarError):
         return False
     return True
 
 
-def safe_extract_tar_gz(archive_path: Path, delete_archive: bool) -> Path:
+def extract_required_archive_members(archive_path: Path, target_dir: Path) -> tuple[int, int]:
+    """Stream only the TIFF/mask/GeoJSON files needed by Dataset V2."""
+    target_resolved = target_dir.resolve()
+    extracted_files = 0
+    extracted_bytes = 0
+    with tarfile.open(archive_path, "r:gz") as tar:
+        for member in tar:
+            if not required_archive_member(member):
+                continue
+            normalized_parts = [
+                part for part in member.name.replace("\\", "/").split("/") if part not in {"", "."}
+            ]
+            member_path = target_dir.joinpath(*normalized_parts).resolve()
+            try:
+                member_path.relative_to(target_resolved)
+            except ValueError:
+                raise ValueError(f"unsafe archive member path: {member.name}")
+            source = tar.extractfile(member)
+            if source is None:
+                raise tarfile.ExtractError(f"unable to read required archive member: {member.name}")
+            member_path.parent.mkdir(parents=True, exist_ok=True)
+            temporary = member_path.with_name(member_path.name + ".partial")
+            try:
+                with source, temporary.open("wb") as destination:
+                    shutil.copyfileobj(source, destination, length=1024 * 1024)
+                temporary.replace(member_path)
+            finally:
+                temporary.unlink(missing_ok=True)
+            extracted_files += 1
+            extracted_bytes += int(member.size)
+    return extracted_files, extracted_bytes
+
+
+def safe_extract_tar_gz(
+    archive_path: Path,
+    delete_archive: bool,
+    selective: bool = False,
+) -> Path:
     target_dir = archive_path.with_suffix("").with_suffix("")
     target_dir.mkdir(parents=True, exist_ok=True)
-    if archive_extract_is_complete(archive_path):
+    extract_mode = "required_only" if selective else "full"
+    if archive_extract_is_complete(archive_path, extract_mode=extract_mode):
+        if delete_archive and find_sample_roots(target_dir, require_intersection=False):
+            archive_path.unlink()
         return target_dir
 
-    if extracted_tree_matches_archive(archive_path, target_dir):
-        write_archive_extract_marker(archive_path, adopted_existing=True)
+    if extracted_tree_matches_archive(archive_path, target_dir, extract_mode=extract_mode):
+        write_archive_extract_marker(
+            archive_path,
+            adopted_existing=True,
+            extract_mode=extract_mode,
+        )
         if delete_archive and find_sample_roots(target_dir, require_intersection=False):
             archive_path.unlink()
         return target_dir
 
     marker_path = archive_extract_marker_path(archive_path)
     marker_path.unlink(missing_ok=True)
-    target_resolved = target_dir.resolve()
-    with tarfile.open(archive_path, "r:gz") as tar:
-        for member in tar.getmembers():
-            member_path = (target_dir / member.name).resolve()
-            try:
-                member_path.relative_to(target_resolved)
-            except ValueError:
-                raise ValueError(f"unsafe archive member path: {member.name}")
-        tar.extractall(path=target_dir)
+    if selective:
+        extracted_files, extracted_bytes = extract_required_archive_members(archive_path, target_dir)
+        if extracted_files == 0:
+            raise FileNotFoundError(f"archive contains no required RC files: {archive_path}")
+    else:
+        target_resolved = target_dir.resolve()
+        with tarfile.open(archive_path, "r:gz") as tar:
+            for member in tar.getmembers():
+                member_path = (target_dir / member.name).resolve()
+                try:
+                    member_path.relative_to(target_resolved)
+                except ValueError:
+                    raise ValueError(f"unsafe archive member path: {member.name}")
+            tar.extractall(path=target_dir)
+        extracted_files = None
+        extracted_bytes = None
 
-    write_archive_extract_marker(archive_path)
+    if selective and not find_sample_roots(target_dir, require_intersection=False):
+        raise FileNotFoundError(
+            f"selective extraction did not produce a valid RC sample; archive retained: {archive_path}"
+        )
+    write_archive_extract_marker(
+        archive_path,
+        extract_mode=extract_mode,
+        extracted_files=extracted_files,
+        extracted_bytes=extracted_bytes,
+    )
     if delete_archive and find_sample_roots(target_dir, require_intersection=False):
         archive_path.unlink()
     return target_dir
@@ -272,18 +383,24 @@ def extract_archives(
     input_root: Path,
     delete_archive: bool,
     workers: int = DEFAULT_ARCHIVE_WORKERS,
+    selective: bool = False,
 ):
     archives = sorted(input_root.rglob("*.tar.gz"))
     if not archives:
         print(f"[archive-extract] no .tar.gz archives under {input_root}", flush=True)
         return
 
-    pending = [archive for archive in archives if not archive_extract_is_complete(archive)]
+    extract_mode = "required_only" if selective else "full"
+    pending = [
+        archive
+        for archive in archives
+        if delete_archive or not archive_extract_is_complete(archive, extract_mode=extract_mode)
+    ]
     skipped = len(archives) - len(pending)
     worker_count = min(max(1, int(workers)), max(1, len(pending)))
     print(
         f"[archive-extract] root={input_root} archives={len(archives)} "
-        f"pending={len(pending)} skipped={skipped} workers={worker_count}",
+        f"pending={len(pending)} skipped={skipped} workers={worker_count} mode={extract_mode}",
         flush=True,
     )
     if not pending:
@@ -304,7 +421,7 @@ def extract_archives(
 
     if worker_count == 1:
         for completed, archive in enumerate(pending, start=1):
-            safe_extract_tar_gz(archive, delete_archive=delete_archive)
+            safe_extract_tar_gz(archive, delete_archive=delete_archive, selective=selective)
             report_progress(completed, archive)
         return
 
@@ -313,7 +430,7 @@ def extract_archives(
         thread_name_prefix="tar-extract",
     ) as executor:
         future_to_archive = {
-            executor.submit(safe_extract_tar_gz, archive, delete_archive): archive
+            executor.submit(safe_extract_tar_gz, archive, delete_archive, selective): archive
             for archive in pending
         }
         for completed, future in enumerate(concurrent.futures.as_completed(future_to_archive), start=1):
@@ -341,8 +458,14 @@ def discover_samples(
     limit_samples=None,
     require_intersection_features: bool = False,
     archive_workers: int = DEFAULT_ARCHIVE_WORKERS,
+    selective_archive_extract: bool = False,
 ):
-    extract_archives(input_root, delete_archive=delete_archives, workers=archive_workers)
+    extract_archives(
+        input_root,
+        delete_archive=delete_archives,
+        workers=archive_workers,
+        selective=selective_archive_extract,
+    )
     # Lane+intersection training still needs lane-only negative examples:
     # an empty or missing Intersection.geojson means "no intersection target",
     # not "invalid raw sample". Only lane/image/mask are required here.

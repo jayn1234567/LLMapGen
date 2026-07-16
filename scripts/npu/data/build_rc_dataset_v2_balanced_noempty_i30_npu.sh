@@ -17,6 +17,7 @@ TRAIN_STRIDE=${TRAIN_STRIDE:-128}
 DIFFICULTY_RATIOS=${DIFFICULTY_RATIOS:-empty=0,easy=0.30,medium=0.33,hard=0.27,very_hard=0.10}
 INTERSECTION_TARGET_RATIO=${INTERSECTION_TARGET_RATIO:-0.30}
 ARCHIVE_WORKERS=${ARCHIVE_WORKERS:-16}
+SELECTIVE_ARCHIVE_EXTRACT=${SELECTIVE_ARCHIVE_EXTRACT:-true}
 VIEWS=${VIEWS:-both}
 OBS_BACKEND=${OBS_BACKEND:-moxing}
 OBSUTIL_PATH=${OBSUTIL_PATH:-}
@@ -73,6 +74,7 @@ echo "[dataset-v2-npu] train crop stride:   ${TRAIN_STRIDE}"
 echo "[dataset-v2-npu] difficulty ratios:   ${DIFFICULTY_RATIOS}"
 echo "[dataset-v2-npu] global intersection: ${INTERSECTION_TARGET_RATIO}"
 echo "[dataset-v2-npu] archive workers:      ${ARCHIVE_WORKERS}"
+echo "[dataset-v2-npu] selective extraction: ${SELECTIVE_ARCHIVE_EXTRACT}"
 echo "[dataset-v2-npu] views:               ${VIEWS}"
 echo "[dataset-v2-npu] OBS backend:         ${OBS_BACKEND}"
 echo "============================================================"
@@ -100,6 +102,9 @@ if is_true "${RESUME}"; then
 fi
 if is_true "${KEEP_ARCHIVES}"; then
   command+=(--keep-archives)
+fi
+if is_true "${SELECTIVE_ARCHIVE_EXTRACT}"; then
+  command+=(--selective-archive-extract)
 fi
 if is_true "${REMOVE_PACKAGE_AFTER_UPLOAD}"; then
   command+=(--remove-package-after-upload)

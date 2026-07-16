@@ -431,6 +431,7 @@ def discover_multi_source_samples(
     duplicate_policy,
     limit_samples,
     archive_workers,
+    selective_archive_extract,
 ):
     chosen = {}
     chosen_source = {}
@@ -445,6 +446,7 @@ def discover_multi_source_samples(
             limit_samples=None,
             require_intersection_features=False,
             archive_workers=archive_workers,
+            selective_archive_extract=selective_archive_extract,
         )
         source_uri = source_uris[index] if index < len(source_uris) else str(root)
         if not samples:
@@ -687,6 +689,14 @@ def parse_args(argv=None):
         default=16,
         help="Number of independent .tar.gz archives to extract concurrently.",
     )
+    parser.add_argument(
+        "--selective-archive-extract",
+        action="store_true",
+        help=(
+            "Extract only 0_inter.tif, 0_edit_poly.tif, and label_check_crop/*.geojson "
+            "from each .tar.gz before deleting the verified source archive."
+        ),
+    )
     return parser.parse_args(argv)
 
 
@@ -724,6 +734,7 @@ def main(argv=None):
         args.duplicate_policy,
         args.limit_samples,
         args.archive_workers,
+        args.selective_archive_extract,
     )
     if not samples:
         raise FileNotFoundError("no valid raw samples found across the supplied input roots")

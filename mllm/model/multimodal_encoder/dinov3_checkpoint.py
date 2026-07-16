@@ -177,6 +177,7 @@ def _scripted_dinov3_to_hf_state(
     for idx in block_indexes:
         src = f"encoder.blocks.{idx}"
         target_layers = (
+            f"layer.{idx}",
             f"model.layer.{idx}",
             f"model.layers.{idx}",
             f"model.blocks.{idx}",

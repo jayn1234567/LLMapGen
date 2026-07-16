@@ -314,7 +314,10 @@ if [[ "${DIFFICULTY_EVAL}" =~ ^(1|true|True|TRUE|yes|YES)$ ]]; then
     requested_difficulties+=("${difficulty}")
   done < <(read_list "${DIFFICULTIES}")
   difficulty_args+=(--difficulties "${requested_difficulties[@]}")
-  python scripts/tools/build_difficulty_eval_splits.py "${difficulty_args[@]}"
+  if ! python scripts/tools/build_difficulty_eval_splits.py "${difficulty_args[@]}"; then
+    echo "ERROR: failed to build difficulty evaluation splits from ${TEST_JSON}."
+    exit 1
+  fi
   for difficulty in "${requested_difficulties[@]}"; do
     split_json="${DIFFICULTY_SPLIT_ROOT}/${difficulty}.jsonl"
     if [ ! -s "${split_json}" ]; then

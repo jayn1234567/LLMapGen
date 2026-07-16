@@ -841,10 +841,14 @@ def main() -> None:
     tag_counter = Counter(tag for item in reports for tag in item["tags"])
     difficulty_counter = Counter(item["difficulty"] for item in reports)
     summary = {
+        "difficulty_rule_version": DIFFICULTY_RULE_VERSION,
+        "cut_affects_difficulty": False,
         "dataset_root": str(dataset_root),
         "jsonl": str(jsonl_path),
         "image_folder": str(image_folder),
         "num_samples": len(reports),
+        "images_found": sum(bool(item.get("image_exists")) for item in reports),
+        "images_missing": sum(not bool(item.get("image_exists")) for item in reports),
         "tag_counts": dict(tag_counter.most_common()),
         "difficulty_counts": dict(difficulty_counter),
         "top_samples": report_rows[: min(30, len(report_rows))],

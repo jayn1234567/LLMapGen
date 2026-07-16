@@ -8,6 +8,7 @@ import shutil
 import sys
 import tarfile
 import time
+from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -46,7 +47,16 @@ from mllm.coord_utils import (
 
 TASK_TEXT = "Please construct the complete road map in the current BEV (Bird's Eye View) image patch."
 INSIDE, LEFT, RIGHT, BOTTOM, TOP = 0, 1, 2, 4, 8
-LANE_TYPE_NAMES = {2: "right_turn"}
+SEMANTIC_SCHEMA_VERSION = "lane_intersection_semantic_v1"
+LANE_TYPE_NAMES = {1: "common", 2: "right_turn"}
+ALLOWED_LANE_TYPES = frozenset({"common", "right_turn", "other"})
+INTERSECTION_TYPE_BY_SOURCE_PAIR = {
+    (1, 1): "common",
+    (1, 2): "t_intersection",
+    (1, 3): "small_untyped",
+    (4, 1): "t_lane_change_area",
+}
+ALLOWED_INTERSECTION_TYPES = frozenset({*INTERSECTION_TYPE_BY_SOURCE_PAIR.values(), "other"})
 IGNORED_LANE_TYPE_CODES = frozenset({3})
 DEFAULT_ARCHIVE_WORKERS = 16
 ARCHIVE_EXTRACT_MARKER = ".archive_extract_complete.json"
@@ -663,7 +673,48 @@ def lane_type_name(value):
     lane_type_code = normalize_lane_type_code(value)
     if lane_type_code in IGNORED_LANE_TYPE_CODES:
         return None
-    return LANE_TYPE_NAMES.get(lane_type_code, "common")
+    return LANE_TYPE_NAMES.get(lane_type_code, "other")
+
+
+def normalized_property_key(value):
+    return "".join(char for char in str(value).lower() if char.isalnum())
+
+
+def source_property(properties, *names):
+    normalized_names = {normalized_property_key(name) for name in names}
+    for key, value in (properties or {}).items():
+        if normalized_property_key(key) in normalized_names:
+            return value
+    return None
+
+
+def row_source_property(row, *names):
+    if hasattr(row, "items"):
+        return source_property(dict(row.items()), *names)
+    for name in names:
+        if hasattr(row, name):
+            return getattr(row, name)
+    return None
+
+
+def intersection_type_name(properties):
+    raw_type = source_property(properties, "IntersectionType", "intersection_type")
+    raw_subtype = source_property(properties, "IntersectionSubType", "intersection_subtype")
+    main_type = normalize_lane_type_code(raw_type)
+    subtype = normalize_lane_type_code(raw_subtype)
+
+    # Some producers omit subtype=1 from type-4 records.
+    if main_type == 4 and subtype is None:
+        subtype = 1
+    source_pair = (main_type, subtype)
+    target_type = INTERSECTION_TYPE_BY_SOURCE_PAIR.get(source_pair)
+    if target_type is None and main_type == 3:
+        # Compatibility with producers that encode the small-untyped class as
+        # a standalone type 3 instead of the canonical pair 1-3.
+        target_type = "small_untyped"
+    if target_type is None:
+        target_type = "other"
+    return target_type, source_pair
 
 
 def load_line_geometries(path: Path, crs, transform, simplify_tolerance: float):
@@ -672,11 +723,7 @@ def load_line_geometries(path: Path, crs, transform, simplify_tolerance: float):
     gdf = gpd.read_file(path).to_crs(crs)
     lines = []
     for index, row in gdf.iterrows():
-        raw_lane_type = (
-            row.get("LaneType")
-            if hasattr(row, "get")
-            else getattr(row, "LaneType", None)
-        )
+        raw_lane_type = row_source_property(row, "LaneType", "lane_type")
         source_lane_type = lane_type_name(raw_lane_type)
         if source_lane_type is None:
             continue
@@ -768,10 +815,13 @@ def load_intersection_geometries(path: Path, crs, transform, simplify_tolerance:
             for key, value in row.items()
             if key != "geometry" and not (isinstance(value, float) and np.isnan(value))
         }
+        intersection_type, source_type_pair = intersection_type_name(properties)
         for part_idx, poly in enumerate(geoms):
             if not poly.is_empty and poly.area > 0:
                 polygons.append({
                     "geometry": poly,
+                    "intersection_type": intersection_type,
+                    "source_type_pair": source_type_pair,
                     "source_properties": properties,
                     "source_index": int(index),
                     "source_part_index": part_idx,
@@ -916,6 +966,7 @@ def clip_lanes_to_patch(lines, transform, x0, y0, patch_size, line_sample_distan
             global_pixel_points = [[point[0] + x0, point[1] + y0] for point in local_points]
             results.append({
                 "category": "centerline",
+                "lane_type": line.get("_source_lane_type", "other"),
                 "start_type": endpoint_type_from_map_line(geom, clipped_line.coords[0]),
                 "end_type": endpoint_type_from_map_line(geom, clipped_line.coords[-1]),
                 "points": local_points,
@@ -1124,11 +1175,13 @@ def clip_intersections_to_patch(intersections, x0, y0, patch_size, transform=Non
                 continue
             results.append({
                 "category": "intersection",
+                "intersection_type": item.get("intersection_type"),
                 "is_cut": bool(is_cut),
                 "points": pts,
                 "_source_intersection_index": item.get("source_index", idx),
                 "_source_part_index": item.get("source_part_index", part_idx),
                 "_source_properties": item.get("source_properties", {}),
+                "_source_type_pair": item.get("source_type_pair"),
                 "_patch_x0": x0,
                 "_patch_y0": y0,
             })
@@ -1392,6 +1445,24 @@ def make_prompt(include_intersections: bool, incoming_traces, incoming_intersect
         ])
     else:
         parts.append(coord_description(coord_mode, coord_range, patch_size))
+    parts.extend([
+        "",
+        'Return only valid JSON in the form {"lines":[...]} with no extra explanation.',
+        (
+            'For every centerline, include "lane_type" with exactly one of: '
+            '"common" for a regular centerline, "right_turn" for a right-turn-only '
+            'centerline, or "other" for any remaining lane class. Do not output '
+            'U-turn reference lines.'
+        ),
+    ])
+    if include_intersections:
+        parts.append(
+            'For every intersection, include "intersection_type" with exactly one of: '
+            '"common" for a common intersection, "t_intersection" for a T-intersection, '
+            '"small_untyped" for a small untyped intersection, or '
+            '"t_lane_change_area" for a T-shaped lane-change area, or "other" '
+            'for any remaining or unknown intersection class.'
+        )
     parts.extend(["", "Incoming traces JSON:", trace_json])
     if include_intersections:
         inter_json = json.dumps(incoming_intersections or [], ensure_ascii=False, separators=(",", ":"))
@@ -1607,7 +1678,7 @@ def empty_ratio_for_phase_split(args, phase: str, split_name: str):
     return args.phase_b_max_empty_ratio
 
 
-def validate_rows(rows, include_intersections, patch_size):
+def validate_rows(rows, include_intersections, patch_size, require_semantic_types=False):
     errors = []
     for row in rows:
         for line in row.get("target_lines", []):
@@ -1621,11 +1692,20 @@ def validate_rows(rows, include_intersections, patch_size):
             if category == "centerline":
                 if line.get("start_type") not in {"cut", "inside"} or line.get("end_type") not in {"cut", "inside"}:
                     errors.append(f"{row['id']}: invalid centerline endpoint type")
+                if require_semantic_types and line.get("lane_type") not in ALLOWED_LANE_TYPES:
+                    errors.append(
+                        f"{row['id']}: centerline missing/invalid lane_type={line.get('lane_type')!r}"
+                    )
             elif category == "intersection":
                 if include_intersections and not isinstance(line.get("is_cut"), bool):
                     errors.append(f"{row['id']}: intersection missing boolean is_cut")
                 if len(points) < 4 or points[0] != points[-1]:
                     errors.append(f"{row['id']}: intersection is not closed")
+                if require_semantic_types and line.get("intersection_type") not in ALLOWED_INTERSECTION_TYPES:
+                    errors.append(
+                        f"{row['id']}: intersection missing/unsupported intersection_type="
+                        f"{line.get('intersection_type')!r}, source_pair={line.get('_source_type_pair')!r}"
+                    )
             else:
                 errors.append(f"{row['id']}: unsupported category {category}")
         for trace in row.get("incoming_traces", []):
@@ -1637,6 +1717,73 @@ def validate_rows(rows, include_intersections, patch_size):
     if errors:
         preview = "\n".join(errors[:20])
         raise ValueError(f"dataset validation failed with {len(errors)} errors:\n{preview}")
+
+
+def semantic_target_counts(lines, sample_id="<unknown>", strict=True):
+    counts = Counter()
+    errors = []
+    for line_index, line in enumerate(lines or []):
+        category = line.get("category")
+        if category == "centerline":
+            lane_type = line.get("lane_type")
+            counts[f"lane_type:{lane_type}"] += 1
+            if lane_type not in ALLOWED_LANE_TYPES:
+                errors.append(f"line[{line_index}] invalid lane_type={lane_type!r}")
+        elif category == "intersection":
+            intersection_type = line.get("intersection_type")
+            counts[f"intersection_type:{intersection_type}"] += 1
+            if intersection_type not in ALLOWED_INTERSECTION_TYPES:
+                errors.append(
+                    f"line[{line_index}] invalid intersection_type={intersection_type!r}"
+                )
+        else:
+            errors.append(f"line[{line_index}] unsupported category={category!r}")
+    if strict and errors:
+        raise ValueError(
+            f"semantic target validation failed for sample={sample_id}: " + "; ".join(errors[:20])
+        )
+    return counts
+
+
+def semantic_sft_record_counts(record, strict=True, require_prompt=False):
+    conversations = record.get("conversations") or []
+    if require_prompt:
+        human = next(
+            (
+                str(item.get("value", ""))
+                for item in conversations
+                if str(item.get("from", "")).lower() in {"human", "user"}
+            ),
+            "",
+        )
+        missing_prompt_fields = [
+            field for field in ("lane_type", "intersection_type") if field not in human
+        ]
+        if missing_prompt_fields:
+            raise ValueError(
+                f"sample={record.get('id')} prompt is missing semantic field instructions: "
+                f"{missing_prompt_fields}"
+            )
+    assistant = next(
+        (
+            item.get("value")
+            for item in conversations
+            if str(item.get("from", "")).lower() in {"gpt", "assistant"}
+        ),
+        None,
+    )
+    if isinstance(assistant, str):
+        try:
+            assistant = json.loads(assistant)
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"sample={record.get('id')} assistant target is invalid JSON") from exc
+    if not isinstance(assistant, dict) or not isinstance(assistant.get("lines"), list):
+        raise ValueError(f"sample={record.get('id')} assistant target has no lines array")
+    return semantic_target_counts(
+        assistant["lines"],
+        sample_id=str(record.get("id", "<unknown>")),
+        strict=strict,
+    )
 
 
 def build_dataset(include_intersections: bool, args):

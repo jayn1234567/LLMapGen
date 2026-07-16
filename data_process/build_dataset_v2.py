@@ -36,6 +36,7 @@ if str(REPO_ROOT) not in sys.path:
 from data_process.state_update_dataset_common import (
     COORD_MODE_NORM1000,
     DEFAULT_COORD_RANGE,
+    SEMANTIC_SCHEMA_VERSION,
     build_sft_record,
     centered_target_roi,
     discover_samples,
@@ -46,6 +47,7 @@ from data_process.state_update_dataset_common import (
     public_line_in_model_coord,
     read_masked_image,
     require_geo_dependencies,
+    semantic_sft_record_counts,
     split_samples,
     validate_rows,
     write_json,
@@ -578,6 +580,7 @@ def write_images_for_rows(sample, rows, variant_specs, patch_size, png_compress_
 def materialize_split(samples, split_name, selected_counts, variant_specs, source_by_id, args):
     writers = open_variant_writers({name: spec["root"] for name, spec in variant_specs.items()}, split_name)
     record_counts = Counter()
+    semantic_counts = Counter()
     unique_image_count = 0
     dropped_samples = []
     try:
@@ -591,7 +594,7 @@ def materialize_split(samples, split_name, selected_counts, variant_specs, sourc
                 write_images=False,
                 max_empty_ratio=-1.0,
             )
-            validate_rows(rows, True, args.patch_size)
+            validate_rows(rows, True, args.patch_size, require_semantic_types=True)
             rows = [annotate_translation_grid(row, args.patch_size) for row in rows]
             for row in rows:
                 row["meta"] = dict(row.get("meta", {}))
@@ -630,6 +633,12 @@ def materialize_split(samples, split_name, selected_counts, variant_specs, sourc
                         context_size=spec["context_size"],
                         view_mode=spec["view_mode"],
                     )
+                    record_semantic_counts = semantic_sft_record_counts(
+                        sft, strict=True, require_prompt=True
+                    )
+                    semantic_counts.update(
+                        {f"{name}:{key}": value for key, value in record_semantic_counts.items()}
+                    )
                     write_jsonl_item(writers[name]["sft"], sft)
                     write_jsonl_item(writers[name]["meta"], rendered_row)
                     record_counts[name] += 1
@@ -637,6 +646,7 @@ def materialize_split(samples, split_name, selected_counts, variant_specs, sourc
         close_variant_writers(writers)
     return {
         "record_counts": dict(record_counts),
+        "semantic_target_counts": dict(semantic_counts),
         "unique_image_count_per_variant": unique_image_count,
         "raw_samples_without_selected_rows": dropped_samples,
     }
@@ -766,7 +776,7 @@ def main(argv=None):
                 write_images=False,
                 max_empty_ratio=-1.0,
             )
-            validate_rows(rows, True, args.patch_size)
+            validate_rows(rows, True, args.patch_size, require_semantic_types=True)
             if not rows:
                 train_samples_without_rows.append(sample.sample_id)
             for row in rows:
@@ -845,7 +855,9 @@ def main(argv=None):
     }
 
     split_manifest = {
-        "dataset_version": "rc_dataset_v2_stage_a",
+        "dataset_version": "rc_dataset_v2_stage_a_semantic_v1",
+        "semantic_schema_version": SEMANTIC_SCHEMA_VERSION,
+        "semantic_validation_passed": True,
         "split_unit": "raw_sample_folder",
         "split_seed": args.split_seed,
         "train_ratio": args.train_ratio,
@@ -866,7 +878,9 @@ def main(argv=None):
     write_json(manifest_dir / "balance_report.json", balance_report)
 
     build_summary = {
-        "dataset_version": "rc_dataset_v2_stage_a",
+        "dataset_version": "rc_dataset_v2_stage_a_semantic_v1",
+        "semantic_schema_version": SEMANTIC_SCHEMA_VERSION,
+        "semantic_validation_passed": True,
         "difficulty_rule_version": DIFFICULTY_RULE_VERSION,
         "difficulty_rule": {
             "cut_affects_difficulty": False,
@@ -917,6 +931,25 @@ def main(argv=None):
         },
     }
     write_json(output_root / "build_summary.json", build_summary)
+    write_json(
+        output_root / "semantic_schema_report.json",
+        {
+            "semantic_schema_version": SEMANTIC_SCHEMA_VERSION,
+            "validation_passed": True,
+            "allowed_lane_types": ["common", "right_turn", "other"],
+            "allowed_intersection_types": [
+                "common",
+                "t_intersection",
+                "small_untyped",
+                "t_lane_change_area",
+                "other",
+            ],
+            "split_target_counts": {
+                split: result["semantic_target_counts"]
+                for split, result in split_results.items()
+            },
+        },
+    )
     for name, spec in variant_specs.items():
         write_json(spec["root"] / "split_manifest.json", split_manifest)
         write_json(spec["root"] / "balance_report.json", balance_report)

@@ -71,6 +71,7 @@ DATASET_IMAGE_CHECKS_PER_SPLIT=${DATASET_IMAGE_CHECKS_PER_SPLIT:-64}            
 DATASET_EXPECTED_IMAGE_SIZE=${DATASET_EXPECTED_IMAGE_SIZE:-256}                  # Raw image width and height in Dataset V2 local256.
 DATASET_COORD_MAX=${DATASET_COORD_MAX:-1000}                                     # Expected norm1000 target-coordinate upper bound.
 DATASET_ALLOWED_TARGET_LANE_TYPES=${DATASET_ALLOWED_TARGET_LANE_TYPES:-"common right_turn other"}  # Final three-way lane taxonomy.
+DATASET_ALLOWED_TARGET_INTERSECTION_TYPES=${DATASET_ALLOWED_TARGET_INTERSECTION_TYPES:-"common t_intersection small_untyped t_lane_change_area other"}  # Final five-way intersection taxonomy.
 
 # ====================== training params ======================
 # Main knobs for this SFT recipe. Edit values here instead of passing one-off shell prefixes.
@@ -280,11 +281,18 @@ INSPECT_ARGS=(
   --coord-max "${DATASET_COORD_MAX}"
   --image-checks-per-split "${DATASET_IMAGE_CHECKS_PER_SPLIT}"
   --forbid-lane-type 3
+  --require-centerline-type-field
+  --require-intersection-type-field
+  --forbid-intersection-subtype-field
+  --require-taxonomy-prompt
   --print-representative-samples
   --report "${DATASET_INSPECTION_REPORT}"
 )
 for lane_type in ${DATASET_ALLOWED_TARGET_LANE_TYPES}; do
   INSPECT_ARGS+=(--allowed-centerline-type "${lane_type}")
+done
+for intersection_type in ${DATASET_ALLOWED_TARGET_INTERSECTION_TYPES}; do
+  INSPECT_ARGS+=(--allowed-intersection-type "${intersection_type}")
 done
 if [ "${DATASET_INSPECT_MAX_SAMPLES}" -gt 0 ]; then
   INSPECT_ARGS+=(--max-samples-per-split "${DATASET_INSPECT_MAX_SAMPLES}")

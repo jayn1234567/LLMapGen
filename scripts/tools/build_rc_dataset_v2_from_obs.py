@@ -243,8 +243,23 @@ def run_builder(args, sources, local_roots, output_root):
 
 
 def create_variant_tar(variant_root, package_path, resume):
-    if resume and package_path.exists() and package_path.stat().st_size > 0:
-        print(f"[dataset-v2] reuse package: {package_path}", flush=True)
+    freshness_inputs = [
+        variant_root / "dataset_info.json",
+        variant_root / "phase_a" / "train.jsonl",
+        variant_root / "phase_a" / "eval.jsonl",
+        variant_root / "phase_a" / "test.jsonl",
+    ]
+    latest_input_mtime = max(
+        (path.stat().st_mtime_ns for path in freshness_inputs if path.is_file()),
+        default=0,
+    )
+    if (
+        resume
+        and package_path.exists()
+        and package_path.stat().st_size > 0
+        and package_path.stat().st_mtime_ns >= latest_input_mtime
+    ):
+        print(f"[dataset-v2] reuse current package: {package_path}", flush=True)
         return
     package_path.parent.mkdir(parents=True, exist_ok=True)
     temporary = package_path.with_suffix(package_path.suffix + ".partial")
@@ -265,6 +280,14 @@ def upload_outputs(
     backend,
     remove_package_after_upload,
 ):
+    build_summary_path = output_root / "build_summary.json"
+    if not build_summary_path.is_file():
+        raise FileNotFoundError(f"refusing to upload Dataset V2 without build summary: {build_summary_path}")
+    build_summary = json.loads(build_summary_path.read_text(encoding="utf-8"))
+    if not build_summary.get("semantic_validation_passed") or not build_summary.get("semantic_schema_version"):
+        raise ValueError(
+            "refusing to upload Dataset V2 without verified lane_type/intersection_type semantics"
+        )
     variants = []
     if views in {"both", "local"}:
         variants.append("local256")
@@ -288,7 +311,12 @@ def upload_outputs(
             if remove_package_after_upload:
                 package.unlink()
                 print(f"[dataset-v2] removed uploaded package: {package}", flush=True)
-    for filename in ("build_summary.json", "split_manifest.json", "manifests/balance_report.json"):
+    for filename in (
+        "build_summary.json",
+        "semantic_schema_report.json",
+        "split_manifest.json",
+        "manifests/balance_report.json",
+    ):
         source = output_root / filename
         if source.exists():
             backend.upload_file(source, f"{obs_root}/{Path(filename).name}")

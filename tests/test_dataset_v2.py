@@ -20,18 +20,21 @@ from data_process.build_dataset_v2 import (
     empty_candidate_pools,
     select_balanced_candidates,
 )
-from data_process.build_dataset_v2_staged import finalize_stages, stable_sample_split
+from data_process.build_dataset_v2_staged import STAGE_VERSION, finalize_stages, stable_sample_split
 from data_process.state_update_dataset_common import (
     build_sft_record,
     centered_target_roi,
     extract_centered_context,
+    intersection_type_name,
     lane_type_name,
     normalize_lane_type_code,
+    semantic_sft_record_counts,
 )
 from scripts.tools.build_rc_dataset_v2_from_obs import (
     DEFAULT_OUTPUT_OBS_ROOT,
     ObsutilBackend,
 )
+from scripts.tools.build_rc_dataset_v2_streaming_from_obs import completed_stage
 
 
 class DatasetV2ContextTest(unittest.TestCase):
@@ -40,6 +43,30 @@ class DatasetV2ContextTest(unittest.TestCase):
         second = stable_sample_split("sample_123", 42, 0.9, 0.05)
         self.assertEqual(first, second)
         self.assertIn(first, {"train", "eval", "test"})
+
+    def test_resume_rejects_pre_semantic_stage_markers(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            stage_root = Path(temp_dir)
+            marker = stage_root / "stage_complete.json"
+            marker.write_text(
+                json.dumps({
+                    "stage_version": "rc_dataset_v2_source_stage_v1",
+                    "raw_sample_count": 1,
+                    "split_record_counts": {"train": 2},
+                }),
+                encoding="utf-8",
+            )
+            self.assertFalse(completed_stage(stage_root))
+            marker.write_text(
+                json.dumps({
+                    "stage_version": STAGE_VERSION,
+                    "semantic_validation_passed": True,
+                    "raw_sample_count": 1,
+                    "split_record_counts": {"train": 2},
+                }),
+                encoding="utf-8",
+            )
+            self.assertTrue(completed_stage(stage_root))
 
     def test_finalize_staged_sources_balances_and_materializes_candidates(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -63,6 +90,9 @@ class DatasetV2ContextTest(unittest.TestCase):
                     json.dumps({
                         "source_index": source_index,
                         "variants": ["local256"],
+                        "stage_version": STAGE_VERSION,
+                        "semantic_schema_version": dataset_common.SEMANTIC_SCHEMA_VERSION,
+                        "semantic_validation_passed": True,
                     }),
                     encoding="utf-8",
                 )
@@ -89,11 +119,28 @@ class DatasetV2ContextTest(unittest.TestCase):
                             "grid_kind": "base",
                             "image": image,
                         }))
+                        target_lines = [{
+                            "category": "centerline",
+                            "lane_type": "common",
+                            "start_type": "cut",
+                            "end_type": "cut",
+                            "points": [[0, 500], [1000, 500]],
+                        }]
+                        if has_intersection:
+                            target_lines.append({
+                                "category": "intersection",
+                                "intersection_type": "other",
+                                "is_cut": False,
+                                "points": [[100, 100], [900, 100], [900, 900], [100, 100]],
+                            })
                         sft_lines.append(json.dumps({
                             "id": patch_id,
                             "image": image,
                             "meta": {},
-                            "conversations": [],
+                            "conversations": [
+                                {"from": "human", "value": "<image> lane_type intersection_type"},
+                                {"from": "gpt", "value": json.dumps({"lines": target_lines})},
+                            ],
                         }))
                     index_path.write_text("\n".join(index_lines) + ("\n" if index_lines else ""), encoding="utf-8")
                     sft_path.write_text("\n".join(sft_lines) + ("\n" if sft_lines else ""), encoding="utf-8")
@@ -119,6 +166,11 @@ class DatasetV2ContextTest(unittest.TestCase):
             self.assertEqual({record["id"] for record in records}, {item[0] for item in rows})
             for record in records:
                 self.assertTrue((output_root / "local256" / record["image"]).is_file())
+                semantic_sft_record_counts(record, strict=True, require_prompt=True)
+            summary = json.loads((output_root / "build_summary.json").read_text(encoding="utf-8"))
+            self.assertTrue(summary["semantic_validation_passed"])
+            self.assertEqual(summary["stage_version"], STAGE_VERSION)
+            self.assertTrue((output_root / "semantic_schema_report.json").is_file())
 
     def test_selective_archive_extraction_keeps_only_builder_inputs_and_deletes_archive(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -206,8 +258,23 @@ class DatasetV2ContextTest(unittest.TestCase):
         self.assertEqual(lane_type_name(2), "right_turn")
         self.assertEqual(lane_type_name("2.0"), "right_turn")
         self.assertEqual(lane_type_name(1), "common")
-        self.assertEqual(lane_type_name(None), "common")
+        self.assertEqual(lane_type_name(None), "other")
+        self.assertEqual(lane_type_name(25), "other")
         self.assertEqual(normalize_lane_type_code(" 2.0 "), 2)
+
+    def test_intersection_type_mapping_keeps_known_classes_and_uses_other_fallback(self):
+        self.assertEqual(
+            intersection_type_name({"IntersectionType": 1, "IntersectionSubType": 1})[0],
+            "common",
+        )
+        self.assertEqual(
+            intersection_type_name({"intersection_type": "1", "intersection_subtype": "2"})[0],
+            "t_intersection",
+        )
+        self.assertEqual(intersection_type_name({"IntersectionType": 3})[0], "small_untyped")
+        self.assertEqual(intersection_type_name({"IntersectionType": 4})[0], "t_lane_change_area")
+        self.assertEqual(intersection_type_name({"IntersectionType": 99})[0], "other")
+        self.assertEqual(intersection_type_name({})[0], "other")
 
     def test_line_loader_drops_u_turn_reference_geometry(self):
         class FakeLineString:
@@ -271,6 +338,7 @@ class DatasetV2ContextTest(unittest.TestCase):
             "target_lines": [
                 {
                     "category": "centerline",
+                    "lane_type": "common",
                     "start_type": "cut",
                     "end_type": "inside",
                     "points": [[0, 0], [255, 255]],
@@ -289,6 +357,8 @@ class DatasetV2ContextTest(unittest.TestCase):
         prompt = record["conversations"][0]["value"]
         self.assertIn("central 256x256 target ROI [128,128,384,384)", prompt)
         self.assertIn("relative to the target ROI, not the full context image", prompt)
+        self.assertIn('include "lane_type"', prompt)
+        self.assertIn('include "intersection_type"', prompt)
         self.assertEqual(record["meta"]["target_roi_in_image"], [128, 128, 384, 384])
         self.assertEqual(centered_target_roi(256, 512), [128, 128, 384, 384])
 

@@ -45,10 +45,13 @@ from data_process.build_dataset_v2 import (
 from data_process.state_update_dataset_common import (
     COORD_MODE_NORM1000,
     DEFAULT_COORD_RANGE,
+    SEMANTIC_SCHEMA_VERSION,
     build_sft_record,
     discover_samples,
     process_sample,
     require_geo_dependencies,
+    semantic_sft_record_counts,
+    semantic_target_counts,
     validate_rows,
     write_json,
 )
@@ -56,6 +59,7 @@ from scripts.tools.tag_hard_map_samples import DIFFICULTY_RULE_VERSION
 
 
 STAGE_MARKER = "stage_complete.json"
+STAGE_VERSION = "rc_dataset_v2_source_stage_v2_semantic_types"
 VARIANT_SPECS = {
     "local256": {"context_size": 256, "view_mode": "local256"},
     "context512_roi256": {"context_size": 512, "view_mode": "context512_roi256"},
@@ -220,6 +224,12 @@ def stage_source(args) -> None:
     stage_root = Path(args.stage_root)
     marker_path = stage_root / STAGE_MARKER
     if args.resume and marker_path.is_file():
+        marker = json.loads(marker_path.read_text(encoding="utf-8"))
+        if marker.get("stage_version") != STAGE_VERSION or not marker.get("semantic_validation_passed"):
+            raise ValueError(
+                f"stale stage cannot be resumed: {marker_path}. Expected stage_version={STAGE_VERSION}; "
+                "rebuild this source shard from its raw source before allowing raw-source deletion."
+            )
         print(f"[dataset-v2-stage] completed shard already exists: {marker_path}", flush=True)
         if args.delete_input_root_after_stage and input_root.exists():
             if not args.delete_root_parent:
@@ -247,6 +257,7 @@ def stage_source(args) -> None:
     difficulty_counts = Counter()
     intersection_counts = Counter()
     image_counts = Counter()
+    semantic_counts = Counter()
     try:
         for sample in tqdm(samples, desc=f"stage source {args.source_index}", unit="sample"):
             split = stable_sample_split(sample.sample_id, args.split_seed, args.train_ratio, args.eval_ratio)
@@ -261,7 +272,7 @@ def stage_source(args) -> None:
                 write_images=False,
                 max_empty_ratio=-1.0,
             )
-            validate_rows(rows, True, args.patch_size)
+            validate_rows(rows, True, args.patch_size, require_semantic_types=True)
             rows = [annotate_translation_grid(row, args.patch_size) for row in rows]
             for row in rows:
                 row["meta"] = dict(row.get("meta", {}))
@@ -280,6 +291,9 @@ def stage_source(args) -> None:
             )
             for row in rows:
                 metrics = classify_row(row, args.patch_size, args.coord_range)
+                semantic_counts.update(
+                    semantic_target_counts(row.get("target_lines", []), sample_id=row["id"], strict=True)
+                )
                 index_row = {
                     "id": row["id"],
                     "raw_sample_id": sample.sample_id,
@@ -312,6 +326,7 @@ def stage_source(args) -> None:
                         context_size=spec["context_size"],
                         view_mode=spec["view_mode"],
                     )
+                    semantic_sft_record_counts(sft, strict=True, require_prompt=True)
                     write_jsonl_item(sft_writers[variant][split], sft)
                     image_counts[variant] += 1
                 split_counts[split] += 1
@@ -322,7 +337,9 @@ def stage_source(args) -> None:
         close_writers(index_writers, sft_writers)
 
     summary = {
-        "stage_version": "rc_dataset_v2_source_stage_v1",
+        "stage_version": STAGE_VERSION,
+        "semantic_schema_version": SEMANTIC_SCHEMA_VERSION,
+        "semantic_validation_passed": True,
         "difficulty_rule_version": DIFFICULTY_RULE_VERSION,
         "source_index": args.source_index,
         "source_uri": args.source_uri or str(input_root),
@@ -338,6 +355,7 @@ def stage_source(args) -> None:
         "split_record_counts": dict(split_counts),
         "difficulty_counts": dict(difficulty_counts),
         "intersection_counts": dict(intersection_counts),
+        "semantic_target_counts": dict(semantic_counts),
         "image_counts": dict(image_counts),
         "selective_archive_extract": bool(args.selective_archive_extract),
     }
@@ -463,6 +481,7 @@ def materialize_from_stages(
         }
 
     counts = Counter()
+    semantic_counts = Counter()
     link_modes = Counter()
     seen_by_split = {split: set() for split in ("train", "eval", "test")}
     try:
@@ -487,6 +506,12 @@ def materialize_from_stages(
                         continue
                     seen_by_split[split].add(patch_id)
                     for variant, record in sft_items.items():
+                        record_semantic_counts = semantic_sft_record_counts(
+                            record, strict=True, require_prompt=True
+                        )
+                        semantic_counts.update(
+                            {f"{variant}:{key}": value for key, value in record_semantic_counts.items()}
+                        )
                         relative_image = Path(str(record["image"]))
                         source_image = stage_root / "variants" / variant / relative_image
                         destination_image = output_root / variant / relative_image
@@ -513,7 +538,7 @@ def materialize_from_stages(
                     raise ValueError(f"extra staged SFT rows in {stage_root} {variant}/{split}")
     finally:
         close_writers(output_handles, meta_handles)
-    return dict(counts), dict(link_modes)
+    return dict(counts), dict(link_modes), dict(semantic_counts)
 
 
 def finalize_stages(args) -> None:
@@ -529,6 +554,11 @@ def finalize_stages(args) -> None:
     variants = selected_variants(args.views)
     for stage_root in stage_roots:
         summary = json.loads((stage_root / STAGE_MARKER).read_text(encoding="utf-8"))
+        if summary.get("stage_version") != STAGE_VERSION or not summary.get("semantic_validation_passed"):
+            raise ValueError(
+                f"stage {stage_root} uses stale or unverified schema; expected {STAGE_VERSION}. "
+                "Rebuild the source stage before finalization."
+            )
         missing = [variant for variant in variants if variant not in summary.get("variants", [])]
         if missing:
             raise ValueError(f"stage {stage_root} does not contain requested variants: {missing}")
@@ -554,7 +584,7 @@ def finalize_stages(args) -> None:
             f"target={args.intersection_target_ratio}, actual={balance_report['actual_intersection_ratio']}"
         )
 
-    counts, link_modes = materialize_from_stages(
+    counts, link_modes, semantic_counts = materialize_from_stages(
         stage_roots,
         variants,
         output_root,
@@ -570,8 +600,10 @@ def finalize_stages(args) -> None:
     balance_report["difficulty_rule_version"] = DIFFICULTY_RULE_VERSION
     balance_report["cut_affects_difficulty"] = False
     summary = {
-        "dataset_version": "rc_dataset_v2_staged_stage_a",
-        "stage_version": "rc_dataset_v2_source_stage_v1",
+        "dataset_version": "rc_dataset_v2_staged_stage_a_semantic_v1",
+        "stage_version": STAGE_VERSION,
+        "semantic_schema_version": SEMANTIC_SCHEMA_VERSION,
+        "semantic_validation_passed": True,
         "difficulty_rule_version": DIFFICULTY_RULE_VERSION,
         "staging_root": str(staging_root),
         "source_stage_count": len(stage_roots),
@@ -584,11 +616,28 @@ def finalize_stages(args) -> None:
         "variants": variants,
         "record_counts": counts,
         "image_materialization_modes": link_modes,
+        "semantic_target_counts": semantic_counts,
         "split_policy": "sha256_sample_id_seed_threshold",
         "coord_mode": COORD_MODE_NORM1000,
         "coord_range": args.coord_range,
     }
     write_json(output_root / "build_summary.json", summary)
+    write_json(
+        output_root / "semantic_schema_report.json",
+        {
+            "semantic_schema_version": SEMANTIC_SCHEMA_VERSION,
+            "validation_passed": True,
+            "allowed_lane_types": ["common", "right_turn", "other"],
+            "allowed_intersection_types": [
+                "common",
+                "t_intersection",
+                "small_untyped",
+                "t_lane_change_area",
+                "other",
+            ],
+            "target_counts": semantic_counts,
+        },
+    )
     write_json(output_root / "balance_report.json", balance_report)
     manifest_root = output_root / "manifests"
     manifest_root.mkdir(parents=True, exist_ok=True)

@@ -23,8 +23,14 @@ Default duplicate policy is `last`: a later source in the list wins.
 
 Lane GeoJSON records are filtered before patch clipping. `LaneType=3` is a
 U-turn reference line rather than a supervised road centerline, so it is
-excluded from every Dataset V2 variant. `LaneType=2` is retained and recorded
-internally as `right_turn`; the public centerline JSON schema remains unchanged.
+excluded from every Dataset V2 variant. Every public centerline target contains
+`lane_type`: source type 1 becomes `common`, type 2 becomes `right_turn`, and
+every remaining or missing source type becomes `other`.
+
+Every public intersection target contains `intersection_type`. Source pairs
+1-1, 1-2, 1-3, and 4-1 become `common`, `t_intersection`, `small_untyped`, and
+`t_lane_change_area`; all other or missing combinations become `other`. The
+Stage-A prompt states both semantic fields and their allowed values explicitly.
 
 ## Controlled variants
 
@@ -188,7 +194,8 @@ entrypoint. It performs this sequence for every OBS source:
 1. Reuse or download one raw source root.
 2. Selectively extract each nested `.tar.gz`, one package at a time.
 3. Write a verified source shard containing candidate PNGs, SFT JSONL, and a
-   compact difficulty/intersection index.
+   compact difficulty/intersection index. Every assistant target is parsed and
+   checked for `lane_type` and `intersection_type` before completion.
 4. Write `stage_complete.json`, then delete that raw source root.
 5. Continue with the next source.
 
@@ -215,6 +222,11 @@ validated. Add `--keep-raw-source-after-stage` for a non-destructive smoke run.
 With `--resume`, a completed source stage prevents that source from being
 downloaded or rebuilt again.
 
+Semantic shards use stage version
+`rc_dataset_v2_source_stage_v2_semantic_types`. A stage made by an older
+builder is rejected and rebuilt; it is never mixed into the final dataset.
+Keep or re-download the corresponding raw source when migrating an old stage.
+
 `--resume` reuses downloads with a completed marker, keeps existing PNGs, and
 reuses completed tar packages. Do not treat a directory without its
 `.obs_download_complete.json` marker as a complete download.
@@ -226,6 +238,7 @@ obs://yw-ads-training-gy1/data/external/personal/h58801830/whu/jn/data/rc_datase
 |-- local256.tar
 |-- context512_roi256.tar
 |-- build_summary.json
+|-- semantic_schema_report.json
 |-- split_manifest.json
 `-- balance_report.json
 ```
@@ -286,6 +299,8 @@ full lattice and apply weighting in the sampler instead of deleting patches.
   counts, difficulty redistribution, global intersection plan, and per-bucket
   natural/selected intersection ratios.
 - `split_manifest.json`: source roots, duplicate ids, and raw sample split.
+- `semantic_schema_report.json`: allowed semantic values, final counts, and the
+  hard-validation result used to authorize packaging/upload.
 
 ## Local Windows build
 

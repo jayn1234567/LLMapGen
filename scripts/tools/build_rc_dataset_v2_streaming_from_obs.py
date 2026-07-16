@@ -24,6 +24,7 @@ from scripts.tools.build_rc_dataset_v2_from_obs import (
     source_name,
     upload_outputs,
 )
+from data_process.build_dataset_v2_staged import STAGE_VERSION
 
 
 def parse_args(argv=None):
@@ -72,7 +73,25 @@ def completed_stage(stage_root: Path) -> bool:
     if not marker.is_file():
         return False
     payload = json.loads(marker.read_text(encoding="utf-8"))
-    return int(payload.get("raw_sample_count", 0)) > 0 and sum(payload.get("split_record_counts", {}).values()) > 0
+    return (
+        payload.get("stage_version") == STAGE_VERSION
+        and payload.get("semantic_validation_passed") is True
+        and int(payload.get("raw_sample_count", 0)) > 0
+        and sum(payload.get("split_record_counts", {}).values()) > 0
+    )
+
+
+def remove_stale_stage(stage_root: Path, staging_root: Path) -> None:
+    resolved_stage = stage_root.resolve()
+    resolved_staging = staging_root.resolve()
+    if resolved_stage == resolved_staging:
+        raise ValueError(f"refusing to remove staging root itself: {resolved_stage}")
+    try:
+        resolved_stage.relative_to(resolved_staging)
+    except ValueError as exc:
+        raise ValueError(f"stale stage is outside staging root: {resolved_stage}") from exc
+    shutil.rmtree(resolved_stage)
+    print(f"[dataset-v2-stream] removed stale generated stage: {resolved_stage}", flush=True)
 
 
 def download_one_source(source, local_root: Path, resume: bool, backend):
@@ -120,6 +139,13 @@ def main(argv=None):
         name = source_name(source)
         local_root = raw_root / f"{source_index:02d}_{name}"
         stage_root = staging_root / f"{source_index:02d}_{name}"
+        marker = stage_root / "stage_complete.json"
+        if args.resume and marker.is_file() and not completed_stage(stage_root):
+            print(
+                f"[dataset-v2-stream] stale stage lacks {STAGE_VERSION}; it must be rebuilt: {stage_root}",
+                flush=True,
+            )
+            remove_stale_stage(stage_root, staging_root)
         if args.resume and completed_stage(stage_root):
             print(f"[dataset-v2-stream] reuse completed stage: {stage_root}", flush=True)
             if local_root.exists() and not args.keep_raw_source_after_stage:

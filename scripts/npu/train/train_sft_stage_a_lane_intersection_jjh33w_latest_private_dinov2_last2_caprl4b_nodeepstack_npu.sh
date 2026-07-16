@@ -302,8 +302,13 @@ persist_inspection_output() {
     echo "[dataset-inspect] non-master node ${NODE_RANK}: skip report upload."
     return 0
   fi
+  mkdir -p "$(dirname "${CLOUD_OUTPUT_PATH}")"
   if [ -e "${CLOUD_OUTPUT_PATH}" ]; then
     echo "ERROR: inspection output path already exists: ${CLOUD_OUTPUT_PATH}"
+    return 1
+  fi
+  if [ ! -e "${OUTPUT_PATH}" ]; then
+    echo "ERROR: inspection output path does not exist: ${OUTPUT_PATH}"
     return 1
   fi
   echo "[dataset-inspect] moving report to cloud output: ${OUTPUT_PATH} -> ${CLOUD_OUTPUT_PATH}"
@@ -597,8 +602,15 @@ fi
 
 # Rank 0 moves final training artifacts to the platform cloud output path.
 if [[ "${NODE_RANK}" == "0" ]]; then
+  mkdir -p "$(dirname "${CLOUD_OUTPUT_PATH}")"
   if [ -e "${CLOUD_OUTPUT_PATH}" ]; then
     echo "ERROR: cloud output path already exists, refusing to overwrite: ${CLOUD_OUTPUT_PATH}"
+    exit 1
+  fi
+  if [ ! -e "${OUTPUT_PATH}" ]; then
+    echo "ERROR: local training output path does not exist: ${OUTPUT_PATH}"
+    echo "LOCAL_MODEL_SAVE_ROOT contents:"
+    ls -la "${LOCAL_MODEL_SAVE_ROOT}" || true
     exit 1
   fi
   echo "Moving rank0 local output to cloud output: ${OUTPUT_PATH} -> ${CLOUD_OUTPUT_PATH}"

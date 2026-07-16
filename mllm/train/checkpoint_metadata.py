@@ -151,6 +151,7 @@ def sync_qwen_multimodal_config(model):
         "multi_vision_dropout",
         "vision_layer_fusion_indexes",
         "vision_layer_fusion_type",
+        "vision_tower_checkpoint",
     ):
         value = getattr(vision_tower, attr, _cfg_get(config, attr))
         if attr == "multi_vision_towers" and value is None:
@@ -181,6 +182,7 @@ def write_qwen_multimodal_checkpoint_metadata(model, output_dir: str, trainer=No
         "model_type": _cfg_get(config, "model_type"),
         "mm_vision_tower": _cfg_get(config, "mm_vision_tower"),
         "vision_tower": _cfg_get(config, "vision_tower"),
+        "vision_tower_checkpoint": _cfg_get(config, "vision_tower_checkpoint"),
         "mm_vision_tower_type": _cfg_get(config, "mm_vision_tower_type"),
         "input_image_size": _cfg_get(config, "input_image_size"),
         "deepstack_visual_indexes": _cfg_get(config, "deepstack_visual_indexes"),

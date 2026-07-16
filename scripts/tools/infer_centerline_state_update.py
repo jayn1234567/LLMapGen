@@ -666,6 +666,7 @@ def main():
     parser.add_argument("--image-folder", required=True)
     parser.add_argument("--output-json", required=True)
     parser.add_argument("--vision_tower", default="", help="Override external DINO vision tower path when checkpoint metadata points elsewhere.")
+    parser.add_argument("--vision_tower_checkpoint", default="", help="Optional external checkpoint loaded into the vision tower before model weights.")
     parser.add_argument("--mm_vision_tower_type", default="")
     parser.add_argument("--multi_vision_towers", default="")
     parser.add_argument("--multi_vision_tower_types", default="")

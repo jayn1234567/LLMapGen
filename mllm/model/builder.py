@@ -381,6 +381,7 @@ def _load_auto_config(model_path, **kwargs):
         for key in (
             "mm_vision_tower",
             "vision_tower",
+            "vision_tower_checkpoint",
             "mm_vision_tower_type",
             "input_image_size",
             "deepstack_visual_indexes",

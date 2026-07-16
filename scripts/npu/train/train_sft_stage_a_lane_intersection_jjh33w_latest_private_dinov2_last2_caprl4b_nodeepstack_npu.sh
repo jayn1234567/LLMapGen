@@ -6,7 +6,7 @@
 # This file is self-contained and does not call another project .sh file.
 # ============================================================
 
-echo "[di-entry] reached Jiangjihua original-33w latest-private-DINOv2 last2 CapRL SFT launcher"
+echo "[di-entry] reached Jiangjihua original-33w CapRL SFT launcher"
 echo "[di-entry] utc=$(date -u +%Y-%m-%dT%H:%M:%SZ) host=$(hostname) pid=$$"
 echo "DI_throughput: 0.00 samples/s/npu"
 
@@ -19,11 +19,11 @@ cd "${REPO_ROOT}"
 # Recipe identity: fixed task, visual architecture, model family, and train variant.
 DATASET_PHASE=phase_a                                                             # Dataset stage: phase_a for patch inference, phase_b for state update.
 MAP_TASK=lane_intersection                                                        # Task type: lane or lane_intersection.
-VISION_BACKBONE=dinov2                                                            # Visual backbone selector used by the generic multi-vision launcher.
+VISION_BACKBONE=${VISION_BACKBONE:-dinov2}                                        # Visual backbone selector used by the generic multi-vision launcher.
 # Vision assets for this recipe. Scripts only download the towers declared below.
-VISION_TOWER_NAME=private_dinov2_best_vision_tower                                # Local directory name for the exported private-data DINOv2.
-MM_VISION_TOWER_TYPE=dinov2                                                       # Model-side vision tower type: dinov2, dinov3, multi_moe, or multi_concat.
-INPUT_IMAGE_SIZE=518                                                              # Image size fed to the vision encoder; DINOv3 recipes usually use 512.
+VISION_TOWER_NAME=${VISION_TOWER_NAME:-private_dinov2_best_vision_tower}          # Local directory name for the exported private-data vision tower.
+MM_VISION_TOWER_TYPE=${MM_VISION_TOWER_TYPE:-dinov2}                              # Model-side vision tower type: dinov2, dinov3, multi_moe, or multi_concat.
+INPUT_IMAGE_SIZE=${INPUT_IMAGE_SIZE:-518}                                         # Image size fed to the vision encoder; DINOv3 recipes usually use 512.
 
 echo "Script path: ${SCRIPT_PATH}"
 echo "Repo root: ${REPO_ROOT}"
@@ -48,10 +48,13 @@ OBS_CACHE=${OBS_CACHE:-/cache}                                                  
 MODEL_OBS_PATH=${MODEL_OBS_PATH:-obs://yw-ads-training-gy1/data/external/personal/h58801830/whu/jjh/checkpoints}  # OBS directory that stores model and vision checkpoint assets.
 DINOV2_TRAIN_OUTPUT_OBS_PATH=${DINOV2_TRAIN_OUTPUT_OBS_PATH:-auto}                # auto selects the latest completed registry run; explicit run/best path is also accepted.
 DINOV2_TRAIN_OUTPUT_OBS_ROOT=${DINOV2_TRAIN_OUTPUT_OBS_ROOT:-obs://yw-ads-training-gy1/data/external/personal/h58801830/whu/jn/model/dinov2_private_seg_dinov3style_lora}  # Stable registry published by the formal segmentation DI script.
+VISION_TOWER_OBS_PATH=${VISION_TOWER_OBS_PATH:-}                                  # Optional explicit OBS model dir for non-DINOv2 variants such as HF DINOv3.
+VISION_TOWER_CHECKPOINT_OBS_PATH=${VISION_TOWER_CHECKPOINT_OBS_PATH:-}            # Optional external vision checkpoint file, for example scripted dinov3_lora.pt.
 DATASET_OBS_PATH=${DATASET_OBS_PATH:-obs://yw-ads-training-gy1/data/external/personal/h58801830/whu/jjh/data/data_lane_intersection_samples_norm_33w_empty_patch.zip}  # Jiangjihua v9 best original lane+intersection dataset.
 DATASET_DIR_NAME=${DATASET_DIR_NAME:-data_lane_intersection_samples_norm_33w_empty_patch}  # Top-level directory stored in the original zip.
 
 VISION_TOWER=${VISION_TOWER:-}                                                    # Optional local override; auto mode derives a run-specific cache path.
+VISION_TOWER_CHECKPOINT=${VISION_TOWER_CHECKPOINT:-}                              # Optional local external vision checkpoint file.
 # Local dataset and output paths for this run.
 DATASET_ARCHIVE_PATH=${DATASET_ARCHIVE_PATH:-${OBS_CACHE}/dataset_${RUN_ID}.zip}  # Local path for the downloaded Jiangjihua 33w package.
 DATASET_EXTRACT_ROOT=${DATASET_EXTRACT_ROOT:-${OBS_CACHE}/dataset_extract_${RUN_ID}}  # Local directory where the dataset zip is extracted.
@@ -326,24 +329,33 @@ fi
 
 # ====================== model downloads ======================
 DINOV2_SELECTION_REPORT=${DINOV2_SELECTION_REPORT:-${OUTPUT_PATH}/dinov2_obs_selection.json}
-if [[ "${DINOV2_TRAIN_OUTPUT_OBS_PATH}" =~ ^(auto|latest)$ ]]; then
-  echo "[dinov2-resolver] scanning latest completed run under ${DINOV2_TRAIN_OUTPUT_OBS_ROOT}"
-  DINOV2_VISION_TOWER_OBS_PATH=$(python scripts/tools/resolve_latest_dinov2_vision_tower_obs.py \
-    --obs-root "${DINOV2_TRAIN_OUTPUT_OBS_ROOT}" \
-    --report "${DINOV2_SELECTION_REPORT}")
+if [ -n "${VISION_TOWER_OBS_PATH}" ]; then
+  SELECTED_VISION_TOWER_OBS_PATH="${VISION_TOWER_OBS_PATH%/}"
+  echo "[vision-resolver] using explicit vision tower OBS path: ${SELECTED_VISION_TOWER_OBS_PATH}"
 else
-  case "${DINOV2_TRAIN_OUTPUT_OBS_PATH%/}" in
-    */best/vision_tower)
-      DINOV2_VISION_TOWER_OBS_PATH="${DINOV2_TRAIN_OUTPUT_OBS_PATH%/}"
-      ;;
-    *)
-      DINOV2_VISION_TOWER_OBS_PATH="${DINOV2_TRAIN_OUTPUT_OBS_PATH%/}/best/vision_tower"
-      ;;
-  esac
+  if [[ "${DINOV2_TRAIN_OUTPUT_OBS_PATH}" =~ ^(auto|latest)$ ]]; then
+    echo "[dinov2-resolver] scanning latest completed run under ${DINOV2_TRAIN_OUTPUT_OBS_ROOT}"
+    SELECTED_VISION_TOWER_OBS_PATH=$(python scripts/tools/resolve_latest_dinov2_vision_tower_obs.py \
+      --obs-root "${DINOV2_TRAIN_OUTPUT_OBS_ROOT}" \
+      --report "${DINOV2_SELECTION_REPORT}")
+  else
+    case "${DINOV2_TRAIN_OUTPUT_OBS_PATH%/}" in
+      */best/vision_tower)
+        SELECTED_VISION_TOWER_OBS_PATH="${DINOV2_TRAIN_OUTPUT_OBS_PATH%/}"
+        ;;
+      *)
+        SELECTED_VISION_TOWER_OBS_PATH="${DINOV2_TRAIN_OUTPUT_OBS_PATH%/}/best/vision_tower"
+        ;;
+    esac
+  fi
 fi
 if [ -z "${VISION_TOWER}" ]; then
-  DINOV2_SELECTED_RUN_ID=$(basename "$(dirname "$(dirname "${DINOV2_VISION_TOWER_OBS_PATH}")")")
-  VISION_TOWER="${OBS_CACHE}/checkpoints/${VISION_TOWER_NAME}/${DINOV2_SELECTED_RUN_ID}"
+  if [ -n "${VISION_TOWER_OBS_PATH}" ]; then
+    VISION_TOWER="${OBS_CACHE}/checkpoints/${VISION_TOWER_NAME}"
+  else
+    DINOV2_SELECTED_RUN_ID=$(basename "$(dirname "$(dirname "${SELECTED_VISION_TOWER_OBS_PATH}")")")
+    VISION_TOWER="${OBS_CACHE}/checkpoints/${VISION_TOWER_NAME}/${DINOV2_SELECTED_RUN_ID}"
+  fi
 fi
 
 model_asset_is_complete() {
@@ -390,7 +402,36 @@ PY
   }
 }
 
-download_model_asset "${DINOV2_VISION_TOWER_OBS_PATH}" "${VISION_TOWER}" || exit $?
+download_file_asset() {
+  local source="$1"
+  local target="$2"
+  if [[ "${REUSE_LOCAL_ASSETS}" =~ ^(1|true|True|TRUE|yes|YES)$ ]] && [ -s "${target}" ]; then
+    echo "[file-download] reuse ${target}"
+    return 0
+  fi
+  mkdir -p "$(dirname "${target}")"
+  SOURCE="${source}" TARGET="${target}" python - <<'PY'
+import os
+import moxing as mox
+
+source = os.environ["SOURCE"]
+target = os.environ["TARGET"]
+print(f"[file-download] {source} -> {target}", flush=True)
+mox.file.copy(source, target)
+PY
+  [ -s "${target}" ] || {
+    echo "ERROR: downloaded file asset is empty or missing: ${target}" >&2
+    return 1
+  }
+}
+
+download_model_asset "${SELECTED_VISION_TOWER_OBS_PATH}" "${VISION_TOWER}" || exit $?
+if [ -n "${VISION_TOWER_CHECKPOINT_OBS_PATH}" ]; then
+  if [ -z "${VISION_TOWER_CHECKPOINT}" ]; then
+    VISION_TOWER_CHECKPOINT="${OBS_CACHE}/checkpoints/${VISION_TOWER_NAME}_external.pt"
+  fi
+  download_file_asset "${VISION_TOWER_CHECKPOINT_OBS_PATH}" "${VISION_TOWER_CHECKPOINT}" || exit $?
+fi
 download_model_asset "${MODEL_OBS_PATH}/${QWEN_MODEL_NAME}" "${QWEN_PATH}" || exit $?
 INIT_MODEL_PATH="${QWEN_PATH}"                                                    # Initial model path passed to train_qwen. Stage B uses the Stage-A checkpoint.
 # Fail early if any required model, dataset, image, or vision asset is missing.
@@ -400,6 +441,10 @@ for path in "${INIT_MODEL_PATH}" "${VISION_TOWER}" "${TRAIN_PATH}" "${EVAL_PATH}
     exit 1
   fi
 done
+if [ -n "${VISION_TOWER_CHECKPOINT}" ] && [ ! -s "${VISION_TOWER_CHECKPOINT}" ]; then
+  echo "ERROR: vision tower checkpoint not found or empty: ${VISION_TOWER_CHECKPOINT}"
+  exit 1
+fi
 
 # Derive gradient accumulation from the requested global batch size.
 TOTAL_DEVICES=$(( NNODES * NPROC_PER_NODE ))                                      # Total number of NPU processes across all nodes.
@@ -431,13 +476,24 @@ if [ -n "${VISION_LAYER_FUSION_INDEXES}" ]; then
   )
 fi
 
+VISION_TOWER_CHECKPOINT_ARGS=()                                                   # Optional external vision checkpoint CLI arguments.
+if [ -n "${VISION_TOWER_CHECKPOINT}" ]; then
+  VISION_TOWER_CHECKPOINT_ARGS=(--vision_tower_checkpoint "${VISION_TOWER_CHECKPOINT}")
+fi
+if [ "${MM_VISION_UNFREEZE_LAST_N_BLOCKS}" -lt 0 ]; then
+  VISION_TRAIN_DESC="full vision tower"
+else
+  VISION_TRAIN_DESC="last ${MM_VISION_UNFREEZE_LAST_N_BLOCKS} blocks + final norm"
+fi
+
 # Print the resolved run configuration before the expensive launch.
 echo "============================================================"
 echo "Recipe:       ${DATASET_PHASE} | ${MAP_TASK} | ${VISION_BACKBONE}"
 echo "Init model:   ${INIT_MODEL_PATH}"
 echo "Vision tower: ${VISION_TOWER}"
-echo "Vision OBS:   ${DINOV2_VISION_TOWER_OBS_PATH}"
-echo "Vision train: last ${MM_VISION_UNFREEZE_LAST_N_BLOCKS} blocks + final norm"
+echo "Vision OBS:   ${SELECTED_VISION_TOWER_OBS_PATH}"
+echo "Vision ckpt:  ${VISION_TOWER_CHECKPOINT:-<none>}"
+echo "Vision train: ${VISION_TRAIN_DESC}"
 echo "Vision layer: ${MM_VISION_SELECT_LAYER} (24 is final normalized output)"
 echo "Layer fusion: ${VISION_LAYER_FUSION_INDEXES:-off} (${VISION_LAYER_FUSION_TYPE})"
 echo "Coord tokens: ${COORDINATE_TOKEN_MODE} (max=${COORDINATE_TOKEN_MAX})"
@@ -462,6 +518,7 @@ torchrun \
   --model_name_or_path "${INIT_MODEL_PATH}" \
   --version conv_qwen_3_Dinov2_huawei \
   --vision_tower "${VISION_TOWER}" \
+  "${VISION_TOWER_CHECKPOINT_ARGS[@]}" \
   --mm_vision_tower_type "${MM_VISION_TOWER_TYPE}" \
   --input_image_size "${INPUT_IMAGE_SIZE}" \
   "${VISION_LAYER_FUSION_ARGS[@]}" \
@@ -506,6 +563,7 @@ torchrun \
   --best_infer_index_eval_data_path "${EVAL_PATH}" \
   --best_infer_index_image_folder "${IMAGE_FOLDER}" \
   --best_infer_index_vision_tower "${VISION_TOWER}" \
+  --best_infer_index_vision_tower_checkpoint "${VISION_TOWER_CHECKPOINT}" \
   --best_infer_index_input_image_size "${INPUT_IMAGE_SIZE}" \
   --best_infer_index_conv_template conv_qwen_3_Dinov2_huawei \
   --best_infer_index_map_task "${MAP_TASK}" \

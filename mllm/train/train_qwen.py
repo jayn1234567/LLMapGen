@@ -947,6 +947,9 @@ class BestInferIndexCallback(DirectBestCheckpointMixin, TrainerCallback):
             "--vision_tower",
             str(getattr(args, "best_infer_index_vision_tower", "") or ""),
         ]
+        vision_checkpoint = str(getattr(args, "best_infer_index_vision_tower_checkpoint", "") or "")
+        if vision_checkpoint:
+            common.extend(["--vision_tower_checkpoint", vision_checkpoint])
         input_size = getattr(args, "best_infer_index_input_image_size", None)
         if input_size:
             common.extend(["--input_image_size", str(int(input_size))])
@@ -1124,6 +1127,16 @@ class ModelArguments:
     tune_mm_mlp_adapter: bool = field(default=False)
     tune_mm_mlp_and_vision_tower: bool = field(default=False)
     vision_tower: Optional[str] = field(default=None)
+    vision_tower_checkpoint: Optional[str] = field(
+        default=None,
+        metadata={
+            "help": (
+                "Optional external checkpoint loaded into the vision tower after "
+                "the base HF vision_tower is initialized. Used for scripted DINOv3 "
+                "segmentation checkpoints such as dinov3_lora.pt."
+            )
+        },
+    )
     mm_vision_select_layer: Optional[int] = field(default=-1)   # default to the last layer
     pretrain_mm_mlp_adapter: Optional[str] = field(default=None)
     mm_projector_type: Optional[str] = field(default='linear')
@@ -1275,6 +1288,7 @@ class TrainingArguments(transformers.TrainingArguments):
     best_infer_index_eval_data_path: str = field(default="")
     best_infer_index_image_folder: str = field(default="")
     best_infer_index_vision_tower: str = field(default="")
+    best_infer_index_vision_tower_checkpoint: str = field(default="")
     best_infer_index_input_image_size: Optional[int] = field(default=None)
     best_infer_index_disable_deepstack: bool = field(default=False)
     best_infer_index_conv_template: str = field(default="conv_qwen_3_Dinov2_huawei")
@@ -2401,6 +2415,8 @@ def train(attn_implementation=None):
             training_args.best_infer_index_image_folder = _first_path(data_args.eval_image_folder or data_args.image_folder)
         if not training_args.best_infer_index_vision_tower:
             training_args.best_infer_index_vision_tower = str(model_args.multi_vision_towers or model_args.vision_tower or "")
+        if not training_args.best_infer_index_vision_tower_checkpoint:
+            training_args.best_infer_index_vision_tower_checkpoint = str(model_args.vision_tower_checkpoint or "")
         if training_args.best_infer_index_input_image_size is None:
             training_args.best_infer_index_input_image_size = model_args.input_image_size
         training_args.best_infer_index_disable_deepstack = bool(model_args.disable_deepstack)

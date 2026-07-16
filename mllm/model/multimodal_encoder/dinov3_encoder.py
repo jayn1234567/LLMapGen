@@ -7,6 +7,10 @@ import torch.nn as nn
 from transformers import AutoImageProcessor
 from transformers import DINOv3ViTConfig, DINOv3ViTModel
 
+from .dinov3_checkpoint import (
+    apply_scripted_dinov3_processor_stats,
+    load_dinov3_vision_checkpoint,
+)
 from .deepstack import build_deepstack_mergers
 from .visual_layer_fusion import VisualLayerFusion
 
@@ -20,7 +24,15 @@ class DINOv3VisionTower(nn.Module):
         self.select_layer = args.mm_vision_select_layer
         self.select_feature = getattr(args, 'mm_vision_select_feature', 'patch')
         self.tune_vision_tower = getattr(args, 'unfreeze_mm_vision_tower', False)
+        self.unfreeze_last_n_blocks = int(
+            getattr(args, 'mm_vision_unfreeze_last_n_blocks', -1)
+        )
         self.input_image_size = getattr(args, 'input_image_size', None)
+        self.vision_tower_checkpoint = (
+            getattr(args, 'vision_tower_checkpoint', None)
+            or getattr(args, 'mm_vision_tower_checkpoint', None)
+            or ""
+        )
 
         self.deepstack_visual_indexes = getattr(args, 'deepstack_visual_indexes', None)
         self.deepstack_mergers = None
@@ -78,8 +90,8 @@ class DINOv3VisionTower(nn.Module):
             device_map=device_map,
             local_files_only=True,
         )
-        if not self.tune_vision_tower:
-            self.vision_tower.requires_grad_(False)
+        self._load_external_checkpoint_if_present()
+        self.set_vision_tower_trainable(self.tune_vision_tower)
 
         target_size = self.input_image_size or self.vision_tower.config.image_size
         if target_size is not None:
@@ -112,8 +124,8 @@ class DINOv3VisionTower(nn.Module):
 
         self.image_processor = AutoImageProcessor.from_pretrained(checkpoint_dir, local_files_only=True)
         self.vision_tower = DINOv3ViTModel(vit_config)
-        if not self.tune_vision_tower:
-            self.vision_tower.requires_grad_(False)
+        self._load_external_checkpoint_if_present()
+        self.set_vision_tower_trainable(self.tune_vision_tower)
 
         target_size = self.input_image_size or self.vision_tower.config.image_size
         if target_size is not None:
@@ -137,6 +149,71 @@ class DINOv3VisionTower(nn.Module):
         self.cfg_only = self.vision_tower.config
         self.is_loaded = True
         self._keep_stable_dtype()
+
+    def _load_external_checkpoint_if_present(self):
+        checkpoint = str(self.vision_tower_checkpoint or "").strip()
+        if not checkpoint:
+            return
+        selected_name = load_dinov3_vision_checkpoint(self.vision_tower, checkpoint)
+        if selected_name == "scripted_dinov3_hf":
+            apply_scripted_dinov3_processor_stats(self.image_processor)
+
+    def set_vision_tower_trainable(self, trainable, last_n_blocks=None):
+        """Apply full, frozen, or tail-block-only DINOv3 fine-tuning."""
+        if last_n_blocks is not None:
+            self.unfreeze_last_n_blocks = int(last_n_blocks)
+
+        trainable = bool(trainable)
+        if not trainable:
+            self.vision_tower.requires_grad_(False)
+            self.tune_vision_tower = False
+            self.trainable_vision_block_indices = []
+            return
+
+        blocks = getattr(getattr(self.vision_tower, "encoder", None), "layer", None)
+        if blocks is None:
+            blocks = getattr(getattr(self.vision_tower, "encoder", None), "layers", None)
+        if blocks is None:
+            blocks = getattr(getattr(self.vision_tower, "encoder", None), "blocks", None)
+
+        if self.unfreeze_last_n_blocks < 0:
+            self.vision_tower.requires_grad_(True)
+            self.tune_vision_tower = True
+            self.trainable_vision_block_indices = (
+                list(range(len(blocks))) if blocks is not None else ["all"]
+            )
+            return
+
+        if blocks is None:
+            raise ValueError(
+                "DINOv3 tail-block fine-tuning was requested, but encoder blocks "
+                "could not be found on the loaded vision tower."
+            )
+        if self.unfreeze_last_n_blocks > len(blocks):
+            raise ValueError(
+                "mm_vision_unfreeze_last_n_blocks="
+                f"{self.unfreeze_last_n_blocks} exceeds DINOv3 depth {len(blocks)}."
+            )
+
+        self.vision_tower.requires_grad_(False)
+        start = len(blocks) - self.unfreeze_last_n_blocks
+        for block in blocks[start:]:
+            block.requires_grad_(True)
+
+        if self.unfreeze_last_n_blocks > 0:
+            final_norm = getattr(self.vision_tower, "layernorm", None)
+            if final_norm is None:
+                final_norm = getattr(self.vision_tower, "norm", None)
+            if final_norm is not None:
+                final_norm.requires_grad_(True)
+
+        self.trainable_vision_block_indices = list(range(start, len(blocks)))
+        self.tune_vision_tower = bool(self.trainable_vision_block_indices)
+        print(
+            "DINOv3 partial fine-tuning: "
+            f"blocks={self.trainable_vision_block_indices}, "
+            f"final_norm={self.unfreeze_last_n_blocks > 0}"
+        )
 
     def _resolve_select_layer_index(self):
         raw = self.select_layer

@@ -1,0 +1,338 @@
+from pathlib import Path
+from typing import Any, Dict, Sequence, Tuple
+
+import torch
+import torch.nn as nn
+
+
+def _tensor_state_dict(payload: Any) -> Dict[str, torch.Tensor]:
+    if hasattr(payload, "state_dict") and not isinstance(payload, dict):
+        try:
+            state = payload.state_dict()
+        except Exception:
+            state = None
+        if isinstance(state, dict):
+            return {str(key): value for key, value in state.items() if torch.is_tensor(value)}
+
+    if not isinstance(payload, dict):
+        return {}
+
+    direct = {str(key): value for key, value in payload.items() if torch.is_tensor(value)}
+    if direct:
+        return direct
+
+    for key in ("vision_encoder", "encoder", "backbone", "model", "state_dict", "module", "net"):
+        nested_state = _tensor_state_dict(payload.get(key))
+        if nested_state:
+            return nested_state
+    return {}
+
+
+def _strip_common_prefixes(state_dict: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
+    prefixes = (
+        "module.",
+        "_orig_mod.",
+        "base_model.model.",
+        "base_model.",
+        "vision_encoder.",
+        "encoder.",
+        "backbone.",
+        "net.",
+    )
+    state = dict(state_dict)
+    changed = True
+    while changed:
+        changed = False
+        for prefix in prefixes:
+            if state and all(str(key).startswith(prefix) for key in state):
+                state = {str(key)[len(prefix) :]: value for key, value in state.items()}
+                changed = True
+                break
+    return state
+
+
+def _suffix_aligned_state(module: nn.Module, state_dict: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
+    target_state = module.state_dict()
+    source_by_suffix: Dict[str, Tuple[str, torch.Tensor]] = {}
+    for source_key, value in state_dict.items():
+        parts = str(source_key).split(".")
+        for start in range(len(parts)):
+            suffix = ".".join(parts[start:])
+            target = target_state.get(suffix)
+            if target is None or tuple(target.shape) != tuple(value.shape):
+                continue
+            existing = source_by_suffix.get(suffix)
+            if existing is None or len(str(source_key)) < len(existing[0]):
+                source_by_suffix[suffix] = (str(source_key), value)
+    return {target_key: value for target_key, (_, value) in source_by_suffix.items()}
+
+
+def _find_target_key(
+    target_state: Dict[str, torch.Tensor],
+    value: torch.Tensor,
+    suffixes: Sequence[str],
+) -> str | None:
+    shape = tuple(value.shape)
+    for suffix in suffixes:
+        matches = [
+            key
+            for key, target_value in target_state.items()
+            if str(key).endswith(str(suffix)) and tuple(target_value.shape) == shape
+        ]
+        if matches:
+            return sorted(matches, key=len)[0]
+    return None
+
+
+def _assign_by_suffix(
+    mapped: Dict[str, torch.Tensor],
+    target_state: Dict[str, torch.Tensor],
+    value: torch.Tensor | None,
+    suffixes: Sequence[str],
+) -> bool:
+    if value is None or not torch.is_tensor(value):
+        return False
+    target_key = _find_target_key(target_state, value, suffixes)
+    if target_key is None:
+        return False
+    mapped[target_key] = value
+    return True
+
+
+def _scripted_dinov3_to_hf_state(
+    vision_encoder: nn.Module,
+    raw_state: Dict[str, torch.Tensor],
+) -> Dict[str, torch.Tensor]:
+    if not any(str(key).startswith("encoder.blocks.") for key in raw_state):
+        return {}
+
+    target_state = vision_encoder.state_dict()
+    mapped: Dict[str, torch.Tensor] = {}
+
+    _assign_by_suffix(mapped, target_state, raw_state.get("encoder.cls_token"), ("embeddings.cls_token", "cls_token"))
+    _assign_by_suffix(
+        mapped,
+        target_state,
+        raw_state.get("encoder.storage_tokens"),
+        ("embeddings.register_tokens", "register_tokens", "storage_tokens"),
+    )
+    _assign_by_suffix(mapped, target_state, raw_state.get("encoder.mask_token"), ("embeddings.mask_token", "mask_token"))
+    _assign_by_suffix(
+        mapped,
+        target_state,
+        raw_state.get("encoder.patch_embed.proj.weight"),
+        ("embeddings.patch_embeddings.projection.weight", "patch_embed.proj.weight"),
+    )
+    _assign_by_suffix(
+        mapped,
+        target_state,
+        raw_state.get("encoder.patch_embed.proj.bias"),
+        ("embeddings.patch_embeddings.projection.bias", "patch_embed.proj.bias"),
+    )
+
+    block_indexes = sorted(
+        {
+            int(str(key).split(".")[2])
+            for key in raw_state
+            if str(key).startswith("encoder.blocks.")
+            and len(str(key).split(".")) > 3
+            and str(key).split(".")[2].isdigit()
+        }
+    )
+    for idx in block_indexes:
+        src = f"encoder.blocks.{idx}"
+        target_layers = (
+            f"encoder.layer.{idx}",
+            f"encoder.layers.{idx}",
+            f"encoder.blocks.{idx}",
+            f"blocks.{idx}",
+            f"layers.{idx}",
+        )
+
+        for norm_name in ("norm1", "norm2"):
+            for attr in ("weight", "bias"):
+                _assign_by_suffix(
+                    mapped,
+                    target_state,
+                    raw_state.get(f"{src}.{norm_name}.{attr}"),
+                    tuple(f"{layer}.{norm_name}.{attr}" for layer in target_layers),
+                )
+
+        for mlp_name in ("fc1", "fc2"):
+            for attr in ("weight", "bias"):
+                _assign_by_suffix(
+                    mapped,
+                    target_state,
+                    raw_state.get(f"{src}.mlp.{mlp_name}.{attr}"),
+                    tuple(f"{layer}.mlp.{mlp_name}.{attr}" for layer in target_layers),
+                )
+
+        for source_name, target_names in (
+            ("ls1.gamma", ("layer_scale1.lambda1", "layer_scale1.gamma", "ls1.gamma")),
+            ("ls2.gamma", ("layer_scale2.lambda1", "layer_scale2.gamma", "ls2.gamma")),
+        ):
+            _assign_by_suffix(
+                mapped,
+                target_state,
+                raw_state.get(f"{src}.{source_name}"),
+                tuple(f"{layer}.{target}" for layer in target_layers for target in target_names),
+            )
+
+        for attr in ("weight", "bias"):
+            _assign_by_suffix(
+                mapped,
+                target_state,
+                raw_state.get(f"{src}.attn.proj.{attr}"),
+                tuple(
+                    f"{layer}.{target}.{attr}"
+                    for layer in target_layers
+                    for target in ("attention.output.dense", "attention.output.projection", "attn.proj")
+                ),
+            )
+
+        qkv_weight = raw_state.get(f"{src}.attn.qkv.qkv.weight")
+        qkv_bias = raw_state.get(f"{src}.attn.qkv.qkv.bias")
+        if torch.is_tensor(qkv_weight) and qkv_weight.ndim == 2 and qkv_weight.shape[0] % 3 == 0:
+            q_weight, k_weight, v_weight = torch.chunk(qkv_weight, 3, dim=0)
+            q_delta_a = raw_state.get(f"{src}.attn.qkv.linear_a_q.weight")
+            q_delta_b = raw_state.get(f"{src}.attn.qkv.linear_b_q.weight")
+            v_delta_a = raw_state.get(f"{src}.attn.qkv.linear_a_v.weight")
+            v_delta_b = raw_state.get(f"{src}.attn.qkv.linear_b_v.weight")
+            if torch.is_tensor(q_delta_a) and torch.is_tensor(q_delta_b):
+                q_delta = torch.matmul(q_delta_b.to(dtype=q_weight.dtype), q_delta_a.to(dtype=q_weight.dtype))
+                if tuple(q_delta.shape) == tuple(q_weight.shape):
+                    q_weight = q_weight + q_delta
+            if torch.is_tensor(v_delta_a) and torch.is_tensor(v_delta_b):
+                v_delta = torch.matmul(v_delta_b.to(dtype=v_weight.dtype), v_delta_a.to(dtype=v_weight.dtype))
+                if tuple(v_delta.shape) == tuple(v_weight.shape):
+                    v_weight = v_weight + v_delta
+            for name, value in (("query", q_weight), ("key", k_weight), ("value", v_weight)):
+                _assign_by_suffix(
+                    mapped,
+                    target_state,
+                    value,
+                    tuple(
+                        f"{layer}.{target}.{name}.weight"
+                        for layer in target_layers
+                        for target in ("attention.attention", "attention")
+                    )
+                    + tuple(f"{layer}.attn.{name}.weight" for layer in target_layers),
+                )
+
+        if torch.is_tensor(qkv_bias) and qkv_bias.ndim == 1 and qkv_bias.shape[0] % 3 == 0:
+            q_bias, k_bias, v_bias = torch.chunk(qkv_bias, 3, dim=0)
+            for name, value in (("query", q_bias), ("key", k_bias), ("value", v_bias)):
+                _assign_by_suffix(
+                    mapped,
+                    target_state,
+                    value,
+                    tuple(
+                        f"{layer}.{target}.{name}.bias"
+                        for layer in target_layers
+                        for target in ("attention.attention", "attention")
+                    )
+                    + tuple(f"{layer}.attn.{name}.bias" for layer in target_layers),
+                )
+
+    for source_key, suffixes in (
+        ("encoder.norm.weight", ("layernorm.weight", "norm.weight")),
+        ("encoder.norm.bias", ("layernorm.bias", "norm.bias")),
+    ):
+        _assign_by_suffix(mapped, target_state, raw_state.get(source_key), suffixes)
+    return mapped
+
+
+def _candidate_encoder_states(
+    vision_encoder: nn.Module,
+    raw_state: Dict[str, torch.Tensor],
+) -> list[tuple[str, Dict[str, torch.Tensor]]]:
+    stripped = _strip_common_prefixes(raw_state)
+    candidates: list[tuple[str, Dict[str, torch.Tensor]]] = [("raw", raw_state), ("stripped", stripped)]
+    if stripped and not all(str(key).startswith("model.") for key in stripped):
+        candidates.append(("stripped_plus_model", {f"model.{key}": value for key, value in stripped.items()}))
+    if raw_state and not all(str(key).startswith("model.") for key in raw_state):
+        candidates.append(("raw_plus_model", {f"model.{key}": value for key, value in raw_state.items()}))
+    suffix_aligned = _suffix_aligned_state(vision_encoder, raw_state)
+    if suffix_aligned:
+        candidates.append(("suffix_aligned", suffix_aligned))
+    scripted_dinov3 = _scripted_dinov3_to_hf_state(vision_encoder, raw_state)
+    if scripted_dinov3:
+        candidates.append(("scripted_dinov3_hf", scripted_dinov3))
+
+    deduped: list[tuple[str, Dict[str, torch.Tensor]]] = []
+    seen = set()
+    for name, state in candidates:
+        signature = tuple(sorted(state.keys()))
+        if signature in seen:
+            continue
+        seen.add(signature)
+        deduped.append((name, state))
+    return deduped
+
+
+def _shape_match_score(module: nn.Module, state_dict: Dict[str, torch.Tensor]) -> tuple[int, int]:
+    target_state = module.state_dict()
+    matched = {
+        key: value
+        for key, value in state_dict.items()
+        if key in target_state and tuple(target_state[key].shape) == tuple(value.shape)
+    }
+    return len(matched), sum(int(value.numel()) for value in matched.values())
+
+
+def _select_encoder_state(
+    vision_encoder: nn.Module,
+    raw_state: Dict[str, torch.Tensor],
+) -> tuple[str, Dict[str, torch.Tensor]]:
+    best_name = ""
+    best_state: Dict[str, torch.Tensor] = {}
+    best_score = (0, 0)
+    for name, candidate in _candidate_encoder_states(vision_encoder, raw_state):
+        score = _shape_match_score(vision_encoder, candidate)
+        if score > best_score:
+            best_name = name
+            best_state = candidate
+            best_score = score
+    if best_score[0] <= 0:
+        lora_keys = [key for key in raw_state if "lora" in str(key).lower()]
+        hint = ""
+        if lora_keys:
+            hint = (
+                " The checkpoint looks like a LoRA-only adapter. Merge the LoRA adapter "
+                "into the base DINOv3 weights first, or provide a scripted DINOv3 checkpoint "
+                "that includes encoder blocks."
+            )
+        raise ValueError(f"Unable to match any DINOv3 visual encoder weights by shape.{hint}")
+    return best_name, best_state
+
+
+def load_dinov3_vision_checkpoint(
+    vision_encoder: nn.Module,
+    checkpoint_path: str | Path,
+) -> str:
+    path = Path(checkpoint_path).expanduser().resolve()
+    if not path.is_file():
+        raise FileNotFoundError(f"DINOv3 visual checkpoint not found: {path}")
+
+    state = torch.load(str(path), map_location="cpu", weights_only=False)
+    raw_state = _tensor_state_dict(state)
+    if not raw_state:
+        raise ValueError(f"Unable to extract DINOv3 visual encoder weights from checkpoint: {path}")
+
+    selected_name, encoder_state = _select_encoder_state(vision_encoder, raw_state)
+    missing, unexpected = vision_encoder.load_state_dict(encoder_state, strict=False)
+    print(
+        "[dinov3-checkpoint] "
+        f"selected_state={selected_name} tensors={len(encoder_state)} "
+        f"missing={len(missing)} unexpected={len(unexpected)} path={path}",
+        flush=True,
+    )
+    return selected_name
+
+
+def apply_scripted_dinov3_processor_stats(image_processor: Any) -> None:
+    if image_processor is None:
+        return
+    image_processor.image_mean = [0.5, 0.5, 0.5]
+    image_processor.image_std = [1.0, 1.0, 1.0]
+    print("[dinov3-checkpoint] using scripted DINOv3 normalization: mean=0.5 std=1.0", flush=True)

@@ -239,9 +239,13 @@ powershell -ExecutionPolicy Bypass -File .\scripts\tools\setup_rc_dataset_v2_win
 conda activate rc-dataset-v2
 ```
 
-The script installs Python 3.11, NumPy 1.26, Pillow, tqdm, GeoPandas, Rasterio,
-Shapely, and pyproj. If `conda-forge` is unavailable on the intranet, pass the
-company Conda channel with `-Channel YOUR_CHANNEL`.
+The script clones the existing Conda environment `py311` into
+`rc-dataset-v2`, verifies Python 3.11, and then installs NumPy 1.26, Pillow,
+tqdm, GeoPandas, Rasterio, Shapely, and pyproj with that environment's pip.
+This avoids asking an intranet Conda channel to resolve or download Python.
+Use `-CloneFrom OTHER_ENV` when the reusable Python 3.11 environment has a
+different name, and use `-PipIndexUrl URL` when an intranet PyPI mirror must be
+selected explicitly.
 
 For local Windows OBS access, use Huawei `obsutil.exe` instead of installing a
 package named `moxing` from public PyPI. Add `obsutil.exe` to `PATH`, then use

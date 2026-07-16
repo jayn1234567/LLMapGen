@@ -52,6 +52,7 @@ TEST_JSON=${TEST_JSON:-${DATASET_PATH}/${DATASET_PHASE}/test.jsonl}             
 CHECKPOINT_DOWNLOAD_ROOT=${CHECKPOINT_DOWNLOAD_ROOT:-${OBS_CACHE}/checkpoints_${RUN_ID}}  # Local root used to download checkpoint candidates from OBS.
 LOCAL_OUTPUT_ROOT=${LOCAL_OUTPUT_ROOT:-${OBS_CACHE}/test_phase_a_lane_intersection_dinov2_output_${RUN_ID}}  # Per-run local inference output root.
 CLOUD_OUTPUT_DIR=${TEST_RESULT_OBS:-${OSB_SHARE_PATH%/}/test_results_${RUN_ID}}   # Final cloud output directory for inference or GRPO results.
+UPLOAD_RESULTS=${UPLOAD_RESULTS:-True}                                            # Set false for local Ascend evaluation that should keep results on disk only.
 
 # ====================== inference params ======================
 # CHECKPOINT_OBS_LIST or CHECKPOINT_DIRS can contain one or multiple checkpoints.
@@ -437,7 +438,9 @@ for index in "${!CHECKPOINT_ITEMS[@]}"; do
 done
 
 # Rank 0 uploads the complete local result tree to OBS.
-if [ "${NODE_RANK}" -eq 0 ]; then
+if [ "${NODE_RANK}" -eq 0 ] && [[ "${UPLOAD_RESULTS}" =~ ^(1|true|True|TRUE|yes|YES)$ ]]; then
   python -c "import moxing as mox; mox.file.copy_parallel('${LOCAL_OUTPUT_ROOT}', '${CLOUD_OUTPUT_DIR}')"
   echo "Inference results uploaded to ${CLOUD_OUTPUT_DIR}"
+elif [ "${NODE_RANK}" -eq 0 ]; then
+  echo "Inference results kept locally at ${LOCAL_OUTPUT_ROOT}"
 fi

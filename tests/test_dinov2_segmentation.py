@@ -17,6 +17,7 @@ from mllm.vision_pretrain.data import (
 )
 from mllm.vision_pretrain.dinov2_segmentation import (
     Dinov2RoadSegmentationModel,
+    enable_dinov2_gradient_checkpointing,
     merged_lora_state_dict,
 )
 from mllm.vision_pretrain.metrics import confusion_matrix, metrics_from_confusion
@@ -272,6 +273,49 @@ class Dinov2SegmentationTests(unittest.TestCase):
         self.assertIn("encoder.layer.0.attention.attention.value.weight", state_dict)
         self.assertFalse(any("lora_A" in key or "lora_B" in key for key in state_dict))
         self.assertFalse(any("base_layer" in key for key in state_dict))
+
+    def test_lora_gradient_checkpointing_keeps_all_adapter_gradients(self):
+        from transformers import Dinov2Config, Dinov2Model
+
+        config = Dinov2Config(
+            image_size=8,
+            patch_size=2,
+            num_channels=3,
+            hidden_size=8,
+            num_hidden_layers=2,
+            num_attention_heads=2,
+            intermediate_size=16,
+        )
+        vision_encoder = Dinov2Model(config)
+        mode = enable_dinov2_gradient_checkpointing(
+            vision_encoder,
+            adapter_only=True,
+        )
+        model = Dinov2RoadSegmentationModel(
+            vision_encoder,
+            input_size=8,
+            hidden_state_indices=[1, 2],
+            projection_channels=16,
+            vision_lora_enable=True,
+            vision_lora_r=2,
+            vision_lora_alpha=4,
+            vision_lora_target_modules="query,value",
+        )
+        model.gradient_checkpointing_mode = mode
+        model.train()
+        model(torch.randn(2, 3, 8, 8)).square().mean().backward()
+
+        adapter_parameters = {
+            name: parameter
+            for name, parameter in model.vision_encoder.named_parameters()
+            if parameter.requires_grad
+        }
+        self.assertEqual(mode, "non_reentrant")
+        self.assertEqual(len(adapter_parameters), 8)
+        self.assertTrue(all("lora_" in name for name in adapter_parameters))
+        self.assertTrue(
+            all(parameter.grad is not None for parameter in adapter_parameters.values())
+        )
 
     def test_fixed_two_class_confusion_metrics(self):
         logits = torch.tensor(

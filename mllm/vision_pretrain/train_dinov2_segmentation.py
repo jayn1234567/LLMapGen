@@ -352,6 +352,7 @@ def save_best_artifacts(
         "vision_lora_dropout": model.vision_lora_dropout,
         "vision_lora_target_modules": model.vision_lora_target_modules,
         "vision_lora_modules": list(model.vision_lora_modules),
+        "gradient_checkpointing_mode": model.gradient_checkpointing_mode,
         "trainable_vision_block_indices": (
             None
             if model.trainable_vision_block_indices is None
@@ -525,6 +526,7 @@ def main() -> None:
         f"vision_unfreeze_last_n_blocks={raw_model.vision_unfreeze_last_n_blocks} "
         f"vision_lora_enable={raw_model.vision_lora_enable} "
         f"vision_lora_modules={raw_model.vision_lora_modules[:12]} "
+        f"gradient_checkpointing_mode={raw_model.gradient_checkpointing_mode} "
         f"trainable_vision_block_indices={raw_model.trainable_vision_block_indices} "
         f"frozen_parameter_tensors={len(frozen_parameters)} "
         f"frozen_preview={json.dumps(frozen_parameters[:20])}",
@@ -608,6 +610,24 @@ def main() -> None:
                         dice_weight=args.dice_loss_weight,
                     )
                 (loss / group_size).backward()
+
+            if epoch == 1 and batch_index == 0:
+                missing_gradients = [
+                    name
+                    for name, parameter in raw_model.named_parameters()
+                    if parameter.requires_grad and parameter.grad is None
+                ]
+                if missing_gradients:
+                    raise RuntimeError(
+                        "Trainable parameters did not receive gradients on the first backward pass: "
+                        f"count={len(missing_gradients)}, preview={missing_gradients[:32]}. "
+                        "This usually indicates an invalid gradient-checkpointing/adapter configuration."
+                    )
+                rank0_print(
+                    rank,
+                    "[dinov2-seg] first-backward gradient audit passed: "
+                    f"trainable_tensors={sum(parameter.requires_grad for parameter in raw_model.parameters())}",
+                )
 
             group_loss += float(loss.detach().item())
             group_ce += float(components["cross_entropy"].item())

@@ -9,6 +9,42 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 
+def enable_dinov2_gradient_checkpointing(
+    vision_encoder: nn.Module,
+    *,
+    adapter_only: bool,
+) -> str:
+    """Enable checkpointing without dropping gradients for adapter-only training."""
+    if not adapter_only:
+        vision_encoder.gradient_checkpointing_enable()
+        return "reentrant"
+
+    try:
+        vision_encoder.gradient_checkpointing_enable(
+            gradient_checkpointing_kwargs={"use_reentrant": False}
+        )
+        return "non_reentrant"
+    except TypeError:
+        # Older Transformers releases do not expose checkpoint kwargs. Making
+        # the frozen embedding output require grad keeps reentrant checkpointing
+        # connected to trainable LoRA parameters inside each encoder block.
+        vision_encoder.gradient_checkpointing_enable()
+        embeddings = getattr(vision_encoder, "embeddings", None)
+        if not isinstance(embeddings, nn.Module):
+            raise RuntimeError(
+                "Adapter-only DINOv2 gradient checkpointing requires either "
+                "non-reentrant checkpoint support or a discoverable embeddings module."
+            )
+
+        def require_output_grad(_module, _inputs, output):
+            if isinstance(output, torch.Tensor):
+                output.requires_grad_(True)
+            return output
+
+        embeddings.register_forward_hook(require_output_grad)
+        return "reentrant_with_embedding_grad_hook"
+
+
 class LoRALinear(nn.Module):
     def __init__(
         self,
@@ -463,6 +499,7 @@ class Dinov2RoadSegmentationModel(nn.Module):
         self.vision_lora_dropout = float(vision_lora_dropout)
         self.vision_lora_target_modules = ",".join(_split_csv(vision_lora_target_modules))
         self.vision_lora_modules: tuple[str, ...] = ()
+        self.gradient_checkpointing_mode = "disabled"
         if self.vision_lora_enable:
             self.vision_encoder.requires_grad_(False)
             self.vision_lora_modules = tuple(
@@ -592,9 +629,13 @@ class Dinov2RoadSegmentationModel(nn.Module):
             model_name_or_path,
             local_files_only=True,
         )
+        gradient_checkpointing_mode = "disabled"
         if gradient_checkpointing:
-            vision_encoder.gradient_checkpointing_enable()
-        return cls(
+            gradient_checkpointing_mode = enable_dinov2_gradient_checkpointing(
+                vision_encoder,
+                adapter_only=bool(vision_lora_enable),
+            )
+        model = cls(
             vision_encoder,
             input_size=input_size,
             hidden_state_indices=hidden_state_indices,
@@ -607,6 +648,8 @@ class Dinov2RoadSegmentationModel(nn.Module):
             vision_lora_dropout=vision_lora_dropout,
             vision_lora_target_modules=vision_lora_target_modules,
         )
+        model.gradient_checkpointing_mode = gradient_checkpointing_mode
+        return model
 
     def forward(self, pixel_values: torch.Tensor) -> torch.Tensor:
         outputs = self.vision_encoder(

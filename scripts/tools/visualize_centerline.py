@@ -191,6 +191,7 @@ def main():
     parser.add_argument("--eval-match-threshold", type=float, default=0.33)
     parser.add_argument("--whole-map-viz-dir", default="", help="Directory for stitched whole-map visualizations. Defaults to input-dir/whole_map_viz.")
     parser.add_argument("--skip-whole-map-viz", action="store_true")
+    parser.add_argument("--max-samples", type=int, default=0, help="Visualize at most this many records; 0 means all.")
     args = parser.parse_args()
 
     input_dir = Path(args.input_dir)
@@ -206,6 +207,8 @@ def main():
     results = load_json_array_or_lines(summary_path)
     if not results:
         raise ValueError(f"No valid records found in {summary_path}")
+    if args.max_samples > 0:
+        results = results[: args.max_samples]
 
     output_dir = Path(args.output_dir) if args.output_dir else input_dir / "viz"
     output_dir.mkdir(parents=True, exist_ok=True)

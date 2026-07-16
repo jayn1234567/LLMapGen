@@ -379,6 +379,46 @@ def infer_coord_mode(lines: list[dict[str, Any]], image_size: tuple[int, int] | 
     return "pixel"
 
 
+def record_patch_size(record: dict[str, Any], image_size: tuple[int, int] | None) -> tuple[int, int]:
+    if image_size is not None:
+        return max(2, int(image_size[0])), max(2, int(image_size[1]))
+    meta = record.get("meta") if isinstance(record.get("meta"), dict) else {}
+    width = meta.get("patch_width") or meta.get("pixel_patch_size") or meta.get("patch_size") or 256
+    height = meta.get("patch_height") or meta.get("pixel_patch_size") or meta.get("patch_size") or 256
+    try:
+        return max(2, int(width)), max(2, int(height))
+    except (TypeError, ValueError):
+        return 256, 256
+
+
+def normalize_lines_for_metrics(
+    lines: list[dict[str, Any]],
+    coord_mode: str,
+    patch_size: tuple[int, int],
+    coord_range: float,
+) -> list[dict[str, Any]]:
+    """Put geometry on the normalized metric grid without changing the source record."""
+    if coord_mode != "pixel":
+        return lines
+    width, height = patch_size
+    max_x = max(1.0, float(width - 1))
+    max_y = max(1.0, float(height - 1))
+    normalized = []
+    for item in lines:
+        clone = dict(item)
+        points = []
+        for x, y in clean_points(item.get("points")):
+            points.append(
+                [
+                    max(0.0, min(coord_range, x / max_x * coord_range)),
+                    max(0.0, min(coord_range, y / max_y * coord_range)),
+                ]
+            )
+        clone["points"] = points
+        normalized.append(clone)
+    return normalized
+
+
 def to_pixel(point: tuple[float, float], image_size: tuple[int, int], coord_mode: str, coord_range: float) -> tuple[int, int]:
     x, y = point
     if coord_mode == "norm1000":
@@ -404,12 +444,26 @@ def resolve_record_image(record: dict[str, Any], dataset_root: Path, image_folde
 def sample_metrics(record: dict[str, Any], image_size: tuple[int, int] | None, args: argparse.Namespace) -> dict[str, Any]:
     payload = extract_target_payload(record)
     lines = normalize_lines(payload)
-    centerlines = [item for item in lines if category_of(item) == "centerline" and len(clean_points(item.get("points"))) >= 2]
-    intersections = [item for item in lines if category_of(item) == "intersection" and len(clean_points(item.get("points"))) >= 3]
     coord_mode = infer_coord_mode(lines, image_size, args.coord_mode)
+    metric_lines = normalize_lines_for_metrics(
+        lines,
+        coord_mode=coord_mode,
+        patch_size=record_patch_size(record, image_size),
+        coord_range=float(args.coord_range),
+    )
+    centerlines = [
+        item
+        for item in metric_lines
+        if category_of(item) == "centerline" and len(clean_points(item.get("points"))) >= 2
+    ]
+    intersections = [
+        item
+        for item in metric_lines
+        if category_of(item) == "intersection" and len(clean_points(item.get("points"))) >= 3
+    ]
     lengths = [line_length(clean_points(item.get("points"))) for item in centerlines]
     total_length = float(sum(lengths))
-    point_count = sum(len(clean_points(item.get("points"))) for item in lines)
+    point_count = sum(len(clean_points(item.get("points"))) for item in metric_lines)
     cut_count = sum(
         int(str(item.get("start_type", "")).lower() == "cut") + int(str(item.get("end_type", "")).lower() == "cut")
         for item in centerlines
@@ -496,7 +550,7 @@ def sample_metrics(record: dict[str, Any], image_size: tuple[int, int] | None, a
         "id": record.get("id", record.get("sample_id")),
         "image": record.get("image", record.get("images")),
         "coord_mode": coord_mode,
-        "line_count": len(lines),
+        "line_count": len(metric_lines),
         "centerline_count": len(centerlines),
         "intersection_count": len(intersections),
         "point_count": point_count,

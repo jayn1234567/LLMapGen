@@ -62,6 +62,14 @@ NUM_TEST_SAMPLES=${NUM_TEST_SAMPLES:-0}                                         
 MAX_NEW_TOKENS=${MAX_NEW_TOKENS:-2048}                                            # Maximum number of generated tokens per sample.
 COORD_MODE=${COORD_MODE:-auto}                                                    # Coordinate mode: auto reads meta.coord_mode, or force norm1000 or pixel.
 COORD_RANGE=${COORD_RANGE:-1000}                                                  # Coordinate range for normalized labels, normally 1000.
+DIFFICULTY_EVAL=${DIFFICULTY_EVAL:-False}                                         # Split TEST_JSON into geometry-based difficulty buckets before inference.
+DIFFICULTIES=${DIFFICULTIES:-easy,medium,hard,very_hard}                          # Difficulty buckets evaluated independently.
+DIFFICULTY_SAMPLES_PER_BUCKET=${DIFFICULTY_SAMPLES_PER_BUCKET:-300}               # Balanced sample count per bucket; 0 evaluates every eligible sample.
+DIFFICULTY_VIS_LIMIT=${DIFFICULTY_VIS_LIMIT:-50}                                  # Maximum patch comparisons rendered per bucket; 0 renders all.
+DIFFICULTY_SEED=${DIFFICULTY_SEED:-42}                                            # Stable reservoir-sampling seed.
+DIFFICULTY_INCLUDE_EMPTY=${DIFFICULTY_INCLUDE_EMPTY:-False}                       # Include empty patches in easy; false focuses metrics on road geometry.
+DIFFICULTY_SPLIT_ROOT=${DIFFICULTY_SPLIT_ROOT:-${OBS_CACHE}/difficulty_eval_${RUN_ID}}  # Generated per-difficulty JSONL files and manifest.
+CHECKPOINT_DEEPSTACK_MODE=${CHECKPOINT_DEEPSTACK_MODE:-disabled}                  # disabled preserves this recipe; auto trusts checkpoint config.
 # ====================== Ascend environment ======================
 # Ascend and HCCL runtime environment for NPU jobs.
 export ASCEND_CUSTOM_PATH=${ASCEND_CUSTOM_PATH:-/usr/local/Ascend/ascend-toolkit/latest}  # Ascend toolkit root.
@@ -284,11 +292,54 @@ for path in "${VISION_TOWER}" "${TEST_JSON}" "${IMAGE_FOLDER}"; do
   fi
 done
 
+# Build deterministic balanced evaluation files. Difficulty scoring is always
+# performed on a normalized 0..1000 geometry grid, including legacy pixel GT.
+TEST_JSON_ITEMS=()
+TEST_JSON_LABELS=()
+if [[ "${DIFFICULTY_EVAL}" =~ ^(1|true|True|TRUE|yes|YES)$ ]]; then
+  difficulty_args=(
+    --input-jsonl "${TEST_JSON}"
+    --output-dir "${DIFFICULTY_SPLIT_ROOT}"
+    --samples-per-difficulty "${DIFFICULTY_SAMPLES_PER_BUCKET}"
+    --seed "${DIFFICULTY_SEED}"
+    --coord-mode "${COORD_MODE}"
+    --coord-range "${COORD_RANGE}"
+  )
+  if [[ "${DIFFICULTY_INCLUDE_EMPTY}" =~ ^(1|true|True|TRUE|yes|YES)$ ]]; then
+    difficulty_args+=(--include-empty)
+  fi
+  requested_difficulties=()
+  while IFS= read -r difficulty; do
+    requested_difficulties+=("${difficulty}")
+  done < <(read_list "${DIFFICULTIES}")
+  difficulty_args+=(--difficulties "${requested_difficulties[@]}")
+  python scripts/tools/build_difficulty_eval_splits.py "${difficulty_args[@]}"
+  for difficulty in "${requested_difficulties[@]}"; do
+    split_json="${DIFFICULTY_SPLIT_ROOT}/${difficulty}.jsonl"
+    if [ ! -s "${split_json}" ]; then
+      echo "WARNING: skip empty difficulty split: ${split_json}"
+      continue
+    fi
+    TEST_JSON_ITEMS+=("${split_json}")
+    TEST_JSON_LABELS+=("${difficulty}")
+  done
+else
+  TEST_JSON_ITEMS+=("${TEST_JSON}")
+  TEST_JSON_LABELS+=("all")
+fi
+
+if [ "${#TEST_JSON_ITEMS[@]}" -eq 0 ]; then
+  echo "ERROR: no non-empty evaluation JSONL was produced."
+  exit 1
+fi
+
 # Run one checkpoint through inference, evaluation, visualization, and table printing.
 run_one_checkpoint() {
   local checkpoint_dir="$1"
   local checkpoint_label="$2"
   local output_dir="$3"
+  local test_json="$4"
+  local difficulty_label="$5"
   local json_dir="${output_dir}/json"
   local patch_viz_dir="${output_dir}/viz"
   local whole_map_viz_dir="${output_dir}/whole_map_viz"
@@ -297,6 +348,18 @@ run_one_checkpoint() {
   local eval_json="${output_dir}/eval.json"
   mkdir -p "${json_dir}" "${patch_viz_dir}" "${whole_map_viz_dir}"
   echo "Infer ${checkpoint_label}: ${checkpoint_dir}"
+  deepstack_args=()
+  case "${CHECKPOINT_DEEPSTACK_MODE}" in
+    disabled|disable|off|false|False|FALSE|0)
+      deepstack_args+=(--disable_deepstack)
+      ;;
+    auto|checkpoint)
+      ;;
+    *)
+      echo "ERROR: unsupported CHECKPOINT_DEEPSTACK_MODE=${CHECKPOINT_DEEPSTACK_MODE}; use disabled or auto."
+      return 1
+      ;;
+  esac
 # Launch the recipe entrypoint. Training uses HCCL/DDP and full SFT may add DeepSpeed.
 torchrun \
     --nnodes="${NNODES}" \
@@ -309,8 +372,8 @@ torchrun \
     --vision_tower "${VISION_TOWER}" \
     --mm_vision_tower_type "${MM_VISION_TOWER_TYPE}" \
     --input_image_size "${INPUT_IMAGE_SIZE}" \
-    --disable_deepstack \
-    --test-json "${TEST_JSON}" \
+    "${deepstack_args[@]}" \
+    --test-json "${test_json}" \
     --num-samples "${NUM_TEST_SAMPLES}" \
     --image-folder "${IMAGE_FOLDER}" \
     --prompt-mode dataset \
@@ -329,12 +392,19 @@ torchrun \
   if [ "${NODE_RANK}" -ne 0 ]; then
     return 0
   fi
-  python scripts/tools/visualize_centerline.py \
-      --input-dir "${output_dir}" \
-      --image-folder "${IMAGE_FOLDER}" \
-      --output-dir "${patch_viz_dir}" \
-      --eval-output-json "${eval_json}" \
-      --whole-map-viz-dir "${whole_map_viz_dir}"
+  visualize_args=(
+      --input-dir "${output_dir}"
+      --image-folder "${IMAGE_FOLDER}"
+      --output-dir "${patch_viz_dir}"
+      --map-task "${MAP_TASK}"
+      --eval-output-json "${eval_json}"
+  )
+  if [[ "${DIFFICULTY_EVAL}" =~ ^(1|true|True|TRUE|yes|YES)$ ]]; then
+    visualize_args+=(--max-samples "${DIFFICULTY_VIS_LIMIT}" --no-eval-centerline --skip-whole-map-viz)
+  else
+    visualize_args+=(--max-samples 0 --whole-map-viz-dir "${whole_map_viz_dir}")
+  fi
+  python scripts/tools/visualize_centerline.py "${visualize_args[@]}"
   if [ -f "${eval_json}" ]; then
     python - "${eval_json}" <<'PY'
 import json
@@ -352,12 +422,18 @@ PY
 for index in "${!CHECKPOINT_ITEMS[@]}"; do
   label="${CHECKPOINT_LABELS[$index]}"
   checkpoint="${CHECKPOINT_ITEMS[$index]}"
-  if [ "${#CHECKPOINT_ITEMS[@]}" -gt 1 ]; then
-    output_dir="${LOCAL_OUTPUT_ROOT}/${index}_${label}"
-  else
-    output_dir="${LOCAL_OUTPUT_ROOT}"
-  fi
-  run_one_checkpoint "${checkpoint}" "${label}" "${output_dir}"
+  for test_index in "${!TEST_JSON_ITEMS[@]}"; do
+    test_json="${TEST_JSON_ITEMS[$test_index]}"
+    test_label="${TEST_JSON_LABELS[$test_index]}"
+    if [[ "${DIFFICULTY_EVAL}" =~ ^(1|true|True|TRUE|yes|YES)$ ]]; then
+      output_dir="${LOCAL_OUTPUT_ROOT}/${label}/${test_label}"
+    elif [ "${#CHECKPOINT_ITEMS[@]}" -gt 1 ]; then
+      output_dir="${LOCAL_OUTPUT_ROOT}/${index}_${label}"
+    else
+      output_dir="${LOCAL_OUTPUT_ROOT}"
+    fi
+    run_one_checkpoint "${checkpoint}" "${label}/${test_label}" "${output_dir}" "${test_json}" "${test_label}"
+  done
 done
 
 # Rank 0 uploads the complete local result tree to OBS.

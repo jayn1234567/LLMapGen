@@ -2,11 +2,11 @@
 
 # ============================================================
 # NPU SFT training
-# Fixed recipe: Dataset V2 local256 | private DINOv2 last2 + CapRL-Qwen3VL-4B | no DeepStack
+# Fixed recipe: Dataset V2 local256 550k | private DINOv2 last2 + CapRL-Qwen3VL-4B | no DeepStack
 # This file is self-contained and does not call another project .sh file.
 # ============================================================
 
-echo "[di-entry] reached Dataset V2 private-DINOv2 last2 CapRL SFT launcher"
+echo "[di-entry] reached Dataset V2 local256-550k private-DINOv2 last2 CapRL SFT launcher"
 echo "[di-entry] utc=$(date -u +%Y-%m-%dT%H:%M:%SZ) host=$(hostname) pid=$$"
 echo "DI_throughput: 0.00 samples/s/npu"
 
@@ -41,20 +41,20 @@ echo "System defined obs share path: ${OSB_SHARE_PATH}"
 if [ -n "${MA_VJ_NAME:-}" ]; then
   DEFAULT_RUN_ID=$(printf '%s' "${MA_VJ_NAME}" | tr -c 'A-Za-z0-9_.-' '_')        # Stable across every node in one DI job.
 else
-  DEFAULT_RUN_ID=datasetv2_private_dinov2_last2_caprl4b_$(date -u +%Y%m%d_%H%M%S)
+  DEFAULT_RUN_ID=datasetv2_local256_550k_private_dinov2_last2_caprl4b_$(date -u +%Y%m%d_%H%M%S)
 fi
 RUN_ID=${RUN_ID:-${DEFAULT_RUN_ID}}                                               # Unique run id for local cache and cloud output folders.
 OBS_CACHE=${OBS_CACHE:-/cache}                                                    # Local worker cache root for models, datasets, checkpoints, and outputs.
 MODEL_OBS_PATH=${MODEL_OBS_PATH:-obs://yw-ads-training-gy1/data/external/personal/h58801830/whu/jjh/checkpoints}  # OBS directory that stores model and vision checkpoint assets.
 DINOV2_TRAIN_OUTPUT_OBS_PATH=${DINOV2_TRAIN_OUTPUT_OBS_PATH:-auto}                # auto selects the latest completed registry run; explicit run/best path is also accepted.
 DINOV2_TRAIN_OUTPUT_OBS_ROOT=${DINOV2_TRAIN_OUTPUT_OBS_ROOT:-obs://yw-ads-training-gy1/data/external/personal/h58801830/whu/jn/model/dinov2_private_seg_dinov3style_lora}  # Stable registry published by the formal segmentation DI script.
-DATASET_OBS_PATH=${DATASET_OBS_PATH:-obs://yw-ads-training-gy1/data/external/personal/h58801830/whu/jn/data/rc_dataset_v2_550k_noempty_i30_shift128/local256.tar}  # Balanced Dataset V2 local256 package.
-DATASET_DIR_NAME=${DATASET_DIR_NAME:-local256}                                    # Top-level directory stored in local256.tar.
+DATASET_OBS_PATH=${DATASET_OBS_PATH:-obs://yw-ads-training-2-gy1/data/external/personal/h58801830/jn/data/local256/local.tar}  # Canonical finalized Dataset V2 local256 550k package.
+DATASET_DIR_NAME=${DATASET_DIR_NAME:-local256}                                    # Top-level directory stored in local.tar.
 
 VISION_TOWER=${VISION_TOWER:-}                                                    # Optional local override; auto mode derives a run-specific cache path.
 # Local dataset and output paths for this run.
 DATASET_ARCHIVE_PATH=${DATASET_ARCHIVE_PATH:-${OBS_CACHE}/dataset_${RUN_ID}.tar}  # Local path for the downloaded Dataset V2 package.
-DATASET_EXTRACT_ROOT=${DATASET_EXTRACT_ROOT:-${OBS_CACHE}/dataset_extract_${RUN_ID}}  # Local directory where the dataset zip is extracted.
+DATASET_EXTRACT_ROOT=${DATASET_EXTRACT_ROOT:-${OBS_CACHE}/dataset_extract_${RUN_ID}}  # Local directory where the dataset tar is extracted.
 DATASET_PATH=${DATASET_PATH:-${DATASET_EXTRACT_ROOT}/${DATASET_DIR_NAME}}         # Preferred extracted dataset root; resolved dynamically after unzip.
 IMAGE_FOLDER=${IMAGE_FOLDER:-}                                                    # Optional image-root override; defaults to the resolved DATASET_PATH.
 CLOUD_OUTPUT_PATH=${OSB_SHARE_PATH%/}/${RUN_ID}                                   # Final cloud output directory for training artifacts.
@@ -116,9 +116,9 @@ REUSE_LOCAL_ASSETS=${REUSE_LOCAL_ASSETS:-True}                                  
 SWANLAB_ENABLE=${SWANLAB_ENABLE:-True}                                            # Enable SwanLab experiment logging.
 export SWANLAB_API_KEY=${SWANLAB_API_KEY:-}                                      # Optional SwanLab key; keep secrets in the DI environment.
 SWANLAB_PROJECT=${SWANLAB_PROJECT:-unimapgen_v9}                                  # SwanLab project used by the reference CapRL experiment.
-SWANLAB_GROUP=${SWANLAB_GROUP:-sft_phase_a_lane_intersection_datasetv2_private_dinov2_caprl4b}  # Group for the private-DINOv2 rerun.
-SWANLAB_EXPERIMENT_NAME=${SWANLAB_EXPERIMENT_NAME:-sft_datasetv2_private_dinov2_last2_caprl4b_ep8}  # Experiment display name.
-SWANLAB_TAGS=${SWANLAB_TAGS:-sft,phase_a,lane_intersection,datasetv2,dinov2,last2,caprl4b,nodeepstack}  # Comma-separated SwanLab tags.
+SWANLAB_GROUP=${SWANLAB_GROUP:-sft_phase_a_lane_intersection_datasetv2_local256_550k_private_dinov2_caprl4b}  # Group for the private-DINOv2 rerun.
+SWANLAB_EXPERIMENT_NAME=${SWANLAB_EXPERIMENT_NAME:-sft_datasetv2_local256_550k_private_dinov2_last2_caprl4b_ep8}  # Experiment display name.
+SWANLAB_TAGS=${SWANLAB_TAGS:-sft,phase_a,lane_intersection,datasetv2,local256,550k,dinov2,last2,caprl4b,nodeepstack}  # Comma-separated SwanLab tags.
 SWANLAB_MODE=${SWANLAB_MODE:-offline}                                             # SwanLab mode, for example offline on restricted cloud networks.
 SWANLAB_API_HOST=${SWANLAB_API_HOST:-}                                            # Optional SwanLab private API host.
 SWANLAB_WEB_HOST=${SWANLAB_WEB_HOST:-}                                            # Optional SwanLab private web host.
@@ -307,8 +307,13 @@ persist_inspection_output() {
     echo "[dataset-inspect] non-master node ${NODE_RANK}: skip report upload."
     return 0
   fi
+  mkdir -p "$(dirname "${CLOUD_OUTPUT_PATH}")"
   if [ -e "${CLOUD_OUTPUT_PATH}" ]; then
     echo "ERROR: inspection output path already exists: ${CLOUD_OUTPUT_PATH}"
+    return 1
+  fi
+  if [ ! -e "${OUTPUT_PATH}" ]; then
+    echo "ERROR: inspection output path does not exist: ${OUTPUT_PATH}"
     return 1
   fi
   echo "[dataset-inspect] moving report to cloud output: ${OUTPUT_PATH} -> ${CLOUD_OUTPUT_PATH}"
@@ -547,8 +552,15 @@ fi
 
 # Rank 0 moves final training artifacts to the platform cloud output path.
 if [[ "${NODE_RANK}" == "0" ]]; then
+  mkdir -p "$(dirname "${CLOUD_OUTPUT_PATH}")"
   if [ -e "${CLOUD_OUTPUT_PATH}" ]; then
     echo "ERROR: cloud output path already exists, refusing to overwrite: ${CLOUD_OUTPUT_PATH}"
+    exit 1
+  fi
+  if [ ! -e "${OUTPUT_PATH}" ]; then
+    echo "ERROR: local training output path does not exist: ${OUTPUT_PATH}"
+    echo "LOCAL_MODEL_SAVE_ROOT contents:"
+    ls -la "${LOCAL_MODEL_SAVE_ROOT}" || true
     exit 1
   fi
   echo "Moving rank0 local output to cloud output: ${OUTPUT_PATH} -> ${CLOUD_OUTPUT_PATH}"

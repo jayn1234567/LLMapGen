@@ -472,12 +472,27 @@ def normalize_lines_for_metrics(
     return normalized
 
 
-def to_pixel(point: tuple[float, float], image_size: tuple[int, int], coord_mode: str, coord_range: float) -> tuple[int, int]:
+def to_pixel(
+    point: tuple[float, float],
+    image_size: tuple[int, int],
+    coord_mode: str,
+    coord_range: float,
+    target_roi: tuple[int, int, int, int] | None = None,
+) -> tuple[int, int]:
     x, y = point
+    if target_roi is not None:
+        x0, y0, x1, y1 = target_roi
+        target_width = max(1, x1 - x0)
+        target_height = max(1, y1 - y0)
+    else:
+        x0, y0 = 0, 0
+        target_width, target_height = image_size
     if coord_mode == "norm1000":
-        width, height = image_size
-        x = x / coord_range * (width - 1)
-        y = y / coord_range * (height - 1)
+        x = x0 + x / coord_range * (target_width - 1)
+        y = y0 + y / coord_range * (target_height - 1)
+    elif target_roi is not None:
+        x += x0
+        y += y0
     return int(round(x)), int(round(y))
 
 
@@ -716,6 +731,24 @@ def draw_overlay(
     lines = normalize_lines(payload)
     coord_mode = infer_coord_mode(lines, image.size, args.coord_mode)
     draw = ImageDraw.Draw(image)
+    target_roi = None
+    meta = record.get("meta")
+    if isinstance(meta, dict):
+        raw_roi = meta.get("target_roi_in_image")
+        if (
+            isinstance(raw_roi, list)
+            and len(raw_roi) == 4
+            and all(isinstance(value, int) for value in raw_roi)
+            and 0 <= raw_roi[0] < raw_roi[2] <= image.width
+            and 0 <= raw_roi[1] < raw_roi[3] <= image.height
+        ):
+            target_roi = tuple(raw_roi)
+            if target_roi != (0, 0, image.width, image.height):
+                draw.rectangle(
+                    [target_roi[0], target_roi[1], target_roi[2] - 1, target_roi[3] - 1],
+                    outline=(255, 80, 80),
+                    width=2,
+                )
     colors = {
         "centerline": (0, 255, 80),
         "intersection": (255, 210, 0),
@@ -725,7 +758,10 @@ def draw_overlay(
         pts_raw = clean_points(item.get("points"))
         if not pts_raw:
             continue
-        pts = [to_pixel(point, image.size, coord_mode, args.coord_range) for point in pts_raw]
+        pts = [
+            to_pixel(point, image.size, coord_mode, args.coord_range, target_roi)
+            for point in pts_raw
+        ]
         cat = category_of(item)
         color = colors.get(cat, colors["other"])
         width = 4 if cat == "intersection" else 3

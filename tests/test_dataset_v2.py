@@ -35,6 +35,11 @@ from scripts.tools.build_rc_dataset_v2_from_obs import (
     ObsutilBackend,
 )
 from scripts.tools.build_rc_dataset_v2_streaming_from_obs import completed_stage
+from scripts.tools.build_rc_dataset_v2_context512_windows import (
+    build_compact_id_filter,
+    subset_spec,
+    verify_id_pairing,
+)
 
 
 class DatasetV2ContextTest(unittest.TestCase):
@@ -63,10 +68,52 @@ class DatasetV2ContextTest(unittest.TestCase):
                     "semantic_validation_passed": True,
                     "raw_sample_count": 1,
                     "split_record_counts": {"train": 2},
+                    "train_candidate_filter": {"sha256": "candidate-sha"},
                 }),
                 encoding="utf-8",
             )
-            self.assertTrue(completed_stage(stage_root))
+            self.assertFalse(completed_stage(stage_root))
+            self.assertTrue(completed_stage(stage_root, "candidate-sha"))
+            self.assertFalse(completed_stage(stage_root, "different-sha"))
+
+    def test_context_wrapper_builds_filter_and_verifies_exact_pairing(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            local_root = root / "local256"
+            phase_root = local_root / "phase_a"
+            phase_root.mkdir(parents=True)
+            source_jsonl = phase_root / "train.jsonl"
+            source_jsonl.write_text(
+                "".join(json.dumps({"id": f"sample_{index}"}) + "\n" for index in range(10)),
+                encoding="utf-8",
+            )
+            (local_root / "dataset_info.json").write_text(
+                json.dumps({
+                    "balance": {
+                        "final_bucket_counts": {
+                            "empty": 0,
+                            "easy": 3,
+                            "medium": 3,
+                            "hard": 3,
+                            "very_hard": 1,
+                        },
+                        "actual_intersection_ratio": 0.3,
+                    }
+                }),
+                encoding="utf-8",
+            )
+            spec = subset_spec(local_root, 10)
+            self.assertEqual(spec["total"], 10)
+            self.assertEqual(spec["counts"]["very_hard"], 1)
+
+            compact = root / "ids.jsonl"
+            self.assertEqual(build_compact_id_filter(source_jsonl, compact, resume=False), 10)
+            context_jsonl = root / "context512_roi256" / "phase_a" / "train.jsonl"
+            context_jsonl.parent.mkdir(parents=True)
+            shutil.copy2(source_jsonl, context_jsonl)
+            report = verify_id_pairing(compact, context_jsonl, root, 10)
+            self.assertTrue(report["exact_id_pairing"])
+            self.assertTrue((root / "context512_roi256" / "pairing_report.json").is_file())
 
     def test_finalize_staged_sources_balances_and_materializes_candidates(self):
         with tempfile.TemporaryDirectory() as temp_dir:

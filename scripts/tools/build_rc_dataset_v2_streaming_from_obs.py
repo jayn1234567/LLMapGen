@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import shlex
@@ -55,6 +56,11 @@ def parse_args(argv=None):
     parser.add_argument("--remove-package-after-upload", action="store_true")
     parser.add_argument("--keep-raw-source-after-stage", action="store_true")
     parser.add_argument("--keep-archives", action="store_true")
+    parser.add_argument(
+        "--train-candidate-jsonl",
+        default="",
+        help="Optional completed train JSONL whose ids limit train candidates rendered by each source stage.",
+    )
     parser.add_argument("--skip-download", action="store_true")
     parser.add_argument("--skip-finalize", action="store_true")
     parser.add_argument("--skip-upload", action="store_true")
@@ -68,17 +74,32 @@ def run(command):
     subprocess.run([str(item) for item in command], cwd=REPO_ROOT, check=True)
 
 
-def completed_stage(stage_root: Path) -> bool:
+def file_sha256(path: Path, chunk_size: int = 8 * 1024 * 1024) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        while True:
+            chunk = handle.read(chunk_size)
+            if not chunk:
+                break
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def completed_stage(stage_root: Path, expected_candidate_sha256: str = "") -> bool:
     marker = stage_root / "stage_complete.json"
     if not marker.is_file():
         return False
     payload = json.loads(marker.read_text(encoding="utf-8"))
-    return (
+    complete = (
         payload.get("stage_version") == STAGE_VERSION
         and payload.get("semantic_validation_passed") is True
         and int(payload.get("raw_sample_count", 0)) > 0
         and sum(payload.get("split_record_counts", {}).values()) > 0
     )
+    if complete:
+        candidate_filter = payload.get("train_candidate_filter") or {}
+        complete = str(candidate_filter.get("sha256") or "") == expected_candidate_sha256
+    return complete
 
 
 def remove_stale_stage(stage_root: Path, staging_root: Path) -> None:
@@ -119,6 +140,8 @@ def main(argv=None):
     raw_root = Path(args.raw_root) if args.raw_root else work_root / "raw_sources"
     staging_root = Path(args.staging_root) if args.staging_root else work_root / "staging"
     output_root = Path(args.output_root) if args.output_root else work_root / "output"
+    candidate_jsonl = Path(args.train_candidate_jsonl) if args.train_candidate_jsonl else None
+    candidate_filter_sha256 = file_sha256(candidate_jsonl) if candidate_jsonl else ""
     for path in (work_root, raw_root, staging_root, output_root):
         path.mkdir(parents=True, exist_ok=True)
 
@@ -140,16 +163,16 @@ def main(argv=None):
         local_root = raw_root / f"{source_index:02d}_{name}"
         stage_root = staging_root / f"{source_index:02d}_{name}"
         marker = stage_root / "stage_complete.json"
-        if args.resume and marker.is_file() and not completed_stage(stage_root):
+        if args.resume and marker.is_file() and not completed_stage(stage_root, candidate_filter_sha256):
             print(
                 f"[dataset-v2-stream] stale stage lacks {STAGE_VERSION}; it must be rebuilt: {stage_root}",
                 flush=True,
             )
             remove_stale_stage(stage_root, staging_root)
-        if args.resume and completed_stage(stage_root):
+        if args.resume and completed_stage(stage_root, candidate_filter_sha256):
             print(f"[dataset-v2-stream] reuse completed stage: {stage_root}", flush=True)
             if local_root.exists() and not args.keep_raw_source_after_stage:
-                run([
+                cleanup_command = [
                     sys.executable,
                     "data_process/build_dataset_v2_staged.py",
                     "stage",
@@ -161,7 +184,10 @@ def main(argv=None):
                     "--resume",
                     "--delete-input-root-after-stage",
                     "--delete-root-parent", raw_root,
-                ])
+                ]
+                if candidate_jsonl:
+                    cleanup_command.extend(["--train-candidate-jsonl", candidate_jsonl])
+                run(cleanup_command)
             continue
 
         if args.skip_download:
@@ -188,6 +214,8 @@ def main(argv=None):
             stage_command.append("--resume")
         if args.keep_archives:
             stage_command.append("--keep-archives")
+        if candidate_jsonl:
+            stage_command.extend(["--train-candidate-jsonl", candidate_jsonl])
         if args.limit_samples is not None:
             stage_command.extend(["--limit-samples", args.limit_samples])
         if not args.keep_raw_source_after_stage:
@@ -196,7 +224,7 @@ def main(argv=None):
                 "--delete-root-parent", raw_root,
             ])
         run(stage_command)
-        if not completed_stage(stage_root):
+        if not completed_stage(stage_root, candidate_filter_sha256):
             raise RuntimeError(f"source stage validation failed: {stage_root}")
         print(
             f"[dataset-v2-stream] free disk after source {source_index}: "

@@ -440,3 +440,39 @@ python scripts\tools\validate_visualize_rc_dataset_v2.py --dataset-root "D:\data
 mkdir "D:\data\fulldata\output_100k\packages"
 tar -cf "D:\data\fulldata\output_100k\packages\local256_100k.tar" -C "D:\data\fulldata\output_100k" local256
 ```
+
+## Build paired context512 550k and 100k variants on Windows
+
+The completed local256 datasets cannot be expanded into real 512x512 context
+images because their surrounding source pixels are no longer present. Use the
+wrapper below to stream the seven raw OBS sources one at a time, render only
+the train IDs already selected by local256, validate both outputs, and create
+both tar packages:
+
+```bat
+python scripts\tools\build_rc_dataset_v2_context512_windows.py --work-root "D:\data\fulldata_context512" --local-550-root "D:\data\fulldata\output\local256" --local-100-root "D:\data\fulldata\output_100k\local256" --obsutil-path "C:\Users\jWX1497058\Downloads\obsutil_windows_amd64\obsutil_windows_amd64_5.8.3\obsutil.exe" --archive-workers 16 --resume
+```
+
+The wrapper preserves the exact 550k and 100k train ID sets. It derives each
+dataset's observed difficulty counts from `dataset_info.json`, keeps the 30%
+intersection ratio, and keeps eval/test identical between the two context
+sizes. Every context image is 512x512; the supervised ROI is the central
+`[128,128,384,384]` box, and answer coordinates remain norm1000 relative to
+that 256x256 ROI. The prompt states this explicitly.
+
+Outputs:
+
+```text
+D:\data\fulldata_context512\output_550k\context512_roi256
+D:\data\fulldata_context512\output_100k\context512_roi256
+D:\data\fulldata_context512\packages\context512_roi256_550k.tar
+D:\data\fulldata_context512\packages\context512_roi256_100k.tar
+```
+
+`pairing_report.json` proves that each context train set has exactly the same
+IDs as its local256 counterpart. Validation reports and 50 examples per
+difficulty are written next to each output. With `--resume`, completed source
+stages, ID filters, and already materialized final images are reused; validation
+is rerun and tar packages are refreshed after finalization. Raw OBS source
+directories are deleted only after their context stage has passed semantic
+validation.

@@ -11,8 +11,10 @@ from scripts.tools.validate_visualize_rc_dataset_v2 import (
     ErrorCollector,
     audit,
     resolve_expected_difficulty_counts,
+    validate_metadata,
     validate_target_lines,
 )
+from scripts.tools.tag_hard_map_samples import to_pixel
 
 
 PROMPT = """<image>
@@ -94,6 +96,7 @@ class ValidateVisualizeDatasetV2Test(unittest.TestCase):
                 dataset_root=str(dataset_root),
                 output_dir=str(output_dir),
                 phase="phase_a",
+                variant="local256",
                 expected_train_samples=2,
                 difficulty_ratios="empty=0,easy=0.30,medium=0.33,hard=0.27,very_hard=0.10",
                 expected_intersection_ratio=-1.0,
@@ -176,6 +179,45 @@ class ValidateVisualizeDatasetV2Test(unittest.TestCase):
         self.assertEqual(requested["medium"], 181500)
         self.assertEqual(requested["hard"], 148500)
         self.assertEqual(source, "dataset_info.balance.final_bucket_counts")
+
+    def test_context512_metadata_and_roi_coordinate_projection(self):
+        record = {
+            "meta": {
+                "tile_id": "context_tile",
+                "coord_mode": "norm1000",
+                "coord_range": 1000,
+                "pixel_patch_size": 256,
+                "patch_width": 256,
+                "patch_height": 256,
+                "target_size": 256,
+                "context_image_size": 512,
+                "view_mode": "context512_roi256",
+                "target_roi_in_image": [128, 128, 384, 384],
+            }
+        }
+        errors = ErrorCollector(max_examples=10)
+        tile_id = validate_metadata(
+            record,
+            errors,
+            "train",
+            1,
+            "context_sample",
+            "context512_roi256",
+            {
+                "context_image_size": 512,
+                "target_roi_in_image": [128, 128, 384, 384],
+            },
+        )
+        self.assertEqual(errors.total, 0)
+        self.assertEqual(tile_id, "context_tile")
+        self.assertEqual(
+            to_pixel((0, 0), (512, 512), "norm1000", 1000, (128, 128, 384, 384)),
+            (128, 128),
+        )
+        self.assertEqual(
+            to_pixel((1000, 1000), (512, 512), "norm1000", 1000, (128, 128, 384, 384)),
+            (383, 383),
+        )
 
 
 if __name__ == "__main__":

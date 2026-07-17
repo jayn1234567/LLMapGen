@@ -101,6 +101,11 @@ def parse_args(argv=None):
     stage.add_argument("--selective-archive-extract", action="store_true")
     stage.add_argument("--keep-archives", action="store_true")
     stage.add_argument("--limit-samples", type=int, default=None)
+    stage.add_argument(
+        "--train-candidate-jsonl",
+        default="",
+        help="Optional completed train JSONL whose ids limit train rows rendered into this stage.",
+    )
     stage.add_argument("--resume", action="store_true")
     stage.add_argument("--delete-input-root-after-stage", action="store_true")
     stage.add_argument(
@@ -228,12 +233,21 @@ def stage_source(args) -> None:
     input_root = Path(args.input_root)
     stage_root = Path(args.stage_root)
     marker_path = stage_root / STAGE_MARKER
+    candidate_jsonl_text = str(getattr(args, "train_candidate_jsonl", "") or "").strip()
+    candidate_jsonl = Path(candidate_jsonl_text) if candidate_jsonl_text else None
+    allowed_train_ids = load_train_candidate_ids(candidate_jsonl) if candidate_jsonl else None
+    candidate_filter_sha256 = file_sha256(candidate_jsonl) if candidate_jsonl else ""
     if args.resume and marker_path.is_file():
         marker = json.loads(marker_path.read_text(encoding="utf-8"))
         if marker.get("stage_version") != STAGE_VERSION or not marker.get("semantic_validation_passed"):
             raise ValueError(
                 f"stale stage cannot be resumed: {marker_path}. Expected stage_version={STAGE_VERSION}; "
                 "rebuild this source shard from its raw source before allowing raw-source deletion."
+            )
+        marker_filter = marker.get("train_candidate_filter") or {}
+        if str(marker_filter.get("sha256") or "") != candidate_filter_sha256:
+            raise ValueError(
+                f"completed stage uses a different train candidate filter: {marker_path}"
             )
         print(f"[dataset-v2-stage] completed shard already exists: {marker_path}", flush=True)
         if args.delete_input_root_after_stage and input_root.exists():
@@ -279,6 +293,8 @@ def stage_source(args) -> None:
             )
             validate_rows(rows, True, args.patch_size, require_semantic_types=True)
             rows = [annotate_translation_grid(row, args.patch_size) for row in rows]
+            if split == "train" and allowed_train_ids is not None:
+                rows = [row for row in rows if str(row["id"]) in allowed_train_ids]
             for row in rows:
                 row["meta"] = dict(row.get("meta", {}))
                 row["meta"].update({
@@ -362,6 +378,11 @@ def stage_source(args) -> None:
         "intersection_counts": dict(intersection_counts),
         "semantic_target_counts": dict(semantic_counts),
         "image_counts": dict(image_counts),
+        "train_candidate_filter": {
+            "path": str(candidate_jsonl),
+            "sha256": candidate_filter_sha256,
+            "unique_ids": len(allowed_train_ids),
+        } if candidate_jsonl else None,
         "selective_archive_extract": bool(args.selective_archive_extract),
     }
     if sum(split_counts.values()) <= 0:
@@ -390,6 +411,17 @@ def iter_jsonl(path: Path):
         for line_number, line in enumerate(handle, start=1):
             if line.strip():
                 yield line_number, json.loads(line)
+
+
+def file_sha256(path: Path, chunk_size: int = 8 * 1024 * 1024) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        while True:
+            chunk = handle.read(chunk_size)
+            if not chunk:
+                break
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def build_sample_owners(stage_roots: list[Path], duplicate_policy: str):

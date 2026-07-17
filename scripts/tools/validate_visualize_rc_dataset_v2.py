@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate a completed RC Dataset V2 local256 build and visualize difficulty buckets."""
+"""Validate a completed RC Dataset V2 view and visualize difficulty buckets."""
 
 from __future__ import annotations
 
@@ -41,11 +41,29 @@ from scripts.tools.tag_hard_map_samples import (
 
 DEFAULT_DIFFICULTY_RATIOS = "empty=0,easy=0.30,medium=0.33,hard=0.27,very_hard=0.10"
 SPLITS = ("train", "eval", "test")
+VARIANT_SPECS = {
+    "local256": {
+        "image_size": (256, 256),
+        "context_image_size": 256,
+        "target_roi_in_image": [0, 0, 256, 256],
+    },
+    "context512_roi256": {
+        "image_size": (512, 512),
+        "context_image_size": 512,
+        "target_roi_in_image": [128, 128, 384, 384],
+    },
+}
 
 
 def parse_args(argv=None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--dataset-root", required=True, help="Completed local256 dataset root.")
+    parser.add_argument("--dataset-root", required=True, help="Completed Dataset V2 variant root.")
+    parser.add_argument(
+        "--variant",
+        choices=["auto", *VARIANT_SPECS],
+        default="auto",
+        help="Dataset view; auto uses the dataset-root directory name.",
+    )
     parser.add_argument("--output-dir", default="", help="Audit output; defaults beside dataset-root.")
     parser.add_argument("--phase", default="phase_a")
     parser.add_argument("--expected-train-samples", type=int, default=550000)
@@ -95,6 +113,17 @@ def resolve_split_path(dataset_root: Path, phase: str, split: str) -> Path | Non
     if split == "eval":
         candidates.append(phase_root / "val.jsonl")
     return next((path for path in candidates if path.is_file()), None)
+
+
+def resolve_variant(dataset_root: Path, requested: str) -> tuple[str, dict[str, Any]]:
+    variant = str(requested or "auto")
+    if variant == "auto":
+        variant = dataset_root.name
+    if variant not in VARIANT_SPECS:
+        raise ValueError(
+            f"Unable to infer Dataset V2 variant from {dataset_root}; pass --variant explicitly."
+        )
+    return variant, VARIANT_SPECS[variant]
 
 
 def iter_jsonl(path: Path, split: str, errors: ErrorCollector) -> Iterator[tuple[int, dict[str, Any]]]:
@@ -275,7 +304,13 @@ def validate_target_lines(
 
 
 def validate_metadata(
-    record: dict[str, Any], errors: ErrorCollector, split: str, line_number: int, sample_id: str
+    record: dict[str, Any],
+    errors: ErrorCollector,
+    split: str,
+    line_number: int,
+    sample_id: str,
+    variant: str,
+    variant_spec: dict[str, Any],
 ) -> str:
     meta = record.get("meta")
     if not isinstance(meta, dict):
@@ -288,9 +323,9 @@ def validate_metadata(
         "patch_width": 256,
         "patch_height": 256,
         "target_size": 256,
-        "context_image_size": 256,
-        "view_mode": "local256",
-        "target_roi_in_image": [0, 0, 256, 256],
+        "context_image_size": variant_spec["context_image_size"],
+        "view_mode": variant,
+        "target_roi_in_image": variant_spec["target_roi_in_image"],
     }
     for key, expected_value in expected.items():
         if meta.get(key) != expected_value:
@@ -458,6 +493,8 @@ def audit(args: argparse.Namespace) -> tuple[dict[str, Any], ErrorCollector]:
         else dataset_root.parent / f"{dataset_root.name}_validation"
     )
     output_dir.mkdir(parents=True, exist_ok=True)
+    variant, variant_spec = resolve_variant(dataset_root, getattr(args, "variant", "auto"))
+    expected_image_size = tuple(variant_spec["image_size"])
     errors = ErrorCollector(max_examples=args.max_error_examples)
     build_metadata = check_build_metadata(dataset_root, errors)
     ratios = parse_ratio_spec(args.difficulty_ratios)
@@ -505,7 +542,15 @@ def audit(args: argparse.Namespace) -> tuple[dict[str, Any], ErrorCollector]:
             else:
                 seen_ids[sample_id] = split
 
-            tile_id = validate_metadata(record, errors, split, line_number, sample_id)
+            tile_id = validate_metadata(
+                record,
+                errors,
+                split,
+                line_number,
+                sample_id,
+                variant,
+                variant_spec,
+            )
             if tile_id:
                 previous_tile_split = tile_splits.get(tile_id)
                 if previous_tile_split is not None and previous_tile_split != split:
@@ -584,7 +629,7 @@ def audit(args: argparse.Namespace) -> tuple[dict[str, Any], ErrorCollector]:
                         sample_id=sample_id,
                     )
                 elif args.image_decode_mode == "all":
-                    image_decode_error = decode_image(image_path, (256, 256))
+                    image_decode_error = decode_image(image_path, expected_image_size)
                     stats["decoded_images"] += 1
                     if image_decode_error:
                         errors.add("invalid_image", image_decode_error, split=split, line_number=line_number, sample_id=sample_id)
@@ -629,7 +674,7 @@ def audit(args: argparse.Namespace) -> tuple[dict[str, Any], ErrorCollector]:
     if args.image_decode_mode == "sampled":
         for split, bucket in decode_reservoirs.items():
             for sample_id, image_path, line_number in bucket:
-                image_decode_error = decode_image(image_path, (256, 256))
+                image_decode_error = decode_image(image_path, expected_image_size)
                 if split in split_stats:
                     split_stats[split]["decoded_images"] += 1
                 if image_decode_error:
@@ -723,6 +768,7 @@ def audit(args: argparse.Namespace) -> tuple[dict[str, Any], ErrorCollector]:
         "status": "passed" if errors.total == 0 else "failed",
         "dataset_root": str(dataset_root),
         "output_dir": str(output_dir),
+        "variant": variant,
         "semantic_schema_version": SEMANTIC_SCHEMA_VERSION,
         "difficulty_rule_version": DIFFICULTY_RULE_VERSION,
         "constraints": {
@@ -731,7 +777,7 @@ def audit(args: argparse.Namespace) -> tuple[dict[str, Any], ErrorCollector]:
             "expected_intersection_ratio": args.expected_intersection_ratio,
             "allowed_lane_types": sorted(ALLOWED_LANE_TYPES),
             "allowed_intersection_types": sorted(ALLOWED_INTERSECTION_TYPES),
-            "expected_image_size": [256, 256],
+            "expected_image_size": list(expected_image_size),
             "image_decode_mode": args.image_decode_mode,
             "image_decode_samples_per_split": args.image_decode_samples_per_split,
         },

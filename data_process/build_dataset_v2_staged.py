@@ -123,6 +123,11 @@ def parse_args(argv=None):
     finalize.add_argument("--difficulty-seed", type=int, default=20260713)
     finalize.add_argument("--duplicate-policy", choices=["last", "first", "error"], default="last")
     finalize.add_argument("--copy-mode", choices=["hardlink", "copy"], default="hardlink")
+    finalize.add_argument(
+        "--train-candidate-jsonl",
+        default="",
+        help="Optional completed train JSONL whose ids constrain the new train selection to a subset.",
+    )
     finalize.add_argument("--resume", action="store_true")
     finalize.add_argument("--coord-range", type=int, default=DEFAULT_COORD_RANGE)
     return parser.parse_args(argv)
@@ -412,7 +417,21 @@ def build_sample_owners(stage_roots: list[Path], duplicate_policy: str):
     return owner, collisions
 
 
-def load_candidate_pools(stage_roots, sample_owner):
+def load_train_candidate_ids(path: Path) -> set[str]:
+    candidate_ids = set()
+    for line_number, item in iter_jsonl(path):
+        patch_id = str(item.get("id", "")).strip()
+        if not patch_id:
+            raise ValueError(f"candidate train JSONL has no id at {path}:{line_number}")
+        if patch_id in candidate_ids:
+            raise ValueError(f"duplicate id in candidate train JSONL: {patch_id}")
+        candidate_ids.add(patch_id)
+    if not candidate_ids:
+        raise ValueError(f"candidate train JSONL is empty: {path}")
+    return candidate_ids
+
+
+def load_candidate_pools(stage_roots, sample_owner, allowed_train_ids=None):
     base_pools = empty_candidate_pools()
     translated_pools = empty_candidate_pools()
     seen_patch_ids = set()
@@ -422,6 +441,8 @@ def load_candidate_pools(stage_roots, sample_owner):
             if sample_owner.get(str(item["raw_sample_id"])) != int(item["source_index"]):
                 continue
             patch_id = str(item["id"])
+            if allowed_train_ids is not None and patch_id not in allowed_train_ids:
+                continue
             if patch_id in seen_patch_ids:
                 continue
             seen_patch_ids.add(patch_id)
@@ -564,7 +585,14 @@ def finalize_stages(args) -> None:
             raise ValueError(f"stage {stage_root} does not contain requested variants: {missing}")
 
     sample_owner, collisions = build_sample_owners(stage_roots, args.duplicate_policy)
-    base_pools, translated_pools, candidate_counts = load_candidate_pools(stage_roots, sample_owner)
+    candidate_jsonl_text = str(getattr(args, "train_candidate_jsonl", "") or "").strip()
+    candidate_jsonl = Path(candidate_jsonl_text) if candidate_jsonl_text else None
+    allowed_train_ids = load_train_candidate_ids(candidate_jsonl) if candidate_jsonl else None
+    base_pools, translated_pools, candidate_counts = load_candidate_pools(
+        stage_roots,
+        sample_owner,
+        allowed_train_ids,
+    )
     selected_counts, balance_report = select_balanced_candidates(
         base_pools,
         translated_pools,
@@ -612,6 +640,11 @@ def finalize_stages(args) -> None:
         "duplicate_policy": args.duplicate_policy,
         "duplicate_raw_sample_events": collisions,
         "candidate_train_counts": dict(candidate_counts),
+        "train_candidate_filter": {
+            "path": str(candidate_jsonl),
+            "unique_ids": len(allowed_train_ids),
+            "selection_is_subset": True,
+        } if candidate_jsonl else None,
         "balance": balance_report,
         "variants": variants,
         "record_counts": counts,

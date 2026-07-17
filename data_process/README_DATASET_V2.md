@@ -416,3 +416,27 @@ local256_validation/
 Exit code `0` means all checks passed. Exit code `2` means the report contains
 validation failures; the script still keeps the generated report and any
 visualizations it was able to render.
+
+## Build a 100k quick-training subset
+
+Keep the completed source stages and use the 550k train JSONL as a candidate-id
+filter. This makes the quick-training set a strict subset of the formal dataset
+while retaining its observed difficulty distribution and 30% global
+intersection ratio:
+
+```bat
+python data_process\build_dataset_v2_staged.py finalize --staging-root "D:\data\fulldata\staging" --output-root "D:\data\fulldata\output_100k" --views local --train-target-samples 100000 --difficulty-ratios "empty=0,easy=0.30,medium=0.3560290909,hard=0.2439709091,very_hard=0.10" --intersection-target-ratio 0.30 --difficulty-seed 20260713 --duplicate-policy last --copy-mode hardlink --train-candidate-jsonl "D:\data\fulldata\output\local256\phase_a\train.jsonl"
+```
+
+The expected train counts are 30,000 easy, 35,603 medium, 24,397 hard, and
+10,000 very-hard records. Images are hard-linked on the same NTFS volume, and
+eval/test remain identical to the 550k dataset for comparable metrics. Use a
+new empty output directory rather than reusing a previous subset directory.
+
+Validate and package it with:
+
+```bat
+python scripts\tools\validate_visualize_rc_dataset_v2.py --dataset-root "D:\data\fulldata\output_100k\local256" --output-dir "D:\data\fulldata\output_100k\local256_validation" --expected-train-samples 100000 --visualize-per-difficulty 50
+mkdir "D:\data\fulldata\output_100k\packages"
+tar -cf "D:\data\fulldata\output_100k\packages\local256_100k.tar" -C "D:\data\fulldata\output_100k" local256
+```

@@ -155,6 +155,7 @@ class DatasetV2ContextTest(unittest.TestCase):
                 difficulty_seed=7,
                 duplicate_policy="last",
                 copy_mode="copy",
+                train_candidate_jsonl="",
                 resume=False,
                 coord_range=1000,
             )
@@ -171,6 +172,43 @@ class DatasetV2ContextTest(unittest.TestCase):
             self.assertTrue(summary["semantic_validation_passed"])
             self.assertEqual(summary["stage_version"], STAGE_VERSION)
             self.assertTrue((output_root / "semantic_schema_report.json").is_file())
+
+            candidate_path = root / "candidate_train.jsonl"
+            candidate_path.write_text(
+                "\n".join([
+                    json.dumps({"id": "easy_plain"}),
+                    json.dumps({"id": "medium_inter"}),
+                ]) + "\n",
+                encoding="utf-8",
+            )
+            filtered_output = root / "filtered"
+            filtered_args = SimpleNamespace(
+                staging_root=str(staging_root),
+                output_root=str(filtered_output),
+                views="local",
+                train_target_samples=2,
+                difficulty_ratios="empty=0,easy=0.5,medium=0.5,hard=0,very_hard=0",
+                intersection_target_ratio=0.5,
+                difficulty_seed=7,
+                duplicate_policy="last",
+                copy_mode="copy",
+                train_candidate_jsonl=str(candidate_path),
+                resume=False,
+                coord_range=1000,
+            )
+            finalize_stages(filtered_args)
+            filtered_records = [
+                json.loads(line)
+                for line in (filtered_output / "local256" / "phase_a" / "train.jsonl")
+                .read_text(encoding="utf-8")
+                .splitlines()
+            ]
+            self.assertEqual({record["id"] for record in filtered_records}, {"easy_plain", "medium_inter"})
+            filtered_summary = json.loads(
+                (filtered_output / "build_summary.json").read_text(encoding="utf-8")
+            )
+            self.assertTrue(filtered_summary["train_candidate_filter"]["selection_is_subset"])
+            self.assertEqual(filtered_summary["train_candidate_filter"]["unique_ids"], 2)
 
     def test_selective_archive_extraction_keeps_only_builder_inputs_and_deletes_archive(self):
         with tempfile.TemporaryDirectory() as temp_dir:

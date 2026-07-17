@@ -343,6 +343,22 @@ def check_build_metadata(dataset_root: Path, errors: ErrorCollector) -> dict[str
     if metadata.get("semantic_validation_passed") is not True:
         errors.add("unverified_build", "semantic_validation_passed is not true")
     balance = metadata.get("balance") if isinstance(metadata.get("balance"), dict) else {}
+    compact_balance = {
+        "target_total": balance.get("target_total"),
+        "selected_total": balance.get("selected_total"),
+        "selected_unique": balance.get("selected_unique"),
+        "exact_repeated_records": balance.get("exact_repeated_records"),
+        "target_ratios": balance.get("target_ratios"),
+        "target_quotas": balance.get("target_quotas"),
+        "final_bucket_counts": balance.get("final_bucket_counts"),
+        "target_intersection_ratio": balance.get("target_intersection_ratio"),
+        "actual_intersection_ratio": balance.get("actual_intersection_ratio"),
+        "selection_policy": balance.get("selection_policy"),
+    }
+    for grid_name in ("base_grid", "translation_grid"):
+        grid = balance.get(grid_name)
+        if isinstance(grid, dict) and isinstance(grid.get("difficulty_plan"), dict):
+            compact_balance[grid_name] = {"difficulty_plan": grid["difficulty_plan"]}
     return {
         "path": str(metadata_path),
         "dataset_version": metadata.get("dataset_version"),
@@ -354,9 +370,34 @@ def check_build_metadata(dataset_root: Path, errors: ErrorCollector) -> dict[str
         "coord_range": metadata.get("coord_range"),
         "target_patch_size": metadata.get("target_patch_size"),
         "train_stride": metadata.get("train_stride"),
-        "balance_requested_train_samples": balance.get("requested_train_samples"),
-        "balance_final_train_samples": balance.get("final_train_samples"),
+        "balance": compact_balance,
     }
+
+
+def valid_difficulty_counts(value: Any, expected_total: int) -> dict[str, int] | None:
+    if not isinstance(value, dict):
+        return None
+    counts = {}
+    for difficulty in DIFFICULTY_ORDER:
+        count = value.get(difficulty)
+        if not isinstance(count, int) or isinstance(count, bool) or count < 0:
+            return None
+        counts[difficulty] = count
+    if sum(counts.values()) != expected_total:
+        return None
+    return counts
+
+
+def resolve_expected_difficulty_counts(
+    train_total: int, ratios: dict[str, float], build_metadata: dict[str, Any]
+) -> tuple[dict[str, int], dict[str, int], str]:
+    requested = allocate_quotas(train_total, ratios)
+    balance = build_metadata.get("balance")
+    if isinstance(balance, dict):
+        final_counts = valid_difficulty_counts(balance.get("final_bucket_counts"), train_total)
+        if final_counts is not None:
+            return final_counts, requested, "dataset_info.balance.final_bucket_counts"
+    return requested, requested, "requested_difficulty_ratios"
 
 
 def decode_image(path: Path, expected_size: tuple[int, int]) -> str | None:
@@ -595,21 +636,22 @@ def audit(args: argparse.Namespace) -> tuple[dict[str, Any], ErrorCollector]:
                     errors.add("invalid_image", image_decode_error, split=split, line_number=line_number, sample_id=sample_id)
 
     train_stats = split_stats.get("train", {})
+    train_total = int(train_stats.get("samples", 0))
     if args.expected_train_samples > 0:
-        actual_train = int(train_stats.get("samples", 0))
-        if actual_train != args.expected_train_samples:
+        if train_total != args.expected_train_samples:
             errors.add(
                 "train_count_mismatch",
-                f"train samples={actual_train}, expected={args.expected_train_samples}",
+                f"train samples={train_total}, expected={args.expected_train_samples}",
                 split="train",
             )
     for split in ("eval", "test"):
         if int(split_stats.get(split, {}).get("samples", 0)) <= 0:
             errors.add("empty_split", f"{split} contains no samples", split=split)
 
-    if not args.skip_distribution_check and int(train_stats.get("samples", 0)) > 0:
-        train_total = int(train_stats["samples"])
-        expected_quotas = allocate_quotas(train_total, ratios)
+    if not args.skip_distribution_check and train_total > 0:
+        expected_quotas, requested_quotas, quota_source = resolve_expected_difficulty_counts(
+            train_total, ratios, build_metadata
+        )
         actual_quotas = train_stats["difficulty_counts"]
         for difficulty in DIFFICULTY_ORDER:
             delta = abs(int(actual_quotas.get(difficulty, 0)) - expected_quotas[difficulty])
@@ -619,15 +661,19 @@ def audit(args: argparse.Namespace) -> tuple[dict[str, Any], ErrorCollector]:
                     f"{difficulty}={actual_quotas.get(difficulty, 0)}, expected={expected_quotas[difficulty]}",
                     split="train",
                 )
-        if args.expected_intersection_ratio >= 0:
-            expected_intersections = int(round(train_total * args.expected_intersection_ratio))
-            actual_intersections = int(train_stats.get("intersection_samples", 0))
-            if abs(actual_intersections - expected_intersections) > args.count_tolerance:
-                errors.add(
-                    "intersection_distribution_mismatch",
-                    f"intersection samples={actual_intersections}, expected={expected_intersections}",
-                    split="train",
-                )
+    else:
+        requested_quotas = {}
+        expected_quotas = {}
+        quota_source = "distribution_check_skipped"
+    if train_total > 0 and args.expected_intersection_ratio >= 0:
+        expected_intersections = int(round(train_total * args.expected_intersection_ratio))
+        actual_intersections = int(train_stats.get("intersection_samples", 0))
+        if abs(actual_intersections - expected_intersections) > args.count_tolerance:
+            errors.add(
+                "intersection_distribution_mismatch",
+                f"intersection samples={actual_intersections}, expected={expected_intersections}",
+                split="train",
+            )
 
     if not args.allow_short_visual_buckets:
         for difficulty, bucket in reservoirs.items():
@@ -688,6 +734,16 @@ def audit(args: argparse.Namespace) -> tuple[dict[str, Any], ErrorCollector]:
             "expected_image_size": [256, 256],
             "image_decode_mode": args.image_decode_mode,
             "image_decode_samples_per_split": args.image_decode_samples_per_split,
+        },
+        "difficulty_distribution": {
+            "quota_source": quota_source,
+            "requested_quotas": requested_quotas,
+            "expected_final_quotas": expected_quotas,
+            "actual_counts": dict(train_stats.get("difficulty_counts", {})),
+            "redistribution_from_requested": {
+                difficulty: int(expected_quotas.get(difficulty, 0)) - int(requested_quotas.get(difficulty, 0))
+                for difficulty in DIFFICULTY_ORDER
+            } if requested_quotas else {},
         },
         "build_metadata": build_metadata,
         "splits": serializable_splits,

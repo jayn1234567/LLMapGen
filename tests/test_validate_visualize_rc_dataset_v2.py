@@ -10,6 +10,7 @@ from data_process.state_update_dataset_common import SEMANTIC_SCHEMA_VERSION
 from scripts.tools.validate_visualize_rc_dataset_v2 import (
     ErrorCollector,
     audit,
+    resolve_expected_difficulty_counts,
     validate_target_lines,
 )
 
@@ -150,6 +151,31 @@ class ValidateVisualizeDatasetV2Test(unittest.TestCase):
             "stale_subtype",
         )
         self.assertEqual(errors.counts["unexpected_intersection_subtype"], 1)
+
+    def test_final_build_quotas_override_requested_ratios_after_redistribution(self):
+        ratios = {
+            "empty": 0.0,
+            "easy": 0.30,
+            "medium": 0.33,
+            "hard": 0.27,
+            "very_hard": 0.10,
+        }
+        final_counts = {
+            "empty": 0,
+            "easy": 165000,
+            "medium": 195816,
+            "hard": 134184,
+            "very_hard": 55000,
+        }
+        expected, requested, source = resolve_expected_difficulty_counts(
+            550000,
+            ratios,
+            {"balance": {"final_bucket_counts": final_counts}},
+        )
+        self.assertEqual(expected, final_counts)
+        self.assertEqual(requested["medium"], 181500)
+        self.assertEqual(requested["hard"], 148500)
+        self.assertEqual(source, "dataset_info.balance.final_bucket_counts")
 
 
 if __name__ == "__main__":

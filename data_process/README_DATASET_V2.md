@@ -377,3 +377,42 @@ obs://yw-ads-training-gy1/data/external/personal/h58801830/whu/jn/data/rc_datase
 Use `--obsutil-path "C:\path\to\obsutil.exe"` if it is not on `PATH`. Use
 `--obsutil-config "C:\path\to\.obsutilconfig"` when the config file is not in
 the current Windows user's home directory.
+
+## Validate a completed local256 dataset
+
+After the `local256` build finishes, run the post-build audit from the repository
+root. The following is a single-line command that works in Anaconda Prompt and
+avoids PowerShell line-continuation differences:
+
+```bat
+python scripts\tools\validate_visualize_rc_dataset_v2.py --dataset-root "D:\data\fulldata\output\local256" --output-dir "D:\data\fulldata\output\local256_validation" --visualize-per-difficulty 50
+```
+
+Change `--dataset-root` to the actual completed `local256` directory. The audit
+streams every train/eval/test JSONL record and checks record ids, raw-tile split
+isolation, prompt/answer JSON, norm1000 coordinates, lane/intersection semantic
+types, 256x256 metadata, image paths, expected 550,000 train samples, difficulty
+quotas, and the 30% intersection-sample target. Every referenced PNG must exist;
+by default a random 5,000 images per split are decoded to verify PNG integrity
+and dimensions. Add `--image-decode-mode all` for the slowest and strongest image
+check.
+
+The audit samples across the complete train split and writes 50 overlays for
+each of `easy`, `medium`, `hard`, and `very_hard`. Results are written under the
+selected output directory:
+
+```text
+local256_validation/
+|-- validation_report.json
+|-- validation_errors.jsonl
+|-- visualization_samples.jsonl
+|-- contact_sheet_easy.png
+|-- contact_sheet_medium.png
+|-- contact_sheet_hard.png
+|-- contact_sheet_very_hard.png
+`-- visualizations/{easy,medium,hard,very_hard}/*.png
+```
+
+Exit code `0` means all checks passed. Exit code `2` means the report contains
+validation failures; the script still keeps the generated report and any
+visualizations it was able to render.

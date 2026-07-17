@@ -255,26 +255,34 @@ python scripts\tools\validate_visualize_rc_dataset_v2.py --dataset-root "D:\data
 
 ## Jiangjihua-route integration
 
-The closest existing launcher is:
+Primary original-DINOv2 launcher:
 
 ```text
-scripts/npu/train/train_sft_stage_a_lane_intersection_datasetv2_private_dinov2_last2_caprl4b_nodeepstack_npu.sh
+scripts/npu/train/train_sft_stage_a_lane_intersection_datasetv2_original_dinov2_caprl4b_nodeepstack_npu.sh
 ```
 
 Its intended architecture is:
 
 ```text
-private-data DINOv2-L
-  -> final normalized hidden state (index 24)
+original facebook DINOv2-L
+  -> selected visual layer -2
   -> mlp2x_gelu projector
   -> CapRL-Qwen3VL-4B-derived text LLM
 ```
 
-The recipe disables DeepStack and direct visual layer fusion. It freezes DINOv2
-blocks 0-21 and trains blocks 22-23 plus final LayerNorm; the projector and LLM
-follow the launcher's existing Jiangjihua-style SFT policy. Ordinary decimal
-coordinates are the baseline (`COORDINATE_TOKEN_MODE=none`). Discrete coordinate
-tokens must be a later ablation.
+The recipe disables DeepStack and direct visual layer fusion. It uses the
+original `facebook_dinov2-large` vision tower under Jiangjihua's checkpoint OBS
+root and unfreezes the vision tower, projector, and LLM in the Jiangjihua-style
+SFT policy. Ordinary decimal coordinates are the baseline
+(`COORDINATE_TOKEN_MODE=none`). Discrete coordinate tokens must be a later
+ablation.
+
+The private-data DINOv2 last-2-block recipe remains available as a separate
+comparison launcher:
+
+```text
+scripts/npu/train/train_sft_stage_a_lane_intersection_datasetv2_private_dinov2_last2_caprl4b_nodeepstack_npu.sh
+```
 
 The launcher currently has an obsolete default dataset URI. The implementing
 agent must change or override it with:
@@ -297,10 +305,9 @@ IMAGE_FOLDER=<DATASET_PATH>
 The `image` values are already relative to `IMAGE_FOLDER`; do not set it to the
 `images/` subdirectory.
 
-The private DINOv2 segmentation export is a separate required asset. Confirm
-and explicitly set `DINOV2_TRAIN_OUTPUT_OBS_PATH` to either the completed run
-root or its `best/vision_tower` directory before formal training. Do not silently
-fall back to an unrelated public DINOv2 checkpoint.
+The original-DINOv2 launcher downloads
+`MODEL_OBS_PATH/facebook_dinov2-large` directly. It does not use the private
+DINOv2 segmentation resolver or `DINOV2_TRAIN_OUTPUT_OBS_PATH`.
 
 ## Required rollout sequence
 
@@ -308,7 +315,7 @@ fall back to an unrelated public DINOv2 checkpoint.
 2. Update/override the dataset OBS URI above.
 3. Run the launcher with `INSPECT_ONLY=True`. It must download, extract, resolve
    `local256`, and pass the semantic/taxonomy/image preflight without training.
-4. Confirm the private DINOv2 `best/vision_tower` and CapRL-Qwen3VL-4B assets.
+4. Confirm the original DINOv2 `facebook_dinov2-large` and CapRL-Qwen3VL-4B assets.
 5. Run an 8-NPU smoke with `MAX_STEPS=20`, micro-batch 1, BF16, gradient
    checkpointing, and the same ZeRO configuration intended for DI.
 6. Inspect loss, trainable-parameter groups, truncation/token statistics, NPU
@@ -331,7 +338,7 @@ the new dataset.
 - [ ] Preserves `lane_type` and `intersection_type` in labels and generation.
 - [ ] Excludes LaneType 3 and rejects public intersection subtype fields.
 - [ ] Runs `INSPECT_ONLY=True` before model downloads/training.
-- [ ] Receives an explicit private DINOv2 segmentation checkpoint URI.
+- [ ] Uses the original DINOv2 `facebook_dinov2-large` checkpoint.
 - [ ] Starts with ordinary numeric JSON and no DeepStack/layer fusion.
 - [ ] Runs a same-recipe NPU smoke before the formal multi-node DI job.
 - [ ] Prints `DI_throughput: ... samples/s/npu` during DI training.

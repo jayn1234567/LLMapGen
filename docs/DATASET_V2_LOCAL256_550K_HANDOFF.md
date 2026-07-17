@@ -14,7 +14,7 @@ Use this exact OBS location. It differs from the older
 
 ```text
 obs://yw-ads-training-2-gy1/data/external/personal/h58801830/jn/data/local256/
-|-- local.tar
+|-- local256.tar
 |-- build_summary.json
 |-- semantic_schema_report.json
 |-- split_manifest.json
@@ -24,18 +24,17 @@ obs://yw-ads-training-2-gy1/data/external/personal/h58801830/jn/data/local256/
 The training archive is:
 
 ```bash
-DATASET_OBS_PATH=obs://yw-ads-training-2-gy1/data/external/personal/h58801830/jn/data/local256/local.tar
+DATASET_OBS_PATH=obs://yw-ads-training-2-gy1/data/external/personal/h58801830/jn/data/local256/local256.tar
 DATASET_DIR_NAME=local256
 ```
 
-`local.tar` is approximately 6.76 GiB and stores `local256/` as its top-level
+`local256.tar` is approximately 6.76 GiB and stores `local256/` as its top-level
 directory. The four JSON files beside the tar are audit/provenance files. The
 tar also contains the variant-level `dataset_info.json`, `balance_report.json`,
 and `split_manifest.json` needed to identify the extracted dataset.
 
-Do not use the old `local256.tar` OBS URI currently present as the default in
-some launchers. Do not run `prepare_di_qa_trainroot.py` or any other conversion
-step on this asset: it is already final SFT data.
+Do not run `prepare_di_qa_trainroot.py` or any other conversion step on this
+asset: it is already final SFT data.
 
 ## Dataset size and splits
 
@@ -288,7 +287,7 @@ The launcher currently has an obsolete default dataset URI. The implementing
 agent must change or override it with:
 
 ```bash
-DATASET_OBS_PATH=obs://yw-ads-training-2-gy1/data/external/personal/h58801830/jn/data/local256/local.tar
+DATASET_OBS_PATH=obs://yw-ads-training-2-gy1/data/external/personal/h58801830/jn/data/local256/local256.tar
 DATASET_DIR_NAME=local256
 ```
 
@@ -330,7 +329,7 @@ the new dataset.
 
 ## Agent checklist
 
-- [ ] Uses the new `yw-ads-training-2-gy1` OBS bucket and `local.tar` filename.
+- [ ] Uses the new `yw-ads-training-2-gy1` OBS bucket and `local256.tar` filename.
 - [ ] Does not reconvert or renormalize the dataset.
 - [ ] Resolves the archive's `local256/` root correctly.
 - [ ] Uses `phase_a/train.jsonl` and `IMAGE_FOLDER=<local256 root>`.

@@ -46,8 +46,8 @@ fi
 RUN_ID=${RUN_ID:-${DEFAULT_RUN_ID}}                                               # Unique run id for local cache and cloud output folders.
 OBS_CACHE=${OBS_CACHE:-/cache}                                                    # Local worker cache root for models, datasets, checkpoints, and outputs.
 MODEL_OBS_PATH=${MODEL_OBS_PATH:-obs://yw-ads-training-gy1/data/external/personal/h58801830/whu/jjh/checkpoints}  # OBS directory that stores model and vision checkpoint assets.
-DATASET_OBS_PATH=${DATASET_OBS_PATH:-obs://yw-ads-training-2-gy1/data/external/personal/h58801830/jn/data/local256/local.tar}  # Canonical finalized Dataset V2 local256 550k package.
-DATASET_DIR_NAME=${DATASET_DIR_NAME:-local256}                                    # Top-level directory stored in local.tar.
+DATASET_OBS_PATH=${DATASET_OBS_PATH:-obs://yw-ads-training-2-gy1/data/external/personal/h58801830/jn/data/local256/local256.tar}  # Canonical finalized Dataset V2 local256 550k package.
+DATASET_DIR_NAME=${DATASET_DIR_NAME:-local256}                                    # Top-level directory stored in local256.tar.
 
 VISION_TOWER=${VISION_TOWER:-${OBS_CACHE}/checkpoints/${VISION_TOWER_NAME}}       # Vision tower path passed to the model loader.
 # Local dataset and output paths for this run.
@@ -205,7 +205,14 @@ if [[ "${REUSE_LOCAL_ASSETS}" =~ ^(1|true|True|TRUE|yes|YES)$ ]] && [ -s "${DATA
   echo "[dataset-download] reuse ${DATASET_ARCHIVE_PATH}"
 else
   mkdir -p "$(dirname "${DATASET_ARCHIVE_PATH}")"
-  python -c "import moxing as mox; mox.file.copy('${DATASET_OBS_PATH}', '${DATASET_ARCHIVE_PATH}')"
+  if ! python -c "import moxing as mox; mox.file.copy('${DATASET_OBS_PATH}', '${DATASET_ARCHIVE_PATH}')"; then
+    echo "ERROR: failed to download Dataset V2 archive: ${DATASET_OBS_PATH}"
+    exit 1
+  fi
+fi
+if [ ! -s "${DATASET_ARCHIVE_PATH}" ]; then
+  echo "ERROR: dataset archive is missing or empty after download: ${DATASET_ARCHIVE_PATH}"
+  exit 1
 fi
 mkdir -p "${DATASET_EXTRACT_ROOT}"
 if [[ "${REUSE_LOCAL_ASSETS}" =~ ^(1|true|True|TRUE|yes|YES)$ ]] && \

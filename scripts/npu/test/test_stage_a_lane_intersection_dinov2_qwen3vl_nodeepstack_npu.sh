@@ -69,7 +69,10 @@ DIFFICULTY_SAMPLES_PER_BUCKET=${DIFFICULTY_SAMPLES_PER_BUCKET:-300}             
 DIFFICULTY_VIS_LIMIT=${DIFFICULTY_VIS_LIMIT:-50}                                  # Maximum patch comparisons rendered per bucket; 0 renders all.
 DIFFICULTY_SEED=${DIFFICULTY_SEED:-42}                                            # Stable reservoir-sampling seed.
 DIFFICULTY_INCLUDE_EMPTY=${DIFFICULTY_INCLUDE_EMPTY:-False}                       # Include empty patches in easy; false focuses metrics on road geometry.
-DIFFICULTY_SPLIT_ROOT=${DIFFICULTY_SPLIT_ROOT:-${OBS_CACHE}/difficulty_eval_${RUN_ID}}  # Generated per-difficulty JSONL files and manifest.
+DIFFICULTY_SPLIT_NAME=${DIFFICULTY_SPLIT_NAME:-${DATASET_DIR_NAME}_${DATASET_PHASE}_${MAP_TASK}_seed${DIFFICULTY_SEED}}  # Stable eval-set name used when DIFFICULTY_SPLIT_ROOT is not set.
+DIFFICULTY_SPLIT_ROOT=${DIFFICULTY_SPLIT_ROOT:-${OBS_CACHE}/fixed_eval_splits/${DIFFICULTY_SPLIT_NAME}}  # Generated/reused per-difficulty JSONL files and manifest.
+DIFFICULTY_REUSE_SPLITS=${DIFFICULTY_REUSE_SPLITS:-True}                          # Reuse existing JSONL files under DIFFICULTY_SPLIT_ROOT for comparable eval.
+DIFFICULTY_REBUILD_SPLITS=${DIFFICULTY_REBUILD_SPLITS:-False}                     # Force rebuilding fixed eval JSONL files even if they already exist.
 CHECKPOINT_DEEPSTACK_MODE=${CHECKPOINT_DEEPSTACK_MODE:-disabled}                  # disabled preserves this recipe; auto trusts checkpoint config.
 # ====================== Ascend environment ======================
 # Ascend and HCCL runtime environment for NPU jobs.
@@ -325,10 +328,26 @@ if [[ "${DIFFICULTY_EVAL}" =~ ^(1|true|True|TRUE|yes|YES)$ ]]; then
   while IFS= read -r difficulty; do
     requested_difficulties+=("${difficulty}")
   done < <(read_list "${DIFFICULTIES}")
-  difficulty_args+=(--difficulties "${requested_difficulties[@]}")
-  if ! python scripts/tools/build_difficulty_eval_splits.py "${difficulty_args[@]}"; then
-    echo "ERROR: failed to build difficulty evaluation splits from ${TEST_JSON}."
-    exit 1
+  reuse_existing_splits=0
+  if [[ "${DIFFICULTY_REUSE_SPLITS}" =~ ^(1|true|True|TRUE|yes|YES)$ ]] && \
+     ! [[ "${DIFFICULTY_REBUILD_SPLITS}" =~ ^(1|true|True|TRUE|yes|YES)$ ]]; then
+    reuse_existing_splits=1
+    for difficulty in "${requested_difficulties[@]}"; do
+      split_json="${DIFFICULTY_SPLIT_ROOT}/${difficulty}.jsonl"
+      if [ ! -s "${split_json}" ]; then
+        reuse_existing_splits=0
+        break
+      fi
+    done
+  fi
+  if [ "${reuse_existing_splits}" -eq 1 ]; then
+    echo "[difficulty-splits] reusing fixed evaluation splits from ${DIFFICULTY_SPLIT_ROOT}"
+  else
+    difficulty_args+=(--difficulties "${requested_difficulties[@]}")
+    if ! python scripts/tools/build_difficulty_eval_splits.py "${difficulty_args[@]}"; then
+      echo "ERROR: failed to build difficulty evaluation splits from ${TEST_JSON}."
+      exit 1
+    fi
   fi
   for difficulty in "${requested_difficulties[@]}"; do
     split_json="${DIFFICULTY_SPLIT_ROOT}/${difficulty}.jsonl"

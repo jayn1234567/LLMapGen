@@ -70,10 +70,16 @@ COORD_RANGE=${COORD_RANGE:-1000}                                                
 DIFFICULTY_EVAL=${DIFFICULTY_EVAL:-False}                                         # Split TEST_JSON into geometry-based difficulty buckets before inference.
 DIFFICULTIES=${DIFFICULTIES:-easy,medium,hard,very_hard}                          # Difficulty buckets evaluated independently.
 DIFFICULTY_SAMPLES_PER_BUCKET=${DIFFICULTY_SAMPLES_PER_BUCKET:-300}               # Balanced sample count per bucket; 0 evaluates every eligible sample.
+DIFFICULTY_SAMPLES_PER_BUCKET_SPEC=${DIFFICULTY_SAMPLES_PER_BUCKET_SPEC:-easy=300,medium=300,hard=300,very_hard=100}  # Optional per-bucket sample counts.
 DIFFICULTY_VIS_LIMIT=${DIFFICULTY_VIS_LIMIT:-50}                                  # Maximum patch comparisons rendered per bucket; 0 renders all.
 DIFFICULTY_SEED=${DIFFICULTY_SEED:-42}                                            # Stable reservoir-sampling seed.
 DIFFICULTY_INCLUDE_EMPTY=${DIFFICULTY_INCLUDE_EMPTY:-False}                       # Include empty patches in easy; false focuses metrics on road geometry.
 DIFFICULTY_SPLIT_ROOT=${DIFFICULTY_SPLIT_ROOT:-${OBS_CACHE}/difficulty_eval_${RUN_ID}}  # Generated per-difficulty JSONL files and manifest.
+DIFFICULTY_TOTAL_EVAL=${DIFFICULTY_TOTAL_EVAL:-True}                              # Merge per-bucket predictions and compute one aggregate metric.
+DIFFICULTY_TOTAL_LABEL=${DIFFICULTY_TOTAL_LABEL:-all_selected}                    # Output folder name for the aggregate selected-sample metrics.
+EVAL_METER_PER_PIXEL=${EVAL_METER_PER_PIXEL:-0.2}                                 # Jiangjihua line-eval meter-per-pixel setting.
+EVAL_BUFFER_SIZE=${EVAL_BUFFER_SIZE:-1.0}                                         # Jiangjihua line-eval buffer size.
+EVAL_MATCH_THRESHOLD=${EVAL_MATCH_THRESHOLD:-0.33}                                # Jiangjihua line-eval matching threshold.
 CHECKPOINT_DEEPSTACK_MODE=${CHECKPOINT_DEEPSTACK_MODE:-disabled}                  # disabled preserves this recipe; auto trusts checkpoint config.
 # ====================== Ascend environment ======================
 # Ascend and HCCL runtime environment for NPU jobs.
@@ -330,6 +336,9 @@ if [[ "${DIFFICULTY_EVAL}" =~ ^(1|true|True|TRUE|yes|YES)$ ]]; then
     --coord-mode "${COORD_MODE}"
     --coord-range "${COORD_RANGE}"
   )
+  if [ -n "${DIFFICULTY_SAMPLES_PER_BUCKET_SPEC}" ]; then
+    difficulty_args+=(--samples-per-difficulty-spec "${DIFFICULTY_SAMPLES_PER_BUCKET_SPEC}")
+  fi
   if [[ "${DIFFICULTY_INCLUDE_EMPTY}" =~ ^(1|true|True|TRUE|yes|YES)$ ]]; then
     difficulty_args+=(--include-empty)
   fi
@@ -416,6 +425,9 @@ if ! torchrun \
     --output-json "${summary_json}" \
     --temperature 0.0 \
     --max-new-tokens "${MAX_NEW_TOKENS}" \
+    --eval-meter-per-pixel "${EVAL_METER_PER_PIXEL}" \
+    --eval-buffer-size "${EVAL_BUFFER_SIZE}" \
+    --eval-match-threshold "${EVAL_MATCH_THRESHOLD}" \
     --eval-centerline \
     --eval-output-json "${eval_json}"; then
     echo "ERROR: inference failed for ${checkpoint_label}/${difficulty_label}."
@@ -434,6 +446,9 @@ if ! torchrun \
       --output-dir "${patch_viz_dir}"
       --map-task "${MAP_TASK}"
       --eval-output-json "${eval_json}"
+      --eval-meter-per-pixel "${EVAL_METER_PER_PIXEL}"
+      --eval-buffer-size "${EVAL_BUFFER_SIZE}"
+      --eval-match-threshold "${EVAL_MATCH_THRESHOLD}"
   )
   if [[ "${DIFFICULTY_EVAL}" =~ ^(1|true|True|TRUE|yes|YES)$ ]]; then
     visualize_args+=(--max-samples "${DIFFICULTY_VIS_LIMIT}" --no-eval-centerline --skip-whole-map-viz)
@@ -452,6 +467,100 @@ payload = payload.get('summary', payload) if isinstance(payload, dict) else payl
 print(payload.get('table') if isinstance(payload, dict) and payload.get('table') else format_eval_table(payload))
 PY
   fi
+}
+
+write_aggregate_difficulty_eval() {
+  local checkpoint_label="$1"
+  local checkpoint_root="${LOCAL_OUTPUT_ROOT}/${checkpoint_label}"
+  local aggregate_dir="${checkpoint_root}/${DIFFICULTY_TOTAL_LABEL}"
+  mkdir -p "${aggregate_dir}"
+  python - \
+    "${checkpoint_root}" \
+    "${aggregate_dir}" \
+    "${DIFFICULTIES}" \
+    "${EVAL_METER_PER_PIXEL}" \
+    "${EVAL_BUFFER_SIZE}" \
+    "${EVAL_MATCH_THRESHOLD}" <<'PY'
+import json
+import re
+import sys
+from pathlib import Path
+
+repo_root = Path.cwd()
+if str(repo_root) not in sys.path:
+    sys.path.insert(0, str(repo_root))
+
+from infer_index.line_eval import evaluate_lane_intersection_records, print_lane_intersection_eval_tables
+
+
+def read_list(text: str) -> list[str]:
+    return [item.strip() for item in re.split(r"[,;\n]+", text or "") if item.strip()]
+
+
+def load_records(path: Path) -> list[dict]:
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if isinstance(payload, list):
+        return [item for item in payload if isinstance(item, dict)]
+    if isinstance(payload, dict):
+        for key in ("patch_results", "results", "records"):
+            value = payload.get(key)
+            if isinstance(value, list):
+                return [item for item in value if isinstance(item, dict)]
+    raise ValueError(f"Unsupported summary payload: {path}")
+
+
+checkpoint_root = Path(sys.argv[1])
+aggregate_dir = Path(sys.argv[2])
+difficulties = read_list(sys.argv[3])
+meter_per_pixel = float(sys.argv[4])
+buffer_size = float(sys.argv[5])
+match_threshold = float(sys.argv[6])
+
+records = []
+source_counts = {}
+source_files = []
+for difficulty in difficulties:
+    summary_path = checkpoint_root / difficulty / "summary.json"
+    if not summary_path.is_file():
+        print(f"[aggregate-eval] skip missing split summary: {summary_path}", flush=True)
+        continue
+    split_records = load_records(summary_path)
+    for record in split_records:
+        record.setdefault("difficulty_eval_bucket", difficulty)
+    records.extend(split_records)
+    source_counts[difficulty] = len(split_records)
+    source_files.append(str(summary_path))
+
+if not records:
+    raise SystemExit(f"No per-difficulty inference summaries found under {checkpoint_root}")
+
+summary_path = aggregate_dir / "summary.json"
+summary_path.write_text(json.dumps(records, ensure_ascii=False, indent=2), encoding="utf-8")
+
+map_eval = evaluate_lane_intersection_records(
+    records,
+    meter_per_pixel=meter_per_pixel,
+    buffer_size=buffer_size,
+    match_threshold=match_threshold,
+)
+eval_summary = {
+    "centerline_eval": map_eval["lane"],
+    "intersection_eval": map_eval["intersection"],
+    "lane_intersection_eval": map_eval["lane_intersection"],
+    "map_eval": map_eval,
+    "aggregate": {
+        "source_counts": source_counts,
+        "num_records": len(records),
+        "source_files": source_files,
+    },
+}
+eval_path = aggregate_dir / "eval.json"
+eval_path.write_text(json.dumps(eval_summary, ensure_ascii=False, indent=2), encoding="utf-8")
+print(f"[aggregate-eval] wrote {len(records)} records -> {summary_path}", flush=True)
+print(f"[aggregate-eval] eval -> {eval_path}", flush=True)
+print_lane_intersection_eval_tables(eval_summary["map_eval"])
+print(json.dumps({"aggregate_eval_json": str(eval_path), "aggregate_eval": eval_summary}, ensure_ascii=False), flush=True)
+PY
 }
 
 # Evaluate each requested checkpoint, separating output folders when multiple are provided.
@@ -473,6 +582,10 @@ for index in "${!CHECKPOINT_ITEMS[@]}"; do
       exit 1
     fi
   done
+  if [[ "${DIFFICULTY_EVAL}" =~ ^(1|true|True|TRUE|yes|YES)$ ]] && \
+     [[ "${DIFFICULTY_TOTAL_EVAL}" =~ ^(1|true|True|TRUE|yes|YES)$ ]]; then
+    write_aggregate_difficulty_eval "${label}"
+  fi
 done
 
 # Rank 0 uploads the complete local result tree to OBS.

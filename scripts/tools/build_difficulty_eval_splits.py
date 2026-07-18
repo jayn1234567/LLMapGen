@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import json
 import random
+import re
 import sys
 from collections import Counter
 from pathlib import Path
@@ -15,7 +16,19 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from scripts.tools.tag_hard_map_samples import sample_metrics
+from scripts.tools.tag_hard_map_samples import (
+    DEFAULT_CURVED_LINE_TURN_THRESHOLD,
+    DEFAULT_EASY_MAX_CENTERLINES,
+    DEFAULT_EASY_MAX_POINTS,
+    DEFAULT_EASY_MAX_SINGLE_TURN,
+    DEFAULT_EASY_MAX_TOTAL_TURN,
+    DEFAULT_HARD_SCORE_THRESHOLD,
+    DEFAULT_SHARP_TURN_THRESHOLD,
+    DEFAULT_SHORT_LINE_THRESHOLD,
+    DEFAULT_VERY_HARD_SCORE_THRESHOLD,
+    DIFFICULTY_RULE_VERSION,
+    sample_metrics,
+)
 
 
 DIFFICULTIES = ("easy", "medium", "hard", "very_hard")
@@ -26,6 +39,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--input-jsonl", required=True)
     parser.add_argument("--output-dir", required=True)
     parser.add_argument("--samples-per-difficulty", type=int, default=300, help="0 keeps every eligible sample.")
+    parser.add_argument(
+        "--samples-per-difficulty-spec",
+        default="",
+        help=(
+            "Optional per-bucket counts like "
+            "easy=300,medium=300,hard=300,very_hard=100. "
+            "Values override --samples-per-difficulty for listed buckets."
+        ),
+    )
     parser.add_argument("--difficulties", nargs="+", choices=DIFFICULTIES, default=list(DIFFICULTIES))
     parser.add_argument("--include-empty", action="store_true", help="Keep empty patches in the easy bucket.")
     parser.add_argument("--seed", type=int, default=42)
@@ -38,7 +60,43 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--dense-point-threshold", type=int, default=34)
     parser.add_argument("--long-total-length-threshold", type=float, default=3600.0)
     parser.add_argument("--many-cut-threshold", type=int, default=6)
+    parser.add_argument("--short-line-threshold", type=float, default=DEFAULT_SHORT_LINE_THRESHOLD)
+    parser.add_argument(
+        "--curved-line-turn-threshold",
+        type=float,
+        default=DEFAULT_CURVED_LINE_TURN_THRESHOLD,
+    )
+    parser.add_argument("--sharp-turn-threshold", type=float, default=DEFAULT_SHARP_TURN_THRESHOLD)
+    parser.add_argument("--easy-max-centerlines", type=int, default=DEFAULT_EASY_MAX_CENTERLINES)
+    parser.add_argument("--easy-max-points", type=int, default=DEFAULT_EASY_MAX_POINTS)
+    parser.add_argument("--easy-max-total-turn", type=float, default=DEFAULT_EASY_MAX_TOTAL_TURN)
+    parser.add_argument("--easy-max-single-turn", type=float, default=DEFAULT_EASY_MAX_SINGLE_TURN)
+    parser.add_argument("--hard-score-threshold", type=float, default=DEFAULT_HARD_SCORE_THRESHOLD)
+    parser.add_argument(
+        "--very-hard-score-threshold",
+        type=float,
+        default=DEFAULT_VERY_HARD_SCORE_THRESHOLD,
+    )
     return parser.parse_args()
+
+
+def parse_samples_per_difficulty_spec(text: str) -> dict[str, int]:
+    limits: dict[str, int] = {}
+    for item in re.split(r"[,;\s]+", str(text or "")):
+        item = item.strip()
+        if not item:
+            continue
+        if "=" not in item:
+            raise ValueError(f"Invalid --samples-per-difficulty-spec item: {item!r}")
+        name, value = item.split("=", 1)
+        name = name.strip()
+        if name not in DIFFICULTIES:
+            raise ValueError(f"Unknown difficulty in --samples-per-difficulty-spec: {name!r}")
+        count = int(value)
+        if count < 0:
+            raise ValueError(f"Sample count must be >= 0 for difficulty {name!r}: {count}")
+        limits[name] = count
+    return limits
 
 
 def write_json(path: Path, payload: Any) -> None:
@@ -61,6 +119,10 @@ def main() -> None:
     input_path = Path(args.input_jsonl)
     output_dir = Path(args.output_dir)
     requested = list(dict.fromkeys(args.difficulties))
+    per_difficulty_limits = {name: args.samples_per_difficulty for name in requested}
+    for name, value in parse_samples_per_difficulty_spec(args.samples_per_difficulty_spec).items():
+        if name in per_difficulty_limits:
+            per_difficulty_limits[name] = value
     selected: dict[str, list[tuple[int, dict[str, Any], dict[str, Any]]]] = {name: [] for name in requested}
     eligible_seen = Counter()
     source_counts = Counter()
@@ -88,7 +150,7 @@ def main() -> None:
             eligible_seen[difficulty] += 1
             entry = (source_index, record, metrics)
             bucket = selected[difficulty]
-            limit = args.samples_per_difficulty
+            limit = per_difficulty_limits[difficulty]
             if limit == 0 or len(bucket) < limit:
                 bucket.append(entry)
             else:
@@ -97,10 +159,13 @@ def main() -> None:
                     bucket[replacement] = entry
 
     manifest_rows = []
+    all_selected_rows = []
     selected_counts = {}
     for difficulty in requested:
         bucket = sorted(selected[difficulty], key=lambda item: item[0])
-        write_jsonl(output_dir / f"{difficulty}.jsonl", [record for _, record, _ in bucket])
+        bucket_records = [record for _, record, _ in bucket]
+        write_jsonl(output_dir / f"{difficulty}.jsonl", bucket_records)
+        all_selected_rows.extend(bucket_records)
         selected_counts[difficulty] = len(bucket)
         for source_index, record, metrics in bucket:
             manifest_rows.append(
@@ -118,8 +183,10 @@ def main() -> None:
             )
     manifest_rows.sort(key=lambda item: (requested.index(item["difficulty"]), item["source_index"]))
     write_jsonl(output_dir / "manifest.jsonl", manifest_rows)
+    write_jsonl(output_dir / "all_selected.jsonl", all_selected_rows)
 
     summary = {
+        "difficulty_rule_version": DIFFICULTY_RULE_VERSION,
         "input_jsonl": str(input_path),
         "output_dir": str(output_dir),
         "source_samples": total,
@@ -127,6 +194,10 @@ def main() -> None:
         "eligible_counts": {name: int(eligible_seen[name]) for name in requested},
         "selected_counts": selected_counts,
         "samples_per_difficulty": args.samples_per_difficulty,
+        "samples_per_difficulty_spec": args.samples_per_difficulty_spec,
+        "samples_per_difficulty_by_bucket": per_difficulty_limits,
+        "all_selected_jsonl": str(output_dir / "all_selected.jsonl"),
+        "all_selected_count": len(all_selected_rows),
         "include_empty": bool(args.include_empty),
         "excluded_empty_samples": excluded_empty,
         "seed": args.seed,

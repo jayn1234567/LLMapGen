@@ -46,6 +46,7 @@ from data_process.build_dataset_v2 import (
 from data_process.state_update_dataset_common import (
     COORD_MODE_NORM1000,
     DEFAULT_COORD_RANGE,
+    IGNORED_LANE_TYPE_CODES,
     SEMANTIC_SCHEMA_VERSION,
     build_sft_record,
     discover_samples,
@@ -60,7 +61,7 @@ from scripts.tools.tag_hard_map_samples import DIFFICULTY_RULE_VERSION
 
 
 STAGE_MARKER = "stage_complete.json"
-STAGE_VERSION = "rc_dataset_v2_source_stage_v2_semantic_types"
+STAGE_VERSION = "rc_dataset_v2_source_stage_v3_ignore_lane_3_22"
 
 
 def add_geometry_args(parser: argparse.ArgumentParser) -> None:
@@ -370,6 +371,7 @@ def stage_source(args) -> None:
     summary = {
         "stage_version": STAGE_VERSION,
         "semantic_schema_version": SEMANTIC_SCHEMA_VERSION,
+        "ignored_source_lane_type_codes": sorted(IGNORED_LANE_TYPE_CODES),
         "semantic_validation_passed": True,
         "difficulty_rule_version": DIFFICULTY_RULE_VERSION,
         "source_index": args.source_index,
@@ -688,6 +690,7 @@ def finalize_stages(args) -> None:
         "dataset_version": "rc_dataset_v2_staged_stage_a_semantic_v1",
         "stage_version": STAGE_VERSION,
         "semantic_schema_version": SEMANTIC_SCHEMA_VERSION,
+        "ignored_source_lane_type_codes": sorted(IGNORED_LANE_TYPE_CODES),
         "semantic_validation_passed": True,
         "difficulty_rule_version": DIFFICULTY_RULE_VERSION,
         "staging_root": str(staging_root),
@@ -719,6 +722,7 @@ def finalize_stages(args) -> None:
         {
             "semantic_schema_version": SEMANTIC_SCHEMA_VERSION,
             "validation_passed": True,
+            "ignored_source_lane_type_codes": sorted(IGNORED_LANE_TYPE_CODES),
             "allowed_lane_types": ["common", "right_turn", "other"],
             "allowed_intersection_types": [
                 "common",

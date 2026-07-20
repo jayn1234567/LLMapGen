@@ -28,6 +28,7 @@ from data_process.build_dataset_v2 import (
 from data_process.state_update_dataset_common import (
     ALLOWED_INTERSECTION_TYPES,
     ALLOWED_LANE_TYPES,
+    IGNORED_LANE_TYPE_CODES,
     SEMANTIC_SCHEMA_VERSION,
 )
 from scripts.tools.tag_hard_map_samples import (
@@ -429,6 +430,12 @@ def check_build_metadata(dataset_root: Path, errors: ErrorCollector) -> dict[str
         )
     if metadata.get("semantic_validation_passed") is not True:
         errors.add("unverified_build", "semantic_validation_passed is not true")
+    ignored_codes = metadata.get("ignored_source_lane_type_codes")
+    if ignored_codes != sorted(IGNORED_LANE_TYPE_CODES):
+        errors.add(
+            "stale_lane_type_filter",
+            f"ignored_source_lane_type_codes={ignored_codes!r}, expected {sorted(IGNORED_LANE_TYPE_CODES)}",
+        )
     balance = metadata.get("balance") if isinstance(metadata.get("balance"), dict) else {}
     compact_balance = {
         "target_total": balance.get("target_total"),
@@ -451,6 +458,7 @@ def check_build_metadata(dataset_root: Path, errors: ErrorCollector) -> dict[str
         "dataset_version": metadata.get("dataset_version"),
         "active_variant": metadata.get("active_variant"),
         "semantic_schema_version": metadata.get("semantic_schema_version"),
+        "ignored_source_lane_type_codes": metadata.get("ignored_source_lane_type_codes"),
         "semantic_validation_passed": metadata.get("semantic_validation_passed"),
         "difficulty_rule_version": metadata.get("difficulty_rule_version"),
         "coord_mode": metadata.get("coord_mode"),
@@ -869,6 +877,7 @@ def audit(args: argparse.Namespace) -> tuple[dict[str, Any], ErrorCollector]:
             "difficulty_ratios": ratios,
             "expected_intersection_ratio": args.expected_intersection_ratio,
             "allowed_lane_types": sorted(ALLOWED_LANE_TYPES),
+            "ignored_source_lane_type_codes": sorted(IGNORED_LANE_TYPE_CODES),
             "allowed_intersection_types": sorted(ALLOWED_INTERSECTION_TYPES),
             "expected_image_size": list(expected_image_size),
             "image_decode_mode": args.image_decode_mode,

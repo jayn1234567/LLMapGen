@@ -21,6 +21,12 @@ This is a true `512x512` target patch. It is different from
 [511, 511] pixel -> [1000, 1000]
 ```
 
+Centerlines whose raw `LaneType` is `3` or `22` are removed while reading the
+source GeoJSON, before clipping, difficulty classification, and balancing.
+Other unmapped lane codes remain represented as `lane_type="other"`. Because
+released JSONL collapses raw lane codes into semantic names, an older dataset
+cannot be safely post-filtered for code 22; rebuild from the raw resources.
+
 The 100k train split is selected strictly from the completed 550k train split.
 Both task variants have identical sample IDs, image paths, split assignments,
 difficulty distribution, and intersection distribution. Images are hard-linked

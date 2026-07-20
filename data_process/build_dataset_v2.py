@@ -36,6 +36,7 @@ if str(REPO_ROOT) not in sys.path:
 from data_process.state_update_dataset_common import (
     COORD_MODE_NORM1000,
     DEFAULT_COORD_RANGE,
+    IGNORED_LANE_TYPE_CODES,
     SEMANTIC_SCHEMA_VERSION,
     build_sft_record,
     centered_target_roi,
@@ -868,6 +869,7 @@ def main(argv=None):
     split_manifest = {
         "dataset_version": "rc_dataset_v2_stage_a_semantic_v1",
         "semantic_schema_version": SEMANTIC_SCHEMA_VERSION,
+        "ignored_source_lane_type_codes": sorted(IGNORED_LANE_TYPE_CODES),
         "semantic_validation_passed": True,
         "split_unit": "raw_sample_folder",
         "split_seed": args.split_seed,
@@ -891,6 +893,7 @@ def main(argv=None):
     build_summary = {
         "dataset_version": "rc_dataset_v2_stage_a_semantic_v1",
         "semantic_schema_version": SEMANTIC_SCHEMA_VERSION,
+        "ignored_source_lane_type_codes": sorted(IGNORED_LANE_TYPE_CODES),
         "semantic_validation_passed": True,
         "difficulty_rule_version": DIFFICULTY_RULE_VERSION,
         "difficulty_rule": {
@@ -947,6 +950,7 @@ def main(argv=None):
         {
             "semantic_schema_version": SEMANTIC_SCHEMA_VERSION,
             "validation_passed": True,
+            "ignored_source_lane_type_codes": sorted(IGNORED_LANE_TYPE_CODES),
             "allowed_lane_types": ["common", "right_turn", "other"],
             "allowed_intersection_types": [
                 "common",

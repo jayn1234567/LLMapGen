@@ -8,7 +8,7 @@ from PIL import Image
 
 from data_process.build_dataset_v2 import dataset_variant_specs
 from data_process.build_dataset_v2_staged import selected_variants
-from data_process.state_update_dataset_common import SEMANTIC_SCHEMA_VERSION
+from data_process.state_update_dataset_common import IGNORED_LANE_TYPE_CODES, SEMANTIC_SCHEMA_VERSION
 from scripts.tools.derive_intersection_prompt_dataset import (
     TASK_MODE,
     derive_dataset,
@@ -94,6 +94,7 @@ class Local512IntersectionPromptTest(unittest.TestCase):
                 json.dumps({
                     "dataset_version": "test_local512",
                     "semantic_schema_version": SEMANTIC_SCHEMA_VERSION,
+                    "ignored_source_lane_type_codes": sorted(IGNORED_LANE_TYPE_CODES),
                     "semantic_validation_passed": True,
                     "balance": {
                         "final_bucket_counts": {"empty": 0, "easy": 0, "medium": 1, "hard": 0, "very_hard": 0},

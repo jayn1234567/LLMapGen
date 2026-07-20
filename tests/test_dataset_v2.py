@@ -25,6 +25,7 @@ from data_process.state_update_dataset_common import (
     build_sft_record,
     centered_target_roi,
     extract_centered_context,
+    IGNORED_LANE_TYPE_CODES,
     intersection_type_name,
     lane_type_name,
     normalize_lane_type_code,
@@ -43,6 +44,14 @@ from scripts.tools.build_rc_dataset_v2_context512_windows import (
 
 
 class DatasetV2ContextTest(unittest.TestCase):
+    def test_lane_types_3_and_22_are_excluded_before_clipping(self):
+        self.assertEqual(IGNORED_LANE_TYPE_CODES, frozenset({3, 22}))
+        self.assertIsNone(lane_type_name(3))
+        self.assertIsNone(lane_type_name("22"))
+        self.assertEqual(lane_type_name(1), "common")
+        self.assertEqual(lane_type_name(2), "right_turn")
+        self.assertEqual(lane_type_name(20), "other")
+
     def test_stable_stage_split_is_order_independent(self):
         first = stable_sample_split("sample_123", 42, 0.9, 0.05)
         second = stable_sample_split("sample_123", 42, 0.9, 0.05)

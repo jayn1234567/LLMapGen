@@ -6,7 +6,7 @@ from types import SimpleNamespace
 
 from PIL import Image
 
-from data_process.state_update_dataset_common import SEMANTIC_SCHEMA_VERSION
+from data_process.state_update_dataset_common import IGNORED_LANE_TYPE_CODES, SEMANTIC_SCHEMA_VERSION
 from scripts.tools.validate_visualize_rc_dataset_v2 import (
     ErrorCollector,
     audit,
@@ -58,6 +58,7 @@ class ValidateVisualizeDatasetV2Test(unittest.TestCase):
                 json.dumps({
                     "dataset_version": "rc_dataset_v2_staged_stage_a_semantic_v1",
                     "semantic_schema_version": SEMANTIC_SCHEMA_VERSION,
+                    "ignored_source_lane_type_codes": sorted(IGNORED_LANE_TYPE_CODES),
                     "semantic_validation_passed": True,
                 }),
                 encoding="utf-8",

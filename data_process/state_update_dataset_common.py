@@ -47,7 +47,7 @@ from mllm.coord_utils import (
 
 TASK_TEXT = "Please construct the complete road map in the current BEV (Bird's Eye View) image patch."
 INSIDE, LEFT, RIGHT, BOTTOM, TOP = 0, 1, 2, 4, 8
-SEMANTIC_SCHEMA_VERSION = "lane_intersection_semantic_v1"
+SEMANTIC_SCHEMA_VERSION = "lane_intersection_semantic_v2_ignore_lane_3_22"
 LANE_TYPE_NAMES = {1: "common", 2: "right_turn"}
 ALLOWED_LANE_TYPES = frozenset({"common", "right_turn", "other"})
 INTERSECTION_TYPE_BY_SOURCE_PAIR = {
@@ -57,7 +57,7 @@ INTERSECTION_TYPE_BY_SOURCE_PAIR = {
     (4, 1): "t_lane_change_area",
 }
 ALLOWED_INTERSECTION_TYPES = frozenset({*INTERSECTION_TYPE_BY_SOURCE_PAIR.values(), "other"})
-IGNORED_LANE_TYPE_CODES = frozenset({3})
+IGNORED_LANE_TYPE_CODES = frozenset({3, 22})
 DEFAULT_ARCHIVE_WORKERS = 16
 ARCHIVE_EXTRACT_MARKER = ".archive_extract_complete.json"
 

@@ -223,9 +223,17 @@ if ! grep -Eq "('eval_loss'|\"eval_loss\")" "${TRAIN_LOG}"; then
   echo "ERROR: no eval loss was found in ${TRAIN_LOG}" >&2
   exit 1
 fi
-BEST_EVAL_METADATA=$(find "${FINAL_OUTPUT}/eval_best" -type f -name best_eval_loss.json -print -quit 2>/dev/null || true)
+BEST_EVAL_METADATA=""
+for BEST_EVAL_ROOT in "${FINAL_OUTPUT}/eval_best_candidates" "${FINAL_OUTPUT}/eval_best"; do
+  if [ -d "${BEST_EVAL_ROOT}" ]; then
+    BEST_EVAL_METADATA=$(find "${BEST_EVAL_ROOT}" -type f -name best_eval_loss.json -print -quit 2>/dev/null || true)
+  fi
+  if [ -n "${BEST_EVAL_METADATA}" ]; then
+    break
+  fi
+done
 if [ -z "${BEST_EVAL_METADATA}" ]; then
-  echo "ERROR: eval-best checkpoint metadata was not produced below ${FINAL_OUTPUT}/eval_best" >&2
+  echo "ERROR: eval-best checkpoint metadata was not produced below ${FINAL_OUTPUT}/eval_best_candidates or eval_best" >&2
   exit 1
 fi
 echo "[di-like-smoke] eval-best metadata: ${BEST_EVAL_METADATA}"

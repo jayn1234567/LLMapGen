@@ -46,7 +46,7 @@ fi
 RUN_ID=${RUN_ID:-${DEFAULT_RUN_ID}}                                               # Unique run id for local cache and cloud output folders.
 OBS_CACHE=${OBS_CACHE:-/cache}                                                    # Local worker cache root for models, datasets, checkpoints, and outputs.
 MODEL_OBS_PATH=${MODEL_OBS_PATH:-obs://yw-ads-training-gy1/data/external/personal/h58801830/whu/jjh/checkpoints}  # OBS directory that stores model and vision checkpoint assets.
-DATASET_OBS_ROOT=${DATASET_OBS_ROOT:-obs://yw-ads-training-2-gy1/data/external/personal/h58801830/jn/output/}  # OBS root supplied for the Dataset V2 local256 100k package.
+DATASET_OBS_ROOT=${DATASET_OBS_ROOT:-obs://yw-ads-training-2-gy1/data/external/personal/h58801830/jn/data/local256_100k/}  # OBS root for the Dataset V2 local256 100k asset.
 DATASET_OBS_PATH=${DATASET_OBS_PATH:-}                                           # Optional exact tar URI; empty probes common locations below DATASET_OBS_ROOT.
 DATASET_OBS_ARCHIVE_NAME=${DATASET_OBS_ARCHIVE_NAME:-local256_100k.tar}           # Archive produced by the 100k Dataset V2 packaging workflow.
 EXPECTED_TRAIN_SAMPLES=${EXPECTED_TRAIN_SAMPLES:-100000}                         # Hard guard against accidentally training on the 550k package.
@@ -207,14 +207,22 @@ SWANLAB_LOG_DIR=${SWANLAB_LOG_DIR:-${OUTPUT_PATH}/swanlab}                      
 # ====================== dataset download and preflight ======================
 # The one-time data job already normalized target classes. DI only extracts and verifies them.
 DATASET_SOURCE_RECORD=${DATASET_SOURCE_RECORD:-${OBS_CACHE}/dataset_source_${RUN_ID}.txt}
-if [[ "${REUSE_LOCAL_ASSETS}" =~ ^(1|true|True|TRUE|yes|YES)$ ]] && [ -s "${DATASET_ARCHIVE_PATH}" ]; then
-  echo "[dataset-download] reuse ${DATASET_ARCHIVE_PATH}"
+LOCAL_DATASET_READY=False
+if find "${DATASET_EXTRACT_ROOT}" -type f -path '*/phase_a/train.jsonl' -print -quit 2>/dev/null | grep -q .; then
+  LOCAL_DATASET_READY=True
+fi
+if [[ "${REUSE_LOCAL_ASSETS}" =~ ^(1|true|True|TRUE|yes|YES)$ ]] && [ "${LOCAL_DATASET_READY}" = True ]; then
+  echo "[dataset-download] reuse extracted dataset under ${DATASET_EXTRACT_ROOT}"
+  DATASET_DOWNLOAD_MODE=local
+  RESOLVED_DATASET_OBS_PATH="<reused-local-dataset>"
 else
   mkdir -p "$(dirname "${DATASET_ARCHIVE_PATH}")"
+  rm -f "${DATASET_SOURCE_RECORD}"
   if ! DATASET_OBS_ROOT="${DATASET_OBS_ROOT}" \
        DATASET_OBS_PATH="${DATASET_OBS_PATH}" \
        DATASET_OBS_ARCHIVE_NAME="${DATASET_OBS_ARCHIVE_NAME}" \
        DATASET_ARCHIVE_PATH="${DATASET_ARCHIVE_PATH}" \
+       DATASET_DIRECTORY_PATH="${DATASET_EXTRACT_ROOT}/${DATASET_DIR_NAME}" \
        DATASET_SOURCE_RECORD="${DATASET_SOURCE_RECORD}" \
        python - <<'PY'
 import os
@@ -226,62 +234,101 @@ import moxing as mox
 root = os.environ["DATASET_OBS_ROOT"].rstrip("/")
 explicit = os.environ["DATASET_OBS_PATH"].strip()
 archive_name = os.environ["DATASET_OBS_ARCHIVE_NAME"]
-target = os.environ["DATASET_ARCHIVE_PATH"]
+archive_target = os.environ["DATASET_ARCHIVE_PATH"]
+directory_target = os.environ["DATASET_DIRECTORY_PATH"]
 source_record = Path(os.environ["DATASET_SOURCE_RECORD"])
 
+archive_candidates = []
+directory_candidates = []
 if explicit:
-    candidates = [explicit]
+    directory_candidates.append(explicit.rstrip("/"))
+    archive_candidates.append(explicit)
 else:
-    candidates = [
+    archive_candidates.extend([
         f"{root}/{archive_name}",
         f"{root}/packages/{archive_name}",
         f"{root}/output_100k/packages/{archive_name}",
         f"{root}/output_100k/{archive_name}",
         f"{root}/local256/{archive_name}",
-    ]
+        f"{root}/local256.tar",
+        f"{root}/packages/local256.tar",
+        f"{root}/output_100k/packages/local256.tar",
+    ])
+    directory_candidates.extend([
+        root,
+        f"{root}/local256",
+        f"{root}/output_100k/local256",
+        f"{root}/output/local256",
+    ])
 
-selected = None
-for candidate in dict.fromkeys(candidates):
-    print(f"[dataset-download] probe {candidate}", file=sys.stderr, flush=True)
+
+def exists(path: str) -> bool:
     try:
-        if mox.file.exists(candidate):
-            selected = candidate
-            break
+        return bool(mox.file.exists(path))
     except Exception as exc:
-        print(f"[dataset-download] probe failed for {candidate}: {exc!r}", file=sys.stderr, flush=True)
+        print(f"[dataset-download] probe failed for {path}: {exc!r}", file=sys.stderr, flush=True)
+        return False
+
+
+def is_dataset_root(path: str) -> bool:
+    path = path.rstrip("/")
+    return exists(f"{path}/phase_a/train.jsonl") or exists(f"{path}/train.jsonl")
+
+selected_mode = None
+selected = None
+for candidate in dict.fromkeys(directory_candidates):
+    print(f"[dataset-download] probe directory {candidate}", file=sys.stderr, flush=True)
+    if is_dataset_root(candidate):
+        selected_mode, selected = "directory", candidate.rstrip("/")
+        break
+if selected is None:
+    for candidate in dict.fromkeys(archive_candidates):
+        print(f"[dataset-download] probe archive {candidate}", file=sys.stderr, flush=True)
+        if exists(candidate):
+            selected_mode, selected = "archive", candidate
+            break
 
 if selected is None:
+    listing = []
+    try:
+        listing = [str(item) for item in (mox.file.list_directory(root) or [])]
+    except Exception as exc:
+        listing = [f"<unable to list {root}: {exc!r}>"]
     raise FileNotFoundError(
-        "Dataset V2 local256 100k tar was not found. Probed:\n"
-        + "\n".join(f"  - {candidate}" for candidate in dict.fromkeys(candidates))
-        + "\nSet DATASET_OBS_PATH to the exact local256_100k.tar URI if it is stored elsewhere."
+        "Dataset V2 local256 100k asset was not found.\n"
+        + "Probed dataset directories:\n"
+        + "\n".join(f"  - {candidate}" for candidate in dict.fromkeys(directory_candidates))
+        + "\nProbed archives:\n"
+        + "\n".join(f"  - {candidate}" for candidate in dict.fromkeys(archive_candidates))
+        + f"\nEntries directly below {root}:\n"
+        + "\n".join(f"  - {item}" for item in listing[:100])
+        + "\nSet DATASET_OBS_PATH to the exact tar URI or extracted dataset directory."
     )
 
-print(f"[dataset-download] copy {selected} -> {target}", flush=True)
-mox.file.copy(selected, target)
+if selected_mode == "directory":
+    Path(directory_target).parent.mkdir(parents=True, exist_ok=True)
+    print(f"[dataset-download] copy directory {selected} -> {directory_target}", flush=True)
+    mox.file.copy_parallel(selected, directory_target)
+else:
+    print(f"[dataset-download] copy archive {selected} -> {archive_target}", flush=True)
+    mox.file.copy(selected, archive_target)
 source_record.parent.mkdir(parents=True, exist_ok=True)
-source_record.write_text(selected + "\n", encoding="utf-8")
+source_record.write_text(f"{selected_mode}\n{selected}\n", encoding="utf-8")
 PY
   then
-    echo "ERROR: failed to resolve or download Dataset V2 local256 100k archive."
+    echo "ERROR: failed to resolve or download Dataset V2 local256 100k asset."
     exit 1
   fi
+  DATASET_DOWNLOAD_MODE=$(sed -n '1p' "${DATASET_SOURCE_RECORD}")
+  RESOLVED_DATASET_OBS_PATH=$(sed -n '2p' "${DATASET_SOURCE_RECORD}")
 fi
-if [ -s "${DATASET_SOURCE_RECORD}" ]; then
-  RESOLVED_DATASET_OBS_PATH=$(head -n 1 "${DATASET_SOURCE_RECORD}")
-else
-  RESOLVED_DATASET_OBS_PATH="${DATASET_OBS_PATH:-<reused-local-archive>}"
-fi
-echo "[dataset-download] resolved source: ${RESOLVED_DATASET_OBS_PATH}"
-if [ ! -s "${DATASET_ARCHIVE_PATH}" ]; then
-  echo "ERROR: dataset archive is missing or empty after download: ${DATASET_ARCHIVE_PATH}"
-  exit 1
-fi
+echo "[dataset-download] resolved source: mode=${DATASET_DOWNLOAD_MODE}, path=${RESOLVED_DATASET_OBS_PATH}"
 mkdir -p "${DATASET_EXTRACT_ROOT}"
-if [[ "${REUSE_LOCAL_ASSETS}" =~ ^(1|true|True|TRUE|yes|YES)$ ]] && \
-   find "${DATASET_EXTRACT_ROOT}" -type f -path '*/phase_a/train.jsonl' -print -quit | grep -q .; then
-  echo "[dataset-extract] reuse ${DATASET_EXTRACT_ROOT}"
-else
+if [ "${DATASET_DOWNLOAD_MODE}" = archive ]; then
+  if [ ! -s "${DATASET_ARCHIVE_PATH}" ]; then
+    echo "ERROR: dataset archive is missing or empty after download: ${DATASET_ARCHIVE_PATH}"
+    exit 1
+  fi
   case "${DATASET_ARCHIVE_PATH}" in
     *.zip)
       unzip -q -o "${DATASET_ARCHIVE_PATH}" -d "${DATASET_EXTRACT_ROOT}"
@@ -294,6 +341,9 @@ else
       exit 1
       ;;
   esac
+elif ! find "${DATASET_EXTRACT_ROOT}" -type f -path '*/phase_a/train.jsonl' -print -quit | grep -q .; then
+  echo "ERROR: downloaded dataset directory has no phase_a/train.jsonl under ${DATASET_EXTRACT_ROOT}"
+  exit 1
 fi
 
 # The zip producer may wrap the dataset in one directory or place it directly at the root.

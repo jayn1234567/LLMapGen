@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""Build paired Stage-A RC Dataset V2 views from one or more raw sources.
+"""Build Stage-A RC Dataset V2 views from one or more raw sources.
 
-The two views share raw-sample splits, target patch ids, geometry labels, and
-balanced train selection.  Only the visible image window changes:
+All requested views share raw-sample splits, target patch ids, geometry labels,
+and balanced train selection. The geometry arguments determine stable names:
 
-* local256: the original 256x256 target patch.
-* context512_roi256: a black-padded 512x512 context crop whose central
-  256x256 ROI is the only supervised region.
+* local{patch_size}: the complete target patch, for example local256/local512.
+* context{context_size}_roi{patch_size}: a padded context crop whose centered
+  target ROI is the only supervised region, for example context512_roi256.
 
 Geometry extraction intentionally delegates to state_update_dataset_common so
 the TIFF mask, GeoJSON clipping, endpoint types, intersection polygons, and
@@ -532,6 +532,26 @@ def variant_row(row, target_size, context_size, view_mode):
     return result
 
 
+def dataset_variant_specs(output_root: Path, views: str, patch_size: int, context_size: int) -> dict:
+    """Return stable variant names and image geometry for a Dataset V2 build."""
+    specs = {}
+    if views in {"both", "local"}:
+        name = f"local{patch_size}"
+        specs[name] = {
+            "root": output_root / name,
+            "context_size": patch_size,
+            "view_mode": name,
+        }
+    if views in {"both", "context"}:
+        name = f"context{context_size}_roi{patch_size}"
+        specs[name] = {
+            "root": output_root / name,
+            "context_size": context_size,
+            "view_mode": name,
+        }
+    return specs
+
+
 def open_variant_writers(variant_roots, split_name):
     writers = {}
     for name, root in variant_roots.items():
@@ -715,10 +735,8 @@ def main(argv=None):
     require_geo_dependencies()
     if args.source_uri and len(args.source_uri) != len(args.input_root):
         raise ValueError("--source-uri must be omitted or repeated exactly once per --input-root")
-    if args.patch_size != 256 or args.context_size != 512:
-        raise ValueError(
-            "The controlled Dataset V2 baseline is fixed to target patch 256 and context image 512."
-        )
+    if args.patch_size <= 0 or args.context_size < args.patch_size:
+        raise ValueError("--patch-size must be positive and --context-size must be >= --patch-size")
     if args.patch_size != args.stride:
         raise ValueError("--stride must equal --patch-size so eval/test retain the base grid")
     if not 0 < args.train_stride <= args.patch_size or args.patch_size % args.train_stride:
@@ -827,19 +845,12 @@ def main(argv=None):
                                 "exact_repeat": False,
                             })
 
-    variant_specs = {}
-    if args.views in {"both", "local"}:
-        variant_specs["local256"] = {
-            "root": output_root / "local256",
-            "context_size": args.patch_size,
-            "view_mode": "local256",
-        }
-    if args.views in {"both", "context"}:
-        variant_specs["context512_roi256"] = {
-            "root": output_root / "context512_roi256",
-            "context_size": args.context_size,
-            "view_mode": "context512_roi256",
-        }
+    variant_specs = dataset_variant_specs(
+        output_root,
+        args.views,
+        args.patch_size,
+        args.context_size,
+    )
 
     split_results = {
         "train": materialize_split(

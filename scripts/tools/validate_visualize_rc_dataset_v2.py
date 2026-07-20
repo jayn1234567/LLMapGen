@@ -37,6 +37,11 @@ from scripts.tools.tag_hard_map_samples import (
     safe_name,
     sample_metrics,
 )
+from scripts.tools.derive_intersection_prompt_dataset import (
+    PROMPT_MARKER,
+    TASK_MODE as INTERSECTION_PROMPT_TASK_MODE,
+    extract_prompt_intersections,
+)
 
 
 DEFAULT_DIFFICULTY_RATIOS = "empty=0,easy=0.30,medium=0.33,hard=0.27,very_hard=0.10"
@@ -44,13 +49,35 @@ SPLITS = ("train", "eval", "test")
 VARIANT_SPECS = {
     "local256": {
         "image_size": (256, 256),
+        "target_size": 256,
         "context_image_size": 256,
         "target_roi_in_image": [0, 0, 256, 256],
+        "view_mode": "local256",
+        "task_mode": "lane_intersection",
     },
     "context512_roi256": {
         "image_size": (512, 512),
+        "target_size": 256,
         "context_image_size": 512,
         "target_roi_in_image": [128, 128, 384, 384],
+        "view_mode": "context512_roi256",
+        "task_mode": "lane_intersection",
+    },
+    "local512": {
+        "image_size": (512, 512),
+        "target_size": 512,
+        "context_image_size": 512,
+        "target_roi_in_image": [0, 0, 512, 512],
+        "view_mode": "local512",
+        "task_mode": "lane_intersection",
+    },
+    "local512_intersection_prompt": {
+        "image_size": (512, 512),
+        "target_size": 512,
+        "context_image_size": 512,
+        "target_roi_in_image": [0, 0, 512, 512],
+        "view_mode": "local512",
+        "task_mode": INTERSECTION_PROMPT_TASK_MODE,
     },
 }
 
@@ -174,6 +201,24 @@ def parse_target(record: dict[str, Any]) -> tuple[dict[str, Any] | None, str | N
     if not isinstance(payload, dict) or not isinstance(payload.get("lines"), list):
         return None, 'assistant JSON must be an object containing a "lines" list'
     return payload, None
+
+
+def record_with_target_lines(record: dict[str, Any], lines: list[dict[str, Any]]) -> dict[str, Any]:
+    result = dict(record)
+    conversations = []
+    replaced = False
+    for message in record.get("conversations", []):
+        item = dict(message)
+        role = str(item.get("from", item.get("role", ""))).strip().lower()
+        if role in {"gpt", "assistant"}:
+            key = "value" if "value" in item or "content" not in item else "content"
+            item[key] = json.dumps({"lines": lines}, ensure_ascii=False, separators=(",", ":"))
+            replaced = True
+        conversations.append(item)
+    if not replaced:
+        conversations.append({"from": "gpt", "value": json.dumps({"lines": lines}, separators=(",", ":"))})
+    result["conversations"] = conversations
+    return result
 
 
 def safe_image_path(dataset_root: Path, relative: Any) -> tuple[Path | None, str | None, str]:
@@ -316,17 +361,24 @@ def validate_metadata(
     if not isinstance(meta, dict):
         errors.add("missing_meta", "record.meta is missing", split=split, line_number=line_number, sample_id=sample_id)
         return ""
+    target_size = int(variant_spec.get("target_size", 256))
     expected = {
         "coord_mode": "norm1000",
         "coord_range": 1000,
-        "pixel_patch_size": 256,
-        "patch_width": 256,
-        "patch_height": 256,
-        "target_size": 256,
+        "pixel_patch_size": target_size,
+        "patch_width": target_size,
+        "patch_height": target_size,
+        "target_size": target_size,
         "context_image_size": variant_spec["context_image_size"],
-        "view_mode": variant,
+        "view_mode": variant_spec.get("view_mode", variant),
         "target_roi_in_image": variant_spec["target_roi_in_image"],
     }
+    if variant_spec.get("task_mode", "lane_intersection") == INTERSECTION_PROMPT_TASK_MODE:
+        expected.update({
+            "dataset_variant": variant,
+            "task_mode": INTERSECTION_PROMPT_TASK_MODE,
+            "oracle_intersection_conditioning": True,
+        })
     for key, expected_value in expected.items():
         if meta.get(key) != expected_value:
             errors.add(
@@ -495,6 +547,8 @@ def audit(args: argparse.Namespace) -> tuple[dict[str, Any], ErrorCollector]:
     output_dir.mkdir(parents=True, exist_ok=True)
     variant, variant_spec = resolve_variant(dataset_root, getattr(args, "variant", "auto"))
     expected_image_size = tuple(variant_spec["image_size"])
+    target_size = int(variant_spec["target_size"])
+    intersection_prompt_task = variant_spec["task_mode"] == INTERSECTION_PROMPT_TASK_MODE
     errors = ErrorCollector(max_examples=args.max_error_examples)
     build_metadata = check_build_metadata(dataset_root, errors)
     ratios = parse_ratio_spec(args.difficulty_ratios)
@@ -565,14 +619,29 @@ def audit(args: argparse.Namespace) -> tuple[dict[str, Any], ErrorCollector]:
                     tile_splits[tile_id] = split
 
             prompt = conversation_value(record, {"human", "user"})
+            prompt_intersections = []
             if not isinstance(prompt, str):
                 errors.add("missing_prompt", "human prompt is missing", split=split, line_number=line_number, sample_id=sample_id)
             else:
-                for required_text in ("lane_type", "intersection_type", "normalized 0-1000", "256x256"):
+                required_texts = ["lane_type", "intersection_type", "normalized 0-1000", f"{target_size}x{target_size}"]
+                if intersection_prompt_task:
+                    required_texts.extend([PROMPT_MARKER, "centerlines only"])
+                for required_text in required_texts:
                     if required_text not in prompt:
                         errors.add(
                             "invalid_prompt",
                             f"prompt does not mention {required_text!r}",
+                            split=split,
+                            line_number=line_number,
+                            sample_id=sample_id,
+                        )
+                if intersection_prompt_task:
+                    try:
+                        prompt_intersections = extract_prompt_intersections(prompt)
+                    except (ValueError, json.JSONDecodeError) as exc:
+                        errors.add(
+                            "invalid_prompt_intersections",
+                            str(exc),
                             split=split,
                             line_number=line_number,
                             sample_id=sample_id,
@@ -583,13 +652,37 @@ def audit(args: argparse.Namespace) -> tuple[dict[str, Any], ErrorCollector]:
                 errors.add("invalid_assistant_target", target_error, split=split, line_number=line_number, sample_id=sample_id)
                 payload = None
             has_intersection = False
+            effective_record = record
             if payload is not None:
                 lines = payload["lines"]
-                semantic_counts, has_intersection = validate_target_lines(
+                semantic_counts, assistant_has_intersection = validate_target_lines(
                     lines, errors, split, line_number, sample_id
                 )
+                if intersection_prompt_task and assistant_has_intersection:
+                    errors.add(
+                        "intersection_leaked_to_assistant",
+                        "assistant target must contain centerlines only",
+                        split=split,
+                        line_number=line_number,
+                        sample_id=sample_id,
+                    )
+                prompt_semantic_counts = Counter()
+                if intersection_prompt_task:
+                    prompt_semantic_counts, has_intersection = validate_target_lines(
+                        prompt_intersections,
+                        errors,
+                        split,
+                        line_number,
+                        sample_id,
+                    )
+                    effective_lines = list(lines) + list(prompt_intersections)
+                    effective_record = record_with_target_lines(record, effective_lines)
+                else:
+                    has_intersection = assistant_has_intersection
+                    effective_lines = lines
+                semantic_counts.update(prompt_semantic_counts)
                 stats["semantic_counts"].update(semantic_counts)
-                if not lines:
+                if not effective_lines:
                     stats["empty_samples"] += 1
                 if has_intersection:
                     stats["intersection_samples"] += 1
@@ -645,8 +738,8 @@ def audit(args: argparse.Namespace) -> tuple[dict[str, Any], ErrorCollector]:
                             bucket[replacement] = item
 
             if split == "train" and payload is not None:
-                metrics = sample_metrics(record, (256, 256), DIFFICULTY_ARGS)
-                difficulty = "empty" if not payload["lines"] else str(metrics["difficulty"])
+                metrics = sample_metrics(effective_record, (target_size, target_size), DIFFICULTY_ARGS)
+                difficulty = "empty" if not effective_lines else str(metrics["difficulty"])
                 stats["difficulty_counts"][difficulty] += 1
                 if difficulty in reservoirs and image_path is not None and image_path.is_file():
                     update_reservoir(
@@ -656,7 +749,7 @@ def audit(args: argparse.Namespace) -> tuple[dict[str, Any], ErrorCollector]:
                         {
                             "sample_id": sample_id,
                             "line_number": line_number,
-                            "record": record,
+                            "record": effective_record,
                             "metrics": metrics,
                             "image_path": image_path,
                         },

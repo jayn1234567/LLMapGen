@@ -25,7 +25,7 @@ from scripts.tools.build_rc_dataset_v2_from_obs import (
     source_name,
     upload_outputs,
 )
-from data_process.build_dataset_v2_staged import STAGE_VERSION
+from data_process.build_dataset_v2_staged import STAGE_VERSION, selected_variants
 
 
 def parse_args(argv=None):
@@ -37,6 +37,9 @@ def parse_args(argv=None):
     parser.add_argument("--output-root", default="")
     parser.add_argument("--output-obs-root", default=DEFAULT_OUTPUT_OBS_ROOT)
     parser.add_argument("--views", choices=["local", "context", "both"], default="local")
+    parser.add_argument("--patch-size", type=int, default=256)
+    parser.add_argument("--context-size", type=int, default=512)
+    parser.add_argument("--eval-test-stride", type=int, default=0, help="Defaults to --patch-size.")
     parser.add_argument("--train-target-samples", type=int, default=550000)
     parser.add_argument("--train-stride", type=int, default=128)
     parser.add_argument(
@@ -85,7 +88,14 @@ def file_sha256(path: Path, chunk_size: int = 8 * 1024 * 1024) -> str:
     return digest.hexdigest()
 
 
-def completed_stage(stage_root: Path, expected_candidate_sha256: str = "") -> bool:
+def completed_stage(
+    stage_root: Path,
+    expected_candidate_sha256: str = "",
+    expected_variants: list[str] | None = None,
+    expected_patch_size: int | None = None,
+    expected_train_stride: int | None = None,
+    expected_eval_test_stride: int | None = None,
+) -> bool:
     marker = stage_root / "stage_complete.json"
     if not marker.is_file():
         return False
@@ -99,6 +109,21 @@ def completed_stage(stage_root: Path, expected_candidate_sha256: str = "") -> bo
     if complete:
         candidate_filter = payload.get("train_candidate_filter") or {}
         complete = str(candidate_filter.get("sha256") or "") == expected_candidate_sha256
+    if complete and expected_variants is not None:
+        complete = all(name in payload.get("variants", []) for name in expected_variants)
+    if complete and expected_patch_size is not None:
+        marker_patch_size = payload.get("target_patch_size")
+        complete = (
+            int(marker_patch_size) == expected_patch_size
+            if marker_patch_size is not None
+            else expected_patch_size == 256
+        )
+    if complete and expected_train_stride is not None:
+        marker_train_stride = payload.get("train_stride")
+        complete = marker_train_stride is not None and int(marker_train_stride) == expected_train_stride
+    if complete and expected_eval_test_stride is not None:
+        marker_eval_test_stride = payload.get("eval_test_stride")
+        complete = marker_eval_test_stride is not None and int(marker_eval_test_stride) == expected_eval_test_stride
     return complete
 
 
@@ -142,6 +167,8 @@ def main(argv=None):
     output_root = Path(args.output_root) if args.output_root else work_root / "output"
     candidate_jsonl = Path(args.train_candidate_jsonl) if args.train_candidate_jsonl else None
     candidate_filter_sha256 = file_sha256(candidate_jsonl) if candidate_jsonl else ""
+    eval_test_stride = args.eval_test_stride or args.patch_size
+    expected_variants = selected_variants(args.views, args.patch_size, args.context_size)
     for path in (work_root, raw_root, staging_root, output_root):
         path.mkdir(parents=True, exist_ok=True)
 
@@ -154,6 +181,7 @@ def main(argv=None):
     print(f"[dataset-v2-stream] output root:    {output_root}", flush=True)
     print(f"[dataset-v2-stream] sources:        {len(sources)}", flush=True)
     print(f"[dataset-v2-stream] views:          {args.views}", flush=True)
+    print(f"[dataset-v2-stream] target patch:   {args.patch_size}", flush=True)
     print(f"[dataset-v2-stream] target records: {args.train_target_samples}", flush=True)
     print(f"[dataset-v2-stream] free disk:      {shutil.disk_usage(work_root).free / (1024 ** 3):.1f} GiB", flush=True)
     print("============================================================", flush=True)
@@ -163,13 +191,27 @@ def main(argv=None):
         local_root = raw_root / f"{source_index:02d}_{name}"
         stage_root = staging_root / f"{source_index:02d}_{name}"
         marker = stage_root / "stage_complete.json"
-        if args.resume and marker.is_file() and not completed_stage(stage_root, candidate_filter_sha256):
+        if args.resume and marker.is_file() and not completed_stage(
+            stage_root,
+            candidate_filter_sha256,
+            expected_variants,
+            args.patch_size,
+            args.train_stride,
+            eval_test_stride,
+        ):
             print(
                 f"[dataset-v2-stream] stale stage lacks {STAGE_VERSION}; it must be rebuilt: {stage_root}",
                 flush=True,
             )
             remove_stale_stage(stage_root, staging_root)
-        if args.resume and completed_stage(stage_root, candidate_filter_sha256):
+        if args.resume and completed_stage(
+            stage_root,
+            candidate_filter_sha256,
+            expected_variants,
+            args.patch_size,
+            args.train_stride,
+            eval_test_stride,
+        ):
             print(f"[dataset-v2-stream] reuse completed stage: {stage_root}", flush=True)
             if local_root.exists() and not args.keep_raw_source_after_stage:
                 cleanup_command = [
@@ -181,6 +223,10 @@ def main(argv=None):
                     "--source-index", source_index,
                     "--source-uri", source,
                     "--views", args.views,
+                    "--patch-size", args.patch_size,
+                    "--context-size", args.context_size,
+                    "--stride", eval_test_stride,
+                    "--train-stride", args.train_stride,
                     "--resume",
                     "--delete-input-root-after-stage",
                     "--delete-root-parent", raw_root,
@@ -205,6 +251,9 @@ def main(argv=None):
             "--source-index", source_index,
             "--source-uri", source,
             "--views", args.views,
+            "--patch-size", args.patch_size,
+            "--context-size", args.context_size,
+            "--stride", eval_test_stride,
             "--split-seed", args.split_seed,
             "--train-stride", args.train_stride,
             "--archive-workers", args.archive_workers,
@@ -224,7 +273,14 @@ def main(argv=None):
                 "--delete-root-parent", raw_root,
             ])
         run(stage_command)
-        if not completed_stage(stage_root, candidate_filter_sha256):
+        if not completed_stage(
+            stage_root,
+            candidate_filter_sha256,
+            expected_variants,
+            args.patch_size,
+            args.train_stride,
+            eval_test_stride,
+        ):
             raise RuntimeError(f"source stage validation failed: {stage_root}")
         print(
             f"[dataset-v2-stream] free disk after source {source_index}: "
@@ -240,6 +296,8 @@ def main(argv=None):
             "--staging-root", staging_root,
             "--output-root", output_root,
             "--views", args.views,
+            "--patch-size", args.patch_size,
+            "--context-size", args.context_size,
             "--train-target-samples", args.train_target_samples,
             "--difficulty-ratios", args.difficulty_ratios,
             "--intersection-target-ratio", args.intersection_target_ratio,

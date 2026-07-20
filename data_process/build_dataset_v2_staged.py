@@ -35,6 +35,7 @@ from data_process.build_dataset_v2 import (
     DIFFICULTY_ORDER,
     annotate_translation_grid,
     classify_row,
+    dataset_variant_specs,
     empty_candidate_pools,
     parse_ratio_spec,
     select_balanced_candidates,
@@ -60,10 +61,6 @@ from scripts.tools.tag_hard_map_samples import DIFFICULTY_RULE_VERSION
 
 STAGE_MARKER = "stage_complete.json"
 STAGE_VERSION = "rc_dataset_v2_source_stage_v2_semantic_types"
-VARIANT_SPECS = {
-    "local256": {"context_size": 256, "view_mode": "local256"},
-    "context512_roi256": {"context_size": 512, "view_mode": "context512_roi256"},
-}
 
 
 def add_geometry_args(parser: argparse.ArgumentParser) -> None:
@@ -134,17 +131,14 @@ def parse_args(argv=None):
         help="Optional completed train JSONL whose ids constrain the new train selection to a subset.",
     )
     finalize.add_argument("--resume", action="store_true")
+    finalize.add_argument("--patch-size", type=int, default=256)
+    finalize.add_argument("--context-size", type=int, default=512)
     finalize.add_argument("--coord-range", type=int, default=DEFAULT_COORD_RANGE)
     return parser.parse_args(argv)
 
 
-def selected_variants(views: str) -> list[str]:
-    variants = []
-    if views in {"local", "both"}:
-        variants.append("local256")
-    if views in {"context", "both"}:
-        variants.append("context512_roi256")
-    return variants
+def selected_variants(views: str, patch_size: int = 256, context_size: int = 512) -> list[str]:
+    return list(dataset_variant_specs(Path("."), views, patch_size, context_size))
 
 
 def stable_sample_split(sample_id: str, seed: int, train_ratio: float, eval_ratio: float) -> str:
@@ -162,8 +156,10 @@ def stable_sample_split(sample_id: str, seed: int, train_ratio: float, eval_rati
 
 
 def validate_geometry_args(args) -> None:
-    if args.patch_size != 256 or args.context_size != 512:
-        raise ValueError("staged Dataset V2 is fixed to a 256 target and optional 512 context")
+    if args.patch_size <= 0 or args.context_size < args.patch_size:
+        raise ValueError("--patch-size must be positive and --context-size must be >= --patch-size")
+    if (args.context_size - args.patch_size) % 2:
+        raise ValueError("--context-size minus --patch-size must be even for a centered ROI")
     if args.stride != args.patch_size:
         raise ValueError("--stride must equal --patch-size for eval/test")
     if not 0 < args.train_stride <= args.patch_size or args.patch_size % args.train_stride:
@@ -172,14 +168,13 @@ def validate_geometry_args(args) -> None:
         raise ValueError(f"--coord-range must be {DEFAULT_COORD_RANGE}")
 
 
-def stage_variant_specs(stage_root: Path, views: str) -> dict:
-    return {
-        name: {
-            **VARIANT_SPECS[name],
-            "root": stage_root / "variants" / name,
-        }
-        for name in selected_variants(views)
-    }
+def stage_variant_specs(stage_root: Path, views: str, patch_size: int, context_size: int) -> dict:
+    return dataset_variant_specs(
+        stage_root / "variants",
+        views,
+        patch_size,
+        context_size,
+    )
 
 
 def open_stage_writers(stage_root: Path, variants: list[str]):
@@ -244,6 +239,21 @@ def stage_source(args) -> None:
                 f"stale stage cannot be resumed: {marker_path}. Expected stage_version={STAGE_VERSION}; "
                 "rebuild this source shard from its raw source before allowing raw-source deletion."
             )
+        expected_variants = selected_variants(args.views, args.patch_size, args.context_size)
+        missing_variants = [name for name in expected_variants if name not in marker.get("variants", [])]
+        if missing_variants:
+            raise ValueError(f"completed stage is missing requested variants {missing_variants}: {marker_path}")
+        marker_patch_size = marker.get("target_patch_size")
+        if marker_patch_size is not None and int(marker_patch_size) != args.patch_size:
+            raise ValueError(f"completed stage uses target_patch_size={marker_patch_size}, expected {args.patch_size}")
+        if int(marker.get("train_stride", args.train_stride)) != args.train_stride:
+            raise ValueError(
+                f"completed stage uses train_stride={marker.get('train_stride')}, expected {args.train_stride}"
+            )
+        if int(marker.get("eval_test_stride", args.stride)) != args.stride:
+            raise ValueError(
+                f"completed stage uses eval_test_stride={marker.get('eval_test_stride')}, expected {args.stride}"
+            )
         marker_filter = marker.get("train_candidate_filter") or {}
         if str(marker_filter.get("sha256") or "") != candidate_filter_sha256:
             raise ValueError(
@@ -269,8 +279,8 @@ def stage_source(args) -> None:
     if not samples:
         raise FileNotFoundError(f"no valid raw RC samples found under {input_root}")
 
-    variants = selected_variants(args.views)
-    specs = stage_variant_specs(stage_root, args.views)
+    variants = selected_variants(args.views, args.patch_size, args.context_size)
+    specs = stage_variant_specs(stage_root, args.views, args.patch_size, args.context_size)
     index_writers, sft_writers = open_stage_writers(stage_root, variants)
     split_counts = Counter()
     difficulty_counts = Counter()
@@ -372,6 +382,8 @@ def stage_source(args) -> None:
         "eval_ratio": args.eval_ratio,
         "train_stride": args.train_stride,
         "eval_test_stride": args.stride,
+        "target_patch_size": args.patch_size,
+        "context_size": args.context_size,
         "variants": variants,
         "split_record_counts": dict(split_counts),
         "difficulty_counts": dict(difficulty_counts),
@@ -595,6 +607,12 @@ def materialize_from_stages(
 
 
 def finalize_stages(args) -> None:
+    patch_size = int(getattr(args, "patch_size", 256))
+    context_size = int(getattr(args, "context_size", 512))
+    if patch_size <= 0 or context_size < patch_size:
+        raise ValueError("--patch-size must be positive and --context-size must be >= --patch-size")
+    if (context_size - patch_size) % 2:
+        raise ValueError("--context-size minus --patch-size must be even for a centered ROI")
     if args.coord_range != DEFAULT_COORD_RANGE:
         raise ValueError(f"--coord-range must be {DEFAULT_COORD_RANGE}")
     if not 0 <= args.intersection_target_ratio <= 1:
@@ -604,7 +622,7 @@ def finalize_stages(args) -> None:
     output_root = Path(args.output_root)
     output_root.mkdir(parents=True, exist_ok=True)
     stage_roots = discover_stage_roots(staging_root)
-    variants = selected_variants(args.views)
+    variants = selected_variants(args.views, patch_size, context_size)
     for stage_root in stage_roots:
         summary = json.loads((stage_root / STAGE_MARKER).read_text(encoding="utf-8"))
         if summary.get("stage_version") != STAGE_VERSION or not summary.get("semantic_validation_passed"):
@@ -615,6 +633,13 @@ def finalize_stages(args) -> None:
         missing = [variant for variant in variants if variant not in summary.get("variants", [])]
         if missing:
             raise ValueError(f"stage {stage_root} does not contain requested variants: {missing}")
+        stage_patch_size = summary.get("target_patch_size")
+        if stage_patch_size is None and patch_size != 256:
+            raise ValueError(f"legacy stage has no target patch size and cannot be used for {patch_size}: {stage_root}")
+        if stage_patch_size is not None and int(stage_patch_size) != patch_size:
+            raise ValueError(
+                f"stage target_patch_size={stage_patch_size}, expected {patch_size}: {stage_root}"
+            )
 
     sample_owner, collisions = build_sample_owners(stage_roots, args.duplicate_policy)
     candidate_jsonl_text = str(getattr(args, "train_candidate_jsonl", "") or "").strip()
@@ -685,6 +710,8 @@ def finalize_stages(args) -> None:
         "split_policy": "sha256_sample_id_seed_threshold",
         "coord_mode": COORD_MODE_NORM1000,
         "coord_range": args.coord_range,
+        "target_patch_size": patch_size,
+        "context_size": context_size,
     }
     write_json(output_root / "build_summary.json", summary)
     write_json(

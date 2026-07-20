@@ -76,6 +76,34 @@ class DatasetV2ContextTest(unittest.TestCase):
             self.assertTrue(completed_stage(stage_root, "candidate-sha"))
             self.assertFalse(completed_stage(stage_root, "different-sha"))
 
+    def test_resume_requires_matching_true512_geometry_and_strides(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            stage_root = Path(temp_dir)
+            marker = stage_root / "stage_complete.json"
+            marker.write_text(
+                json.dumps({
+                    "stage_version": STAGE_VERSION,
+                    "semantic_validation_passed": True,
+                    "raw_sample_count": 1,
+                    "split_record_counts": {"train": 2},
+                    "train_candidate_filter": {"sha256": ""},
+                    "variants": ["local512"],
+                    "target_patch_size": 512,
+                    "train_stride": 256,
+                    "eval_test_stride": 512,
+                }),
+                encoding="utf-8",
+            )
+            self.assertTrue(completed_stage(stage_root, "", ["local512"], 512, 256, 512))
+            self.assertFalse(completed_stage(stage_root, "", ["local512"], 512, 128, 512))
+            self.assertFalse(completed_stage(stage_root, "", ["local256"], 512, 256, 512))
+            self.assertFalse(completed_stage(stage_root, "", ["local512"], 256, 256, 512))
+
+            payload = json.loads(marker.read_text(encoding="utf-8"))
+            payload.pop("eval_test_stride")
+            marker.write_text(json.dumps(payload), encoding="utf-8")
+            self.assertFalse(completed_stage(stage_root, "", ["local512"], 512, 256, 512))
+
     def test_context_wrapper_builds_filter_and_verifies_exact_pairing(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)

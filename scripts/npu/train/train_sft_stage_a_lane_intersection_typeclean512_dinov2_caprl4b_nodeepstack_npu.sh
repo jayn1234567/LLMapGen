@@ -80,6 +80,7 @@ DATASET_ALLOWED_TARGET_LANE_TYPES=${DATASET_ALLOWED_TARGET_LANE_TYPES:-"common r
 TARGET_GLOBAL_BATCH_SIZE=${TARGET_GLOBAL_BATCH_SIZE:-128}                         # Desired global batch size used to derive gradient accumulation.
 PER_DEVICE_TRAIN_BATCH_SIZE=${PER_DEVICE_TRAIN_BATCH_SIZE:-4}                     # Micro batch size per NPU process.
 NUM_EPOCHS=${NUM_EPOCHS:-8}                                                       # Match Jiangjihua v9 best CapRL recipe.
+MAX_STEPS=${MAX_STEPS:--1}                                                        # -1 runs NUM_EPOCHS; a positive value enables short NPU memory smoke tests.
 LR=${LR:-2e-5}                                                                    # Base learning rate for LLM and default trainable parameters.
 MM_PROJECTOR_LR=${MM_PROJECTOR_LR:-2e-5}                                          # Learning rate for the multimodal projector.
 MM_VISION_TOWER_LR=${MM_VISION_TOWER_LR:-2e-5}                                    # Match Jiangjihua v9 best full-DINO fine-tuning recipe.
@@ -89,10 +90,11 @@ MODEL_MAX_LENGTH=${MODEL_MAX_LENGTH:-4096}                                      
 SAVE_STEPS=${SAVE_STEPS:-1000}                                                    # Match the v9 best checkpoint interval.
 SAVE_TOTAL_LIMIT=${SAVE_TOTAL_LIMIT:-15}                                          # Maximum number of regular checkpoints to keep.
 LOGGING_STEPS=${LOGGING_STEPS:-10}                                                # Training log interval in optimizer steps.
-EVAL_STEPS=${EVAL_STEPS:-500}                                                     # Evaluation interval when ENABLE_EVAL is true.
+EVAL_STEPS=${EVAL_STEPS:-1000}                                                    # Evaluation interval when ENABLE_EVAL is true.
+EVAL_SAMPLE_LIMIT=${EVAL_SAMPLE_LIMIT:-4096}                                      # Deterministic eval-loss subset size; 0 uses the full eval split.
 DEEPSPEED_CONFIG=${DEEPSPEED_CONFIG:-scripts/deepspeed_zero3.json}                # DeepSpeed config path for full-parameter SFT. LoRA scripts may leave it unused.
-ENABLE_EVAL=${ENABLE_EVAL:-False}                                                 # Whether to run Trainer evaluation during training.
-SAVE_BEST_EVAL_LOSS=${SAVE_BEST_EVAL_LOSS:-False}                                 # Whether to save a best checkpoint by eval loss.
+ENABLE_EVAL=${ENABLE_EVAL:-True}                                                  # Whether to run Trainer evaluation during training.
+SAVE_BEST_EVAL_LOSS=${SAVE_BEST_EVAL_LOSS:-True}                                  # Whether to save a best checkpoint by eval loss.
 SAVE_BEST_TRAIN_LOSS=${SAVE_BEST_TRAIN_LOSS:-True}                                # Whether to save a best checkpoint by training loss.
 BEST_TRAIN_LOSS_START_STEP=${BEST_TRAIN_LOSS_START_STEP:-5000}                    # Step threshold before best-train-loss checkpointing starts.
 SAVE_BEST_INFER_INDEX=${SAVE_BEST_INFER_INDEX:-False}                             # Whether to run inference-based best checkpoint selection.
@@ -102,6 +104,7 @@ BEST_CHECKPOINT_SAVE_MODE=${BEST_CHECKPOINT_SAVE_MODE:-rotating_create_only}    
 BEST_CHECKPOINT_KEEP_LIMIT=${BEST_CHECKPOINT_KEEP_LIMIT:-8}                       # Keep one best candidate per default epoch budget.
 VISION_LAYER_FUSION_INDEXES=${VISION_LAYER_FUSION_INDEXES:-}                      # ViT layers fused into the main visual stream; empty disables direct fusion.
 VISION_LAYER_FUSION_TYPE=${VISION_LAYER_FUSION_TYPE:-mean}                        # Fusion mode: mean, sum, learned_weighted; aliases: weighted, softmax_weighted.
+REUSE_LOCAL_ASSETS=${REUSE_LOCAL_ASSETS:-True}                                    # Reuse complete local dataset/model assets when rerunning an Ascend smoke test.
 
 # Experiment logging metadata.
 SWANLAB_ENABLE=${SWANLAB_ENABLE:-True}                                            # Enable SwanLab experiment logging.
@@ -195,9 +198,19 @@ SWANLAB_LOG_DIR=${SWANLAB_LOG_DIR:-${OUTPUT_PATH}/swanlab}                      
 
 # ====================== dataset download and preflight ======================
 # The one-time data job already normalized target classes. DI only extracts and verifies them.
-python -c "import moxing as mox; mox.file.copy('${DATASET_OBS_PATH}', '${DATASET_ZIP_PATH}')"
+if [[ "${REUSE_LOCAL_ASSETS}" =~ ^(1|true|True|TRUE|yes|YES)$ ]] && [ -s "${DATASET_ZIP_PATH}" ]; then
+  echo "[dataset-download] reuse ${DATASET_ZIP_PATH}"
+else
+  mkdir -p "$(dirname "${DATASET_ZIP_PATH}")"
+  python -c "import moxing as mox; mox.file.copy('${DATASET_OBS_PATH}', '${DATASET_ZIP_PATH}')"
+fi
 mkdir -p "${DATASET_EXTRACT_ROOT}"
-unzip -q "${DATASET_ZIP_PATH}" -d "${DATASET_EXTRACT_ROOT}"
+if [[ "${REUSE_LOCAL_ASSETS}" =~ ^(1|true|True|TRUE|yes|YES)$ ]] && \
+   find "${DATASET_EXTRACT_ROOT}" -type f -path '*/phase_a/train.jsonl' -print -quit | grep -q .; then
+  echo "[dataset-extract] reuse ${DATASET_EXTRACT_ROOT}"
+else
+  unzip -q -o "${DATASET_ZIP_PATH}" -d "${DATASET_EXTRACT_ROOT}"
+fi
 
 # The zip producer may wrap the dataset in one directory or place it directly at the root.
 # Resolve exactly one phase_a/train.jsonl (preferred) or flat train.jsonl dataset root.
@@ -304,8 +317,52 @@ if [[ "${INSPECT_ONLY}" =~ ^(1|true|True|TRUE|yes|YES)$ ]]; then
 fi
 
 # ====================== model downloads ======================
-python -c "import moxing as mox; mox.file.copy_parallel('${MODEL_OBS_PATH}/${VISION_TOWER_NAME}', '${VISION_TOWER}')"
-python -c "import moxing as mox; mox.file.copy_parallel('${MODEL_OBS_PATH}/${QWEN_MODEL_NAME}', '${QWEN_PATH}')"
+model_asset_is_complete() {
+  local model_dir="$1"
+  [ -f "${model_dir}/config.json" ] || return 1
+  MODEL_DIR="${model_dir}" python - <<'PY'
+import json
+import os
+from pathlib import Path
+
+root = Path(os.environ["MODEL_DIR"])
+for index_name in ("model.safetensors.index.json", "pytorch_model.bin.index.json"):
+    index_path = root / index_name
+    if not index_path.is_file():
+        continue
+    payload = json.loads(index_path.read_text(encoding="utf-8"))
+    shards = set(payload.get("weight_map", {}).values())
+    raise SystemExit(0 if shards and all((root / shard).is_file() for shard in shards) else 1)
+single_files = ("model.safetensors", "pytorch_model.bin")
+raise SystemExit(0 if any((root / name).is_file() for name in single_files) else 1)
+PY
+}
+
+download_model_asset() {
+  local source="$1"
+  local target="$2"
+  if [[ "${REUSE_LOCAL_ASSETS}" =~ ^(1|true|True|TRUE|yes|YES)$ ]] && model_asset_is_complete "${target}"; then
+    echo "[model-download] reuse ${target}"
+    return 0
+  fi
+  mkdir -p "${target}"
+  SOURCE="${source}" TARGET="${target}" python - <<'PY'
+import os
+import moxing as mox
+
+source = os.environ["SOURCE"]
+target = os.environ["TARGET"]
+print(f"[model-download] {source} -> {target}", flush=True)
+mox.file.copy_parallel(source, target)
+PY
+  model_asset_is_complete "${target}" || {
+    echo "ERROR: downloaded model asset is incomplete: ${target}" >&2
+    return 1
+  }
+}
+
+download_model_asset "${MODEL_OBS_PATH}/${VISION_TOWER_NAME}" "${VISION_TOWER}" || exit $?
+download_model_asset "${MODEL_OBS_PATH}/${QWEN_MODEL_NAME}" "${QWEN_PATH}" || exit $?
 INIT_MODEL_PATH="${QWEN_PATH}"                                                    # Initial model path passed to train_qwen. Stage B uses the Stage-A checkpoint.
 # Fail early if any required model, dataset, image, or vision asset is missing.
 for path in "${INIT_MODEL_PATH}" "${VISION_TOWER}" "${TRAIN_PATH}" "${EVAL_PATH}" "${IMAGE_FOLDER}"; do
@@ -330,6 +387,7 @@ if [[ "${ENABLE_EVAL}" =~ ^(1|true|True|TRUE|yes|YES)$ ]]; then
   EVAL_ARGS=(                                                                     # Optional Trainer eval arguments, populated only when ENABLE_EVAL is true.
     --eval_data_path "${EVAL_PATH}"
     --eval_image_folder "${IMAGE_FOLDER}"
+    --eval_sample_limit "${EVAL_SAMPLE_LIMIT}"
     "${EVAL_STRATEGY_ARG}" steps
     --eval_steps "${EVAL_STEPS}"
     --save_best_eval_loss "${SAVE_BEST_EVAL_LOSS}"
@@ -358,7 +416,7 @@ echo "Eval:         ${EVAL_PATH}"
 echo "Output:       ${OUTPUT_PATH}"
 echo "Topology:     nnodes=${NNODES}, node_rank=${NODE_RANK}, nproc_per_node=${NPROC_PER_NODE}"
 echo "Batch:        per_device=${PER_DEVICE_TRAIN_BATCH_SIZE}, accumulation=${GRADIENT_ACCUMULATION_STEPS}, effective=$((MICRO_BATCH * GRADIENT_ACCUMULATION_STEPS))"
-echo "Epochs/LR:    epochs=${NUM_EPOCHS}, llm=${LR}, projector=${MM_PROJECTOR_LR}, vision=${MM_VISION_TOWER_LR}"
+echo "Schedule/LR:  epochs=${NUM_EPOCHS}, max_steps=${MAX_STEPS}, llm=${LR}, projector=${MM_PROJECTOR_LR}, vision=${MM_VISION_TOWER_LR}"
 echo "============================================================"
 
 # Launch the recipe entrypoint. Training uses HCCL/DDP and full SFT may add DeepSpeed.
@@ -387,6 +445,7 @@ torchrun \
   --bf16 True \
   --output_dir "${OUTPUT_PATH}" \
   --num_train_epochs "${NUM_EPOCHS}" \
+  --max_steps "${MAX_STEPS}" \
   --per_device_train_batch_size "${PER_DEVICE_TRAIN_BATCH_SIZE}" \
   --gradient_accumulation_steps "${GRADIENT_ACCUMULATION_STEPS}" \
   --learning_rate "${LR}" \

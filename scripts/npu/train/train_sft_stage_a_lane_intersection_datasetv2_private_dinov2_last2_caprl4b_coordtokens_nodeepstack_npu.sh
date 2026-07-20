@@ -92,10 +92,11 @@ MODEL_MAX_LENGTH=${MODEL_MAX_LENGTH:-4096}                                      
 SAVE_STEPS=${SAVE_STEPS:-1000}                                                    # Match the v9 best checkpoint interval.
 SAVE_TOTAL_LIMIT=${SAVE_TOTAL_LIMIT:-15}                                          # Maximum number of regular checkpoints to keep.
 LOGGING_STEPS=${LOGGING_STEPS:-10}                                                # Training log interval in optimizer steps.
-EVAL_STEPS=${EVAL_STEPS:-500}                                                     # Evaluation interval when ENABLE_EVAL is true.
+EVAL_STEPS=${EVAL_STEPS:-1000}                                                    # Evaluation interval when ENABLE_EVAL is true.
+EVAL_SAMPLE_LIMIT=${EVAL_SAMPLE_LIMIT:-4096}                                      # Deterministic eval-loss subset size; 0 uses the full eval split.
 DEEPSPEED_CONFIG=${DEEPSPEED_CONFIG:-scripts/deepspeed_zero3.json}                # DeepSpeed config path for full-parameter SFT. LoRA scripts may leave it unused.
-ENABLE_EVAL=${ENABLE_EVAL:-False}                                                 # Whether to run Trainer evaluation during training.
-SAVE_BEST_EVAL_LOSS=${SAVE_BEST_EVAL_LOSS:-False}                                 # Whether to save a best checkpoint by eval loss.
+ENABLE_EVAL=${ENABLE_EVAL:-True}                                                  # Whether to run Trainer evaluation during training.
+SAVE_BEST_EVAL_LOSS=${SAVE_BEST_EVAL_LOSS:-True}                                  # Whether to save a best checkpoint by eval loss.
 SAVE_BEST_TRAIN_LOSS=${SAVE_BEST_TRAIN_LOSS:-True}                                # Whether to save a best checkpoint by training loss.
 BEST_TRAIN_LOSS_START_STEP=${BEST_TRAIN_LOSS_START_STEP:-5000}                    # Step threshold before best-train-loss checkpointing starts.
 SAVE_BEST_INFER_INDEX=${SAVE_BEST_INFER_INDEX:-False}                             # Whether to run inference-based best checkpoint selection.
@@ -415,6 +416,7 @@ if [[ "${ENABLE_EVAL}" =~ ^(1|true|True|TRUE|yes|YES)$ ]]; then
   EVAL_ARGS=(                                                                     # Optional Trainer eval arguments, populated only when ENABLE_EVAL is true.
     --eval_data_path "${EVAL_PATH}"
     --eval_image_folder "${IMAGE_FOLDER}"
+    --eval_sample_limit "${EVAL_SAMPLE_LIMIT}"
     "${EVAL_STRATEGY_ARG}" steps
     --eval_steps "${EVAL_STEPS}"
     --save_best_eval_loss "${SAVE_BEST_EVAL_LOSS}"

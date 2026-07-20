@@ -83,6 +83,7 @@ DATASET_ALLOWED_TARGET_INTERSECTION_TYPES=${DATASET_ALLOWED_TARGET_INTERSECTION_
 # Main runtime parameters and hyperparameters.
 TARGET_GLOBAL_BATCH_SIZE=${TARGET_GLOBAL_BATCH_SIZE:-128}                         # Desired global batch size used to derive gradient accumulation.
 PER_DEVICE_TRAIN_BATCH_SIZE=${PER_DEVICE_TRAIN_BATCH_SIZE:-4}                     # Micro batch size per NPU process.
+PER_DEVICE_EVAL_BATCH_SIZE=${PER_DEVICE_EVAL_BATCH_SIZE:-1}                       # Keep eval memory bounded; Transformers otherwise defaults to 8 per NPU.
 NUM_EPOCHS=${NUM_EPOCHS:-8}                                                       # Match Jiangjihua v9 best CapRL recipe.
 MAX_STEPS=${MAX_STEPS:--1}                                                        # -1 runs NUM_EPOCHS; a positive value enables short NPU memory smoke tests.
 LR=${LR:-2e-5}                                                                    # Base learning rate for LLM and default trainable parameters.
@@ -523,7 +524,7 @@ echo "Train:        ${TRAIN_PATH}"
 echo "Eval:         ${EVAL_PATH}"
 echo "Output:       ${OUTPUT_PATH}"
 echo "Topology:     nnodes=${NNODES}, node_rank=${NODE_RANK}, nproc_per_node=${NPROC_PER_NODE}"
-echo "Batch:        per_device=${PER_DEVICE_TRAIN_BATCH_SIZE}, accumulation=${GRADIENT_ACCUMULATION_STEPS}, effective=$((MICRO_BATCH * GRADIENT_ACCUMULATION_STEPS))"
+echo "Batch:        train_per_device=${PER_DEVICE_TRAIN_BATCH_SIZE}, eval_per_device=${PER_DEVICE_EVAL_BATCH_SIZE}, accumulation=${GRADIENT_ACCUMULATION_STEPS}, effective=$((MICRO_BATCH * GRADIENT_ACCUMULATION_STEPS))"
 echo "Schedule/LR:  epochs=${NUM_EPOCHS}, max_steps=${MAX_STEPS}, llm=${LR}, projector=${MM_PROJECTOR_LR}, vision=${MM_VISION_TOWER_LR}"
 echo "============================================================"
 
@@ -557,6 +558,7 @@ torchrun \
   --num_train_epochs "${NUM_EPOCHS}" \
   --max_steps "${MAX_STEPS}" \
   --per_device_train_batch_size "${PER_DEVICE_TRAIN_BATCH_SIZE}" \
+  --per_device_eval_batch_size "${PER_DEVICE_EVAL_BATCH_SIZE}" \
   --gradient_accumulation_steps "${GRADIENT_ACCUMULATION_STEPS}" \
   --learning_rate "${LR}" \
   --mm_projector_lr "${MM_PROJECTOR_LR}" \

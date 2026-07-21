@@ -1,4 +1,3 @@
-import gc
 import json
 import os
 import subprocess
@@ -38,24 +37,6 @@ def _ensure_generation_config(model):
         model.generation_config = transformers.GenerationConfig.from_dict(config)
     else:
         model.generation_config = transformers.GenerationConfig()
-
-
-def _maybe_release_npu_cache_before_checkpoint(trainer):
-    enabled = os.environ.get("MLLM_NPU_EMPTY_CACHE_BEFORE_CHECKPOINT", "0").strip().lower()
-    if enabled not in {"1", "true", "yes", "on"}:
-        return
-
-    device = getattr(getattr(trainer, "args", None), "device", None)
-    device_type = str(getattr(device, "type", device)).lower()
-    if device_type != "npu" or not hasattr(torch, "npu"):
-        return
-
-    # Checkpointing starts with a small NPU collective in Trainer.store_flos().
-    # Releasing cached training blocks first prevents that collective from being
-    # the first operation to request a new Ascend memory pool.
-    torch.npu.synchronize()
-    gc.collect()
-    torch.npu.empty_cache()
 
 
 def _save_config_pretrained(model, output_dir):
@@ -474,7 +455,6 @@ class LLaVATrainer(Trainer):
         run_dir = self._get_output_dir(trial=trial)
         output_dir = os.path.join(run_dir, checkpoint_folder)
 
-        _maybe_release_npu_cache_before_checkpoint(self)
         sync_qwen_multimodal_config(self.model)
 
         if getattr(self.args, 'tune_mm_mlp_adapter', False):

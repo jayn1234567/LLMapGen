@@ -591,14 +591,24 @@ run_one_checkpoint() {
       return 1
       ;;
   esac
-# Launch the recipe entrypoint. Training uses HCCL/DDP and full SFT may add DeepSpeed.
-if ! torchrun \
-    --nnodes="${NNODES}" \
-    --nproc_per_node="${NPROC_PER_NODE}" \
-    --node_rank="${NODE_RANK}" \
-    --master_addr="${MASTER_ADDR}" \
-    --master_port="${MASTER_PORT}" \
-    scripts/tools/infer_centerline_checkpoint.py \
+# Launch single-device diagnostics directly so Python reports the original
+# exception without torchrun/distributed wrappers. Multi-device runs keep DDP.
+infer_launcher=()
+if [ "${NNODES}" -eq 1 ] && [ "${NPROC_PER_NODE}" -eq 1 ]; then
+  unset LOCAL_RANK RANK WORLD_SIZE
+  infer_launcher=(python scripts/tools/infer_centerline_checkpoint.py)
+else
+  infer_launcher=(
+    torchrun
+    --nnodes="${NNODES}"
+    --nproc_per_node="${NPROC_PER_NODE}"
+    --node_rank="${NODE_RANK}"
+    --master_addr="${MASTER_ADDR}"
+    --master_port="${MASTER_PORT}"
+    scripts/tools/infer_centerline_checkpoint.py
+  )
+fi
+if ! "${infer_launcher[@]}" \
     --checkpoint-dir "${checkpoint_dir}" \
     --vision_tower "${VISION_TOWER}" \
     --mm_vision_tower_type "${MM_VISION_TOWER_TYPE}" \

@@ -47,9 +47,15 @@ from mllm.coord_utils import (
 
 TASK_TEXT = "Please construct the complete road map in the current BEV (Bird's Eye View) image patch."
 INSIDE, LEFT, RIGHT, BOTTOM, TOP = 0, 1, 2, 4, 8
-SEMANTIC_SCHEMA_VERSION = "lane_intersection_semantic_v2_ignore_lane_3_22"
-LANE_TYPE_NAMES = {1: "common", 2: "right_turn"}
-ALLOWED_LANE_TYPES = frozenset({"common", "right_turn", "other"})
+SEMANTIC_SCHEMA_VERSION = "lane_intersection_semantic_v3_lane_4_18_25_ignore_3_22"
+LANE_TYPE_NAMES = {
+    1: "common",
+    2: "right_turn",
+    4: "waiting_area",
+    18: "bus_lane",
+    25: "main_auxiliary_connector",
+}
+ALLOWED_LANE_TYPES = frozenset({*LANE_TYPE_NAMES.values(), "other"})
 INTERSECTION_TYPE_BY_SOURCE_PAIR = {
     (1, 1): "common",
     (1, 2): "t_intersection",
@@ -1451,8 +1457,10 @@ def make_prompt(include_intersections: bool, incoming_traces, incoming_intersect
         (
             'For every centerline, include "lane_type" with exactly one of: '
             '"common" for a regular centerline, "right_turn" for a right-turn-only '
-            'centerline, or "other" for any remaining lane class. Do not output '
-            'U-turn reference lines.'
+            'centerline, "waiting_area" for a waiting-area centerline, "bus_lane" '
+            'for a bus-lane centerline, "main_auxiliary_connector" for a connector '
+            'between main and auxiliary roads, or "other" for any remaining lane '
+            'class. Do not output centerlines from excluded raw LaneType 3 or LaneType 22.'
         ),
     ])
     if include_intersections:

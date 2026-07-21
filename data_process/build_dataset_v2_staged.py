@@ -46,6 +46,7 @@ from data_process.build_dataset_v2 import (
 from data_process.state_update_dataset_common import (
     COORD_MODE_NORM1000,
     DEFAULT_COORD_RANGE,
+    ALLOWED_LANE_TYPES,
     IGNORED_LANE_TYPE_CODES,
     SEMANTIC_SCHEMA_VERSION,
     build_sft_record,
@@ -61,7 +62,7 @@ from scripts.tools.tag_hard_map_samples import DIFFICULTY_RULE_VERSION
 
 
 STAGE_MARKER = "stage_complete.json"
-STAGE_VERSION = "rc_dataset_v2_source_stage_v3_ignore_lane_3_22"
+STAGE_VERSION = "rc_dataset_v2_source_stage_v4_lane_4_18_25_ignore_3_22"
 
 
 def add_geometry_args(parser: argparse.ArgumentParser) -> None:
@@ -723,7 +724,7 @@ def finalize_stages(args) -> None:
             "semantic_schema_version": SEMANTIC_SCHEMA_VERSION,
             "validation_passed": True,
             "ignored_source_lane_type_codes": sorted(IGNORED_LANE_TYPE_CODES),
-            "allowed_lane_types": ["common", "right_turn", "other"],
+            "allowed_lane_types": sorted(ALLOWED_LANE_TYPES),
             "allowed_intersection_types": [
                 "common",
                 "t_intersection",

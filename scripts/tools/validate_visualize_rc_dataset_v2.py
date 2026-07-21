@@ -631,7 +631,13 @@ def audit(args: argparse.Namespace) -> tuple[dict[str, Any], ErrorCollector]:
             if not isinstance(prompt, str):
                 errors.add("missing_prompt", "human prompt is missing", split=split, line_number=line_number, sample_id=sample_id)
             else:
-                required_texts = ["lane_type", "intersection_type", "normalized 0-1000", f"{target_size}x{target_size}"]
+                required_texts = [
+                    "lane_type",
+                    *sorted(ALLOWED_LANE_TYPES),
+                    "intersection_type",
+                    "normalized 0-1000",
+                    f"{target_size}x{target_size}",
+                ]
                 if intersection_prompt_task:
                     required_texts.extend([PROMPT_MARKER, "centerlines only"])
                 for required_text in required_texts:

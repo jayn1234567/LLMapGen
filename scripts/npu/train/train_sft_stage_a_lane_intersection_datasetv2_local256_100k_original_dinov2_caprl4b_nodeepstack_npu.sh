@@ -82,7 +82,7 @@ DATASET_ALLOWED_TARGET_INTERSECTION_TYPES=${DATASET_ALLOWED_TARGET_INTERSECTION_
 # BEST_* options control train-loss, eval-loss, or infer-index best checkpoint folders.
 # Main runtime parameters and hyperparameters.
 TARGET_GLOBAL_BATCH_SIZE=${TARGET_GLOBAL_BATCH_SIZE:-128}                         # Desired global batch size used to derive gradient accumulation.
-PER_DEVICE_TRAIN_BATCH_SIZE=${PER_DEVICE_TRAIN_BATCH_SIZE:-4}                     # Micro batch size per NPU process.
+PER_DEVICE_TRAIN_BATCH_SIZE=${PER_DEVICE_TRAIN_BATCH_SIZE:-2}                     # Leave NPU memory headroom at checkpoint boundaries; 32 NPUs derive accumulation=2 for global batch 128.
 PER_DEVICE_EVAL_BATCH_SIZE=${PER_DEVICE_EVAL_BATCH_SIZE:-1}                       # Keep eval memory bounded; Transformers otherwise defaults to 8 per NPU.
 NUM_EPOCHS=${NUM_EPOCHS:-8}                                                       # Match Jiangjihua v9 best CapRL recipe.
 MAX_STEPS=${MAX_STEPS:--1}                                                        # -1 runs NUM_EPOCHS; a positive value enables short NPU memory smoke tests.

@@ -44,15 +44,16 @@ CHECKPOINT_OBS_LIST=${CHECKPOINT_OBS_LIST:-}                                    
 CHECKPOINT_DIRS=${CHECKPOINT_DIRS:-}                                              # Comma, semicolon, or newline separated local checkpoint roots to evaluate.
 VISION_TOWER=${VISION_TOWER:-${OBS_CACHE}/checkpoints/${VISION_TOWER_NAME}}       # Vision tower path passed to the model loader. Multi-vision uses a comma list.
 # Local dataset and output paths for this run.
-DATASET_ZIP_PATH=${DATASET_ZIP_PATH:-${OBS_CACHE}/dataset_${RUN_ID}.zip}          # Local path for the downloaded dataset zip.
-DATASET_EXTRACT_ROOT=${DATASET_EXTRACT_ROOT:-${OBS_CACHE}/dataset_extract_${RUN_ID}}  # Local directory where the dataset zip is extracted.
-DATASET_PATH=${DATASET_PATH:-${DATASET_EXTRACT_ROOT}/${DATASET_DIR_NAME}}        # Extracted dataset root containing phase_a and phase_b folders.
-IMAGE_FOLDER=${IMAGE_FOLDER:-${DATASET_PATH}}                                     # Image root passed to training or inference. Usually DATASET_PATH.
-TEST_JSON=${TEST_JSON:-${DATASET_PATH}/${DATASET_PHASE}/test.jsonl}               # Inference JSONL path for the selected dataset phase.
+DATASET_ARCHIVE_PATH=${DATASET_ARCHIVE_PATH:-${DATASET_ZIP_PATH:-${OBS_CACHE}/dataset_${RUN_ID}.archive}}  # Local archive path; zip/tar/tar.gz are detected by content.
+DATASET_EXTRACT_ROOT=${DATASET_EXTRACT_ROOT:-${OBS_CACHE}/dataset_extract_${RUN_ID}}  # Local directory where the dataset archive is extracted.
+DATASET_PATH=${DATASET_PATH:-}                                                    # Optional extracted dataset root; auto-resolved when empty.
+IMAGE_FOLDER=${IMAGE_FOLDER:-}                                                    # Optional image-root override; defaults to the resolved DATASET_PATH.
+TEST_JSON=${TEST_JSON:-}                                                         # Optional test JSONL override; test/val/eval is auto-resolved when empty.
 CHECKPOINT_DOWNLOAD_ROOT=${CHECKPOINT_DOWNLOAD_ROOT:-${OBS_CACHE}/checkpoints_${RUN_ID}}  # Local root used to download checkpoint candidates from OBS.
 LOCAL_OUTPUT_ROOT=${LOCAL_OUTPUT_ROOT:-${OBS_CACHE}/test_phase_a_lane_intersection_dinov2_output_${RUN_ID}}  # Per-run local inference output root.
 CLOUD_OUTPUT_DIR=${TEST_RESULT_OBS:-${OSB_SHARE_PATH%/}/test_results_${RUN_ID}}   # Final cloud output directory for inference or GRPO results.
 UPLOAD_RESULTS=${UPLOAD_RESULTS:-True}                                            # Set false for local Ascend evaluation that should keep results on disk only.
+REUSE_LOCAL_ASSETS=${REUSE_LOCAL_ASSETS:-True}                                   # Reuse downloaded vision/data assets and extracted data when present.
 
 # ====================== inference params ======================
 # CHECKPOINT_OBS_LIST or CHECKPOINT_DIRS can contain one or multiple checkpoints.
@@ -188,11 +189,96 @@ fi
 export NNODES NODE_RANK NPROC_PER_NODE MASTER_ADDR MASTER_PORT
 export RDZV_ID=${RDZV_ID:-test_phase_a_lane_intersection_dinov2_${RUN_ID}}        # Unique rendezvous id for this distributed run.
 # Download recipe-specific assets and the dataset, then verify required local paths.
-python -c "import moxing as mox; mox.file.copy_parallel('${MODEL_OBS_PATH}/${VISION_TOWER_NAME}', '${VISION_TOWER}')"
-python -c "import moxing as mox; mox.file.copy('${DATASET_OBS_PATH}', '${DATASET_ZIP_PATH}')"
+if [[ "${REUSE_LOCAL_ASSETS}" =~ ^(1|true|True|TRUE|yes|YES)$ ]] && [ -f "${VISION_TOWER}/config.json" ]; then
+  echo "[assets] reusing vision tower: ${VISION_TOWER}"
+else
+  python -c "import moxing as mox; mox.file.copy_parallel('${MODEL_OBS_PATH}/${VISION_TOWER_NAME}', '${VISION_TOWER}')"
+fi
+if [[ "${REUSE_LOCAL_ASSETS}" =~ ^(1|true|True|TRUE|yes|YES)$ ]] && [ -s "${DATASET_ARCHIVE_PATH}" ]; then
+  echo "[assets] reusing dataset archive: ${DATASET_ARCHIVE_PATH}"
+else
+  mkdir -p "$(dirname "${DATASET_ARCHIVE_PATH}")"
+  python -c "import moxing as mox; mox.file.copy('${DATASET_OBS_PATH}', '${DATASET_ARCHIVE_PATH}')"
+fi
 mkdir -p "${DATASET_EXTRACT_ROOT}" "${CHECKPOINT_DOWNLOAD_ROOT}" "${LOCAL_OUTPUT_ROOT}"
-unzip -q "${DATASET_ZIP_PATH}" -d "${DATASET_EXTRACT_ROOT}"
+if [[ "${REUSE_LOCAL_ASSETS}" =~ ^(1|true|True|TRUE|yes|YES)$ ]] && \
+   [ -n "$(find "${DATASET_EXTRACT_ROOT}" -type f \( -name test.jsonl -o -name val.jsonl \) -print -quit 2>/dev/null)" ]; then
+  echo "[assets] reusing extracted dataset: ${DATASET_EXTRACT_ROOT}"
+else
+  python - "${DATASET_ARCHIVE_PATH}" "${DATASET_EXTRACT_ROOT}" <<'PY'
+import sys
+import tarfile
+import zipfile
+from pathlib import Path
+
+archive = Path(sys.argv[1])
+output = Path(sys.argv[2])
+output.mkdir(parents=True, exist_ok=True)
+if zipfile.is_zipfile(archive):
+    print(f"[dataset] extracting zip: {archive} -> {output}", flush=True)
+    with zipfile.ZipFile(archive) as handle:
+        handle.extractall(output)
+elif tarfile.is_tarfile(archive):
+    print(f"[dataset] extracting tar: {archive} -> {output}", flush=True)
+    with tarfile.open(archive, "r:*") as handle:
+        handle.extractall(output)
+else:
+    raise SystemExit(f"Unsupported dataset archive (expected zip/tar/tar.gz): {archive}")
+PY
+fi
+
+if [ -z "${DATASET_PATH}" ]; then
+  DATASET_PATH=$(python - "${DATASET_EXTRACT_ROOT}" "${DATASET_DIR_NAME}" "${DATASET_PHASE}" <<'PY'
+import sys
+from pathlib import Path
+
+extract_root = Path(sys.argv[1]).resolve()
+preferred = str(sys.argv[2]).strip()
+phase = str(sys.argv[3]).strip()
+candidates = []
+if preferred:
+    candidates.append(extract_root / preferred)
+candidates.append(extract_root)
+candidates.extend(path.parent.parent for path in extract_root.rglob(f"{phase}/test.jsonl"))
+candidates.extend(path.parent for path in extract_root.rglob("test.jsonl"))
+candidates.extend(path.parent for path in extract_root.rglob("val.jsonl"))
+
+seen = set()
+for candidate in candidates:
+    candidate = candidate.resolve()
+    if candidate in seen:
+        continue
+    seen.add(candidate)
+    if (candidate / phase / "test.jsonl").is_file() or (candidate / "test.jsonl").is_file():
+        print(candidate)
+        raise SystemExit(0)
+    if (candidate / phase / "val.jsonl").is_file() or (candidate / "val.jsonl").is_file():
+        print(candidate)
+        raise SystemExit(0)
+raise SystemExit(f"Unable to resolve a dataset root below {extract_root}")
+PY
+  )
+fi
+IMAGE_FOLDER=${IMAGE_FOLDER:-${DATASET_PATH}}
+if [ -z "${TEST_JSON}" ]; then
+  for candidate in \
+    "${DATASET_PATH}/${DATASET_PHASE}/test.jsonl" \
+    "${DATASET_PATH}/test.jsonl" \
+    "${DATASET_PATH}/${DATASET_PHASE}/val.jsonl" \
+    "${DATASET_PATH}/val.jsonl" \
+    "${DATASET_PATH}/${DATASET_PHASE}/eval.jsonl" \
+    "${DATASET_PATH}/eval.jsonl"; do
+    if [ -f "${candidate}" ]; then
+      TEST_JSON="${candidate}"
+      break
+    fi
+  done
+fi
 echo "Run id: ${RUN_ID}"
+echo "Dataset archive: ${DATASET_ARCHIVE_PATH}"
+echo "Dataset root: ${DATASET_PATH}"
+echo "Test JSONL: ${TEST_JSON}"
+echo "Image folder: ${IMAGE_FOLDER}"
 echo "Local output root: ${LOCAL_OUTPUT_ROOT}"
 echo "Cloud output dir: ${CLOUD_OUTPUT_DIR}"
 

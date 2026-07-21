@@ -81,8 +81,8 @@ DATASET_ALLOWED_TARGET_INTERSECTION_TYPES=${DATASET_ALLOWED_TARGET_INTERSECTION_
 # SAVE_STEPS/SAVE_TOTAL_LIMIT control regular checkpoint-* retention.
 # BEST_* options control train-loss, eval-loss, or infer-index best checkpoint folders.
 # Main runtime parameters and hyperparameters.
-TARGET_GLOBAL_BATCH_SIZE=${TARGET_GLOBAL_BATCH_SIZE:-64}                          # This 100k recipe uses global batch 64 as requested.
-PER_DEVICE_TRAIN_BATCH_SIZE=${PER_DEVICE_TRAIN_BATCH_SIZE:-2}                     # This 100k recipe uses two samples per NPU; other recipes are unchanged.
+TARGET_GLOBAL_BATCH_SIZE=${TARGET_GLOBAL_BATCH_SIZE:-128}                         # Desired global batch size used to derive gradient accumulation.
+PER_DEVICE_TRAIN_BATCH_SIZE=${PER_DEVICE_TRAIN_BATCH_SIZE:-4}                     # Match the original Jiangjihua full-parameter recipe on 32 NPUs.
 PER_DEVICE_EVAL_BATCH_SIZE=${PER_DEVICE_EVAL_BATCH_SIZE:-1}                       # Keep eval memory bounded; Transformers otherwise defaults to 8 per NPU.
 NUM_EPOCHS=${NUM_EPOCHS:-8}                                                       # Match Jiangjihua v9 best CapRL recipe.
 MAX_STEPS=${MAX_STEPS:--1}                                                        # -1 runs NUM_EPOCHS; a positive value enables short NPU memory smoke tests.
@@ -95,12 +95,12 @@ MODEL_MAX_LENGTH=${MODEL_MAX_LENGTH:-4096}                                      
 SAVE_STEPS=${SAVE_STEPS:-1000}                                                    # Match the v9 best checkpoint interval.
 SAVE_TOTAL_LIMIT=${SAVE_TOTAL_LIMIT:-15}                                          # Maximum number of regular checkpoints to keep.
 LOGGING_STEPS=${LOGGING_STEPS:-10}                                                # Training log interval in optimizer steps.
-EVAL_STEPS=${EVAL_STEPS:-1000}                                                    # Evaluate alongside each regular Jiangjihua-style checkpoint.
+EVAL_STEPS=${EVAL_STEPS:-2000}                                                    # Evaluation interval when ENABLE_EVAL is true.
 EVAL_SAMPLE_LIMIT=${EVAL_SAMPLE_LIMIT:-10000}                                     # Deterministic eval-loss subset size; 0 uses the full eval split.
 DEEPSPEED_CONFIG=${DEEPSPEED_CONFIG:-scripts/deepspeed_zero3.json}                # DeepSpeed config path for full-parameter SFT. LoRA scripts may leave it unused.
 ENABLE_EVAL=${ENABLE_EVAL:-True}                                                  # Whether to run Trainer evaluation during training.
 SAVE_BEST_EVAL_LOSS=${SAVE_BEST_EVAL_LOSS:-False}                                 # Eval loss is logged every EVAL_STEPS; select the matching regular checkpoint manually.
-SAVE_BEST_TRAIN_LOSS=${SAVE_BEST_TRAIN_LOSS:-True}                                 # Preserve Jiangjihua's original best-train-loss checkpoint behavior.
+SAVE_BEST_TRAIN_LOSS=${SAVE_BEST_TRAIN_LOSS:-False}                                # Whether to save a best checkpoint by training loss.
 BEST_TRAIN_LOSS_START_STEP=${BEST_TRAIN_LOSS_START_STEP:-5000}                    # Step threshold before best-train-loss checkpointing starts.
 SAVE_BEST_INFER_INDEX=${SAVE_BEST_INFER_INDEX:-False}                             # Whether to run inference-based best checkpoint selection.
 BEST_INFER_INDEX_METRIC=${BEST_INFER_INDEX_METRIC:-length_f1}                     # Metric used for inference-based best checkpoint selection.

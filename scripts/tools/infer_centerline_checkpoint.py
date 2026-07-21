@@ -999,17 +999,7 @@ def main():
             print_lane_intersection_eval_tables,
         )
 
-    checkpoint_arg = str(args.checkpoint_dir).strip()
-    if not checkpoint_arg:
-        parser.error("--checkpoint-dir cannot be empty")
-    checkpoint_dir = Path(checkpoint_arg).expanduser().resolve()
-    if not checkpoint_dir.is_dir():
-        raise FileNotFoundError(f"Checkpoint directory does not exist: {checkpoint_dir}")
-    checkpoint_entries = sorted(path.name for path in checkpoint_dir.iterdir())
-    print(
-        f"[infer] checkpoint_dir={checkpoint_dir}; "
-        f"entries={checkpoint_entries[:20]}"
-    )
+    checkpoint_dir = Path(args.checkpoint_dir)
     manifest = read_manifest(checkpoint_dir)
 
     conv_template = args.conv_template or manifest.get("version") or ""

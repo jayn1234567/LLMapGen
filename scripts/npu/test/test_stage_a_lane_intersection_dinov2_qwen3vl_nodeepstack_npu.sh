@@ -46,6 +46,7 @@ VISION_TOWER=${VISION_TOWER:-${OBS_CACHE}/checkpoints/${VISION_TOWER_NAME}}     
 # Local dataset and output paths for this run.
 DATASET_ARCHIVE_PATH=${DATASET_ARCHIVE_PATH:-${DATASET_ZIP_PATH:-${OBS_CACHE}/dataset_${RUN_ID}.archive}}  # Local archive path; zip/tar/tar.gz are detected by content.
 DATASET_EXTRACT_ROOT=${DATASET_EXTRACT_ROOT:-${OBS_CACHE}/dataset_extract_${RUN_ID}}  # Local directory where the dataset archive is extracted.
+DATASET_EXTRACT_MARKER=${DATASET_EXTRACT_MARKER:-${DATASET_EXTRACT_ROOT}/.llmapgen_extract_complete}  # Written only after a complete archive extraction.
 DATASET_PATH=${DATASET_PATH:-}                                                    # Optional extracted dataset root; auto-resolved when empty.
 IMAGE_FOLDER=${IMAGE_FOLDER:-}                                                    # Optional image-root override; defaults to the resolved DATASET_PATH.
 TEST_JSON=${TEST_JSON:-}                                                         # Optional test JSONL override; test/val/eval is auto-resolved when empty.
@@ -194,17 +195,33 @@ if [[ "${REUSE_LOCAL_ASSETS}" =~ ^(1|true|True|TRUE|yes|YES)$ ]] && [ -f "${VISI
 else
   python -c "import moxing as mox; mox.file.copy_parallel('${MODEL_OBS_PATH}/${VISION_TOWER_NAME}', '${VISION_TOWER}')"
 fi
-if [[ "${REUSE_LOCAL_ASSETS}" =~ ^(1|true|True|TRUE|yes|YES)$ ]] && [ -s "${DATASET_ARCHIVE_PATH}" ]; then
+archive_is_valid() {
+  python - "$1" <<'PY'
+import sys
+import tarfile
+import zipfile
+from pathlib import Path
+
+archive = Path(sys.argv[1])
+raise SystemExit(0 if archive.is_file() and (zipfile.is_zipfile(archive) or tarfile.is_tarfile(archive)) else 1)
+PY
+}
+if [[ "${REUSE_LOCAL_ASSETS}" =~ ^(1|true|True|TRUE|yes|YES)$ ]] && archive_is_valid "${DATASET_ARCHIVE_PATH}"; then
   echo "[assets] reusing dataset archive: ${DATASET_ARCHIVE_PATH}"
 else
   mkdir -p "$(dirname "${DATASET_ARCHIVE_PATH}")"
+  rm -f "${DATASET_ARCHIVE_PATH}"
   python -c "import moxing as mox; mox.file.copy('${DATASET_OBS_PATH}', '${DATASET_ARCHIVE_PATH}')"
+  if ! archive_is_valid "${DATASET_ARCHIVE_PATH}"; then
+    echo "ERROR: downloaded dataset archive is incomplete or unsupported: ${DATASET_ARCHIVE_PATH}"
+    exit 1
+  fi
 fi
 mkdir -p "${DATASET_EXTRACT_ROOT}" "${CHECKPOINT_DOWNLOAD_ROOT}" "${LOCAL_OUTPUT_ROOT}"
-if [[ "${REUSE_LOCAL_ASSETS}" =~ ^(1|true|True|TRUE|yes|YES)$ ]] && \
-   [ -n "$(find "${DATASET_EXTRACT_ROOT}" -type f \( -name test.jsonl -o -name val.jsonl \) -print -quit 2>/dev/null)" ]; then
+if [[ "${REUSE_LOCAL_ASSETS}" =~ ^(1|true|True|TRUE|yes|YES)$ ]] && [ -f "${DATASET_EXTRACT_MARKER}" ]; then
   echo "[assets] reusing extracted dataset: ${DATASET_EXTRACT_ROOT}"
 else
+  rm -f "${DATASET_EXTRACT_MARKER}"
   python - "${DATASET_ARCHIVE_PATH}" "${DATASET_EXTRACT_ROOT}" <<'PY'
 import sys
 import tarfile
@@ -225,6 +242,7 @@ elif tarfile.is_tarfile(archive):
 else:
     raise SystemExit(f"Unsupported dataset archive (expected zip/tar/tar.gz): {archive}")
 PY
+  touch "${DATASET_EXTRACT_MARKER}"
 fi
 
 if [ -z "${DATASET_PATH}" ]; then

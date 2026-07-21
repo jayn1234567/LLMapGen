@@ -189,7 +189,6 @@ def main():
     parser.add_argument("--eval-meter-per-pixel", type=float, default=0.2)
     parser.add_argument("--eval-buffer-size", type=float, default=1.0)
     parser.add_argument("--eval-match-threshold", type=float, default=0.33)
-    parser.add_argument("--eval-intersection-iou-threshold", type=float, default=0.5)
     parser.add_argument("--whole-map-viz-dir", default="", help="Directory for stitched whole-map visualizations. Defaults to input-dir/whole_map_viz.")
     parser.add_argument("--skip-whole-map-viz", action="store_true")
     parser.add_argument("--max-samples", type=int, default=0, help="Visualize at most this many records; 0 means all.")
@@ -273,7 +272,6 @@ def main():
             meter_per_pixel=args.eval_meter_per_pixel,
             buffer_size=args.eval_buffer_size,
             match_threshold=args.eval_match_threshold,
-            intersection_iou_threshold=args.eval_intersection_iou_threshold,
         )
         map_task = args.map_task
         if map_task == "auto":
@@ -284,8 +282,6 @@ def main():
                 "centerline_eval": map_eval["lane"],
                 "intersection_eval": map_eval["intersection"],
                 "lane_intersection_eval": map_eval["lane_intersection"],
-                "lane_type_eval": map_eval["lane_type"],
-                "intersection_type_eval": map_eval["intersection_type"],
                 "map_eval": map_eval,
             }
         else:

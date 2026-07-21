@@ -44,15 +44,12 @@ from scripts.tools.build_rc_dataset_v2_context512_windows import (
 
 
 class DatasetV2ContextTest(unittest.TestCase):
-    def test_lane_type_mapping_and_exclusions(self):
+    def test_lane_types_3_and_22_are_excluded_before_clipping(self):
         self.assertEqual(IGNORED_LANE_TYPE_CODES, frozenset({3, 22}))
         self.assertIsNone(lane_type_name(3))
         self.assertIsNone(lane_type_name("22"))
         self.assertEqual(lane_type_name(1), "common")
         self.assertEqual(lane_type_name(2), "right_turn")
-        self.assertEqual(lane_type_name(4), "waiting_area")
-        self.assertEqual(lane_type_name("18"), "bus_lane")
-        self.assertEqual(lane_type_name(25), "main_auxiliary_connector")
         self.assertEqual(lane_type_name(20), "other")
 
     def test_stable_stage_split_is_order_independent(self):
@@ -378,17 +375,13 @@ class DatasetV2ContextTest(unittest.TestCase):
         self.assertIsNone(lane_type_name(3))
         self.assertIsNone(lane_type_name("3"))
         self.assertIsNone(lane_type_name("3.0"))
-        self.assertIsNone(lane_type_name(22))
 
-    def test_lane_type_metadata_keeps_explicit_lane_classes(self):
+    def test_lane_type_metadata_keeps_right_turn_and_common_lines(self):
         self.assertEqual(lane_type_name(2), "right_turn")
         self.assertEqual(lane_type_name("2.0"), "right_turn")
         self.assertEqual(lane_type_name(1), "common")
-        self.assertEqual(lane_type_name(4), "waiting_area")
-        self.assertEqual(lane_type_name(18), "bus_lane")
-        self.assertEqual(lane_type_name(25), "main_auxiliary_connector")
         self.assertEqual(lane_type_name(None), "other")
-        self.assertEqual(lane_type_name(20), "other")
+        self.assertEqual(lane_type_name(25), "other")
         self.assertEqual(normalize_lane_type_code(" 2.0 "), 2)
 
     def test_intersection_type_mapping_keeps_known_classes_and_uses_other_fallback(self):

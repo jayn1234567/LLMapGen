@@ -36,7 +36,6 @@ if str(REPO_ROOT) not in sys.path:
 from data_process.state_update_dataset_common import (
     COORD_MODE_NORM1000,
     DEFAULT_COORD_RANGE,
-    ALLOWED_LANE_TYPES,
     IGNORED_LANE_TYPE_CODES,
     SEMANTIC_SCHEMA_VERSION,
     build_sft_record,
@@ -952,7 +951,7 @@ def main(argv=None):
             "semantic_schema_version": SEMANTIC_SCHEMA_VERSION,
             "validation_passed": True,
             "ignored_source_lane_type_codes": sorted(IGNORED_LANE_TYPE_CODES),
-            "allowed_lane_types": sorted(ALLOWED_LANE_TYPES),
+            "allowed_lane_types": ["common", "right_turn", "other"],
             "allowed_intersection_types": [
                 "common",
                 "t_intersection",

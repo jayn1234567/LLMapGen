@@ -78,19 +78,9 @@ DIFFICULTY_REUSE_SPLITS=${DIFFICULTY_REUSE_SPLITS:-True}                        
 DIFFICULTY_REBUILD_SPLITS=${DIFFICULTY_REBUILD_SPLITS:-False}                     # Force rebuilding fixed eval JSONL files even if they already exist.
 DIFFICULTY_TOTAL_EVAL=${DIFFICULTY_TOTAL_EVAL:-True}                              # Merge per-bucket predictions and compute one aggregate metric.
 DIFFICULTY_TOTAL_LABEL=${DIFFICULTY_TOTAL_LABEL:-all_selected}                    # Output folder name for the aggregate selected-sample metrics.
-REFERENCE_EVAL_SPLIT_ROOT=${REFERENCE_EVAL_SPLIT_ROOT:-}                          # Optional old fixed-eval root whose image identities and buckets must be reused.
-REFERENCE_EVAL_SCAN_TARGET_SPLITS=${REFERENCE_EVAL_SCAN_TARGET_SPLITS:-train,eval,test}  # New-dataset splits scanned for matching image patches.
-REFERENCE_EVAL_ALLOWED_TARGET_SPLITS=${REFERENCE_EVAL_ALLOWED_TARGET_SPLITS:-eval,test}  # New-dataset splits eligible for fair evaluation; train is excluded by default.
-REFERENCE_EVAL_MIN_MATCH_RATIO=${REFERENCE_EVAL_MIN_MATCH_RATIO:-0.0}             # Fail remapping when the emitted/reference ratio is below this value.
-REFERENCE_EVAL_REQUIRE_ALL=${REFERENCE_EVAL_REQUIRE_ALL:-False}                   # Require every old reference image to have an allowed new-dataset record.
-REFERENCE_EVAL_GROUND_TRUTH_SOURCE=${REFERENCE_EVAL_GROUND_TRUTH_SOURCE:-target}  # target uses new labels; reference keeps old GT with the new image path and prompt.
-REFERENCE_EVAL_REFERENCE_IMAGE_ROOT=${REFERENCE_EVAL_REFERENCE_IMAGE_ROOT:-}      # Optional old dataset root for decoded-pixel identity verification.
-REFERENCE_EVAL_VERIFY_PIXELS=${REFERENCE_EVAL_VERIFY_PIXELS:-False}               # Compare decoded RGB pixels when both old and new image roots are available.
-REFERENCE_EVAL_REQUIRE_PIXEL_MATCH=${REFERENCE_EVAL_REQUIRE_PIXEL_MATCH:-False}   # Exclude matches whose decoded pixels differ or cannot be resolved.
 EVAL_METER_PER_PIXEL=${EVAL_METER_PER_PIXEL:-0.2}                                 # Jiangjihua line-eval meter-per-pixel setting.
 EVAL_BUFFER_SIZE=${EVAL_BUFFER_SIZE:-1.0}                                         # Jiangjihua line-eval buffer size.
 EVAL_MATCH_THRESHOLD=${EVAL_MATCH_THRESHOLD:-0.33}                                # Jiangjihua line-eval matching threshold.
-EVAL_INTERSECTION_IOU_THRESHOLD=${EVAL_INTERSECTION_IOU_THRESHOLD:-0.5}           # Polygon-IoU threshold used to match predicted and GT intersections.
 CHECKPOINT_DEEPSTACK_MODE=${CHECKPOINT_DEEPSTACK_MODE:-disabled}                  # disabled preserves this recipe; auto trusts checkpoint config.
 # ====================== Ascend environment ======================
 # Ascend and HCCL runtime environment for NPU jobs.
@@ -311,58 +301,6 @@ echo "Image folder: ${IMAGE_FOLDER}"
 echo "Local output root: ${LOCAL_OUTPUT_ROOT}"
 echo "Cloud output dir: ${CLOUD_OUTPUT_DIR}"
 
-# Optionally replace the new dataset's random difficulty sample with records
-# that correspond to the exact image identities used by an older fixed set.
-REFERENCE_EVAL_MAPPING_ACTIVE=0
-if [ -n "${REFERENCE_EVAL_SPLIT_ROOT}" ]; then
-  reference_scan_splits=()
-  while IFS= read -r split; do
-    reference_scan_splits+=("${split}")
-  done < <(read_list "${REFERENCE_EVAL_SCAN_TARGET_SPLITS}")
-  reference_allowed_splits=()
-  while IFS= read -r split; do
-    reference_allowed_splits+=("${split}")
-  done < <(read_list "${REFERENCE_EVAL_ALLOWED_TARGET_SPLITS}")
-  if [ "${#reference_scan_splits[@]}" -eq 0 ] || [ "${#reference_allowed_splits[@]}" -eq 0 ]; then
-    echo "ERROR: reference-eval scan and allowed target split lists must be non-empty."
-    exit 1
-  fi
-  reference_args=(
-    --reference-dir "${REFERENCE_EVAL_SPLIT_ROOT}"
-    --target-dataset-root "${DATASET_PATH}"
-    --output-dir "${DIFFICULTY_SPLIT_ROOT}"
-    --target-phase "${DATASET_PHASE}"
-    --scan-target-splits "${reference_scan_splits[@]}"
-    --allowed-target-splits "${reference_allowed_splits[@]}"
-    --patch-size 256
-    --min-output-match-ratio "${REFERENCE_EVAL_MIN_MATCH_RATIO}"
-    --ground-truth-source "${REFERENCE_EVAL_GROUND_TRUTH_SOURCE}"
-  )
-  if [[ "${REFERENCE_EVAL_REQUIRE_ALL}" =~ ^(1|true|True|TRUE|yes|YES)$ ]]; then
-    reference_args+=(--require-all)
-  fi
-  if [[ "${REFERENCE_EVAL_VERIFY_PIXELS}" =~ ^(1|true|True|TRUE|yes|YES)$ ]]; then
-    if [ -z "${REFERENCE_EVAL_REFERENCE_IMAGE_ROOT}" ]; then
-      echo "ERROR: REFERENCE_EVAL_REFERENCE_IMAGE_ROOT is required when pixel verification is enabled."
-      exit 1
-    fi
-    reference_args+=(
-      --verify-pixels
-      --reference-image-root "${REFERENCE_EVAL_REFERENCE_IMAGE_ROOT}"
-      --target-image-root "${IMAGE_FOLDER}"
-    )
-  fi
-  if [[ "${REFERENCE_EVAL_REQUIRE_PIXEL_MATCH}" =~ ^(1|true|True|TRUE|yes|YES)$ ]]; then
-    reference_args+=(--require-pixel-match)
-  fi
-  python scripts/tools/remap_fixed_eval_to_dataset.py "${reference_args[@]}"
-  DIFFICULTY_EVAL=True
-  DIFFICULTY_REUSE_SPLITS=True
-  DIFFICULTY_REBUILD_SPLITS=False
-  REFERENCE_EVAL_MAPPING_ACTIVE=1
-  echo "[fixed-eval-remap] mapping report: ${DIFFICULTY_SPLIT_ROOT}/mapping_report.json"
-fi
-
 # Build the checkpoint evaluation list from OBS roots or local directories.
 CHECKPOINT_ITEMS=()                                                               # Resolved checkpoint paths that will be evaluated.
 CHECKPOINT_LABELS=()                                                              # Display labels paired with CHECKPOINT_ITEMS.
@@ -505,16 +443,7 @@ if [[ "${DIFFICULTY_EVAL}" =~ ^(1|true|True|TRUE|yes|YES)$ ]]; then
     requested_difficulties+=("${difficulty}")
   done < <(read_list "${DIFFICULTIES}")
   reuse_existing_splits=0
-  if [ "${REFERENCE_EVAL_MAPPING_ACTIVE}" -eq 1 ]; then
-    reuse_existing_splits=1
-    for difficulty in "${requested_difficulties[@]}"; do
-      split_json="${DIFFICULTY_SPLIT_ROOT}/${difficulty}.jsonl"
-      if [ ! -s "${split_json}" ]; then
-        echo "ERROR: fixed-eval remapping produced an empty split: ${split_json}"
-        exit 1
-      fi
-    done
-  elif [[ "${DIFFICULTY_REUSE_SPLITS}" =~ ^(1|true|True|TRUE|yes|YES)$ ]] && \
+  if [[ "${DIFFICULTY_REUSE_SPLITS}" =~ ^(1|true|True|TRUE|yes|YES)$ ]] && \
      ! [[ "${DIFFICULTY_REBUILD_SPLITS}" =~ ^(1|true|True|TRUE|yes|YES)$ ]]; then
     reuse_existing_splits=1
     for difficulty in "${requested_difficulties[@]}"; do
@@ -610,7 +539,6 @@ if ! torchrun \
     --eval-meter-per-pixel "${EVAL_METER_PER_PIXEL}" \
     --eval-buffer-size "${EVAL_BUFFER_SIZE}" \
     --eval-match-threshold "${EVAL_MATCH_THRESHOLD}" \
-    --eval-intersection-iou-threshold "${EVAL_INTERSECTION_IOU_THRESHOLD}" \
     --eval-centerline \
     --eval-output-json "${eval_json}"; then
     echo "ERROR: inference failed for ${checkpoint_label}/${difficulty_label}."
@@ -632,7 +560,6 @@ if ! torchrun \
       --eval-meter-per-pixel "${EVAL_METER_PER_PIXEL}"
       --eval-buffer-size "${EVAL_BUFFER_SIZE}"
       --eval-match-threshold "${EVAL_MATCH_THRESHOLD}"
-      --eval-intersection-iou-threshold "${EVAL_INTERSECTION_IOU_THRESHOLD}"
   )
   if [[ "${DIFFICULTY_EVAL}" =~ ^(1|true|True|TRUE|yes|YES)$ ]]; then
     visualize_args+=(--max-samples "${DIFFICULTY_VIS_LIMIT}" --no-eval-centerline --skip-whole-map-viz)
@@ -664,8 +591,7 @@ write_aggregate_difficulty_eval() {
     "${DIFFICULTIES}" \
     "${EVAL_METER_PER_PIXEL}" \
     "${EVAL_BUFFER_SIZE}" \
-    "${EVAL_MATCH_THRESHOLD}" \
-    "${EVAL_INTERSECTION_IOU_THRESHOLD}" <<'PY'
+    "${EVAL_MATCH_THRESHOLD}" <<'PY'
 import json
 import re
 import sys
@@ -700,7 +626,6 @@ difficulties = read_list(sys.argv[3])
 meter_per_pixel = float(sys.argv[4])
 buffer_size = float(sys.argv[5])
 match_threshold = float(sys.argv[6])
-intersection_iou_threshold = float(sys.argv[7])
 
 records = []
 source_counts = {}
@@ -728,14 +653,11 @@ map_eval = evaluate_lane_intersection_records(
     meter_per_pixel=meter_per_pixel,
     buffer_size=buffer_size,
     match_threshold=match_threshold,
-    intersection_iou_threshold=intersection_iou_threshold,
 )
 eval_summary = {
     "centerline_eval": map_eval["lane"],
     "intersection_eval": map_eval["intersection"],
     "lane_intersection_eval": map_eval["lane_intersection"],
-    "lane_type_eval": map_eval["lane_type"],
-    "intersection_type_eval": map_eval["intersection_type"],
     "map_eval": map_eval,
     "aggregate": {
         "source_counts": source_counts,

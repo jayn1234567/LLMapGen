@@ -24,30 +24,12 @@ inference/evaluation, visualization, and OBS upload.
 |---|---|
 | `CHECKPOINT_OBS_LIST` | Comma, semicolon, or newline separated OBS checkpoint roots to download and evaluate. |
 | `CHECKPOINT_DIRS` | Comma, semicolon, or newline separated local checkpoint roots. |
-| `DATASET_OBS_PATH` | OBS dataset archive path. The DINOv2 lane-intersection launcher accepts zip, tar, and tar.gz. |
+| `DATASET_OBS_PATH` | OBS dataset zip path. |
 | `DATASET_PATH` | Local extracted dataset root containing `phase_a`/`phase_b` jsonl files and images. |
 | `NUM_TEST_SAMPLES` | Number of samples to evaluate; `0` means full test split. |
 | `COORD_MODE` | `auto`, `norm1000`, or `pixel`; `auto` reads `meta.coord_mode`. |
-| `REFERENCE_EVAL_SPLIT_ROOT` | Optional old fixed difficulty-set root. Its image identities/buckets are remapped to complete records from the current dataset. |
-| `REFERENCE_EVAL_ALLOWED_TARGET_SPLITS` | New-dataset splits allowed in the remapped evaluation. Default `eval,test`; adding `train` preserves more inputs but introduces training leakage. |
-| `REFERENCE_EVAL_VERIFY_PIXELS` | Compare decoded RGB pixels after ID/coordinate matching when the old image root is available. |
 | `TRANSFORMERS_SPEC` | Transformers package spec installed by the script. Qwen3.5 defaults to `transformers>=5.7.0`. |
 | `TOKENIZERS_SPEC` | Tokenizers package spec. Qwen3.5 scripts keep this open-ended by default to avoid conflicts with newer Transformers. |
-
-## Fixed-Input Remapping
-
-`scripts/tools/remap_fixed_eval_to_dataset.py` makes cross-dataset model
-comparisons use the same image patches without reusing stale labels. It keeps
-the reference set's difficulty membership and order, matches each patch through
-the preserved patch id or `tile_id + x0 + y0`, then writes the complete record
-from the target dataset. The resulting prompts and targets therefore include
-the target release's current `lane_type` and `intersection_type` fields.
-
-The tool scans target train/eval/test to report where every reference moved,
-but emits only target eval/test by default. Inspect `mapping_report.json` before
-inference. A match found only in target train is deliberately excluded because
-evaluating it would leak a sample seen by the new model. Pixel verification is
-optional and should be enabled when the old dataset image root is still local.
 
 ## Qwen Text Matrix
 

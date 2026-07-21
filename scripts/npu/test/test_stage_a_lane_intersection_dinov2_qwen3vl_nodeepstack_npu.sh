@@ -216,6 +216,17 @@ archive = Path(sys.argv[1])
 raise SystemExit(0 if archive.is_file() and (zipfile.is_zipfile(archive) or tarfile.is_tarfile(archive)) else 1)
 PY
 }
+mkdir -p "${DATASET_EXTRACT_ROOT}" "${CHECKPOINT_DOWNLOAD_ROOT}" "${LOCAL_OUTPUT_ROOT}"
+USE_EXPLICIT_DATASET_PATH=0
+if [ -n "${DATASET_PATH}" ]; then
+  if [ ! -d "${DATASET_PATH}" ]; then
+    echo "ERROR: explicit DATASET_PATH is not a directory: ${DATASET_PATH}"
+    exit 1
+  fi
+  USE_EXPLICIT_DATASET_PATH=1
+  echo "[assets] using explicit extracted dataset root: ${DATASET_PATH}"
+fi
+if [ "${USE_EXPLICIT_DATASET_PATH}" -eq 0 ]; then
 if [[ "${REUSE_LOCAL_ASSETS}" =~ ^(1|true|True|TRUE|yes|YES)$ ]] && archive_is_valid "${DATASET_ARCHIVE_PATH}"; then
   echo "[assets] reusing dataset archive: ${DATASET_ARCHIVE_PATH}"
 else
@@ -227,7 +238,6 @@ else
     exit 1
   fi
 fi
-mkdir -p "${DATASET_EXTRACT_ROOT}" "${CHECKPOINT_DOWNLOAD_ROOT}" "${LOCAL_OUTPUT_ROOT}"
 if [[ "${REUSE_LOCAL_ASSETS}" =~ ^(1|true|True|TRUE|yes|YES)$ ]] && [ -f "${DATASET_EXTRACT_MARKER}" ]; then
   echo "[assets] reusing extracted dataset: ${DATASET_EXTRACT_ROOT}"
 else
@@ -254,6 +264,7 @@ PY
     tar -xf "${DATASET_ARCHIVE_PATH}" -C "${DATASET_EXTRACT_ROOT}"
   fi
   touch "${DATASET_EXTRACT_MARKER}"
+fi
 fi
 
 if [ -z "${DATASET_PATH}" ]; then

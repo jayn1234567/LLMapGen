@@ -300,14 +300,14 @@ PY
   )
 fi
 IMAGE_FOLDER=${IMAGE_FOLDER:-${DATASET_PATH}}
-if [ -z "${TEST_JSON}" ]; then
+if [ -z "${TEST_JSON}" ] && [ -z "${REFERENCE_EVAL_SPLIT_ROOT}" ]; then
   for candidate in \
     "${DATASET_PATH}/${DATASET_PHASE}/test.jsonl" \
     "${DATASET_PATH}/test.jsonl" \
-    "${DATASET_PATH}/${DATASET_PHASE}/val.jsonl" \
-    "${DATASET_PATH}/val.jsonl" \
     "${DATASET_PATH}/${DATASET_PHASE}/eval.jsonl" \
-    "${DATASET_PATH}/eval.jsonl"; do
+    "${DATASET_PATH}/eval.jsonl" \
+    "${DATASET_PATH}/${DATASET_PHASE}/val.jsonl" \
+    "${DATASET_PATH}/val.jsonl"; do
     if [ -f "${candidate}" ]; then
       TEST_JSON="${candidate}"
       break
@@ -485,7 +485,11 @@ else
   exit 1
 fi
 
-for path in "${VISION_TOWER}" "${TEST_JSON}" "${IMAGE_FOLDER}"; do
+REQUIRED_PATHS=("${VISION_TOWER}" "${IMAGE_FOLDER}")
+if [ -z "${REFERENCE_EVAL_SPLIT_ROOT}" ]; then
+  REQUIRED_PATHS+=("${TEST_JSON}")
+fi
+for path in "${REQUIRED_PATHS[@]}"; do
   if [ ! -e "${path}" ]; then
     echo "ERROR: required path not found: ${path}"
     exit 1

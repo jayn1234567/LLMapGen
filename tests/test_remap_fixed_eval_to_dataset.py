@@ -116,6 +116,23 @@ class FixedEvalRemapTest(unittest.TestCase):
             self.assertEqual(report["selected_count"], 1)
             self.assertEqual(report["match_method_counts"], {"tile_xy": 1})
 
+    def test_reference_ground_truth_keeps_target_prompt_and_image(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output = self.run_tool(
+                Path(directory),
+                new_record(split="test"),
+                "test",
+                extra_args=["--ground-truth-source", "reference"],
+            )
+            remapped = json.loads((output / "easy.jsonl").read_text(encoding="utf-8"))
+            report = json.loads((output / "mapping_report.json").read_text(encoding="utf-8"))
+
+            self.assertEqual(remapped["image"], "images/test/tile_a/tile_a_x00512_y00256.png")
+            self.assertEqual(remapped["conversations"][0]["value"], "<image>\nnew semantic prompt")
+            self.assertEqual(json.loads(remapped["conversations"][1]["value"]), {"lines": []})
+            self.assertEqual(remapped["meta"]["fixed_eval_reference"]["ground_truth_source"], "reference")
+            self.assertEqual(report["ground_truth_source"], "reference")
+
     def test_target_train_match_is_reported_but_excluded_by_default(self):
         with tempfile.TemporaryDirectory() as directory:
             output = self.run_tool(Path(directory), new_record(split="train"), "train")

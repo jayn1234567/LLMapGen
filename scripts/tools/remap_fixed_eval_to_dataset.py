@@ -10,6 +10,7 @@ and falls back to the raw tile plus absolute crop origin.
 from __future__ import annotations
 
 import argparse
+import copy
 import hashlib
 import json
 import re
@@ -52,6 +53,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--progress-every", type=int, default=100000)
     parser.add_argument("--min-output-match-ratio", type=float, default=0.0)
     parser.add_argument("--require-all", action="store_true")
+    parser.add_argument(
+        "--ground-truth-source",
+        choices=["target", "reference"],
+        default="target",
+        help=(
+            "Use target labels (default), or keep the target image/prompt while replacing "
+            "the assistant answer with geometry labels from the reference fixed set."
+        ),
+    )
     parser.add_argument("--reference-image-root", default="")
     parser.add_argument("--target-image-root", default="")
     parser.add_argument("--verify-pixels", action="store_true")
@@ -415,8 +425,31 @@ def verify_chosen_pixels(
     return dict(verification_counts)
 
 
-def annotate_target_record(item, selected):
-    record = dict(selected["record"])
+def _assistant_message_index(conversations):
+    if not isinstance(conversations, list):
+        return None
+    for index in range(len(conversations) - 1, -1, -1):
+        message = conversations[index]
+        role = str(message.get("from", message.get("role", ""))).strip().lower() if isinstance(message, dict) else ""
+        if role in {"gpt", "assistant"}:
+            return index
+    return 1 if len(conversations) > 1 else None
+
+
+def annotate_target_record(item, selected, ground_truth_source="target"):
+    record = copy.deepcopy(selected["record"])
+    if ground_truth_source == "reference":
+        target_conversations = record.get("conversations")
+        reference_conversations = item["record"].get("conversations")
+        target_index = _assistant_message_index(target_conversations)
+        reference_index = _assistant_message_index(reference_conversations)
+        if target_index is None or reference_index is None:
+            raise ValueError(
+                "Unable to combine target prompt with reference ground truth for "
+                f"reference_id={item['reference_id']!r}, target_id={selected['target_id']!r}"
+            )
+        target_conversations[target_index] = copy.deepcopy(reference_conversations[reference_index])
+        record["conversations"] = target_conversations
     meta = dict(record.get("meta", {}))
     meta["fixed_eval_reference"] = {
         "reference_id": item["reference_id"],
@@ -424,6 +457,7 @@ def annotate_target_record(item, selected):
         "reference_difficulty": item["difficulty"],
         "target_split": selected["target_split"],
         "match_method": selected["method"],
+        "ground_truth_source": ground_truth_source,
     }
     record["meta"] = meta
     return record
@@ -486,7 +520,9 @@ def main() -> None:
         selected = chosen.get(item["uid"])
         if selected is None:
             continue
-        selected_by_bucket[item["difficulty"]].append(annotate_target_record(item, selected))
+        selected_by_bucket[item["difficulty"]].append(
+            annotate_target_record(item, selected, ground_truth_source=args.ground_truth_source)
+        )
 
     all_selected = []
     for difficulty in difficulties:
@@ -520,6 +556,7 @@ def main() -> None:
         "selected_count": len(all_selected),
         "selected_counts": selected_counts,
         "selected_ratio": selected_ratio,
+        "ground_truth_source": args.ground_truth_source,
         "status_counts": dict(status_counts),
         "target_split_counts_before_filter": dict(target_split_counts),
         "match_method_counts": dict(method_counts),

@@ -83,6 +83,7 @@ REFERENCE_EVAL_SCAN_TARGET_SPLITS=${REFERENCE_EVAL_SCAN_TARGET_SPLITS:-train,eva
 REFERENCE_EVAL_ALLOWED_TARGET_SPLITS=${REFERENCE_EVAL_ALLOWED_TARGET_SPLITS:-eval,test}  # New-dataset splits eligible for fair evaluation; train is excluded by default.
 REFERENCE_EVAL_MIN_MATCH_RATIO=${REFERENCE_EVAL_MIN_MATCH_RATIO:-0.0}             # Fail remapping when the emitted/reference ratio is below this value.
 REFERENCE_EVAL_REQUIRE_ALL=${REFERENCE_EVAL_REQUIRE_ALL:-False}                   # Require every old reference image to have an allowed new-dataset record.
+REFERENCE_EVAL_GROUND_TRUTH_SOURCE=${REFERENCE_EVAL_GROUND_TRUTH_SOURCE:-target}  # target uses new labels; reference keeps old GT with the new image path and prompt.
 REFERENCE_EVAL_REFERENCE_IMAGE_ROOT=${REFERENCE_EVAL_REFERENCE_IMAGE_ROOT:-}      # Optional old dataset root for decoded-pixel identity verification.
 REFERENCE_EVAL_VERIFY_PIXELS=${REFERENCE_EVAL_VERIFY_PIXELS:-False}               # Compare decoded RGB pixels when both old and new image roots are available.
 REFERENCE_EVAL_REQUIRE_PIXEL_MATCH=${REFERENCE_EVAL_REQUIRE_PIXEL_MATCH:-False}   # Exclude matches whose decoded pixels differ or cannot be resolved.
@@ -335,6 +336,7 @@ if [ -n "${REFERENCE_EVAL_SPLIT_ROOT}" ]; then
     --allowed-target-splits "${reference_allowed_splits[@]}"
     --patch-size 256
     --min-output-match-ratio "${REFERENCE_EVAL_MIN_MATCH_RATIO}"
+    --ground-truth-source "${REFERENCE_EVAL_GROUND_TRUTH_SOURCE}"
   )
   if [[ "${REFERENCE_EVAL_REQUIRE_ALL}" =~ ^(1|true|True|TRUE|yes|YES)$ ]]; then
     reference_args+=(--require-all)

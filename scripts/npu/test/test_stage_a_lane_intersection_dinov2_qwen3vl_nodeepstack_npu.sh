@@ -216,17 +216,6 @@ archive = Path(sys.argv[1])
 raise SystemExit(0 if archive.is_file() and (zipfile.is_zipfile(archive) or tarfile.is_tarfile(archive)) else 1)
 PY
 }
-mkdir -p "${DATASET_EXTRACT_ROOT}" "${CHECKPOINT_DOWNLOAD_ROOT}" "${LOCAL_OUTPUT_ROOT}"
-USE_EXPLICIT_DATASET_PATH=0
-if [ -n "${DATASET_PATH}" ]; then
-  if [ ! -d "${DATASET_PATH}" ]; then
-    echo "ERROR: explicit DATASET_PATH is not a directory: ${DATASET_PATH}"
-    exit 1
-  fi
-  USE_EXPLICIT_DATASET_PATH=1
-  echo "[assets] using explicit extracted dataset root: ${DATASET_PATH}"
-fi
-if [ "${USE_EXPLICIT_DATASET_PATH}" -eq 0 ]; then
 if [[ "${REUSE_LOCAL_ASSETS}" =~ ^(1|true|True|TRUE|yes|YES)$ ]] && archive_is_valid "${DATASET_ARCHIVE_PATH}"; then
   echo "[assets] reusing dataset archive: ${DATASET_ARCHIVE_PATH}"
 else
@@ -238,6 +227,7 @@ else
     exit 1
   fi
 fi
+mkdir -p "${DATASET_EXTRACT_ROOT}" "${CHECKPOINT_DOWNLOAD_ROOT}" "${LOCAL_OUTPUT_ROOT}"
 if [[ "${REUSE_LOCAL_ASSETS}" =~ ^(1|true|True|TRUE|yes|YES)$ ]] && [ -f "${DATASET_EXTRACT_MARKER}" ]; then
   echo "[assets] reusing extracted dataset: ${DATASET_EXTRACT_ROOT}"
 else
@@ -264,7 +254,6 @@ PY
     tar -xf "${DATASET_ARCHIVE_PATH}" -C "${DATASET_EXTRACT_ROOT}"
   fi
   touch "${DATASET_EXTRACT_MARKER}"
-fi
 fi
 
 if [ -z "${DATASET_PATH}" ]; then
@@ -300,14 +289,14 @@ PY
   )
 fi
 IMAGE_FOLDER=${IMAGE_FOLDER:-${DATASET_PATH}}
-if [ -z "${TEST_JSON}" ] && [ -z "${REFERENCE_EVAL_SPLIT_ROOT}" ]; then
+if [ -z "${TEST_JSON}" ]; then
   for candidate in \
     "${DATASET_PATH}/${DATASET_PHASE}/test.jsonl" \
     "${DATASET_PATH}/test.jsonl" \
-    "${DATASET_PATH}/${DATASET_PHASE}/eval.jsonl" \
-    "${DATASET_PATH}/eval.jsonl" \
     "${DATASET_PATH}/${DATASET_PHASE}/val.jsonl" \
-    "${DATASET_PATH}/val.jsonl"; do
+    "${DATASET_PATH}/val.jsonl" \
+    "${DATASET_PATH}/${DATASET_PHASE}/eval.jsonl" \
+    "${DATASET_PATH}/eval.jsonl"; do
     if [ -f "${candidate}" ]; then
       TEST_JSON="${candidate}"
       break
@@ -391,30 +380,7 @@ import sys
 root = Path(sys.argv[1])
 if not root.exists():
     raise SystemExit(f"checkpoint path does not exist: {root}")
-
-weight_names = (
-    "model.safetensors",
-    "pytorch_model.bin",
-    "adapter_model.safetensors",
-    "adapter_model.bin",
-    "model.safetensors.index.json",
-    "pytorch_model.bin.index.json",
-)
-weight_patterns = (
-    "model-*-of-*.safetensors",
-    "pytorch_model-*-of-*.bin",
-    "adapter_model-*-of-*.safetensors",
-    "adapter_model-*-of-*.bin",
-)
-
-
-def has_weights(path: Path) -> bool:
-    return any((path / name).is_file() for name in weight_names) or any(
-        next(path.glob(pattern), None) is not None for pattern in weight_patterns
-    )
-
-
-if root.is_dir() and has_weights(root):
+if any((root / name).is_file() for name in ("model.safetensors", "pytorch_model.bin", "adapter_model.safetensors")):
     print(root)
     raise SystemExit(0)
 cmd = [
@@ -437,26 +403,19 @@ if result.returncode == 0 and result.stdout.strip():
     print(result.stdout.strip())
     raise SystemExit(0)
 checkpoints = []
-for path in root.rglob("*"):
-    if not path.is_dir() or not has_weights(path):
-        continue
-    try:
-        step = int(path.name.rsplit("-", 1)[1]) if path.name.startswith("checkpoint-") else -1
-    except Exception:
-        step = -1
-    depth = len(path.relative_to(root).parts)
-    checkpoints.append((step, -depth, str(path), path))
+for path in root.glob("checkpoint-*"):
+    if path.is_dir():
+        try:
+            step = int(path.name.rsplit("-", 1)[1])
+        except Exception:
+            step = -1
+        checkpoints.append((step, path))
 if checkpoints:
-    print(sorted(checkpoints)[-1][-1])
+    print(sorted(checkpoints)[-1][1])
     raise SystemExit(0)
 raise SystemExit(f"cannot resolve a usable checkpoint under: {root}")
 PY
 )
-    if [ -z "${RESOLVED_CHECKPOINT}" ] || [ ! -d "${RESOLVED_CHECKPOINT}" ]; then
-      echo "ERROR: failed to resolve a usable model checkpoint from: ${CHECKPOINT_INPUT_PATH}" >&2
-      exit 1
-    fi
-    echo "[checkpoint] resolved ${CHECKPOINT_INPUT_PATH} -> ${RESOLVED_CHECKPOINT}"
     CHECKPOINT_ITEMS+=("${RESOLVED_CHECKPOINT}")
     CHECKPOINT_LABELS+=("${label}")
   done < <(read_list "${CHECKPOINT_OBS_LIST}")
@@ -471,30 +430,7 @@ import sys
 root = Path(sys.argv[1])
 if not root.exists():
     raise SystemExit(f"checkpoint path does not exist: {root}")
-
-weight_names = (
-    "model.safetensors",
-    "pytorch_model.bin",
-    "adapter_model.safetensors",
-    "adapter_model.bin",
-    "model.safetensors.index.json",
-    "pytorch_model.bin.index.json",
-)
-weight_patterns = (
-    "model-*-of-*.safetensors",
-    "pytorch_model-*-of-*.bin",
-    "adapter_model-*-of-*.safetensors",
-    "adapter_model-*-of-*.bin",
-)
-
-
-def has_weights(path: Path) -> bool:
-    return any((path / name).is_file() for name in weight_names) or any(
-        next(path.glob(pattern), None) is not None for pattern in weight_patterns
-    )
-
-
-if root.is_dir() and has_weights(root):
+if any((root / name).is_file() for name in ("model.safetensors", "pytorch_model.bin", "adapter_model.safetensors")):
     print(root)
     raise SystemExit(0)
 cmd = [
@@ -517,26 +453,19 @@ if result.returncode == 0 and result.stdout.strip():
     print(result.stdout.strip())
     raise SystemExit(0)
 checkpoints = []
-for path in root.rglob("*"):
-    if not path.is_dir() or not has_weights(path):
-        continue
-    try:
-        step = int(path.name.rsplit("-", 1)[1]) if path.name.startswith("checkpoint-") else -1
-    except Exception:
-        step = -1
-    depth = len(path.relative_to(root).parts)
-    checkpoints.append((step, -depth, str(path), path))
+for path in root.glob("checkpoint-*"):
+    if path.is_dir():
+        try:
+            step = int(path.name.rsplit("-", 1)[1])
+        except Exception:
+            step = -1
+        checkpoints.append((step, path))
 if checkpoints:
-    print(sorted(checkpoints)[-1][-1])
+    print(sorted(checkpoints)[-1][1])
     raise SystemExit(0)
 raise SystemExit(f"cannot resolve a usable checkpoint under: {root}")
 PY
 )
-    if [ -z "${RESOLVED_CHECKPOINT}" ] || [ ! -d "${RESOLVED_CHECKPOINT}" ]; then
-      echo "ERROR: failed to resolve a usable model checkpoint from: ${CHECKPOINT_INPUT_PATH}" >&2
-      exit 1
-    fi
-    echo "[checkpoint] resolved ${CHECKPOINT_INPUT_PATH} -> ${RESOLVED_CHECKPOINT}"
     CHECKPOINT_ITEMS+=("${RESOLVED_CHECKPOINT}")
     CHECKPOINT_LABELS+=("$(safe_label "${local_item}")")
   done < <(read_list "${CHECKPOINT_DIRS}")
@@ -545,11 +474,7 @@ else
   exit 1
 fi
 
-REQUIRED_PATHS=("${VISION_TOWER}" "${IMAGE_FOLDER}")
-if [ -z "${REFERENCE_EVAL_SPLIT_ROOT}" ]; then
-  REQUIRED_PATHS+=("${TEST_JSON}")
-fi
-for path in "${REQUIRED_PATHS[@]}"; do
+for path in "${VISION_TOWER}" "${TEST_JSON}" "${IMAGE_FOLDER}"; do
   if [ ! -e "${path}" ]; then
     echo "ERROR: required path not found: ${path}"
     exit 1
@@ -655,24 +580,14 @@ run_one_checkpoint() {
       return 1
       ;;
   esac
-# Launch single-device diagnostics directly so Python reports the original
-# exception without torchrun/distributed wrappers. Multi-device runs keep DDP.
-infer_launcher=()
-if [ "${NNODES}" -eq 1 ] && [ "${NPROC_PER_NODE}" -eq 1 ]; then
-  unset LOCAL_RANK RANK WORLD_SIZE
-  infer_launcher=(python scripts/tools/infer_centerline_checkpoint.py)
-else
-  infer_launcher=(
-    torchrun
-    --nnodes="${NNODES}"
-    --nproc_per_node="${NPROC_PER_NODE}"
-    --node_rank="${NODE_RANK}"
-    --master_addr="${MASTER_ADDR}"
-    --master_port="${MASTER_PORT}"
-    scripts/tools/infer_centerline_checkpoint.py
-  )
-fi
-"${infer_launcher[@]}" \
+# Launch the recipe entrypoint. Training uses HCCL/DDP and full SFT may add DeepSpeed.
+if ! torchrun \
+    --nnodes="${NNODES}" \
+    --nproc_per_node="${NPROC_PER_NODE}" \
+    --node_rank="${NODE_RANK}" \
+    --master_addr="${MASTER_ADDR}" \
+    --master_port="${MASTER_PORT}" \
+    scripts/tools/infer_centerline_checkpoint.py \
     --checkpoint-dir "${checkpoint_dir}" \
     --vision_tower "${VISION_TOWER}" \
     --mm_vision_tower_type "${MM_VISION_TOWER_TYPE}" \
@@ -697,11 +612,7 @@ fi
     --eval-match-threshold "${EVAL_MATCH_THRESHOLD}" \
     --eval-intersection-iou-threshold "${EVAL_INTERSECTION_IOU_THRESHOLD}" \
     --eval-centerline \
-    --eval-output-json "${eval_json}"
-  inference_exit=$?
-  if [ "${inference_exit}" -ne 0 ]; then
-    echo "ERROR: inference process exited with raw code ${inference_exit}."
-    echo "ERROR: exit 137 usually means SIGKILL/host OOM; exit 139 usually means a native segmentation fault."
+    --eval-output-json "${eval_json}"; then
     echo "ERROR: inference failed for ${checkpoint_label}/${difficulty_label}."
     return 1
   fi

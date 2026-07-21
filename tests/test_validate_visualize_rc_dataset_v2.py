@@ -21,6 +21,8 @@ PROMPT = """<image>
 Please construct the map.
 Coordinates use a normalized 0-1000 grid over the original 256x256 image patch.
 Every centerline includes lane_type and every intersection includes intersection_type.
+Allowed lane types are common, right_turn, waiting_area, bus_lane,
+main_auxiliary_connector, and other.
 """
 
 

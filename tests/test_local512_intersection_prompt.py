@@ -81,6 +81,9 @@ class Local512IntersectionPromptTest(unittest.TestCase):
         self.assertFalse(any(item["category"] == "intersection" for item in target["lines"]))
         prompt = transformed["conversations"][0]["value"]
         self.assertEqual(extract_prompt_intersections(prompt), intersections)
+        self.assertIn('"waiting_area"', prompt)
+        self.assertIn('"bus_lane"', prompt)
+        self.assertIn('"main_auxiliary_connector"', prompt)
         self.assertEqual(transformed["meta"]["task_mode"], TASK_MODE)
         self.assertEqual(transformed["meta"]["dataset_variant"], "local512_intersection_prompt")
 

@@ -21,11 +21,12 @@ There are seven roots, even though the initial estimate referred to six source
 datasets. Duplicate raw sample ids are reported in `split_manifest.json`.
 Default duplicate policy is `last`: a later source in the list wins.
 
-Lane GeoJSON records are filtered before patch clipping. `LaneType=3` is a
-U-turn reference line rather than a supervised road centerline, so it is
-excluded from every Dataset V2 variant. Every public centerline target contains
-`lane_type`: source type 1 becomes `common`, type 2 becomes `right_turn`, and
-every remaining or missing source type becomes `other`.
+Lane GeoJSON records are filtered before patch clipping. Source types 3 and 22
+are excluded from every Dataset V2 variant. Every public centerline target
+contains `lane_type`: source type 1 becomes `common`, type 2 becomes
+`right_turn`, type 4 becomes `waiting_area`, type 18 becomes `bus_lane`, type 25
+becomes `main_auxiliary_connector`, and every remaining or missing source type
+becomes `other`.
 
 Every public intersection target contains `intersection_type`. Source pairs
 1-1, 1-2, 1-3, and 4-1 become `common`, `t_intersection`, `small_untyped`, and

@@ -62,8 +62,10 @@ def build_prompt(patch_size: int, coord_range: int, intersections: list[dict]) -
         (
             'For every centerline, include "lane_type" with exactly one of: '
             '"common" for a regular centerline, "right_turn" for a right-turn-only '
-            'centerline, or "other" for any remaining lane class. Do not output '
-            'U-turn reference lines.'
+            'centerline, "waiting_area" for a waiting-area centerline, "bus_lane" '
+            'for a bus-lane centerline, "main_auxiliary_connector" for a connector '
+            'between main and auxiliary roads, or "other" for any remaining lane '
+            'class. Do not output centerlines from excluded raw LaneType 3 or LaneType 22.'
         ),
     ])
 

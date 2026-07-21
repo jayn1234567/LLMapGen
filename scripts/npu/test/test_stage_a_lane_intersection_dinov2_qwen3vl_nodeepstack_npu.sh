@@ -608,7 +608,7 @@ else
     scripts/tools/infer_centerline_checkpoint.py
   )
 fi
-if ! "${infer_launcher[@]}" \
+"${infer_launcher[@]}" \
     --checkpoint-dir "${checkpoint_dir}" \
     --vision_tower "${VISION_TOWER}" \
     --mm_vision_tower_type "${MM_VISION_TOWER_TYPE}" \
@@ -633,7 +633,11 @@ if ! "${infer_launcher[@]}" \
     --eval-match-threshold "${EVAL_MATCH_THRESHOLD}" \
     --eval-intersection-iou-threshold "${EVAL_INTERSECTION_IOU_THRESHOLD}" \
     --eval-centerline \
-    --eval-output-json "${eval_json}"; then
+    --eval-output-json "${eval_json}"
+  inference_exit=$?
+  if [ "${inference_exit}" -ne 0 ]; then
+    echo "ERROR: inference process exited with raw code ${inference_exit}."
+    echo "ERROR: exit 137 usually means SIGKILL/host OOM; exit 139 usually means a native segmentation fault."
     echo "ERROR: inference failed for ${checkpoint_label}/${difficulty_label}."
     return 1
   fi

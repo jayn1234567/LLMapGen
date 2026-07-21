@@ -427,6 +427,11 @@ if checkpoints:
 raise SystemExit(f"cannot resolve a usable checkpoint under: {root}")
 PY
 )
+    if [ -z "${RESOLVED_CHECKPOINT}" ] || [ ! -d "${RESOLVED_CHECKPOINT}" ]; then
+      echo "ERROR: failed to resolve a usable model checkpoint from: ${CHECKPOINT_INPUT_PATH}" >&2
+      exit 1
+    fi
+    echo "[checkpoint] resolved ${CHECKPOINT_INPUT_PATH} -> ${RESOLVED_CHECKPOINT}"
     CHECKPOINT_ITEMS+=("${RESOLVED_CHECKPOINT}")
     CHECKPOINT_LABELS+=("${label}")
   done < <(read_list "${CHECKPOINT_OBS_LIST}")
@@ -477,6 +482,11 @@ if checkpoints:
 raise SystemExit(f"cannot resolve a usable checkpoint under: {root}")
 PY
 )
+    if [ -z "${RESOLVED_CHECKPOINT}" ] || [ ! -d "${RESOLVED_CHECKPOINT}" ]; then
+      echo "ERROR: failed to resolve a usable model checkpoint from: ${CHECKPOINT_INPUT_PATH}" >&2
+      exit 1
+    fi
+    echo "[checkpoint] resolved ${CHECKPOINT_INPUT_PATH} -> ${RESOLVED_CHECKPOINT}"
     CHECKPOINT_ITEMS+=("${RESOLVED_CHECKPOINT}")
     CHECKPOINT_LABELS+=("$(safe_label "${local_item}")")
   done < <(read_list "${CHECKPOINT_DIRS}")

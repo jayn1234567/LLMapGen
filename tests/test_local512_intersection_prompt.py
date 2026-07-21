@@ -16,6 +16,7 @@ from scripts.tools.derive_intersection_prompt_dataset import (
     parse_target,
     transform_record,
 )
+from scripts.tools.build_rc_dataset_v2_local512_windows import parse_args, sample_count_label
 from scripts.tools.validate_visualize_rc_dataset_v2 import audit
 
 
@@ -56,6 +57,16 @@ def source_record(sample_id: str, split: str) -> dict:
 
 
 class Local512IntersectionPromptTest(unittest.TestCase):
+    def test_local512_builder_defaults_to_200k_quick_subset(self):
+        args = parse_args(["--work-root", "work", "--obsutil-path", "obsutil"])
+        self.assertEqual(args.quick_train_target_samples, 200000)
+        self.assertEqual(sample_count_label(args.quick_train_target_samples), "200k")
+
+    def test_sample_count_label_supports_non_thousand_counts(self):
+        self.assertEqual(sample_count_label(12345), "12345")
+        with self.assertRaises(ValueError):
+            sample_count_label(0)
+
     def test_true_512_variant_naming(self):
         specs = dataset_variant_specs(Path("output"), "local", 512, 512)
         self.assertEqual(list(specs), ["local512"])

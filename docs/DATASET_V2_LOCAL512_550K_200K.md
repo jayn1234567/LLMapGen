@@ -8,9 +8,9 @@ RC sources:
 | Dataset | Train records | Supervision |
 |---|---:|---|
 | `local512` | 550,000 | centerlines and intersections |
-| `local512` quick subset | 100,000 | centerlines and intersections |
+| `local512` quick subset | 200,000 | centerlines and intersections |
 | `local512_intersection_prompt` | 550,000 | intersection GT in user prompt; centerlines only in assistant target |
-| `local512_intersection_prompt` quick subset | 100,000 | same oracle-conditioned task |
+| `local512_intersection_prompt` quick subset | 200,000 | same oracle-conditioned task |
 
 This is a true `512x512` target patch. It is different from
 `context512_roi256`, whose image is 512 but whose supervised center ROI remains
@@ -27,7 +27,7 @@ Other unmapped lane codes remain represented as `lane_type="other"`. Because
 released JSONL collapses raw lane codes into semantic names, an older dataset
 cannot be safely post-filtered for code 22; rebuild from the raw resources.
 
-The 100k train split is selected strictly from the completed 550k train split.
+The 200k train split is selected strictly from the completed 550k train split.
 Both task variants have identical sample IDs, image paths, split assignments,
 difficulty distribution, and intersection distribution. Images are hard-linked
 while building when the filesystem supports it.
@@ -41,7 +41,7 @@ finalizes, audits, visualizes, and packages all four assets.
 Run this as one line in `cmd.exe`:
 
 ```bat
-conda activate rc-dataset-v2-py313 && python scripts\tools\build_rc_dataset_v2_local512_windows.py --work-root "D:\data\fulldata_local512" --obsutil-path "C:\Users\jWX1497058\Downloads\obsutil_windows_amd64\obsutil_windows_amd64_5.8.3\obsutil.exe" --archive-workers 16 --train-stride 256 --resume
+conda activate rc-dataset-v2-py313 && python scripts\tools\build_rc_dataset_v2_local512_windows.py --work-root "D:\data\fulldata_local512" --obsutil-path "C:\Users\jWX1497058\Downloads\obsutil_windows_amd64\obsutil_windows_amd64_5.8.3\obsutil.exe" --archive-workers 16 --train-stride 256 --quick-train-target-samples 200000 --resume
 ```
 
 The default train distribution is:
@@ -65,14 +65,14 @@ D:\data\fulldata_local512\
 |-- output_550k\
 |   |-- local512\
 |   `-- local512_intersection_prompt\
-|-- output_100k\
+|-- output_200k\
 |   |-- local512\
 |   `-- local512_intersection_prompt\
 |-- packages\
 |   |-- local512_550k.tar
-|   |-- local512_100k.tar
+|   |-- local512_200k.tar
 |   |-- local512_intersection_prompt_550k.tar
-|   `-- local512_intersection_prompt_100k.tar
+|   `-- local512_intersection_prompt_200k.tar
 |-- filters\
 `-- staging_local512\
 ```

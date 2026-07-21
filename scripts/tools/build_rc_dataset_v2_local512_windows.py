@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build 550k/100k true-512 Dataset V2 and intersection-conditioned variants."""
+"""Build 550k/200k true-512 Dataset V2 and intersection-conditioned variants."""
 
 from __future__ import annotations
 
@@ -24,6 +24,8 @@ from scripts.tools.build_rc_dataset_v2_from_obs import create_variant_tar
 
 
 PATCH_SIZE = 512
+FORMAL_TRAIN_TARGET = 550000
+DEFAULT_QUICK_TRAIN_TARGET = 200000
 STANDARD_VARIANT = "local512"
 PROMPT_VARIANT = "local512_intersection_prompt"
 
@@ -36,6 +38,12 @@ def parse_args(argv=None):
     parser.add_argument("--source-obs-root", action="append", default=[])
     parser.add_argument("--archive-workers", type=int, default=16)
     parser.add_argument("--train-stride", type=int, default=256)
+    parser.add_argument(
+        "--quick-train-target-samples",
+        type=int,
+        default=DEFAULT_QUICK_TRAIN_TARGET,
+        help="Quick-subset train size; it must be smaller than the 550k formal set.",
+    )
     parser.add_argument("--visualize-per-difficulty", type=int, default=50)
     parser.add_argument("--image-decode-mode", choices=["sampled", "all", "none"], default="sampled")
     parser.add_argument("--resume", action="store_true")
@@ -43,6 +51,14 @@ def parse_args(argv=None):
     parser.add_argument("--skip-validation", action="store_true")
     parser.add_argument("--skip-package", action="store_true")
     return parser.parse_args(argv)
+
+
+def sample_count_label(count: int) -> str:
+    if count <= 0:
+        raise ValueError("sample count must be positive")
+    if count % 1000 == 0:
+        return f"{count // 1000}k"
+    return str(count)
 
 
 def run(command):
@@ -111,7 +127,7 @@ def verify_subset(formal_root: Path, quick_root: Path, expected_quick: int, repo
     }
     report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     if report["status"] != "passed":
-        raise ValueError(f"100k subset verification failed: {report}")
+        raise ValueError(f"quick subset verification failed: {report}")
 
 
 def verify_task_pairing(standard_root: Path, prompt_root: Path):
@@ -179,19 +195,27 @@ def main(argv=None):
     args = parse_args(argv)
     if args.train_stride <= 0 or PATCH_SIZE % args.train_stride:
         raise ValueError(f"--train-stride must be a positive divisor of {PATCH_SIZE}")
+    if not 0 < args.quick_train_target_samples < FORMAL_TRAIN_TARGET:
+        raise ValueError(
+            "--quick-train-target-samples must be positive and smaller than "
+            f"{FORMAL_TRAIN_TARGET}"
+        )
+    quick_target = args.quick_train_target_samples
+    quick_label = sample_count_label(quick_target)
     work_root = Path(args.work_root).expanduser().resolve()
     raw_root = work_root / "raw_sources"
     staging_root = work_root / "staging_local512"
     output_550_root = work_root / "output_550k"
-    output_100_root = work_root / "output_100k"
+    output_quick_root = work_root / f"output_{quick_label}"
     package_root = work_root / "packages"
     filters_root = work_root / "filters"
-    for path in (work_root, raw_root, staging_root, output_550_root, output_100_root, package_root, filters_root):
+    for path in (work_root, raw_root, staging_root, output_550_root, output_quick_root, package_root, filters_root):
         path.mkdir(parents=True, exist_ok=True)
 
     print("============================================================", flush=True)
     print(f"[local512-build] work root:    {work_root}", flush=True)
     print(f"[local512-build] train stride: {args.train_stride}", flush=True)
+    print(f"[local512-build] quick target: {quick_target} ({quick_label})", flush=True)
     print(f"[local512-build] free disk:    {shutil.disk_usage(work_root).free / (1024 ** 3):.1f} GiB", flush=True)
     print("============================================================", flush=True)
 
@@ -207,7 +231,7 @@ def main(argv=None):
             "--patch-size", PATCH_SIZE,
             "--context-size", PATCH_SIZE,
             "--eval-test-stride", PATCH_SIZE,
-            "--train-target-samples", 550000,
+            "--train-target-samples", FORMAL_TRAIN_TARGET,
             "--train-stride", args.train_stride,
             "--archive-workers", args.archive_workers,
             "--obs-backend", "obsutil",
@@ -224,44 +248,51 @@ def main(argv=None):
         run(stage_command)
 
     requested_ratios = "empty=0,easy=0.30,medium=0.33,hard=0.27,very_hard=0.10"
-    finalize_local512(staging_root, output_550_root, 550000, requested_ratios, 0.30, args.resume)
+    finalize_local512(
+        staging_root,
+        output_550_root,
+        FORMAL_TRAIN_TARGET,
+        requested_ratios,
+        0.30,
+        args.resume,
+    )
     standard_550 = output_550_root / STANDARD_VARIANT
-    spec_550 = subset_spec(standard_550, 550000)
+    spec_550 = subset_spec(standard_550, FORMAL_TRAIN_TARGET)
     formal_filter = filters_root / "local512_550k_train_ids.jsonl"
-    if build_compact_id_filter(spec_550["train_jsonl"], formal_filter, args.resume) != 550000:
-        raise ValueError("formal local512 train filter does not contain 550000 ids")
+    if build_compact_id_filter(spec_550["train_jsonl"], formal_filter, args.resume) != FORMAL_TRAIN_TARGET:
+        raise ValueError(f"formal local512 train filter does not contain {FORMAL_TRAIN_TARGET} ids")
 
     finalize_local512(
         staging_root,
-        output_100_root,
-        100000,
+        output_quick_root,
+        quick_target,
         spec_550["ratios"],
         spec_550["intersection_ratio"],
         args.resume,
         formal_filter,
     )
-    standard_100 = output_100_root / STANDARD_VARIANT
-    subset_report = output_100_root / "subset_pairing_report.json"
-    verify_subset(standard_550, standard_100, 100000, subset_report)
-    shutil.copy2(subset_report, standard_100 / subset_report.name)
+    standard_quick = output_quick_root / STANDARD_VARIANT
+    subset_report = output_quick_root / "subset_pairing_report.json"
+    verify_subset(standard_550, standard_quick, quick_target, subset_report)
+    shutil.copy2(subset_report, standard_quick / subset_report.name)
 
     prompt_550 = output_550_root / PROMPT_VARIANT
-    prompt_100 = output_100_root / PROMPT_VARIANT
+    prompt_quick = output_quick_root / PROMPT_VARIANT
     derive_prompt_variant(standard_550, prompt_550, args.resume)
-    derive_prompt_variant(standard_100, prompt_100, args.resume)
+    derive_prompt_variant(standard_quick, prompt_quick, args.resume)
 
     if not args.skip_validation:
-        validate_variant(standard_550, STANDARD_VARIANT, 550000, args)
-        validate_variant(standard_100, STANDARD_VARIANT, 100000, args)
-        validate_variant(prompt_550, PROMPT_VARIANT, 550000, args)
-        validate_variant(prompt_100, PROMPT_VARIANT, 100000, args)
+        validate_variant(standard_550, STANDARD_VARIANT, FORMAL_TRAIN_TARGET, args)
+        validate_variant(standard_quick, STANDARD_VARIANT, quick_target, args)
+        validate_variant(prompt_550, PROMPT_VARIANT, FORMAL_TRAIN_TARGET, args)
+        validate_variant(prompt_quick, PROMPT_VARIANT, quick_target, args)
 
     if not args.skip_package:
         packages = {
             package_root / "local512_550k.tar": standard_550,
-            package_root / "local512_100k.tar": standard_100,
+            package_root / f"local512_{quick_label}.tar": standard_quick,
             package_root / "local512_intersection_prompt_550k.tar": prompt_550,
-            package_root / "local512_intersection_prompt_100k.tar": prompt_100,
+            package_root / f"local512_intersection_prompt_{quick_label}.tar": prompt_quick,
         }
         for package, variant_root in packages.items():
             create_variant_tar(variant_root, package, args.resume)

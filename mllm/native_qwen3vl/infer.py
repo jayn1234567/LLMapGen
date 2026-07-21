@@ -522,11 +522,14 @@ def write_outputs(results: list[dict[str, Any]], args):
                 meter_per_pixel=args.eval_meter_per_pixel,
                 buffer_size=args.eval_buffer_size,
                 match_threshold=args.eval_match_threshold,
+                intersection_iou_threshold=args.eval_intersection_iou_threshold,
             )
             eval_payload.update({
                 "centerline_eval": map_eval["lane"],
                 "intersection_eval": map_eval["intersection"],
                 "lane_intersection_eval": map_eval["lane_intersection"],
+                "lane_type_eval": map_eval["lane_type"],
+                "intersection_type_eval": map_eval["intersection_type"],
                 "map_eval": map_eval,
             })
         else:
@@ -588,6 +591,7 @@ def parse_args():
     parser.add_argument("--eval-meter-per-pixel", type=float, default=0.2)
     parser.add_argument("--eval-buffer-size", type=float, default=1.0)
     parser.add_argument("--eval-match-threshold", type=float, default=0.33)
+    parser.add_argument("--eval-intersection-iou-threshold", type=float, default=0.5)
     parser.add_argument("--skip-eval", action="store_true")
     parser.add_argument("--skip-visualize", action="store_true")
     parser.add_argument("--skip-whole-map-viz", action="store_true")

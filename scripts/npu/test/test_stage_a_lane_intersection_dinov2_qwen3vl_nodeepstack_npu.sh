@@ -89,6 +89,7 @@ REFERENCE_EVAL_REQUIRE_PIXEL_MATCH=${REFERENCE_EVAL_REQUIRE_PIXEL_MATCH:-False} 
 EVAL_METER_PER_PIXEL=${EVAL_METER_PER_PIXEL:-0.2}                                 # Jiangjihua line-eval meter-per-pixel setting.
 EVAL_BUFFER_SIZE=${EVAL_BUFFER_SIZE:-1.0}                                         # Jiangjihua line-eval buffer size.
 EVAL_MATCH_THRESHOLD=${EVAL_MATCH_THRESHOLD:-0.33}                                # Jiangjihua line-eval matching threshold.
+EVAL_INTERSECTION_IOU_THRESHOLD=${EVAL_INTERSECTION_IOU_THRESHOLD:-0.5}           # Polygon-IoU threshold used to match predicted and GT intersections.
 CHECKPOINT_DEEPSTACK_MODE=${CHECKPOINT_DEEPSTACK_MODE:-disabled}                  # disabled preserves this recipe; auto trusts checkpoint config.
 # ====================== Ascend environment ======================
 # Ascend and HCCL runtime environment for NPU jobs.
@@ -607,6 +608,7 @@ if ! torchrun \
     --eval-meter-per-pixel "${EVAL_METER_PER_PIXEL}" \
     --eval-buffer-size "${EVAL_BUFFER_SIZE}" \
     --eval-match-threshold "${EVAL_MATCH_THRESHOLD}" \
+    --eval-intersection-iou-threshold "${EVAL_INTERSECTION_IOU_THRESHOLD}" \
     --eval-centerline \
     --eval-output-json "${eval_json}"; then
     echo "ERROR: inference failed for ${checkpoint_label}/${difficulty_label}."
@@ -628,6 +630,7 @@ if ! torchrun \
       --eval-meter-per-pixel "${EVAL_METER_PER_PIXEL}"
       --eval-buffer-size "${EVAL_BUFFER_SIZE}"
       --eval-match-threshold "${EVAL_MATCH_THRESHOLD}"
+      --eval-intersection-iou-threshold "${EVAL_INTERSECTION_IOU_THRESHOLD}"
   )
   if [[ "${DIFFICULTY_EVAL}" =~ ^(1|true|True|TRUE|yes|YES)$ ]]; then
     visualize_args+=(--max-samples "${DIFFICULTY_VIS_LIMIT}" --no-eval-centerline --skip-whole-map-viz)
@@ -659,7 +662,8 @@ write_aggregate_difficulty_eval() {
     "${DIFFICULTIES}" \
     "${EVAL_METER_PER_PIXEL}" \
     "${EVAL_BUFFER_SIZE}" \
-    "${EVAL_MATCH_THRESHOLD}" <<'PY'
+    "${EVAL_MATCH_THRESHOLD}" \
+    "${EVAL_INTERSECTION_IOU_THRESHOLD}" <<'PY'
 import json
 import re
 import sys
@@ -694,6 +698,7 @@ difficulties = read_list(sys.argv[3])
 meter_per_pixel = float(sys.argv[4])
 buffer_size = float(sys.argv[5])
 match_threshold = float(sys.argv[6])
+intersection_iou_threshold = float(sys.argv[7])
 
 records = []
 source_counts = {}
@@ -721,11 +726,14 @@ map_eval = evaluate_lane_intersection_records(
     meter_per_pixel=meter_per_pixel,
     buffer_size=buffer_size,
     match_threshold=match_threshold,
+    intersection_iou_threshold=intersection_iou_threshold,
 )
 eval_summary = {
     "centerline_eval": map_eval["lane"],
     "intersection_eval": map_eval["intersection"],
     "lane_intersection_eval": map_eval["lane_intersection"],
+    "lane_type_eval": map_eval["lane_type"],
+    "intersection_type_eval": map_eval["intersection_type"],
     "map_eval": map_eval,
     "aggregate": {
         "source_counts": source_counts,

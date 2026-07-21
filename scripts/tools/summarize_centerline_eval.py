@@ -18,6 +18,7 @@ def main():
     parser.add_argument("--meter-per-pixel", type=float, default=0.2)
     parser.add_argument("--buffer-size", type=float, default=1.0)
     parser.add_argument("--match-threshold", type=float, default=0.33)
+    parser.add_argument("--intersection-iou-threshold", type=float, default=0.5)
     parser.add_argument("--map-task", choices=["lane", "lane_intersection"], default="lane")
     args = parser.parse_args()
 
@@ -49,11 +50,14 @@ def main():
             meter_per_pixel=args.meter_per_pixel,
             buffer_size=args.buffer_size,
             match_threshold=args.match_threshold,
+            intersection_iou_threshold=args.intersection_iou_threshold,
         )
         summary.update({
             "centerline_eval": map_eval["lane"],
             "intersection_eval": map_eval["intersection"],
             "lane_intersection_eval": map_eval["lane_intersection"],
+            "lane_type_eval": map_eval["lane_type"],
+            "intersection_type_eval": map_eval["intersection_type"],
             "map_eval": map_eval,
         })
     text = json.dumps(summary, ensure_ascii=False, indent=2)

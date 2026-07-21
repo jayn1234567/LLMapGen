@@ -188,6 +188,7 @@ def build_eval_payload(records, args, evaluate_records_fn, evaluate_lane_interse
         meter_per_pixel=args.eval_meter_per_pixel,
         buffer_size=args.eval_buffer_size,
         match_threshold=args.eval_match_threshold,
+        intersection_iou_threshold=args.eval_intersection_iou_threshold,
     )
     if args.include_intersections:
         map_eval = evaluate_lane_intersection_records_fn(records, **eval_kwargs)
@@ -195,6 +196,8 @@ def build_eval_payload(records, args, evaluate_records_fn, evaluate_lane_interse
             "centerline_eval": map_eval["lane"],
             "intersection_eval": map_eval["intersection"],
             "lane_intersection_eval": map_eval["lane_intersection"],
+            "lane_type_eval": map_eval["lane_type"],
+            "intersection_type_eval": map_eval["intersection_type"],
             "map_eval": map_eval,
         }
     return evaluate_records_fn(records, **eval_kwargs)
@@ -214,6 +217,8 @@ def eval_console_payload(eval_path, eval_payload, args):
             "centerline_eval": eval_payload["centerline_eval"],
             "intersection_eval": eval_payload["intersection_eval"],
             "lane_intersection_eval": eval_payload["lane_intersection_eval"],
+            "lane_type_eval": eval_payload["lane_type_eval"],
+            "intersection_type_eval": eval_payload["intersection_type_eval"],
         })
     else:
         payload["centerline_eval"] = eval_payload
@@ -711,6 +716,7 @@ def main():
     parser.add_argument("--eval-meter-per-pixel", type=float, default=0.2)
     parser.add_argument("--eval-buffer-size", type=float, default=1.0)
     parser.add_argument("--eval-match-threshold", type=float, default=0.33)
+    parser.add_argument("--eval-intersection-iou-threshold", type=float, default=0.5)
     parser.add_argument("--dry-run-prompts", action="store_true")
     parser.add_argument("--distributed-by-tile", action="store_true", help="Shard complete tile_id groups across torchrun ranks.")
     parser.add_argument("--rank", type=int, default=None, help="Override global rank. Defaults to RANK env.")

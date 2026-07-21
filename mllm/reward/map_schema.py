@@ -70,6 +70,16 @@ def _validate_points(points: Any, patch_size: int, coord_mode: str = COORD_MODE_
     return clean_points
 
 
+def _optional_semantic_type(item: dict[str, Any], primary_key: str) -> str | None:
+    value = item.get(primary_key)
+    if value is None:
+        value = item.get("type")
+    if value is None:
+        return None
+    normalized = str(value).strip().lower().replace("-", "_").replace(" ", "_")
+    return normalized or None
+
+
 def parse_map_json(
     prediction_text: str,
     map_task: str = "lane",
@@ -107,21 +117,29 @@ def parse_map_json(
                 end_type = item.get("end_type", "inside")
                 if start_type not in {"cut", "inside"} or end_type not in {"cut", "inside"}:
                     raise ValueError("centerline start_type/end_type must be cut or inside")
-                normalized.append({
+                normalized_item = {
                     "category": "centerline",
                     "start_type": start_type,
                     "end_type": end_type,
                     "points": clean_points,
-                })
+                }
+                lane_type = _optional_semantic_type(item, "lane_type")
+                if lane_type is not None:
+                    normalized_item["lane_type"] = lane_type
+                normalized.append(normalized_item)
             else:
                 is_cut = item.get("is_cut", False)
                 if not isinstance(is_cut, bool):
                     raise ValueError("intersection is_cut must be a boolean")
-                normalized.append({
+                normalized_item = {
                     "category": "intersection",
                     "is_cut": is_cut,
                     "points": clean_points,
-                })
+                }
+                intersection_type = _optional_semantic_type(item, "intersection_type")
+                if intersection_type is not None:
+                    normalized_item["intersection_type"] = intersection_type
+                normalized.append(normalized_item)
         return MapParseResult(ok=True, items=normalized, payload_text=json.dumps({"lines": normalized}, ensure_ascii=False))
     except Exception as exc:
         return MapParseResult(ok=False, items=[], payload_text=payload_text, error=str(exc))

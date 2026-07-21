@@ -222,26 +222,27 @@ if [[ "${REUSE_LOCAL_ASSETS}" =~ ^(1|true|True|TRUE|yes|YES)$ ]] && [ -f "${DATA
   echo "[assets] reusing extracted dataset: ${DATASET_EXTRACT_ROOT}"
 else
   rm -f "${DATASET_EXTRACT_MARKER}"
-  python - "${DATASET_ARCHIVE_PATH}" "${DATASET_EXTRACT_ROOT}" <<'PY'
+  archive_type=$(python - "${DATASET_ARCHIVE_PATH}" <<'PY'
 import sys
 import tarfile
 import zipfile
-from pathlib import Path
 
-archive = Path(sys.argv[1])
-output = Path(sys.argv[2])
-output.mkdir(parents=True, exist_ok=True)
+archive = sys.argv[1]
 if zipfile.is_zipfile(archive):
-    print(f"[dataset] extracting zip: {archive} -> {output}", flush=True)
-    with zipfile.ZipFile(archive) as handle:
-        handle.extractall(output)
+    print("zip")
 elif tarfile.is_tarfile(archive):
-    print(f"[dataset] extracting tar: {archive} -> {output}", flush=True)
-    with tarfile.open(archive, "r:*") as handle:
-        handle.extractall(output)
+    print("tar")
 else:
     raise SystemExit(f"Unsupported dataset archive (expected zip/tar/tar.gz): {archive}")
 PY
+  )
+  if [ "${archive_type}" = "zip" ]; then
+    echo "[dataset] extracting zip: ${DATASET_ARCHIVE_PATH} -> ${DATASET_EXTRACT_ROOT}"
+    unzip -q -o "${DATASET_ARCHIVE_PATH}" -d "${DATASET_EXTRACT_ROOT}"
+  else
+    echo "[dataset] extracting tar: ${DATASET_ARCHIVE_PATH} -> ${DATASET_EXTRACT_ROOT}"
+    tar -xf "${DATASET_ARCHIVE_PATH}" -C "${DATASET_EXTRACT_ROOT}"
+  fi
   touch "${DATASET_EXTRACT_MARKER}"
 fi
 

@@ -391,7 +391,30 @@ import sys
 root = Path(sys.argv[1])
 if not root.exists():
     raise SystemExit(f"checkpoint path does not exist: {root}")
-if any((root / name).is_file() for name in ("model.safetensors", "pytorch_model.bin", "adapter_model.safetensors")):
+
+weight_names = (
+    "model.safetensors",
+    "pytorch_model.bin",
+    "adapter_model.safetensors",
+    "adapter_model.bin",
+    "model.safetensors.index.json",
+    "pytorch_model.bin.index.json",
+)
+weight_patterns = (
+    "model-*-of-*.safetensors",
+    "pytorch_model-*-of-*.bin",
+    "adapter_model-*-of-*.safetensors",
+    "adapter_model-*-of-*.bin",
+)
+
+
+def has_weights(path: Path) -> bool:
+    return any((path / name).is_file() for name in weight_names) or any(
+        next(path.glob(pattern), None) is not None for pattern in weight_patterns
+    )
+
+
+if root.is_dir() and has_weights(root):
     print(root)
     raise SystemExit(0)
 cmd = [
@@ -414,15 +437,17 @@ if result.returncode == 0 and result.stdout.strip():
     print(result.stdout.strip())
     raise SystemExit(0)
 checkpoints = []
-for path in root.glob("checkpoint-*"):
-    if path.is_dir():
-        try:
-            step = int(path.name.rsplit("-", 1)[1])
-        except Exception:
-            step = -1
-        checkpoints.append((step, path))
+for path in root.rglob("*"):
+    if not path.is_dir() or not has_weights(path):
+        continue
+    try:
+        step = int(path.name.rsplit("-", 1)[1]) if path.name.startswith("checkpoint-") else -1
+    except Exception:
+        step = -1
+    depth = len(path.relative_to(root).parts)
+    checkpoints.append((step, -depth, str(path), path))
 if checkpoints:
-    print(sorted(checkpoints)[-1][1])
+    print(sorted(checkpoints)[-1][-1])
     raise SystemExit(0)
 raise SystemExit(f"cannot resolve a usable checkpoint under: {root}")
 PY
@@ -446,7 +471,30 @@ import sys
 root = Path(sys.argv[1])
 if not root.exists():
     raise SystemExit(f"checkpoint path does not exist: {root}")
-if any((root / name).is_file() for name in ("model.safetensors", "pytorch_model.bin", "adapter_model.safetensors")):
+
+weight_names = (
+    "model.safetensors",
+    "pytorch_model.bin",
+    "adapter_model.safetensors",
+    "adapter_model.bin",
+    "model.safetensors.index.json",
+    "pytorch_model.bin.index.json",
+)
+weight_patterns = (
+    "model-*-of-*.safetensors",
+    "pytorch_model-*-of-*.bin",
+    "adapter_model-*-of-*.safetensors",
+    "adapter_model-*-of-*.bin",
+)
+
+
+def has_weights(path: Path) -> bool:
+    return any((path / name).is_file() for name in weight_names) or any(
+        next(path.glob(pattern), None) is not None for pattern in weight_patterns
+    )
+
+
+if root.is_dir() and has_weights(root):
     print(root)
     raise SystemExit(0)
 cmd = [
@@ -469,15 +517,17 @@ if result.returncode == 0 and result.stdout.strip():
     print(result.stdout.strip())
     raise SystemExit(0)
 checkpoints = []
-for path in root.glob("checkpoint-*"):
-    if path.is_dir():
-        try:
-            step = int(path.name.rsplit("-", 1)[1])
-        except Exception:
-            step = -1
-        checkpoints.append((step, path))
+for path in root.rglob("*"):
+    if not path.is_dir() or not has_weights(path):
+        continue
+    try:
+        step = int(path.name.rsplit("-", 1)[1]) if path.name.startswith("checkpoint-") else -1
+    except Exception:
+        step = -1
+    depth = len(path.relative_to(root).parts)
+    checkpoints.append((step, -depth, str(path), path))
 if checkpoints:
-    print(sorted(checkpoints)[-1][1])
+    print(sorted(checkpoints)[-1][-1])
     raise SystemExit(0)
 raise SystemExit(f"cannot resolve a usable checkpoint under: {root}")
 PY

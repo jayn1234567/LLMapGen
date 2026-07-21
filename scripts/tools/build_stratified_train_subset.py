@@ -27,6 +27,25 @@ from scripts.tools.tag_hard_map_samples import (  # noqa: E402
 
 DIFFICULTIES = ("easy", "medium", "hard", "very_hard")
 DEFAULT_RATIOS = "easy=0.30,medium=0.3560290909,hard=0.2439709091,very_hard=0.10"
+DIFFICULTY_ARGS = SimpleNamespace(
+    coord_mode="norm1000",
+    coord_range=1000.0,
+    junction_tol=36.0,
+    intersection_tol=16.0,
+    dense_line_threshold=8,
+    dense_point_threshold=34,
+    long_total_length_threshold=3600.0,
+    many_cut_threshold=6,
+    short_line_threshold=90.0,
+    curved_line_turn_threshold=45.0,
+    sharp_turn_threshold=60.0,
+    easy_max_centerlines=3,
+    easy_max_points=16,
+    easy_max_total_turn=120.0,
+    easy_max_single_turn=60.0,
+    hard_score_threshold=2.5,
+    very_hard_score_threshold=5.5,
+)
 
 
 def parse_args() -> argparse.Namespace:
@@ -79,7 +98,9 @@ def allocate_quotas(target_samples: int, ratios: dict[str, float]) -> dict[str, 
 
 
 def default_classifier(record: dict[str, Any]) -> tuple[str, bool]:
-    metrics = sample_metrics(record, image_size=None, args=SimpleNamespace())
+    # Keep these values aligned with data_process.build_dataset_v2.DIFFICULTY_ARGS
+    # so a subset is bucketed exactly like the finalized 550k build.
+    metrics = sample_metrics(record, image_size=None, args=DIFFICULTY_ARGS)
     tags = set(metrics.get("tags") or ())
     return str(metrics["difficulty"]), "empty_patch" in tags
 

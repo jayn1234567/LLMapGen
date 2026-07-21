@@ -6,6 +6,7 @@ import pytest
 from scripts.tools.build_stratified_train_subset import (
     allocate_quotas,
     build_subset,
+    default_classifier,
     parse_ratios,
 )
 
@@ -29,6 +30,31 @@ def test_final_550k_ratios_scale_to_exact_200k_quotas() -> None:
         "hard": 48_794,
         "very_hard": 20_000,
     }
+
+
+def test_default_classifier_uses_dataset_v2_geometry_defaults() -> None:
+    target = {
+        "lines": [
+            {
+                "category": "centerline",
+                "type": "common",
+                "start_type": "cut",
+                "end_type": "cut",
+                "points": [[0, 500], [1000, 500]],
+            }
+        ]
+    }
+    record = {
+        "id": "synthetic",
+        "meta": {"coord_mode": "norm1000", "patch_width": 256, "patch_height": 256},
+        "conversations": [
+            {"from": "human", "value": "<image>"},
+            {"from": "gpt", "value": json.dumps(target)},
+        ],
+    }
+    difficulty, is_empty = default_classifier(record)
+    assert difficulty == "easy"
+    assert is_empty is False
 
 
 def test_exact_difficulty_quotas_and_determinism(tmp_path: Path) -> None:

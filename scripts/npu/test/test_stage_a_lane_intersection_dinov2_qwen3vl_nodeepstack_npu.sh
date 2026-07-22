@@ -82,8 +82,6 @@ EVAL_METER_PER_PIXEL=${EVAL_METER_PER_PIXEL:-0.2}                               
 EVAL_BUFFER_SIZE=${EVAL_BUFFER_SIZE:-1.0}                                         # Jiangjihua line-eval buffer size.
 EVAL_MATCH_THRESHOLD=${EVAL_MATCH_THRESHOLD:-0.33}                                # Jiangjihua line-eval matching threshold.
 CHECKPOINT_DEEPSTACK_MODE=${CHECKPOINT_DEEPSTACK_MODE:-disabled}                  # disabled preserves this recipe; auto trusts checkpoint config.
-INFER_LAUNCH_MODE=${INFER_LAUNCH_MODE:-independent}                              # independent avoids torchrun/HCCL for one-node data-parallel inference.
-INFER_STARTUP_POLL_SECONDS=${INFER_STARTUP_POLL_SECONDS:-2}                      # Poll interval while waiting for each shard's first successful sample.
 # ====================== Ascend environment ======================
 # Ascend and HCCL runtime environment for NPU jobs.
 export ASCEND_CUSTOM_PATH=${ASCEND_CUSTOM_PATH:-/usr/local/Ascend/ascend-toolkit/latest}  # Ascend toolkit root.
@@ -109,9 +107,6 @@ export WITHOUT_JIT_COMPILE=1                                                    
 export HCCL_OP_BASE_FFTS_MODE_ENABLE=FALSE                                        # Disable HCCL FFTS operator base mode for compatibility.
 export COMBINED_ENABLE=1                                                          # Ascend combined-operator switch used by the NPU runtime.
 export OMP_NUM_THREADS=${OMP_NUM_THREADS:-1}                                      # CPU thread count per process.
-export TE_PARALLEL_COMPILER=${TE_PARALLEL_COMPILER:-1}                            # Limit TBE compiler subprocesses to avoid native startup crashes.
-export MAX_COMPILE_CORE_NUMBER=${MAX_COMPILE_CORE_NUMBER:-1}                      # Limit graph-build CPU parallelism for each inference shard.
-export MLLM_SERIALIZE_MODEL_LOAD=${MLLM_SERIALIZE_MODEL_LOAD:-1}                  # Load one full model rank at a time to avoid native host-allocator corruption.
 export MLLM_LOG_RANK0_ONLY=${MLLM_LOG_RANK0_ONLY:-1}                              # Limit project logs to rank 0 when set.
 export TOKENIZERS_PARALLELISM=${TOKENIZERS_PARALLELISM:-false}                    # Disable tokenizer worker parallelism warnings.
 export PYTHONPATH="${REPO_ROOT}:${PYTHONPATH:-}"                                  # Ensure project modules are importable.
@@ -514,183 +509,40 @@ run_one_checkpoint() {
       return 1
       ;;
   esac
-  infer_args=(
-    --checkpoint-dir "${checkpoint_dir}"
-    --vision_tower "${VISION_TOWER}"
-    --mm_vision_tower_type "${MM_VISION_TOWER_TYPE}"
-    --input_image_size "${INPUT_IMAGE_SIZE}"
-    "${deepstack_args[@]}"
-    --test-json "${test_json}"
-    --num-samples "${NUM_TEST_SAMPLES}"
-    --image-folder "${IMAGE_FOLDER}"
-    --prompt-mode dataset
-    --map-task "${MAP_TASK}"
-    --patch-size 256
-    --coord-mode "${COORD_MODE}"
-    --coord-range "${COORD_RANGE}"
-    --conv-template conv_qwen_3_Dinov2_huawei
-    --output-dir "${output_dir}"
-    --sample-json-dir "${json_dir}"
-    --output-json "${summary_json}"
-    --temperature 0.0
-    --max-new-tokens "${MAX_NEW_TOKENS}"
-  )
-
-  inference_exit=0
-  if [ "${NNODES}" -eq 1 ] && [ "${NPROC_PER_NODE}" -gt 1 ] && [ "${INFER_LAUNCH_MODE}" = "independent" ]; then
-    echo "[infer-launch] using ${NPROC_PER_NODE} independent single-NPU shards (no torchrun/HCCL)"
-    echo "[infer-launch] TE_PARALLEL_COMPILER=${TE_PARALLEL_COMPILER}, MAX_COMPILE_CORE_NUMBER=${MAX_COMPILE_CORE_NUMBER}"
-    visible_device_csv=${ASCEND_RT_VISIBLE_DEVICES:-}
-    if [ -n "${visible_device_csv}" ]; then
-      IFS=',' read -r -a infer_devices <<< "${visible_device_csv}"
-    else
-      infer_devices=()
-      for ((rank_idx=0; rank_idx<NPROC_PER_NODE; rank_idx++)); do
-        infer_devices+=("${rank_idx}")
-      done
-    fi
-    if [ "${#infer_devices[@]}" -lt "${NPROC_PER_NODE}" ]; then
-      echo "ERROR: ${NPROC_PER_NODE} shards requested but only ${#infer_devices[@]} visible NPU ids were provided: ${visible_device_csv}"
-      return 1
-    fi
-
-    startup_dir="${output_dir}/.independent_startup"
-    shard_log_dir="${output_dir}/shard_logs"
-    mkdir -p "${startup_dir}" "${shard_log_dir}"
-    shard_pids=()
-    shard_logs=()
-    for ((shard_rank=0; shard_rank<NPROC_PER_NODE; shard_rank++)); do
-      device_id=${infer_devices[${shard_rank}]}
-      ready_file="${startup_dir}/rank_${shard_rank}.ready"
-      shard_log="${shard_log_dir}/rank_${shard_rank}.log"
-      rm -f "${ready_file}"
-      echo "[infer-launch] starting shard ${shard_rank}/${NPROC_PER_NODE} on physical NPU ${device_id}; log=${shard_log}"
-      (
-        unset LOCAL_RANK RANK WORLD_SIZE GROUP_RANK ROLE_RANK LOCAL_WORLD_SIZE
-        export ASCEND_RT_VISIBLE_DEVICES="${device_id}"
-        export ASCEND_VISIBLE_DEVICES="${device_id}"
-        export NPU_VISIBLE_DEVICES="${device_id}"
-        export MLLM_SERIALIZE_MODEL_LOAD=0
-        python scripts/tools/infer_centerline_checkpoint.py \
-          "${infer_args[@]}" \
-          --shard-rank "${shard_rank}" \
-          --shard-world-size "${NPROC_PER_NODE}" \
-          --ready-file "${ready_file}"
-      ) >"${shard_log}" 2>&1 &
-      shard_pid=$!
-      shard_pids+=("${shard_pid}")
-      shard_logs+=("${shard_log}")
-
-      while [ ! -f "${ready_file}" ]; do
-        if ! kill -0 "${shard_pid}" 2>/dev/null; then
-          wait "${shard_pid}"
-          inference_exit=$?
-          [ "${inference_exit}" -ne 0 ] || inference_exit=1
-          echo "ERROR: shard ${shard_rank} exited before its first successful sample; log=${shard_log}"
-          echo "==================== head -n 120 ${shard_log} ===================="
-          head -n 120 "${shard_log}"
-          echo "==================== tail -n 160 ${shard_log} ===================="
-          tail -n 160 "${shard_log}"
-          break
-        fi
-        sleep "${INFER_STARTUP_POLL_SECONDS}"
-      done
-      if [ "${inference_exit}" -ne 0 ]; then
-        break
-      fi
-      echo "[infer-launch] shard ${shard_rank} is ready"
-    done
-
-    if [ "${inference_exit}" -ne 0 ]; then
-      for shard_pid in "${shard_pids[@]}"; do
-        kill "${shard_pid}" 2>/dev/null || true
-      done
-      for shard_pid in "${shard_pids[@]}"; do
-        wait "${shard_pid}" 2>/dev/null || true
-      done
-    fi
-
-    if [ "${inference_exit}" -eq 0 ]; then
-      for shard_index in "${!shard_pids[@]}"; do
-        if ! wait "${shard_pids[${shard_index}]}"; then
-          inference_exit=$?
-          [ "${inference_exit}" -ne 0 ] || inference_exit=1
-          echo "ERROR: independent shard ${shard_index} failed; log=${shard_logs[${shard_index}]}"
-          echo "==================== head -n 120 ${shard_logs[${shard_index}]} ===================="
-          head -n 120 "${shard_logs[${shard_index}]}"
-          echo "==================== tail -n 160 ${shard_logs[${shard_index}]} ===================="
-          tail -n 160 "${shard_logs[${shard_index}]}"
-          break
-        fi
-      done
-    else
-      for shard_pid in "${shard_pids[@]}"; do
-        kill "${shard_pid}" 2>/dev/null || true
-      done
-      for shard_pid in "${shard_pids[@]}"; do
-        wait "${shard_pid}" 2>/dev/null || true
-      done
-    fi
-
-    if [ "${inference_exit}" -eq 0 ]; then
-      if ! python - "${summary_json}" "${NPROC_PER_NODE}" <<'PY'
-import json
-import sys
-from pathlib import Path
-
-summary_path = Path(sys.argv[1])
-world_size = int(sys.argv[2])
-merged = []
-for rank in range(world_size):
-    rank_path = summary_path.with_name(f"{summary_path.stem}_rank{rank:05d}{summary_path.suffix}")
-    if not rank_path.is_file():
-        raise FileNotFoundError(f"missing independent inference shard: {rank_path}")
-    payload = json.loads(rank_path.read_text(encoding="utf-8"))
-    if not isinstance(payload, list):
-        raise TypeError(f"independent inference shard is not a list: {rank_path}")
-    merged.extend(item for item in payload if isinstance(item, dict))
-merged.sort(key=lambda item: (int(item.get("idx", 0)), str(item.get("record_id", ""))))
-summary_path.write_text(json.dumps(merged, ensure_ascii=False, indent=2), encoding="utf-8")
-print(f"[infer-merge] merged {len(merged)} records from {world_size} independent shards -> {summary_path}")
-PY
-      then
-        inference_exit=$?
-        [ "${inference_exit}" -ne 0 ] || inference_exit=1
-      fi
-    fi
-    if [ "${inference_exit}" -eq 0 ]; then
-      python scripts/tools/summarize_centerline_eval.py \
-        --summary-json "${summary_json}" \
-        --output-json "${eval_json}" \
-        --meter-per-pixel "${EVAL_METER_PER_PIXEL}" \
-        --buffer-size "${EVAL_BUFFER_SIZE}" \
-        --match-threshold "${EVAL_MATCH_THRESHOLD}" \
-        --map-task "${MAP_TASK}" || inference_exit=$?
-    fi
-  else
-    infer_launcher=(python scripts/tools/infer_centerline_checkpoint.py)
-    if [ "${NNODES}" -gt 1 ] || [ "${NPROC_PER_NODE}" -gt 1 ]; then
-      infer_launcher=(
-        torchrun
-        --nnodes="${NNODES}"
-        --nproc_per_node="${NPROC_PER_NODE}"
-        --node_rank="${NODE_RANK}"
-        --master_addr="${MASTER_ADDR}"
-        --master_port="${MASTER_PORT}"
-        scripts/tools/infer_centerline_checkpoint.py
-      )
-    fi
-    "${infer_launcher[@]}" \
-      "${infer_args[@]}" \
-      --eval-meter-per-pixel "${EVAL_METER_PER_PIXEL}" \
-      --eval-buffer-size "${EVAL_BUFFER_SIZE}" \
-      --eval-match-threshold "${EVAL_MATCH_THRESHOLD}" \
-      --eval-centerline \
-      --eval-output-json "${eval_json}" || inference_exit=$?
-  fi
-  if [ "${inference_exit}" -ne 0 ]; then
-    echo "ERROR: inference failed for ${checkpoint_label}/${difficulty_label} with exit code ${inference_exit}."
-    return "${inference_exit}"
+# Launch the recipe entrypoint. Training uses HCCL/DDP and full SFT may add DeepSpeed.
+if ! torchrun \
+    --nnodes="${NNODES}" \
+    --nproc_per_node="${NPROC_PER_NODE}" \
+    --node_rank="${NODE_RANK}" \
+    --master_addr="${MASTER_ADDR}" \
+    --master_port="${MASTER_PORT}" \
+    scripts/tools/infer_centerline_checkpoint.py \
+    --checkpoint-dir "${checkpoint_dir}" \
+    --vision_tower "${VISION_TOWER}" \
+    --mm_vision_tower_type "${MM_VISION_TOWER_TYPE}" \
+    --input_image_size "${INPUT_IMAGE_SIZE}" \
+    "${deepstack_args[@]}" \
+    --test-json "${test_json}" \
+    --num-samples "${NUM_TEST_SAMPLES}" \
+    --image-folder "${IMAGE_FOLDER}" \
+    --prompt-mode dataset \
+    --map-task "${MAP_TASK}" \
+    --patch-size 256 \
+    --coord-mode "${COORD_MODE}" \
+    --coord-range "${COORD_RANGE}" \
+    --conv-template conv_qwen_3_Dinov2_huawei \
+    --output-dir "${output_dir}" \
+    --sample-json-dir "${json_dir}" \
+    --output-json "${summary_json}" \
+    --temperature 0.0 \
+    --max-new-tokens "${MAX_NEW_TOKENS}" \
+    --eval-meter-per-pixel "${EVAL_METER_PER_PIXEL}" \
+    --eval-buffer-size "${EVAL_BUFFER_SIZE}" \
+    --eval-match-threshold "${EVAL_MATCH_THRESHOLD}" \
+    --eval-centerline \
+    --eval-output-json "${eval_json}"; then
+    echo "ERROR: inference failed for ${checkpoint_label}/${difficulty_label}."
+    return 1
   fi
   if [ "${NODE_RANK}" -ne 0 ]; then
     return 0
@@ -720,15 +572,10 @@ PY
 import json
 import sys
 from pathlib import Path
-from infer_index.line_eval import format_eval_table, print_lane_intersection_eval_tables
+from infer_index.line_eval import format_eval_table
 payload = json.loads(Path(sys.argv[1]).read_text(encoding='utf-8'))
 payload = payload.get('summary', payload) if isinstance(payload, dict) else payload
-if isinstance(payload, dict) and payload.get('map_eval'):
-    print_lane_intersection_eval_tables(payload['map_eval'])
-elif isinstance(payload, dict) and payload.get('line_eval'):
-    print(format_eval_table(payload['line_eval']))
-else:
-    print(payload.get('table') if isinstance(payload, dict) and payload.get('table') else format_eval_table(payload))
+print(payload.get('table') if isinstance(payload, dict) and payload.get('table') else format_eval_table(payload))
 PY
   fi
 }

@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
 import argparse
-import gc
 import json
 import sys
 from pathlib import Path
@@ -568,15 +567,6 @@ def _load_full_finetune_model(checkpoint_dir: Path, device: str, config_override
     if vision_tower is not None and hasattr(vision_tower, 'set_llm_hidden_size'):
         vision_tower.set_llm_hidden_size(model.config.hidden_size)
 
-    # Cast the empty/randomly initialized model before materializing the full
-    # checkpoint. Keeping an FP32 model, an FP32 state dict, and the temporary
-    # dtype-conversion copy alive together causes a very large host-memory peak
-    # when every NPU rank starts at the same time.
-    dtype = _runtime_dtype(model.config, device)
-    print(f"[infer-load] casting model to {dtype} before checkpoint load", flush=True)
-    model = model.to(dtype=dtype)
-    gc.collect()
-
     state_dict = _load_state_dict(checkpoint_dir)
     _report_full_checkpoint_coverage(model, state_dict, model.config, metadata)
     missing, unexpected = model.load_state_dict(state_dict, strict=False)
@@ -588,12 +578,8 @@ def _load_full_finetune_model(checkpoint_dir: Path, device: str, config_override
     if unexpected:
         print(f"[WARN] Unexpected keys after full-finetune load: {unexpected[:20]}")
 
-    # load_state_dict copies checkpoint values into model storage. Release the
-    # CPU checkpoint before allocating the NPU copy instead of carrying both
-    # full models through model.to(device).
-    del state_dict
-    gc.collect()
-    print(f"[infer-load] released CPU checkpoint; moving model to {device}", flush=True)
+    dtype = _runtime_dtype(model.config, device)
+    model = model.to(dtype=dtype)
     model = model.to(device)
     model.eval()
 
@@ -964,9 +950,6 @@ def main():
     parser.add_argument("--output-json", default="")
     parser.add_argument("--output-dir", default="")
     parser.add_argument("--sample-json-dir", default="", help="Directory for per-sample JSON files. Defaults to output-dir.")
-    parser.add_argument("--shard-rank", type=int, default=0, help="Independent inference shard rank (no torch.distributed required).")
-    parser.add_argument("--shard-world-size", type=int, default=1, help="Number of independent inference shards.")
-    parser.add_argument("--ready-file", default="", help="Touch this file after model load and the first successful sample.")
     parser.add_argument("--print-full-output", action="store_true")
     parser.add_argument("--vision_tower", default="")
     parser.add_argument("--vision_tower_checkpoint", default="")
@@ -998,12 +981,6 @@ def main():
     parser.add_argument("--coord-range", type=int, default=DEFAULT_COORD_RANGE)
     args = parser.parse_args()
     args.device = device_str
-    if args.shard_world_size < 1:
-        raise ValueError("--shard-world-size must be at least 1")
-    if args.shard_rank < 0 or args.shard_rank >= args.shard_world_size:
-        raise ValueError(
-            f"--shard-rank must be in [0, {args.shard_world_size}), got {args.shard_rank}"
-        )
 
     evaluate_one_sample = evaluate_records = print_eval_table = None
     evaluate_lane_intersection_records = print_lane_intersection_eval_tables = None
@@ -1040,50 +1017,8 @@ def main():
         f"disable_deepstack={config_overrides.get('disable_deepstack')}, "
         f"deepstack_visual_indexes={config_overrides.get('deepstack_visual_indexes')}"
     )
-    serialize_model_load = (
-        torch.distributed.is_initialized()
-        and str(args.device).startswith("npu")
-        and _env_flag("MLLM_SERIALIZE_MODEL_LOAD", "1")
-    )
-    if serialize_model_load:
-        rank = torch.distributed.get_rank()
-        world_size = torch.distributed.get_world_size()
-        if rank == 0:
-            print(
-                f"[infer-load] serializing full model load across {world_size} NPU ranks "
-                "to avoid concurrent host allocator peaks",
-                flush=True,
-            )
-        tokenizer = model = image_processor = None
-        for load_rank in range(world_size):
-            if rank == load_rank:
-                load_log = sys.stdout if rank == 0 else sys.stderr
-                print(
-                    f"[infer-load] rank {rank}/{world_size} starting serialized model load",
-                    file=load_log,
-                    flush=True,
-                )
-                tokenizer, model, image_processor = load_model_components(
-                    checkpoint_dir,
-                    manifest,
-                    args.device,
-                    config_overrides=config_overrides,
-                )
-                print(
-                    f"[infer-load] rank {rank}/{world_size} completed serialized model load",
-                    file=load_log,
-                    flush=True,
-                )
-            torch.distributed.barrier()
-        if model is None:
-            raise RuntimeError(f"Rank {rank} did not load model components")
-    else:
-        tokenizer, model, image_processor = load_model_components(
-            checkpoint_dir,
-            manifest,
-            args.device,
-            config_overrides=config_overrides,
-        )
+    tokenizer, model, image_processor = load_model_components(
+        checkpoint_dir, manifest, args.device, config_overrides=config_overrides)
     coordinate_token_mode, coordinate_token_max = resolve_coordinate_token_settings(
         tokenizer,
         model.config,
@@ -1108,8 +1043,6 @@ def main():
         indexed_records = list(enumerate(records, start=start))
         if torch.distributed.is_initialized():
             indexed_records = indexed_records[torch.distributed.get_rank()::torch.distributed.get_world_size()]
-        elif args.shard_world_size > 1:
-            indexed_records = indexed_records[args.shard_rank::args.shard_world_size]
     else:
         if not args.image:
             raise ValueError("Provide either --image or --test-json")
@@ -1124,15 +1057,6 @@ def main():
     rank_suffix = ""
     if torch.distributed.is_initialized():
         rank_suffix = f"rank{torch.distributed.get_rank()}_"
-    elif args.shard_world_size > 1:
-        rank_suffix = f"rank{args.shard_rank}_"
-
-    ready_path = Path(args.ready_file) if args.ready_file else None
-    if ready_path is not None and not indexed_records:
-        ready_path.parent.mkdir(parents=True, exist_ok=True)
-        ready_path.touch()
-        print(f"[infer-shard] empty shard ready: {ready_path}", flush=True)
-        ready_path = None
 
     results = []
     for idx, record in indexed_records:
@@ -1239,7 +1163,6 @@ def main():
         lines_global = offset_lines(parsed_items_pixel, x0, y0) if parse_ok else []
 
         result = {
-            "idx": idx,
             "checkpoint_dir": str(checkpoint_dir),
             "image": str(image_path),
             "record_id": record.get("id", f"sample_{idx}"),
@@ -1301,12 +1224,6 @@ def main():
             sample_path = sample_json_dir / f"{rank_suffix}{idx:03d}_{sanitize_filename(str(result['record_id']))}.json"
             sample_path.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
 
-        if ready_path is not None:
-            ready_path.parent.mkdir(parents=True, exist_ok=True)
-            ready_path.touch()
-            print(f"[infer-shard] first sample complete; ready: {ready_path}", flush=True)
-            ready_path = None
-
         print(
             json.dumps(
                 {
@@ -1364,20 +1281,6 @@ def main():
                     print_eval_payload(eval_summary, args, print_eval_table, print_lane_intersection_eval_tables)
                     print(json.dumps(eval_console_payload(eval_path, eval_summary, args), ensure_ascii=False))
             torch.distributed.barrier()
-        elif args.shard_world_size > 1:
-            rank_output_json_path = rank_json_path(output_json_path, args.shard_rank)
-            rank_output_json_path.write_text(json.dumps(results, ensure_ascii=False, indent=2), encoding="utf-8")
-            print(
-                json.dumps(
-                    {
-                        "shard_rank": args.shard_rank,
-                        "shard_world_size": args.shard_world_size,
-                        "shard_output_json": str(rank_output_json_path),
-                        "samples": len(results),
-                    },
-                    ensure_ascii=False,
-                )
-            )
         else:
             output_json_path.write_text(json.dumps(results, ensure_ascii=False, indent=2), encoding="utf-8")
             if args.eval_centerline:

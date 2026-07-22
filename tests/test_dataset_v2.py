@@ -35,7 +35,11 @@ from scripts.tools.build_rc_dataset_v2_from_obs import (
     DEFAULT_OUTPUT_OBS_ROOT,
     ObsutilBackend,
 )
-from scripts.tools.build_rc_dataset_v2_streaming_from_obs import completed_stage
+from scripts.tools.build_rc_dataset_v2_streaming_from_obs import (
+    build_stage_command,
+    completed_stage,
+    parse_args as parse_streaming_args,
+)
 from scripts.tools.build_rc_dataset_v2_context512_windows import (
     build_compact_id_filter,
     subset_spec,
@@ -44,6 +48,48 @@ from scripts.tools.build_rc_dataset_v2_context512_windows import (
 
 
 class DatasetV2ContextTest(unittest.TestCase):
+    def test_dual_resolution_streaming_stage_command(self):
+        args = parse_streaming_args([
+            "--work-root", "work",
+            "--secondary-local256-staging-root", "stage256",
+            "--views", "both",
+        ])
+        self.assertEqual(args.secondary_local256_train_stride, 128)
+        command = [str(item) for item in build_stage_command(
+            args,
+            Path("raw/source"),
+            Path("stage256/source"),
+            Path("raw"),
+            3,
+            "obs://bucket/source/",
+            256,
+            256,
+            256,
+            128,
+            None,
+            True,
+            "local",
+        )]
+        self.assertIn("--delete-input-root-after-stage", command)
+        self.assertEqual(command[command.index("--views") + 1], "local")
+        self.assertEqual(command[command.index("--patch-size") + 1], "256")
+        self.assertEqual(command[command.index("--train-stride") + 1], "128")
+        primary_command = [str(item) for item in build_stage_command(
+            args,
+            Path("raw/source"),
+            Path("stage/source"),
+            Path("raw"),
+            3,
+            "obs://bucket/source/",
+            256,
+            512,
+            256,
+            128,
+            None,
+            False,
+        )]
+        self.assertEqual(primary_command[primary_command.index("--views") + 1], "both")
+
     def test_lane_type_mapping_and_exclusions(self):
         self.assertEqual(IGNORED_LANE_TYPE_CODES, frozenset({3, 22}))
         self.assertIsNone(lane_type_name(3))

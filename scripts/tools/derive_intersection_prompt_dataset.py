@@ -84,7 +84,10 @@ def extract_prompt_intersections(prompt: str) -> list[dict]:
     return intersections
 
 
-def transform_record(record: dict) -> tuple[dict, list[dict], list[dict]]:
+def transform_record(
+    record: dict,
+    dataset_variant: str | None = None,
+) -> tuple[dict, list[dict], list[dict]]:
     payload = parse_target(record)
     centerlines = []
     intersections = []
@@ -103,7 +106,7 @@ def transform_record(record: dict) -> tuple[dict, list[dict], list[dict]]:
     coord_range = int(meta.get("coord_range", 0))
     if patch_size <= 0 or coord_range <= 0:
         raise ValueError(f"sample={record.get('id')} has invalid target_size/coord_range metadata")
-    variant = f"local{patch_size}_intersection_prompt"
+    variant = str(dataset_variant or f"local{patch_size}_intersection_prompt")
     meta.update({
         "dataset_variant": variant,
         "task_mode": TASK_MODE,
@@ -180,7 +183,10 @@ def transform_split(input_root: Path, output_root: Path, split: str, args) -> di
             meta_record = json.loads(meta_line)
             if str(record.get("id")) != str(meta_record.get("id")):
                 raise ValueError(f"source SFT/meta id mismatch in split={split} row={index}")
-            transformed, centerlines, intersections = transform_record(record)
+            transformed, centerlines, intersections = transform_record(
+                record,
+                dataset_variant=output_root.name,
+            )
             parsed_intersections = extract_prompt_intersections(transformed["conversations"][0]["value"])
             if parsed_intersections != intersections:
                 raise ValueError(f"sample={record.get('id')} prompt intersection round-trip mismatch")

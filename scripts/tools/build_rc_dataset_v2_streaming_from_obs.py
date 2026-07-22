@@ -34,6 +34,11 @@ def parse_args(argv=None):
     parser.add_argument("--work-root", default="")
     parser.add_argument("--raw-root", default="")
     parser.add_argument("--staging-root", default="")
+    parser.add_argument(
+        "--secondary-local256-staging-root",
+        default="",
+        help="Optionally stage local256 from each downloaded source before deleting it.",
+    )
     parser.add_argument("--output-root", default="")
     parser.add_argument("--output-obs-root", default=DEFAULT_OUTPUT_OBS_ROOT)
     parser.add_argument("--views", choices=["local", "context", "both"], default="local")
@@ -42,6 +47,7 @@ def parse_args(argv=None):
     parser.add_argument("--eval-test-stride", type=int, default=0, help="Defaults to --patch-size.")
     parser.add_argument("--train-target-samples", type=int, default=550000)
     parser.add_argument("--train-stride", type=int, default=128)
+    parser.add_argument("--secondary-local256-train-stride", type=int, default=128)
     parser.add_argument(
         "--difficulty-ratios",
         default="empty=0,easy=0.30,medium=0.33,hard=0.27,very_hard=0.10",
@@ -154,6 +160,54 @@ def download_one_source(source, local_root: Path, resume: bool, backend):
     )
 
 
+def build_stage_command(
+    args,
+    local_root: Path,
+    stage_root: Path,
+    raw_root: Path,
+    source_index: int,
+    source: str,
+    patch_size: int,
+    context_size: int,
+    eval_test_stride: int,
+    train_stride: int,
+    candidate_jsonl: Path | None,
+    delete_input: bool,
+    views: str | None = None,
+) -> list:
+    command = [
+        sys.executable,
+        "data_process/build_dataset_v2_staged.py",
+        "stage",
+        "--input-root", local_root,
+        "--stage-root", stage_root,
+        "--source-index", source_index,
+        "--source-uri", source,
+        "--views", views or args.views,
+        "--patch-size", patch_size,
+        "--context-size", context_size,
+        "--stride", eval_test_stride,
+        "--split-seed", args.split_seed,
+        "--train-stride", train_stride,
+        "--archive-workers", args.archive_workers,
+        "--selective-archive-extract",
+    ]
+    if args.resume:
+        command.append("--resume")
+    if args.keep_archives:
+        command.append("--keep-archives")
+    if candidate_jsonl:
+        command.extend(["--train-candidate-jsonl", candidate_jsonl])
+    if args.limit_samples is not None:
+        command.extend(["--limit-samples", args.limit_samples])
+    if delete_input:
+        command.extend([
+            "--delete-input-root-after-stage",
+            "--delete-root-parent", raw_root,
+        ])
+    return command
+
+
 def main(argv=None):
     args = parse_args(argv)
     sources = args.source_obs_root or list(DEFAULT_SOURCE_OBS_ROOTS)
@@ -164,12 +218,20 @@ def main(argv=None):
     work_root = Path(args.work_root)
     raw_root = Path(args.raw_root) if args.raw_root else work_root / "raw_sources"
     staging_root = Path(args.staging_root) if args.staging_root else work_root / "staging"
+    secondary_staging_root = (
+        Path(args.secondary_local256_staging_root)
+        if args.secondary_local256_staging_root
+        else None
+    )
     output_root = Path(args.output_root) if args.output_root else work_root / "output"
     candidate_jsonl = Path(args.train_candidate_jsonl) if args.train_candidate_jsonl else None
     candidate_filter_sha256 = file_sha256(candidate_jsonl) if candidate_jsonl else ""
     eval_test_stride = args.eval_test_stride or args.patch_size
     expected_variants = selected_variants(args.views, args.patch_size, args.context_size)
-    for path in (work_root, raw_root, staging_root, output_root):
+    paths = [work_root, raw_root, staging_root, output_root]
+    if secondary_staging_root is not None:
+        paths.append(secondary_staging_root)
+    for path in paths:
         path.mkdir(parents=True, exist_ok=True)
 
     needs_backend = not args.skip_download or (not args.skip_upload and bool(args.output_obs_root))
@@ -182,6 +244,12 @@ def main(argv=None):
     print(f"[dataset-v2-stream] sources:        {len(sources)}", flush=True)
     print(f"[dataset-v2-stream] views:          {args.views}", flush=True)
     print(f"[dataset-v2-stream] target patch:   {args.patch_size}", flush=True)
+    if secondary_staging_root is not None:
+        print(f"[dataset-v2-stream] local256 stage: {secondary_staging_root}", flush=True)
+        print(
+            f"[dataset-v2-stream] local256 stride:{args.secondary_local256_train_stride}",
+            flush=True,
+        )
     print(f"[dataset-v2-stream] target records: {args.train_target_samples}", flush=True)
     print(f"[dataset-v2-stream] free disk:      {shutil.disk_usage(work_root).free / (1024 ** 3):.1f} GiB", flush=True)
     print("============================================================", flush=True)
@@ -191,6 +259,16 @@ def main(argv=None):
         local_root = raw_root / f"{source_index:02d}_{name}"
         stage_root = staging_root / f"{source_index:02d}_{name}"
         marker = stage_root / "stage_complete.json"
+        secondary_stage_root = (
+            secondary_staging_root / f"{source_index:02d}_{name}"
+            if secondary_staging_root is not None
+            else None
+        )
+        secondary_marker = (
+            secondary_stage_root / "stage_complete.json"
+            if secondary_stage_root is not None
+            else None
+        )
         if args.resume and marker.is_file() and not completed_stage(
             stage_root,
             candidate_filter_sha256,
@@ -204,36 +282,67 @@ def main(argv=None):
                 flush=True,
             )
             remove_stale_stage(stage_root, staging_root)
-        if args.resume and completed_stage(
+        if (
+            args.resume
+            and secondary_marker is not None
+            and secondary_marker.is_file()
+            and not completed_stage(
+                secondary_stage_root,
+                candidate_filter_sha256,
+                ["local256"],
+                256,
+                args.secondary_local256_train_stride,
+                256,
+            )
+        ):
+            print(
+                f"[dataset-v2-stream] stale secondary local256 stage must be rebuilt: "
+                f"{secondary_stage_root}",
+                flush=True,
+            )
+            remove_stale_stage(secondary_stage_root, secondary_staging_root)
+
+        primary_complete = args.resume and completed_stage(
             stage_root,
             candidate_filter_sha256,
             expected_variants,
             args.patch_size,
             args.train_stride,
             eval_test_stride,
-        ):
-            print(f"[dataset-v2-stream] reuse completed stage: {stage_root}", flush=True)
+        )
+        secondary_complete = secondary_stage_root is None or (
+            args.resume
+            and completed_stage(
+                secondary_stage_root,
+                candidate_filter_sha256,
+                ["local256"],
+                256,
+                args.secondary_local256_train_stride,
+                256,
+            )
+        )
+        if primary_complete and secondary_complete:
+            print(f"[dataset-v2-stream] reuse completed primary stage: {stage_root}", flush=True)
+            if secondary_stage_root is not None:
+                print(
+                    f"[dataset-v2-stream] reuse completed local256 stage: {secondary_stage_root}",
+                    flush=True,
+                )
             if local_root.exists() and not args.keep_raw_source_after_stage:
-                cleanup_command = [
-                    sys.executable,
-                    "data_process/build_dataset_v2_staged.py",
-                    "stage",
-                    "--input-root", local_root,
-                    "--stage-root", stage_root,
-                    "--source-index", source_index,
-                    "--source-uri", source,
-                    "--views", args.views,
-                    "--patch-size", args.patch_size,
-                    "--context-size", args.context_size,
-                    "--stride", eval_test_stride,
-                    "--train-stride", args.train_stride,
-                    "--resume",
-                    "--delete-input-root-after-stage",
-                    "--delete-root-parent", raw_root,
-                ]
-                if candidate_jsonl:
-                    cleanup_command.extend(["--train-candidate-jsonl", candidate_jsonl])
-                run(cleanup_command)
+                run(build_stage_command(
+                    args,
+                    local_root,
+                    stage_root,
+                    raw_root,
+                    source_index,
+                    source,
+                    args.patch_size,
+                    args.context_size,
+                    eval_test_stride,
+                    args.train_stride,
+                    candidate_jsonl,
+                    True,
+                ))
             continue
 
         if args.skip_download:
@@ -242,46 +351,67 @@ def main(argv=None):
         else:
             download_one_source(source, local_root, args.resume, backend)
 
-        stage_command = [
-            sys.executable,
-            "data_process/build_dataset_v2_staged.py",
-            "stage",
-            "--input-root", local_root,
-            "--stage-root", stage_root,
-            "--source-index", source_index,
-            "--source-uri", source,
-            "--views", args.views,
-            "--patch-size", args.patch_size,
-            "--context-size", args.context_size,
-            "--stride", eval_test_stride,
-            "--split-seed", args.split_seed,
-            "--train-stride", args.train_stride,
-            "--archive-workers", args.archive_workers,
-            "--selective-archive-extract",
-        ]
-        if args.resume:
-            stage_command.append("--resume")
-        if args.keep_archives:
-            stage_command.append("--keep-archives")
-        if candidate_jsonl:
-            stage_command.extend(["--train-candidate-jsonl", candidate_jsonl])
-        if args.limit_samples is not None:
-            stage_command.extend(["--limit-samples", args.limit_samples])
-        if not args.keep_raw_source_after_stage:
-            stage_command.extend([
-                "--delete-input-root-after-stage",
-                "--delete-root-parent", raw_root,
-            ])
-        run(stage_command)
-        if not completed_stage(
-            stage_root,
-            candidate_filter_sha256,
-            expected_variants,
-            args.patch_size,
-            args.train_stride,
-            eval_test_stride,
-        ):
-            raise RuntimeError(f"source stage validation failed: {stage_root}")
+        if not primary_complete:
+            delete_after_primary = (
+                not args.keep_raw_source_after_stage and secondary_complete
+            )
+            run(build_stage_command(
+                args,
+                local_root,
+                stage_root,
+                raw_root,
+                source_index,
+                source,
+                args.patch_size,
+                args.context_size,
+                eval_test_stride,
+                args.train_stride,
+                candidate_jsonl,
+                delete_after_primary,
+            ))
+            primary_complete = completed_stage(
+                stage_root,
+                candidate_filter_sha256,
+                expected_variants,
+                args.patch_size,
+                args.train_stride,
+                eval_test_stride,
+            )
+            if not primary_complete:
+                raise RuntimeError(f"source stage validation failed: {stage_root}")
+
+        if secondary_stage_root is not None and not secondary_complete:
+            if not local_root.exists():
+                raise FileNotFoundError(
+                    f"raw source was removed before local256 staging completed: {local_root}"
+                )
+            run(build_stage_command(
+                args,
+                local_root,
+                secondary_stage_root,
+                raw_root,
+                source_index,
+                source,
+                256,
+                256,
+                256,
+                args.secondary_local256_train_stride,
+                candidate_jsonl,
+                not args.keep_raw_source_after_stage,
+                "local",
+            ))
+            secondary_complete = completed_stage(
+                secondary_stage_root,
+                candidate_filter_sha256,
+                ["local256"],
+                256,
+                args.secondary_local256_train_stride,
+                256,
+            )
+            if not secondary_complete:
+                raise RuntimeError(
+                    f"secondary local256 source stage validation failed: {secondary_stage_root}"
+                )
         print(
             f"[dataset-v2-stream] free disk after source {source_index}: "
             f"{shutil.disk_usage(work_root).free / (1024 ** 3):.1f} GiB",

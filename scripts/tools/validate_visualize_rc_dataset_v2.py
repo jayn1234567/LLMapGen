@@ -56,6 +56,14 @@ VARIANT_SPECS = {
         "view_mode": "local256",
         "task_mode": "lane_intersection",
     },
+    "local256v2": {
+        "image_size": (256, 256),
+        "target_size": 256,
+        "context_image_size": 256,
+        "target_roi_in_image": [0, 0, 256, 256],
+        "view_mode": "local256",
+        "task_mode": "lane_intersection",
+    },
     "context512_roi256": {
         "image_size": (512, 512),
         "target_size": 256,
@@ -72,7 +80,23 @@ VARIANT_SPECS = {
         "view_mode": "local512",
         "task_mode": "lane_intersection",
     },
+    "local512v2": {
+        "image_size": (512, 512),
+        "target_size": 512,
+        "context_image_size": 512,
+        "target_roi_in_image": [0, 0, 512, 512],
+        "view_mode": "local512",
+        "task_mode": "lane_intersection",
+    },
     "local512_intersection_prompt": {
+        "image_size": (512, 512),
+        "target_size": 512,
+        "context_image_size": 512,
+        "target_roi_in_image": [0, 0, 512, 512],
+        "view_mode": "local512",
+        "task_mode": INTERSECTION_PROMPT_TASK_MODE,
+    },
+    "local512v2_intersection_prompt": {
         "image_size": (512, 512),
         "target_size": 512,
         "context_image_size": 512,

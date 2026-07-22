@@ -87,6 +87,16 @@ class Local512IntersectionPromptTest(unittest.TestCase):
         self.assertEqual(transformed["meta"]["task_mode"], TASK_MODE)
         self.assertEqual(transformed["meta"]["dataset_variant"], "local512_intersection_prompt")
 
+    def test_transform_accepts_named_v2_variant(self):
+        transformed, _, _ = transform_record(
+            source_record("sample_v2", "train"),
+            dataset_variant="local512v2_intersection_prompt",
+        )
+        self.assertEqual(
+            transformed["meta"]["dataset_variant"],
+            "local512v2_intersection_prompt",
+        )
+
     def test_derived_dataset_passes_true_512_audit(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)

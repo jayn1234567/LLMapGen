@@ -109,6 +109,8 @@ export WITHOUT_JIT_COMPILE=1                                                    
 export HCCL_OP_BASE_FFTS_MODE_ENABLE=FALSE                                        # Disable HCCL FFTS operator base mode for compatibility.
 export COMBINED_ENABLE=1                                                          # Ascend combined-operator switch used by the NPU runtime.
 export OMP_NUM_THREADS=${OMP_NUM_THREADS:-1}                                      # CPU thread count per process.
+export TE_PARALLEL_COMPILER=${TE_PARALLEL_COMPILER:-1}                            # Limit TBE compiler subprocesses to avoid native startup crashes.
+export MAX_COMPILE_CORE_NUMBER=${MAX_COMPILE_CORE_NUMBER:-1}                      # Limit graph-build CPU parallelism for each inference shard.
 export MLLM_SERIALIZE_MODEL_LOAD=${MLLM_SERIALIZE_MODEL_LOAD:-1}                  # Load one full model rank at a time to avoid native host-allocator corruption.
 export MLLM_LOG_RANK0_ONLY=${MLLM_LOG_RANK0_ONLY:-1}                              # Limit project logs to rank 0 when set.
 export TOKENIZERS_PARALLELISM=${TOKENIZERS_PARALLELISM:-false}                    # Disable tokenizer worker parallelism warnings.
@@ -537,6 +539,7 @@ run_one_checkpoint() {
   inference_exit=0
   if [ "${NNODES}" -eq 1 ] && [ "${NPROC_PER_NODE}" -gt 1 ] && [ "${INFER_LAUNCH_MODE}" = "independent" ]; then
     echo "[infer-launch] using ${NPROC_PER_NODE} independent single-NPU shards (no torchrun/HCCL)"
+    echo "[infer-launch] TE_PARALLEL_COMPILER=${TE_PARALLEL_COMPILER}, MAX_COMPILE_CORE_NUMBER=${MAX_COMPILE_CORE_NUMBER}"
     visible_device_csv=${ASCEND_RT_VISIBLE_DEVICES:-}
     if [ -n "${visible_device_csv}" ]; then
       IFS=',' read -r -a infer_devices <<< "${visible_device_csv}"
@@ -584,6 +587,9 @@ run_one_checkpoint() {
           inference_exit=$?
           [ "${inference_exit}" -ne 0 ] || inference_exit=1
           echo "ERROR: shard ${shard_rank} exited before its first successful sample; log=${shard_log}"
+          echo "==================== head -n 120 ${shard_log} ===================="
+          head -n 120 "${shard_log}"
+          echo "==================== tail -n 160 ${shard_log} ===================="
           tail -n 160 "${shard_log}"
           break
         fi
@@ -610,6 +616,9 @@ run_one_checkpoint() {
           inference_exit=$?
           [ "${inference_exit}" -ne 0 ] || inference_exit=1
           echo "ERROR: independent shard ${shard_index} failed; log=${shard_logs[${shard_index}]}"
+          echo "==================== head -n 120 ${shard_logs[${shard_index}]} ===================="
+          head -n 120 "${shard_logs[${shard_index}]}"
+          echo "==================== tail -n 160 ${shard_logs[${shard_index}]} ===================="
           tail -n 160 "${shard_logs[${shard_index}]}"
           break
         fi

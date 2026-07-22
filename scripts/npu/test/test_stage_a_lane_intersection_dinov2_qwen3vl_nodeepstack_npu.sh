@@ -107,6 +107,7 @@ export WITHOUT_JIT_COMPILE=1                                                    
 export HCCL_OP_BASE_FFTS_MODE_ENABLE=FALSE                                        # Disable HCCL FFTS operator base mode for compatibility.
 export COMBINED_ENABLE=1                                                          # Ascend combined-operator switch used by the NPU runtime.
 export OMP_NUM_THREADS=${OMP_NUM_THREADS:-1}                                      # CPU thread count per process.
+export MLLM_SERIALIZE_MODEL_LOAD=${MLLM_SERIALIZE_MODEL_LOAD:-1}                  # Load one full model rank at a time to avoid native host-allocator corruption.
 export MLLM_LOG_RANK0_ONLY=${MLLM_LOG_RANK0_ONLY:-1}                              # Limit project logs to rank 0 when set.
 export TOKENIZERS_PARALLELISM=${TOKENIZERS_PARALLELISM:-false}                    # Disable tokenizer worker parallelism warnings.
 export PYTHONPATH="${REPO_ROOT}:${PYTHONPATH:-}"                                  # Ensure project modules are importable.

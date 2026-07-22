@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import argparse
+import gc
 import json
 import sys
 from pathlib import Path
@@ -567,6 +568,15 @@ def _load_full_finetune_model(checkpoint_dir: Path, device: str, config_override
     if vision_tower is not None and hasattr(vision_tower, 'set_llm_hidden_size'):
         vision_tower.set_llm_hidden_size(model.config.hidden_size)
 
+    # Cast the empty/randomly initialized model before materializing the full
+    # checkpoint. Keeping an FP32 model, an FP32 state dict, and the temporary
+    # dtype-conversion copy alive together causes a very large host-memory peak
+    # when every NPU rank starts at the same time.
+    dtype = _runtime_dtype(model.config, device)
+    print(f"[infer-load] casting model to {dtype} before checkpoint load", flush=True)
+    model = model.to(dtype=dtype)
+    gc.collect()
+
     state_dict = _load_state_dict(checkpoint_dir)
     _report_full_checkpoint_coverage(model, state_dict, model.config, metadata)
     missing, unexpected = model.load_state_dict(state_dict, strict=False)
@@ -578,8 +588,12 @@ def _load_full_finetune_model(checkpoint_dir: Path, device: str, config_override
     if unexpected:
         print(f"[WARN] Unexpected keys after full-finetune load: {unexpected[:20]}")
 
-    dtype = _runtime_dtype(model.config, device)
-    model = model.to(dtype=dtype)
+    # load_state_dict copies checkpoint values into model storage. Release the
+    # CPU checkpoint before allocating the NPU copy instead of carrying both
+    # full models through model.to(device).
+    del state_dict
+    gc.collect()
+    print(f"[infer-load] released CPU checkpoint; moving model to {device}", flush=True)
     model = model.to(device)
     model.eval()
 
@@ -1017,8 +1031,50 @@ def main():
         f"disable_deepstack={config_overrides.get('disable_deepstack')}, "
         f"deepstack_visual_indexes={config_overrides.get('deepstack_visual_indexes')}"
     )
-    tokenizer, model, image_processor = load_model_components(
-        checkpoint_dir, manifest, args.device, config_overrides=config_overrides)
+    serialize_model_load = (
+        torch.distributed.is_initialized()
+        and str(args.device).startswith("npu")
+        and _env_flag("MLLM_SERIALIZE_MODEL_LOAD", "1")
+    )
+    if serialize_model_load:
+        rank = torch.distributed.get_rank()
+        world_size = torch.distributed.get_world_size()
+        if rank == 0:
+            print(
+                f"[infer-load] serializing full model load across {world_size} NPU ranks "
+                "to avoid concurrent host allocator peaks",
+                flush=True,
+            )
+        tokenizer = model = image_processor = None
+        for load_rank in range(world_size):
+            if rank == load_rank:
+                load_log = sys.stdout if rank == 0 else sys.stderr
+                print(
+                    f"[infer-load] rank {rank}/{world_size} starting serialized model load",
+                    file=load_log,
+                    flush=True,
+                )
+                tokenizer, model, image_processor = load_model_components(
+                    checkpoint_dir,
+                    manifest,
+                    args.device,
+                    config_overrides=config_overrides,
+                )
+                print(
+                    f"[infer-load] rank {rank}/{world_size} completed serialized model load",
+                    file=load_log,
+                    flush=True,
+                )
+            torch.distributed.barrier()
+        if model is None:
+            raise RuntimeError(f"Rank {rank} did not load model components")
+    else:
+        tokenizer, model, image_processor = load_model_components(
+            checkpoint_dir,
+            manifest,
+            args.device,
+            config_overrides=config_overrides,
+        )
     coordinate_token_mode, coordinate_token_max = resolve_coordinate_token_settings(
         tokenizer,
         model.config,

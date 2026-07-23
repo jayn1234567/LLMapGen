@@ -166,18 +166,22 @@ CONVERT_ARGS=(
   --output-dir "${CONVERTED_SPLIT_ROOT}"
   --expected-counts easy=300,medium=300,hard=300,very_hard=100
   --require-norm1000
+  --image-source-root "${LEGACY_DATASET_ROOT}"
+  --materialize-images copy
+  --require-images
 )
 if [ -n "${PROMPT_TEMPLATE_JSONL}" ]; then
   CONVERT_ARGS+=(--prompt-template-jsonl "${PROMPT_TEMPLATE_JSONL}")
 fi
 python scripts/tools/convert_legacy_fixed_eval_schema.py "${CONVERT_ARGS[@]}"
 
-python - "${CONVERTED_SPLIT_ROOT}" "${LEGACY_DATASET_ROOT}" <<'PY'
+python - "${CONVERTED_SPLIT_ROOT}" <<'PY'
 import json
 import sys
 from pathlib import Path
 
-split_root, image_root = map(Path, sys.argv[1:3])
+split_root = Path(sys.argv[1])
+image_root = split_root
 expected = {"easy": 300, "medium": 300, "hard": 300, "very_hard": 100}
 seen = set()
 missing_images = []
@@ -255,7 +259,7 @@ torchrun \
   --disable_deepstack \
   --test-json "${CONVERTED_SPLIT_ROOT}/all_selected.jsonl" \
   --num-samples 0 \
-  --image-folder "${LEGACY_DATASET_ROOT}" \
+  --image-folder "${CONVERTED_SPLIT_ROOT}" \
   --prompt-mode dataset \
   --map-task lane_intersection \
   --patch-size 256 \
@@ -288,7 +292,7 @@ VIS_LIMIT=${VIS_LIMIT:-0}
 if [ "${VIS_LIMIT}" -gt 0 ]; then
   python scripts/tools/visualize_centerline.py \
     --input-dir "${INFERENCE_ROOT}" \
-    --image-folder "${LEGACY_DATASET_ROOT}" \
+    --image-folder "${CONVERTED_SPLIT_ROOT}" \
     --output-dir "${OUTPUT_ROOT}/checkpoint-34376/viz" \
     --map-task lane_intersection \
     --max-samples "${VIS_LIMIT}" \

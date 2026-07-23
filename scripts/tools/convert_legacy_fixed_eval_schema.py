@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 import copy
 import json
+import shutil
 from collections import Counter
 from pathlib import Path
 from typing import Any, Iterable
@@ -49,6 +50,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--difficulties", nargs="+", choices=DIFFICULTIES, default=list(DIFFICULTIES))
     parser.add_argument("--expected-counts", default=DEFAULT_EXPECTED_COUNTS)
     parser.add_argument("--require-norm1000", action="store_true")
+    parser.add_argument(
+        "--image-source-root",
+        default="",
+        help="Legacy dataset root used to resolve the image bytes referenced by fixed JSONL records.",
+    )
+    parser.add_argument(
+        "--materialize-images",
+        choices=["none", "copy"],
+        default="none",
+        help="Copy resolved legacy images below output-dir/images and rewrite records to that self-contained tree.",
+    )
+    parser.add_argument("--require-images", action="store_true")
     return parser.parse_args()
 
 
@@ -117,6 +130,89 @@ def load_prompt_template(path: Path) -> tuple[str, str]:
         if value.strip():
             return value, str(record.get("id", record.get("sample_id", "")))
     raise ValueError(f"No non-empty human prompt found in current template JSONL: {path}")
+
+
+def image_value(record: dict[str, Any]) -> str:
+    value = record.get("image", record.get("images", ""))
+    if isinstance(value, list):
+        value = value[0] if value else ""
+    return str(value or "").strip()
+
+
+def set_image_value(record: dict[str, Any], value: str) -> None:
+    if "image" in record or "images" not in record:
+        record["image"] = value
+        return
+    current = record.get("images")
+    record["images"] = [value] if isinstance(current, list) else value
+
+
+def resolve_legacy_image(record: dict[str, Any], image_root: Path) -> tuple[Path | None, str]:
+    raw = image_value(record).replace("\\", "/")
+    if not raw:
+        return None, "missing_record_path"
+    relative = Path(raw)
+    direct = relative if relative.is_absolute() else image_root / relative
+    if direct.is_file():
+        return direct.resolve(), "original_path"
+
+    basename = relative.name
+    tile_name = relative.parent.name
+    candidates = []
+    for split in ("test", "eval", "val", "train"):
+        candidate = image_root / "images" / split / tile_name / basename
+        if candidate.is_file():
+            candidates.append(candidate.resolve())
+    candidates = list(dict.fromkeys(candidates))
+    if len(candidates) == 1:
+        return candidates[0], "alternate_split"
+    if len(candidates) > 1:
+        return None, "ambiguous_alternate_split"
+
+    image_tree = image_root / "images"
+    fallback = list(image_tree.rglob(basename)) if image_tree.is_dir() else []
+    fallback = list(dict.fromkeys(path.resolve() for path in fallback if path.is_file()))
+    if len(fallback) == 1:
+        return fallback[0], "basename_search"
+    if len(fallback) > 1:
+        return None, "ambiguous_basename"
+    return None, "not_found"
+
+
+def materialize_legacy_image(
+    record: dict[str, Any],
+    difficulty: str,
+    image_root: Path,
+    output_dir: Path,
+    stats: Counter,
+) -> tuple[bool, dict[str, str]]:
+    original = image_value(record)
+    source, method = resolve_legacy_image(record, image_root)
+    stats[f"image_resolution:{method}"] += 1
+    if source is None:
+        return False, {"sample_id": str(record.get("id", "")), "image": original, "reason": method}
+
+    tile_name = source.parent.name
+    destination = output_dir / "images" / difficulty / tile_name / source.name
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    if not destination.is_file() or destination.stat().st_size != source.stat().st_size:
+        shutil.copy2(source, destination)
+    relative = destination.relative_to(output_dir).as_posix()
+    set_image_value(record, relative)
+    stats["images_materialized"] += 1
+    if original.replace("\\", "/") != relative:
+        stats["image_paths_rewritten"] += 1
+    meta = dict(record.get("meta", {}))
+    conversion = dict(meta.get("legacy_fixed_eval_conversion", {}))
+    conversion.update({
+        "original_image": original,
+        "resolved_source_image": str(source),
+        "materialized_image": relative,
+        "image_resolution_method": method,
+    })
+    meta["legacy_fixed_eval_conversion"] = conversion
+    record["meta"] = meta
+    return True, {}
 
 
 def parse_target_payload(raw_value: Any, sample_id: str) -> dict[str, Any]:
@@ -221,9 +317,15 @@ def main() -> None:
         prompt_source = "built-in:dataset_v2_local256_550k_v1"
     args.prompt_template_jsonl = prompt_source
     expected_counts = parse_expected_counts(args.expected_counts)
+    image_root = Path(args.image_source_root).resolve() if str(args.image_source_root).strip() else None
+    if args.materialize_images != "none" and image_root is None:
+        raise ValueError("--image-source-root is required with --materialize-images")
+    if image_root is not None and not (image_root / "images").is_dir():
+        raise FileNotFoundError(f"Legacy image root is missing its images directory: {image_root}")
     stats: Counter = Counter()
     all_records: list[dict[str, Any]] = []
     seen_ids = set()
+    missing_images: list[dict[str, str]] = []
 
     for difficulty in args.difficulties:
         input_path = reference_dir / f"{difficulty}.jsonl"
@@ -236,12 +338,33 @@ def main() -> None:
             if sample_id in seen_ids:
                 raise ValueError(f"Duplicate sample ID across fixed splits: {sample_id}")
             seen_ids.add(sample_id)
+            if image_root is not None:
+                if args.materialize_images == "copy":
+                    resolved, detail = materialize_legacy_image(
+                        record, difficulty, image_root, output_dir, stats
+                    )
+                else:
+                    source, method = resolve_legacy_image(record, image_root)
+                    stats[f"image_resolution:{method}"] += 1
+                    resolved = source is not None
+                    detail = {} if resolved else {
+                        "sample_id": sample_id,
+                        "image": image_value(record),
+                        "reason": method,
+                    }
+                if not resolved:
+                    missing_images.append(detail)
             converted.append(record)
         expected = expected_counts.get(difficulty)
         if expected is not None and len(converted) != expected:
             raise ValueError(f"Expected {expected} records in {input_path}, found {len(converted)}")
         write_jsonl(output_dir / f"{difficulty}.jsonl", converted)
         all_records.extend(converted)
+
+    if args.require_images and missing_images:
+        raise FileNotFoundError(
+            f"Unable to resolve {len(missing_images)} legacy images; examples={missing_images[:5]}"
+        )
 
     expected_total = sum(expected_counts.get(name, 0) for name in args.difficulties)
     if expected_total and len(all_records) != expected_total:
@@ -257,6 +380,10 @@ def main() -> None:
         "num_records": len(all_records),
         "expected_counts": expected_counts,
         "stats": dict(sorted(stats.items())),
+        "image_source_root": str(image_root) if image_root else "",
+        "materialize_images": args.materialize_images,
+        "missing_images": missing_images,
+        "self_contained_images": args.materialize_images == "copy" and not missing_images,
         "geometry_and_images_preserved_from_legacy": True,
         "type_metric_policy": (
             "Missing legacy lane_type/intersection_type fields remain missing and do not "

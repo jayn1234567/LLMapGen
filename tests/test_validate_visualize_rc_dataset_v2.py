@@ -168,6 +168,7 @@ class ValidateVisualizeDatasetV2Test(unittest.TestCase):
         }
         final_counts = {
             "empty": 0,
+            "very_easy": 0,
             "easy": 165000,
             "medium": 195816,
             "hard": 134184,

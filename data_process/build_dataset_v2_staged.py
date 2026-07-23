@@ -132,6 +132,16 @@ def parse_args(argv=None):
         default="",
         help="Optional completed train JSONL whose ids constrain the new train selection to a subset.",
     )
+    finalize.add_argument(
+        "--difficulty-override-jsonl",
+        default="",
+        help="Optional train difficulty sidecar with id, difficulty/stratum, and difficulty_score.",
+    )
+    finalize.add_argument(
+        "--difficulty-rule-version",
+        default="",
+        help="Rule version recorded when --difficulty-override-jsonl is used.",
+    )
     finalize.add_argument("--resume", action="store_true")
     finalize.add_argument("--patch-size", type=int, default=256)
     finalize.add_argument("--context-size", type=int, default=512)
@@ -464,6 +474,23 @@ def build_sample_owners(stage_roots: list[Path], duplicate_policy: str):
     return owner, collisions
 
 
+def collect_owned_raw_sample_splits(stage_roots: list[Path], sample_owner: dict[str, int]) -> dict[str, list[str]]:
+    split_ids = {split: set() for split in ("train", "eval", "test")}
+    for stage_root in stage_roots:
+        summary = json.loads((stage_root / STAGE_MARKER).read_text(encoding="utf-8"))
+        source_index = int(summary["source_index"])
+        for split in split_ids:
+            for _, item in iter_jsonl(stage_root / "records" / f"{split}.index.jsonl"):
+                raw_sample_id = str(item["raw_sample_id"])
+                if sample_owner.get(raw_sample_id) == source_index:
+                    split_ids[split].add(raw_sample_id)
+    for left, right in (("train", "eval"), ("train", "test"), ("eval", "test")):
+        overlap = split_ids[left] & split_ids[right]
+        if overlap:
+            raise ValueError(f"raw sample split leakage between {left}/{right}: {sorted(overlap)[:20]}")
+    return {split: sorted(values) for split, values in split_ids.items()}
+
+
 def load_train_candidate_ids(path: Path) -> set[str]:
     candidate_ids = set()
     for line_number, item in iter_jsonl(path):
@@ -478,7 +505,44 @@ def load_train_candidate_ids(path: Path) -> set[str]:
     return candidate_ids
 
 
-def load_candidate_pools(stage_roots, sample_owner, allowed_train_ids=None):
+def load_difficulty_overrides(path: Path | None) -> tuple[dict[str, dict], set[str]]:
+    if path is None:
+        return {}, set()
+    overrides = {}
+    versions = set()
+    for line_number, item in iter_jsonl(path):
+        patch_id = str(item.get("id", item.get("sample_id", ""))).strip()
+        difficulty = str(item.get("stratum", item.get("difficulty", ""))).strip()
+        if not patch_id:
+            raise ValueError(f"difficulty override has no id at {path}:{line_number}")
+        if difficulty not in DIFFICULTY_ORDER:
+            raise ValueError(
+                f"difficulty override has invalid bucket {difficulty!r} at {path}:{line_number}; "
+                f"expected one of {DIFFICULTY_ORDER}"
+            )
+        if patch_id in overrides:
+            raise ValueError(f"duplicate difficulty override id at {path}:{line_number}: {patch_id}")
+        score = item.get("difficulty_score")
+        overrides[patch_id] = {
+            "difficulty": difficulty,
+            "stratum": difficulty,
+            "difficulty_score": float(score) if score is not None else None,
+        }
+        version = str(item.get("difficulty_rule_version", "")).strip()
+        if version:
+            versions.add(version)
+    if not overrides:
+        raise ValueError(f"difficulty override JSONL is empty: {path}")
+    return overrides, versions
+
+
+def load_candidate_pools(
+    stage_roots,
+    sample_owner,
+    allowed_train_ids=None,
+    difficulty_overrides=None,
+    require_complete_override=False,
+):
     base_pools = empty_candidate_pools()
     translated_pools = empty_candidate_pools()
     seen_patch_ids = set()
@@ -493,7 +557,10 @@ def load_candidate_pools(stage_roots, sample_owner, allowed_train_ids=None):
             if patch_id in seen_patch_ids:
                 continue
             seen_patch_ids.add(patch_id)
-            stratum = str(item["stratum"])
+            override = (difficulty_overrides or {}).get(patch_id)
+            if override is None and require_complete_override and str(item.get("stratum")) != "empty":
+                raise ValueError(f"difficulty override is missing non-empty train id: {patch_id}")
+            stratum = str((override or item)["stratum"])
             pool_type = "intersection" if item.get("has_intersection") else "plain"
             pools = base_pools if item.get("grid_kind") == "base" else translated_pools
             pools[stratum][pool_type].append(patch_id)
@@ -533,6 +600,7 @@ def materialize_from_stages(
     selected_train_ids,
     copy_mode,
     resume,
+    difficulty_overrides=None,
 ):
     output_handles = {}
     meta_handles = {}
@@ -573,6 +641,10 @@ def materialize_from_stages(
                     if split == "train" and patch_id not in selected_train_ids:
                         continue
                     seen_by_split[split].add(patch_id)
+                    override = (difficulty_overrides or {}).get(patch_id) if split == "train" else None
+                    effective_difficulty = (override or index_item).get("difficulty")
+                    effective_score = (override or index_item).get("difficulty_score")
+                    effective_stratum = (override or index_item).get("stratum")
                     for variant, record in sft_items.items():
                         record_semantic_counts = semantic_sft_record_counts(
                             record, strict=True, require_prompt=True
@@ -590,9 +662,9 @@ def materialize_from_stages(
                             "id": patch_id,
                             "image": record["image"],
                             "meta": record.get("meta", {}),
-                            "difficulty": index_item.get("difficulty"),
-                            "difficulty_score": index_item.get("difficulty_score"),
-                            "stratum": index_item.get("stratum"),
+                            "difficulty": effective_difficulty,
+                            "difficulty_score": effective_score,
+                            "stratum": effective_stratum,
                             "has_intersection": index_item.get("has_intersection"),
                             "grid_kind": index_item.get("grid_kind"),
                             "source_index": index_item.get("source_index"),
@@ -645,13 +717,28 @@ def finalize_stages(args) -> None:
             )
 
     sample_owner, collisions = build_sample_owners(stage_roots, args.duplicate_policy)
+    raw_sample_ids_by_split = collect_owned_raw_sample_splits(stage_roots, sample_owner)
     candidate_jsonl_text = str(getattr(args, "train_candidate_jsonl", "") or "").strip()
     candidate_jsonl = Path(candidate_jsonl_text) if candidate_jsonl_text else None
     allowed_train_ids = load_train_candidate_ids(candidate_jsonl) if candidate_jsonl else None
+    override_jsonl_text = str(getattr(args, "difficulty_override_jsonl", "") or "").strip()
+    override_jsonl = Path(override_jsonl_text) if override_jsonl_text else None
+    difficulty_overrides, override_versions = load_difficulty_overrides(override_jsonl)
+    explicit_rule_version = str(getattr(args, "difficulty_rule_version", "") or "").strip()
+    if explicit_rule_version:
+        difficulty_rule_version = explicit_rule_version
+    elif len(override_versions) == 1:
+        difficulty_rule_version = next(iter(override_versions))
+    elif not override_versions:
+        difficulty_rule_version = DIFFICULTY_RULE_VERSION
+    else:
+        raise ValueError(f"difficulty override mixes rule versions: {sorted(override_versions)}")
     base_pools, translated_pools, candidate_counts = load_candidate_pools(
         stage_roots,
         sample_owner,
         allowed_train_ids,
+        difficulty_overrides,
+        require_complete_override=override_jsonl is not None,
     )
     selected_counts, balance_report = select_balanced_candidates(
         base_pools,
@@ -680,12 +767,13 @@ def finalize_stages(args) -> None:
         set(selected_counts),
         args.copy_mode,
         args.resume,
+        difficulty_overrides,
     )
     for variant in variants:
         if counts.get(f"{variant}:train", 0) != args.train_target_samples:
             raise ValueError(f"final train count mismatch for {variant}: {counts}")
 
-    balance_report["difficulty_rule_version"] = DIFFICULTY_RULE_VERSION
+    balance_report["difficulty_rule_version"] = difficulty_rule_version
     balance_report["cut_affects_difficulty"] = False
     summary = {
         "dataset_version": "rc_dataset_v2_staged_stage_a_semantic_v1",
@@ -693,7 +781,7 @@ def finalize_stages(args) -> None:
         "semantic_schema_version": SEMANTIC_SCHEMA_VERSION,
         "ignored_source_lane_type_codes": sorted(IGNORED_LANE_TYPE_CODES),
         "semantic_validation_passed": True,
-        "difficulty_rule_version": DIFFICULTY_RULE_VERSION,
+        "difficulty_rule_version": difficulty_rule_version,
         "staging_root": str(staging_root),
         "source_stage_count": len(stage_roots),
         "source_stages": [str(path) for path in stage_roots],
@@ -706,6 +794,11 @@ def finalize_stages(args) -> None:
             "unique_ids": len(allowed_train_ids),
             "selection_is_subset": True,
         } if candidate_jsonl else None,
+        "difficulty_override": {
+            "path": str(override_jsonl),
+            "records": len(difficulty_overrides),
+            "rule_version": difficulty_rule_version,
+        } if override_jsonl else None,
         "balance": balance_report,
         "variants": variants,
         "record_counts": counts,
@@ -759,6 +852,10 @@ def finalize_stages(args) -> None:
         "raw_sample_owner_count": len(sample_owner),
         "duplicate_policy": args.duplicate_policy,
         "duplicate_raw_sample_events": collisions,
+        "raw_sample_ids_by_split": raw_sample_ids_by_split,
+        "raw_sample_counts_by_split": {
+            split: len(values) for split, values in raw_sample_ids_by_split.items()
+        },
         "source_stages": [
             json.loads((path / STAGE_MARKER).read_text(encoding="utf-8"))
             for path in stage_roots

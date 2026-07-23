@@ -15,7 +15,6 @@ import math
 import random
 import sys
 from collections import Counter
-from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Iterator
 
@@ -24,6 +23,14 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from data_process.build_dataset_v2 import DIFFICULTY_ARGS
+from data_process.difficulty_profiles import (
+    DIFFICULTY_PROFILE_VERSION,
+    FIVE_TIER_BUCKETS,
+    LOCAL512_PROFILE,
+    classify_metrics,
+    resolution_aware_score,
+    resolve_difficulty_profile,
+)
 from data_process.build_dataset_v2_staged import (
     STAGE_MARKER,
     build_sample_owners,
@@ -37,30 +44,9 @@ from scripts.tools.tag_hard_map_samples import (
 )
 
 
-BUCKETS = ("easy", "medium", "hard", "very_hard")
-RULE_VERSION = "geometry_v3_local512_profile_a"
-
-
-@dataclass(frozen=True)
-class BucketCaps:
-    max_score: float
-    max_centerlines: int
-    max_points: int
-    max_intersections: int
-    max_forks: int
-    max_cycles: int
-    max_crossings: int
-    max_lane_changes: int
-    max_short_fragments: int
-    max_total_turn: float
-    max_single_turn: float
-
-
-DEFAULT_CAPS = {
-    "easy": BucketCaps(1.5, 6, 32, 0, 0, 0, 0, 0, 1, 180.0, 75.0),
-    "medium": BucketCaps(4.5, 10, 56, 1, 1, 1, 1, 1, 3, 500.0, 120.0),
-    "hard": BucketCaps(9.0, 18, 96, 3, 3, 3, 3, 3, 6, 900.0, 165.0),
-}
+BUCKETS = FIVE_TIER_BUCKETS
+RULE_VERSION = DIFFICULTY_PROFILE_VERSION
+DEFAULT_CAPS = LOCAL512_PROFILE.caps
 
 
 def parse_args() -> argparse.Namespace:
@@ -70,6 +56,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--variant", default="local512")
     parser.add_argument("--split", default="train", choices=["train", "eval", "test"])
     parser.add_argument("--patch-size", type=int, default=512)
+    parser.add_argument("--profile", default="local512_profile_a")
     parser.add_argument("--coord-range", type=float, default=1000.0)
     parser.add_argument("--candidate-jsonl", default="", help="Optional JSONL whose ids limit the audit pool.")
     parser.add_argument("--duplicate-policy", default="last", choices=["first", "last", "error"])
@@ -78,86 +65,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--visualize-per-difficulty", type=int, default=100)
     parser.add_argument("--seed", type=int, default=20260723)
     parser.add_argument("--no-sample-report", action="store_true")
-    parser.add_argument("--score-free-centerlines", type=int, default=6)
-    parser.add_argument("--score-free-points", type=int, default=32)
-    add_cap_args(parser, "easy", DEFAULT_CAPS["easy"])
-    add_cap_args(parser, "medium", DEFAULT_CAPS["medium"])
-    add_cap_args(parser, "hard", DEFAULT_CAPS["hard"])
     return parser.parse_args()
-
-
-def add_cap_args(parser: argparse.ArgumentParser, name: str, defaults: BucketCaps) -> None:
-    prefix = f"--{name.replace('_', '-')}-max-"
-    parser.add_argument(prefix + "score", type=float, default=defaults.max_score)
-    parser.add_argument(prefix + "centerlines", type=int, default=defaults.max_centerlines)
-    parser.add_argument(prefix + "points", type=int, default=defaults.max_points)
-    parser.add_argument(prefix + "intersections", type=int, default=defaults.max_intersections)
-    parser.add_argument(prefix + "forks", type=int, default=defaults.max_forks)
-    parser.add_argument(prefix + "cycles", type=int, default=defaults.max_cycles)
-    parser.add_argument(prefix + "crossings", type=int, default=defaults.max_crossings)
-    parser.add_argument(prefix + "lane-changes", type=int, default=defaults.max_lane_changes)
-    parser.add_argument(prefix + "short-fragments", type=int, default=defaults.max_short_fragments)
-    parser.add_argument(prefix + "total-turn", type=float, default=defaults.max_total_turn)
-    parser.add_argument(prefix + "single-turn", type=float, default=defaults.max_single_turn)
-
-
-def caps_from_args(args: argparse.Namespace, name: str) -> BucketCaps:
-    return BucketCaps(
-        max_score=float(getattr(args, f"{name}_max_score")),
-        max_centerlines=int(getattr(args, f"{name}_max_centerlines")),
-        max_points=int(getattr(args, f"{name}_max_points")),
-        max_intersections=int(getattr(args, f"{name}_max_intersections")),
-        max_forks=int(getattr(args, f"{name}_max_forks")),
-        max_cycles=int(getattr(args, f"{name}_max_cycles")),
-        max_crossings=int(getattr(args, f"{name}_max_crossings")),
-        max_lane_changes=int(getattr(args, f"{name}_max_lane_changes")),
-        max_short_fragments=int(getattr(args, f"{name}_max_short_fragments")),
-        max_total_turn=float(getattr(args, f"{name}_max_total_turn")),
-        max_single_turn=float(getattr(args, f"{name}_max_single_turn")),
-    )
-
-
-def resolution_aware_score(metrics: dict[str, Any], free_centerlines: int, free_points: int) -> float:
-    components = dict(metrics.get("difficulty_score_components") or {})
-    components["line_instances"] = min(
-        4.0,
-        max(0, int(metrics.get("centerline_count", 0)) - int(free_centerlines)) * 0.4,
-    )
-    components["output_points"] = min(
-        3.0,
-        max(0, int(metrics.get("point_count", 0)) - int(free_points)) * 0.04,
-    )
-    metrics["difficulty_score_components"] = {
-        key: round(float(value), 3) for key, value in components.items()
-    }
-    score = float(sum(components.values()))
-    metrics["difficulty_score"] = round(score, 3)
-    return score
-
-
-def within_caps(metrics: dict[str, Any], caps: BucketCaps) -> bool:
-    return all((
-        float(metrics.get("difficulty_score", 0.0)) <= caps.max_score,
-        int(metrics.get("centerline_count", 0)) <= caps.max_centerlines,
-        int(metrics.get("point_count", 0)) <= caps.max_points,
-        int(metrics.get("intersection_count", 0)) <= caps.max_intersections,
-        int(metrics.get("fork_node_count", 0)) <= caps.max_forks,
-        int(metrics.get("cycle_count", 0)) <= caps.max_cycles,
-        int(metrics.get("crossing_count", 0)) <= caps.max_crossings,
-        int(metrics.get("lane_change_like_count", 0)) <= caps.max_lane_changes,
-        int(metrics.get("short_fragment_count", 0)) <= caps.max_short_fragments,
-        float(metrics.get("total_turn_degrees", 0.0)) <= caps.max_total_turn,
-        float(metrics.get("max_turn_degrees", 0.0)) <= caps.max_single_turn,
-    ))
-
-
-def classify_metrics(metrics: dict[str, Any], caps: dict[str, BucketCaps]) -> str:
-    if int(metrics.get("centerline_count", 0)) == 0 and int(metrics.get("intersection_count", 0)) == 0:
-        return "empty"
-    for name in ("easy", "medium", "hard"):
-        if within_caps(metrics, caps[name]):
-            return name
-    return "very_hard"
 
 
 def read_candidate_ids(path: Path | None) -> set[str] | None:
@@ -244,7 +152,7 @@ def compact_metrics(metrics: dict[str, Any], stage_root: Path, image_path: Path 
         "id", "difficulty", "difficulty_score", "centerline_count", "intersection_count",
         "point_count", "fork_node_count", "cycle_count", "crossing_count",
         "lane_change_like_count", "short_fragment_count", "total_turn_degrees",
-        "max_turn_degrees", "tags", "difficulty_score_components",
+        "non_common_lane_count", "max_turn_degrees", "tags", "difficulty_score_components",
     )
     result = {key: metrics.get(key) for key in keys}
     result.update({
@@ -284,11 +192,13 @@ def threshold_bucket_counts(scores: list[float], thresholds: list[float]) -> dic
     i0 = bisect.bisect_right(ordered, thresholds[0])
     i1 = bisect.bisect_right(ordered, thresholds[1])
     i2 = bisect.bisect_right(ordered, thresholds[2])
+    i3 = bisect.bisect_right(ordered, thresholds[3])
     return {
-        "easy": i0,
-        "medium": i1 - i0,
-        "hard": i2 - i1,
-        "very_hard": len(ordered) - i2,
+        "very_easy": i0,
+        "easy": i1 - i0,
+        "medium": i2 - i1,
+        "hard": i3 - i2,
+        "very_hard": len(ordered) - i3,
     }
 
 
@@ -330,13 +240,13 @@ def main() -> None:
     sample_owner, duplicate_events = build_sample_owners(stage_roots, args.duplicate_policy)
     candidate_path = Path(args.candidate_jsonl) if str(args.candidate_jsonl).strip() else None
     candidate_ids = read_candidate_ids(candidate_path)
-    caps = {name: caps_from_args(args, name) for name in ("easy", "medium", "hard")}
+    profile = resolve_difficulty_profile(args.profile, args.patch_size)
 
     metric_args = copy.copy(DIFFICULTY_ARGS)
     metric_args.coord_mode = "norm1000"
     metric_args.coord_range = args.coord_range
-    metric_args.easy_max_centerlines = args.score_free_centerlines
-    metric_args.easy_max_points = args.score_free_points
+    metric_args.easy_max_centerlines = profile.score_free_centerlines
+    metric_args.easy_max_points = profile.score_free_points
 
     counts = Counter()
     tags = Counter()
@@ -357,14 +267,20 @@ def main() -> None:
             candidate_ids,
         ):
             metrics = sample_metrics(record, (args.patch_size, args.patch_size), metric_args)
-            resolution_aware_score(metrics, args.score_free_centerlines, args.score_free_points)
-            difficulty = classify_metrics(metrics, caps)
+            resolution_aware_score(metrics, profile)
+            difficulty = classify_metrics(metrics, profile)
             if difficulty == "empty":
                 counts["empty"] += 1
                 continue
             metrics["difficulty"] = difficulty
             metrics["difficulty_rule_version"] = RULE_VERSION
-            metrics["oversample_weight"] = {"easy": 1.0, "medium": 1.5, "hard": 2.5, "very_hard": 4.0}[difficulty]
+            metrics["oversample_weight"] = {
+                "very_easy": 0.5,
+                "easy": 1.0,
+                "medium": 1.5,
+                "hard": 2.5,
+                "very_hard": 4.0,
+            }[difficulty]
             image_path = resolve_image_path(stage_root, args.variant, record)
             if image_path is None or not image_path.is_file():
                 missing_images += 1
@@ -391,7 +307,7 @@ def main() -> None:
         if report_handle is not None:
             report_handle.close()
 
-    quantile_thresholds = [percentile(sorted(scores), value) for value in (0.20, 0.50, 0.80)]
+    quantile_thresholds = [percentile(sorted(scores), value) for value in (0.05, 0.25, 0.55, 0.85)]
     summary = {
         "status": "ok",
         "difficulty_rule_version": RULE_VERSION,
@@ -409,13 +325,12 @@ def main() -> None:
             name: round(counts.get(name, 0) / max(1, scanned), 6) for name in BUCKETS
         },
         "missing_images": missing_images,
-        "score_free_centerlines": args.score_free_centerlines,
-        "score_free_points": args.score_free_points,
-        "bucket_caps": {name: asdict(value) for name, value in caps.items()},
-        "target_20_30_30_20_score_quantiles": {
-            "easy_max_score": quantile_thresholds[0],
-            "medium_max_score": quantile_thresholds[1],
-            "hard_max_score": quantile_thresholds[2],
+        "difficulty_profile": profile.to_dict(),
+        "target_5_20_30_30_15_score_quantiles": {
+            "very_easy_max_score": quantile_thresholds[0],
+            "easy_max_score": quantile_thresholds[1],
+            "medium_max_score": quantile_thresholds[2],
+            "hard_max_score": quantile_thresholds[3],
             "score_only_bucket_counts_with_ties": threshold_bucket_counts(scores, quantile_thresholds),
         },
         "tag_counts": dict(tags.most_common()),

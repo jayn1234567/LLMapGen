@@ -25,7 +25,14 @@ class Local512V2BuilderTest(unittest.TestCase):
         self.assertEqual(INTERSECTION_RATIO, 0.30)
         self.assertEqual(
             expected_difficulty_counts(200000),
-            {"empty": 0, "easy": 40000, "medium": 60000, "hard": 60000, "very_hard": 40000},
+            {
+                "empty": 0,
+                "very_easy": 0,
+                "easy": 40000,
+                "medium": 60000,
+                "hard": 60000,
+                "very_hard": 40000,
+            },
         )
 
     def test_validator_aliases_keep_true_512_geometry(self):

@@ -524,6 +524,10 @@ def sample_metrics(record: dict[str, Any], image_size: tuple[int, int] | None, a
         for item in metric_lines
         if category_of(item) == "centerline" and len(clean_points(item.get("points"))) >= 2
     ]
+    non_common_lane_count = sum(
+        str(item.get("lane_type", item.get("type", "common"))).strip().lower() not in {"", "common"}
+        for item in centerlines
+    )
     intersections = [
         item
         for item in metric_lines
@@ -690,6 +694,7 @@ def sample_metrics(record: dict[str, Any], image_size: tuple[int, int] | None, a
         "cycle_count": cycle_count,
         "crossing_count": crossing_count,
         "lane_change_like_count": lane_change_count,
+        "non_common_lane_count": non_common_lane_count,
         "short_fragment_count": short_fragment_count,
         "curved_line_count": curved_line_count,
         "sharp_turn_count": sharp_turn_count,

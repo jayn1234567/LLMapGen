@@ -612,6 +612,7 @@ class DatasetV2BalancingTest(unittest.TestCase):
         self.assertEqual(report["selected_total"], 100)
         self.assertEqual(report["target_quotas"], {
             "empty": 0,
+            "very_easy": 0,
             "easy": 30,
             "medium": 33,
             "hard": 27,

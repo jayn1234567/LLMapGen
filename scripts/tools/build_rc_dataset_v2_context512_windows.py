@@ -148,7 +148,7 @@ def subset_spec(local_root: Path, expected_total: int) -> dict:
         raise ValueError(f"dataset_info has no balance.final_bucket_counts: {info_path}")
     normalized_counts = {}
     for difficulty in DIFFICULTY_ORDER:
-        value = counts.get(difficulty)
+        value = counts.get(difficulty, 0 if difficulty == "very_easy" else None)
         if not isinstance(value, int) or isinstance(value, bool) or value < 0:
             raise ValueError(f"invalid final difficulty count for {difficulty}: {value!r}")
         normalized_counts[difficulty] = value

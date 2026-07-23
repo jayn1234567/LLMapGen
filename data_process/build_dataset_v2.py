@@ -59,6 +59,7 @@ from scripts.tools.tag_hard_map_samples import DIFFICULTY_RULE_VERSION, sample_m
 
 DEFAULT_DIFFICULTY_RATIOS = {
     "empty": 0.00,
+    "very_easy": 0.00,
     "easy": 0.30,
     "medium": 0.33,
     "hard": 0.27,
@@ -99,6 +100,9 @@ def parse_ratio_spec(raw):
         if name not in DIFFICULTY_ORDER:
             raise ValueError(f"unknown difficulty bucket: {name}")
         ratios[name] = float(value)
+    # Older four-tier commands remain valid; the new trivial bucket defaults to
+    # zero unless a Dataset V3 recipe explicitly requests it.
+    ratios.setdefault("very_easy", 0.0)
     missing = [name for name in DIFFICULTY_ORDER if name not in ratios]
     if missing:
         raise ValueError(f"difficulty ratios are missing buckets: {missing}")
@@ -111,7 +115,7 @@ def parse_ratio_spec(raw):
 
 
 def allocate_quotas(total, ratios):
-    exact = {name: total * ratios[name] for name in DIFFICULTY_ORDER}
+    exact = {name: total * ratios.get(name, 0.0) for name in DIFFICULTY_ORDER}
     quotas = {name: int(exact[name]) for name in DIFFICULTY_ORDER}
     remainder = total - sum(quotas.values())
     order = sorted(DIFFICULTY_ORDER, key=lambda name: (exact[name] - quotas[name], -DIFFICULTY_ORDER.index(name)), reverse=True)
@@ -135,9 +139,14 @@ def empty_candidate_pools():
     }
 
 
+def candidate_bucket(pools, name):
+    return pools.get(name, {"intersection": [], "plain": []})
+
+
 def available_counts(pools):
     return {
-        name: len(pools[name]["intersection"]) + len(pools[name]["plain"])
+        name: len(candidate_bucket(pools, name)["intersection"])
+        + len(candidate_bucket(pools, name)["plain"])
         for name in DIFFICULTY_ORDER
     }
 
@@ -199,9 +208,10 @@ def allocate_global_intersection_quotas(
     weights = {}
 
     for name in DIFFICULTY_ORDER:
-        quota = quotas[name]
-        intersection_unique = len(pools[name]["intersection"])
-        plain_unique = len(pools[name]["plain"])
+        quota = quotas.get(name, 0)
+        bucket = candidate_bucket(pools, name)
+        intersection_unique = len(bucket["intersection"])
+        plain_unique = len(bucket["plain"])
         available = intersection_unique + plain_unique
         natural_ratio = intersection_unique / available if available else 0.0
         natural_ratios[name] = natural_ratio
@@ -244,9 +254,10 @@ def intersection_feasible_range(pools, quotas):
     minimum = 0
     maximum = 0
     for name in DIFFICULTY_ORDER:
-        quota = quotas[name]
-        intersection_unique = len(pools[name]["intersection"])
-        plain_unique = len(pools[name]["plain"])
+        quota = quotas.get(name, 0)
+        bucket = candidate_bucket(pools, name)
+        intersection_unique = len(bucket["intersection"])
+        plain_unique = len(bucket["plain"])
         minimum += max(0, quota - plain_unique)
         maximum += min(quota, intersection_unique)
     return minimum, maximum
@@ -263,9 +274,10 @@ def select_unique_pool_records(pools, quotas, requested_intersections, rng):
     bucket_report = {}
 
     for name in DIFFICULTY_ORDER:
-        quota = quotas[name]
-        intersection_pool = pools[name]["intersection"]
-        plain_pool = pools[name]["plain"]
+        quota = quotas.get(name, 0)
+        bucket = candidate_bucket(pools, name)
+        intersection_pool = bucket["intersection"]
+        plain_pool = bucket["plain"]
         desired_intersection = planned_intersections[name]
         desired_plain = quota - desired_intersection
 
@@ -341,7 +353,7 @@ def select_balanced_candidates(
     base_intersection_ids = {
         item
         for name in DIFFICULTY_ORDER
-        for item in base_pools[name]["intersection"]
+        for item in candidate_bucket(base_pools, name)["intersection"]
     }
     base_intersections = sum(item in base_intersection_ids for item in base_selected)
     translated_intersection_target = final_intersection_target - base_intersections
@@ -360,14 +372,16 @@ def select_balanced_candidates(
     intersection_ids = base_intersection_ids | {
         item
         for name in DIFFICULTY_ORDER
-        for item in translated_pools[name]["intersection"]
+        for item in candidate_bucket(translated_pools, name)["intersection"]
     }
     selected_intersections = sum(item in intersection_ids for item in selected)
     final_bucket_counts = Counter()
     for name in DIFFICULTY_ORDER:
-        selected_in_bucket = set(base_pools[name]["intersection"] + base_pools[name]["plain"])
-        selected_in_bucket.update(translated_pools[name]["intersection"])
-        selected_in_bucket.update(translated_pools[name]["plain"])
+        base_bucket = candidate_bucket(base_pools, name)
+        translated_bucket = candidate_bucket(translated_pools, name)
+        selected_in_bucket = set(base_bucket["intersection"] + base_bucket["plain"])
+        selected_in_bucket.update(translated_bucket["intersection"])
+        selected_in_bucket.update(translated_bucket["plain"])
         final_bucket_counts[name] = sum(item in selected_in_bucket for item in selected)
 
     report = {

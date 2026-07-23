@@ -72,6 +72,14 @@ VARIANT_SPECS = {
         "view_mode": "context512_roi256",
         "task_mode": "lane_intersection",
     },
+    "context512_roi256v3": {
+        "image_size": (512, 512),
+        "target_size": 256,
+        "context_image_size": 512,
+        "target_roi_in_image": [128, 128, 384, 384],
+        "view_mode": "context512_roi256",
+        "task_mode": "lane_intersection",
+    },
     "local512": {
         "image_size": (512, 512),
         "target_size": 512,
@@ -88,6 +96,14 @@ VARIANT_SPECS = {
         "view_mode": "local512",
         "task_mode": "lane_intersection",
     },
+    "local512v3": {
+        "image_size": (512, 512),
+        "target_size": 512,
+        "context_image_size": 512,
+        "target_roi_in_image": [0, 0, 512, 512],
+        "view_mode": "local512",
+        "task_mode": "lane_intersection",
+    },
     "local512_intersection_prompt": {
         "image_size": (512, 512),
         "target_size": 512,
@@ -97,6 +113,14 @@ VARIANT_SPECS = {
         "task_mode": INTERSECTION_PROMPT_TASK_MODE,
     },
     "local512v2_intersection_prompt": {
+        "image_size": (512, 512),
+        "target_size": 512,
+        "context_image_size": 512,
+        "target_roi_in_image": [0, 0, 512, 512],
+        "view_mode": "local512",
+        "task_mode": INTERSECTION_PROMPT_TASK_MODE,
+    },
+    "local512v3_intersection_prompt": {
         "image_size": (512, 512),
         "target_size": 512,
         "context_image_size": 512,
@@ -498,7 +522,7 @@ def valid_difficulty_counts(value: Any, expected_total: int) -> dict[str, int] |
         return None
     counts = {}
     for difficulty in DIFFICULTY_ORDER:
-        count = value.get(difficulty)
+        count = value.get(difficulty, 0 if difficulty == "very_easy" else None)
         if not isinstance(count, int) or isinstance(count, bool) or count < 0:
             return None
         counts[difficulty] = count

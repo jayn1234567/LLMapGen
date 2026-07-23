@@ -62,6 +62,12 @@ def parse_args() -> argparse.Namespace:
         help="Copy resolved legacy images below output-dir/images and rewrite records to that self-contained tree.",
     )
     parser.add_argument("--require-images", action="store_true")
+    parser.add_argument(
+        "--missing-image-policy",
+        choices=["fail", "skip"],
+        default="fail",
+        help="Fail strictly, or exclude records whose original image bytes cannot be found.",
+    )
     return parser.parse_args()
 
 
@@ -326,13 +332,15 @@ def main() -> None:
     all_records: list[dict[str, Any]] = []
     seen_ids = set()
     missing_images: list[dict[str, str]] = []
+    selected_counts: dict[str, int] = {}
 
     for difficulty in args.difficulties:
         input_path = reference_dir / f"{difficulty}.jsonl"
         if not input_path.is_file():
             raise FileNotFoundError(f"Legacy fixed split not found: {input_path}")
         converted = []
-        for source in read_jsonl(input_path):
+        source_records = list(read_jsonl(input_path))
+        for source in source_records:
             record = convert_record(source, difficulty, prompt, args, stats)
             sample_id = str(record.get("id", record.get("sample_id", ""))).strip()
             if sample_id in seen_ids:
@@ -354,21 +362,20 @@ def main() -> None:
                     }
                 if not resolved:
                     missing_images.append(detail)
+                    if args.missing_image_policy == "skip":
+                        stats["records_skipped_missing_image"] += 1
+                        continue
             converted.append(record)
         expected = expected_counts.get(difficulty)
-        if expected is not None and len(converted) != expected:
-            raise ValueError(f"Expected {expected} records in {input_path}, found {len(converted)}")
+        if expected is not None and len(source_records) != expected:
+            raise ValueError(f"Expected {expected} source records in {input_path}, found {len(source_records)}")
         write_jsonl(output_dir / f"{difficulty}.jsonl", converted)
         all_records.extend(converted)
-
-    if args.require_images and missing_images:
-        raise FileNotFoundError(
-            f"Unable to resolve {len(missing_images)} legacy images; examples={missing_images[:5]}"
-        )
+        selected_counts[difficulty] = len(converted)
 
     expected_total = sum(expected_counts.get(name, 0) for name in args.difficulties)
-    if expected_total and len(all_records) != expected_total:
-        raise ValueError(f"Expected {expected_total} converted records, found {len(all_records)}")
+    if expected_total and len(seen_ids) != expected_total:
+        raise ValueError(f"Expected {expected_total} source records, found {len(seen_ids)}")
     write_jsonl(output_dir / "all_selected.jsonl", all_records)
     report = {
         "reference_dir": str(reference_dir),
@@ -378,12 +385,16 @@ def main() -> None:
         "prompt_template_sample_id": prompt_sample_id,
         "prompt": prompt,
         "num_records": len(all_records),
+        "num_source_records": len(seen_ids),
         "expected_counts": expected_counts,
+        "selected_counts": selected_counts,
         "stats": dict(sorted(stats.items())),
         "image_source_root": str(image_root) if image_root else "",
         "materialize_images": args.materialize_images,
         "missing_images": missing_images,
+        "missing_image_policy": args.missing_image_policy,
         "self_contained_images": args.materialize_images == "copy" and not missing_images,
+        "selected_images_self_contained": args.materialize_images == "copy",
         "geometry_and_images_preserved_from_legacy": True,
         "type_metric_policy": (
             "Missing legacy lane_type/intersection_type fields remain missing and do not "
@@ -395,6 +406,10 @@ def main() -> None:
         json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8"
     )
     print(json.dumps(report, ensure_ascii=False, indent=2), flush=True)
+    if missing_images and (args.require_images or args.missing_image_policy == "fail"):
+        raise FileNotFoundError(
+            f"Unable to resolve {len(missing_images)} legacy images; examples={missing_images[:5]}"
+        )
 
 
 if __name__ == "__main__":

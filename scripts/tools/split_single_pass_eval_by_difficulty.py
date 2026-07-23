@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import subprocess
 import sys
 from collections import Counter
 from pathlib import Path
@@ -39,6 +40,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--match-threshold", type=float, default=0.33)
     parser.add_argument("--intersection-iou-threshold", type=float, default=0.5)
     parser.add_argument("--allow-incomplete", action="store_true")
+    parser.add_argument(
+        "--image-folder",
+        default="",
+        help="Optional dataset/image root used to render patch visualizations for each split.",
+    )
+    parser.add_argument(
+        "--visualize-max-samples",
+        type=int,
+        default=-1,
+        help="Render at most this many samples per split when --image-folder is set; 0 renders all, -1 disables.",
+    )
+    parser.add_argument("--visualize-output-name", default="viz", help="Visualization subdirectory name under each split.")
     return parser.parse_args()
 
 
@@ -176,6 +189,40 @@ def build_eval(records: list[dict[str, Any]], args: argparse.Namespace) -> dict[
     }
 
 
+def maybe_visualize_bucket(bucket_root: Path, args: argparse.Namespace) -> Path | None:
+    if args.visualize_max_samples < 0:
+        return None
+    if not args.image_folder:
+        raise ValueError("--image-folder is required when --visualize-max-samples is >= 0")
+    output_dir = bucket_root / args.visualize_output_name
+    command = [
+        sys.executable,
+        str(REPO_ROOT / "scripts" / "tools" / "visualize_centerline.py"),
+        "--input-dir",
+        str(bucket_root),
+        "--image-folder",
+        str(Path(args.image_folder).resolve()),
+        "--output-dir",
+        str(output_dir),
+        "--map-task",
+        "lane_intersection",
+        "--eval-meter-per-pixel",
+        str(args.meter_per_pixel),
+        "--eval-buffer-size",
+        str(args.buffer_size),
+        "--eval-match-threshold",
+        str(args.match_threshold),
+        "--eval-intersection-iou-threshold",
+        str(args.intersection_iou_threshold),
+        "--max-samples",
+        str(args.visualize_max_samples),
+        "--no-eval-centerline",
+        "--skip-whole-map-viz",
+    ]
+    subprocess.run(command, check=True)
+    return output_dir
+
+
 def write_bucket(
     output_root: Path,
     name: str,
@@ -191,6 +238,7 @@ def write_bucket(
     evaluation["single_pass_split"] = metadata
     eval_path = bucket_root / "eval.json"
     eval_path.write_text(json.dumps(evaluation, ensure_ascii=False, indent=2), encoding="utf-8")
+    maybe_visualize_bucket(bucket_root, args)
     return eval_path
 
 

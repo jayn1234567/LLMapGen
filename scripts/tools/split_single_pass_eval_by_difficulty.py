@@ -119,6 +119,28 @@ def typed_gt_only_metric(metrics: dict[str, Any], title: str) -> dict[str, Any]:
     }
 
 
+def unavailable_type_metric(title: str, metric_name: str) -> dict[str, Any]:
+    """Describe a type metric omitted by an older geometry-only backend."""
+    lines = [
+        title,
+        "=" * len(title),
+        "status: unavailable_backend",
+        f"reason: evaluation backend did not return {metric_name!r}",
+        "geometry metrics remain valid; no type accuracy was fabricated",
+    ]
+    return {
+        "status": "unavailable_backend",
+        "policy": "matched_typed_ground_truth_only",
+        "reason": f"evaluation backend did not return {metric_name!r}",
+        "typed_gt_count": None,
+        "typed_geometry_matched_count": None,
+        "type_correct_count": None,
+        "matched_type_accuracy": None,
+        "per_type": {},
+        "table": "\n".join(lines),
+    }
+
+
 def build_eval(records: list[dict[str, Any]], args: argparse.Namespace) -> dict[str, Any]:
     from infer_index.line_eval import evaluate_lane_intersection_records
 
@@ -129,10 +151,21 @@ def build_eval(records: list[dict[str, Any]], args: argparse.Namespace) -> dict[
         match_threshold=args.match_threshold,
         intersection_iou_threshold=args.intersection_iou_threshold,
     )
-    map_eval["lane_type"] = typed_gt_only_metric(map_eval["lane_type"], "Lane Type Evaluation")
-    map_eval["intersection_type"] = typed_gt_only_metric(
-        map_eval["intersection_type"], "Intersection Type Evaluation"
-    )
+    lane_type_metrics = map_eval.get("lane_type")
+    if isinstance(lane_type_metrics, dict):
+        map_eval["lane_type"] = typed_gt_only_metric(lane_type_metrics, "Lane Type Evaluation")
+    else:
+        map_eval["lane_type"] = unavailable_type_metric("Lane Type Evaluation", "lane_type")
+
+    intersection_type_metrics = map_eval.get("intersection_type")
+    if isinstance(intersection_type_metrics, dict):
+        map_eval["intersection_type"] = typed_gt_only_metric(
+            intersection_type_metrics, "Intersection Type Evaluation"
+        )
+    else:
+        map_eval["intersection_type"] = unavailable_type_metric(
+            "Intersection Type Evaluation", "intersection_type"
+        )
     return {
         "centerline_eval": map_eval["lane"],
         "intersection_eval": map_eval["intersection"],

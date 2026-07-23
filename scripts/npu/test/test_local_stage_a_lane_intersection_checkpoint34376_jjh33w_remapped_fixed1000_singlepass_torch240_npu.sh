@@ -75,12 +75,16 @@ export HCCL_CONNECT_TIMEOUT=${HCCL_CONNECT_TIMEOUT:-7200}
 export HCCL_EXEC_TIMEOUT=${HCCL_EXEC_TIMEOUT:-7200}
 
 if [ -f /usr/local/Ascend/ascend-toolkit/set_env.sh ]; then
+  set +u
   # shellcheck disable=SC1091
   source /usr/local/Ascend/ascend-toolkit/set_env.sh
+  set -u
 fi
 if [ -f /usr/local/Ascend/nnal/atb/set_env.sh ]; then
+  set +u
   # shellcheck disable=SC1091
   source /usr/local/Ascend/nnal/atb/set_env.sh
+  set -u
 fi
 
 # The fixed JSONL stores relative legacy image paths. Cache the matching old

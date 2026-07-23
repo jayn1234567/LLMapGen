@@ -76,6 +76,49 @@ def parse_expected_counts(text: str) -> dict[str, int]:
     return result
 
 
+def typed_gt_only_metric(metrics: dict[str, Any], title: str) -> dict[str, Any]:
+    """Expose type accuracy only where the ground truth has a real type."""
+    typed_gt_count = int(metrics.get("typed_gt_count", 0) or 0)
+    type_correct_count = int(metrics.get("type_correct_count", 0) or 0)
+    per_type = metrics.get("per_type") if isinstance(metrics.get("per_type"), dict) else {}
+    typed_geometry_matched_count = sum(
+        int(values.get("geometry_matched", 0) or 0)
+        for values in per_type.values()
+        if isinstance(values, dict)
+    )
+    evaluated_types = {
+        name: {
+            "support": int(values.get("support", 0) or 0),
+            "geometry_matched": int(values.get("geometry_matched", 0) or 0),
+            "correct": int(values.get("correct", 0) or 0),
+            "matched_accuracy": values.get("matched_accuracy"),
+        }
+        for name, values in per_type.items()
+        if isinstance(values, dict) and int(values.get("support", 0) or 0) > 0
+    }
+    status = "evaluated" if typed_gt_count > 0 else "skipped_no_typed_ground_truth"
+    accuracy = metrics.get("matched_type_accuracy") if typed_geometry_matched_count > 0 else None
+    lines = [
+        title,
+        "=" * len(title),
+        "policy: only geometry-matched targets with an explicit GT type participate",
+        f"status: {status}",
+        f"typed GT / typed geometry matches / correct: {typed_gt_count} / "
+        f"{typed_geometry_matched_count} / {type_correct_count}",
+        f"matched typed-GT accuracy: {accuracy if accuracy is not None else 'N/A'}",
+    ]
+    return {
+        "status": status,
+        "policy": "matched_typed_ground_truth_only",
+        "typed_gt_count": typed_gt_count,
+        "typed_geometry_matched_count": typed_geometry_matched_count,
+        "type_correct_count": type_correct_count,
+        "matched_type_accuracy": accuracy,
+        "per_type": evaluated_types,
+        "table": "\n".join(lines),
+    }
+
+
 def build_eval(records: list[dict[str, Any]], args: argparse.Namespace) -> dict[str, Any]:
     from infer_index.line_eval import evaluate_lane_intersection_records
 
@@ -85,6 +128,10 @@ def build_eval(records: list[dict[str, Any]], args: argparse.Namespace) -> dict[
         buffer_size=args.buffer_size,
         match_threshold=args.match_threshold,
         intersection_iou_threshold=args.intersection_iou_threshold,
+    )
+    map_eval["lane_type"] = typed_gt_only_metric(map_eval["lane_type"], "Lane Type Evaluation")
+    map_eval["intersection_type"] = typed_gt_only_metric(
+        map_eval["intersection_type"], "Intersection Type Evaluation"
     )
     return {
         "centerline_eval": map_eval["lane"],

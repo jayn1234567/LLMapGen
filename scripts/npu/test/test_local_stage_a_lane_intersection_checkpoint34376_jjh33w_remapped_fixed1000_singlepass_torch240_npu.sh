@@ -12,7 +12,7 @@ REPO_ROOT=$(readlink -f "${SCRIPT_DIR}/../../..")
 ENV_DIR=${ENV_DIR:-/home/ma-user/.conda/envs/mllm-infer-torch240-py311}
 ACTIVATE_SCRIPT=${ENV_DIR}/activate_mllm_infer_torch240.sh
 REFERENCE_SPLIT_ROOT=${REFERENCE_SPLIT_ROOT:-/cache/jn/eval_sets/jjh33w_1000_e300_m300_h300_vh100_seed42_v1}
-PROMPT_TEMPLATE_JSONL=${PROMPT_TEMPLATE_JSONL:-/cache/jn/data/local256_extract/local256/phase_a/eval.jsonl}
+PROMPT_TEMPLATE_JSONL=${PROMPT_TEMPLATE_JSONL:-}
 CONVERTED_SPLIT_ROOT=${CONVERTED_SPLIT_ROOT:-/cache/jn/eval_sets/jjh33w_1000_current_prompt_legacy_gt_v1}
 VISION_TOWER=${VISION_TOWER:-/cache/jn/model/facebook_dinov2-large}
 CHECKPOINT_OBS_PATH=${CHECKPOINT_OBS_PATH:-obs://yw-ads-model-training-gy1/model-dev/rc-nn/rc_base_model/2026/07/18/2260c16d83414dea8b663282962413ba/output/ma-job-bb9b7ed9-4bc2-4f55-a72a-25219f865069/checkpoint-34376/}
@@ -35,7 +35,7 @@ if [ ! -f "${VISION_TOWER}/config.json" ]; then
   echo "ERROR: reusable DINOv2 model is incomplete: ${VISION_TOWER}" >&2
   exit 2
 fi
-if [ ! -f "${PROMPT_TEMPLATE_JSONL}" ]; then
+if [ -n "${PROMPT_TEMPLATE_JSONL}" ] && [ ! -f "${PROMPT_TEMPLATE_JSONL}" ]; then
   echo "ERROR: current Dataset V2 prompt template JSONL was not found: ${PROMPT_TEMPLATE_JSONL}" >&2
   exit 2
 fi
@@ -59,10 +59,10 @@ done
 rm -rf "${RUNTIME_ROOT}" "${OUTPUT_ROOT}"
 mkdir -p "${CHECKPOINT_DIR}" "${INFERENCE_ROOT}/json" "${METRICS_ROOT}" "${LEGACY_DATA_CACHE}"
 
-export ASCEND_RT_VISIBLE_DEVICES=${ASCEND_RT_VISIBLE_DEVICES:-4,5,6,7}
+export ASCEND_RT_VISIBLE_DEVICES=${ASCEND_RT_VISIBLE_DEVICES:-6,7}
 export ASCEND_VISIBLE_DEVICES=${ASCEND_VISIBLE_DEVICES:-${ASCEND_RT_VISIBLE_DEVICES}}
 export NPU_VISIBLE_DEVICES=${NPU_VISIBLE_DEVICES:-${ASCEND_RT_VISIBLE_DEVICES}}
-NPROC_PER_NODE=${NPROC_PER_NODE:-4}
+NPROC_PER_NODE=${NPROC_PER_NODE:-2}
 export OMP_NUM_THREADS=${OMP_NUM_THREADS:-1}
 export TOKENIZERS_PARALLELISM=false
 export MLLM_LOG_RANK0_ONLY=1
@@ -147,7 +147,7 @@ fi
 
 echo "============================================================"
 echo "Fixed reference:  ${REFERENCE_SPLIT_ROOT}"
-echo "Prompt template:  ${PROMPT_TEMPLATE_JSONL}"
+echo "Prompt template:  ${PROMPT_TEMPLATE_JSONL:-<built-in Dataset V2 local256-550k prompt>}"
 echo "Legacy images:    ${LEGACY_DATASET_ROOT}"
 echo "Converted set:    ${CONVERTED_SPLIT_ROOT}"
 echo "Reused DINOv2:    ${VISION_TOWER}"
@@ -157,12 +157,16 @@ echo "Visible NPUs:     ${ASCEND_RT_VISIBLE_DEVICES}"
 echo "Mode:             one ${NPROC_PER_NODE}-NPU inference pass for all 1000 samples"
 echo "============================================================"
 
-python scripts/tools/convert_legacy_fixed_eval_schema.py \
-  --reference-dir "${REFERENCE_SPLIT_ROOT}" \
-  --output-dir "${CONVERTED_SPLIT_ROOT}" \
-  --prompt-template-jsonl "${PROMPT_TEMPLATE_JSONL}" \
-  --expected-counts easy=300,medium=300,hard=300,very_hard=100 \
+CONVERT_ARGS=(
+  --reference-dir "${REFERENCE_SPLIT_ROOT}"
+  --output-dir "${CONVERTED_SPLIT_ROOT}"
+  --expected-counts easy=300,medium=300,hard=300,very_hard=100
   --require-norm1000
+)
+if [ -n "${PROMPT_TEMPLATE_JSONL}" ]; then
+  CONVERT_ARGS+=(--prompt-template-jsonl "${PROMPT_TEMPLATE_JSONL}")
+fi
+python scripts/tools/convert_legacy_fixed_eval_schema.py "${CONVERT_ARGS[@]}"
 
 python - "${CONVERTED_SPLIT_ROOT}" "${LEGACY_DATASET_ROOT}" <<'PY'
 import json

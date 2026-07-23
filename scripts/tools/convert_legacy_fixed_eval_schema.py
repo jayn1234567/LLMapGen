@@ -19,6 +19,19 @@ from typing import Any, Iterable
 
 DIFFICULTIES = ("easy", "medium", "hard", "very_hard")
 DEFAULT_EXPECTED_COUNTS = "easy=300,medium=300,hard=300,very_hard=100"
+DATASET_V2_LOCAL256_PROMPT = """<image>
+Please construct the complete road map in the current BEV (Bird's Eye View) image patch.
+Coordinates use a normalized 0-1000 grid over the original 256x256 image patch.
+
+Return only valid JSON in the form {"lines":[...]} with no extra explanation.
+For every centerline, include "lane_type" with exactly one of: "common" for a regular centerline, "right_turn" for a right-turn-only centerline, or "other" for any remaining lane class. Do not output U-turn reference lines.
+For every intersection, include "intersection_type" with exactly one of: "common" for a common intersection, "t_intersection" for a T-intersection, "small_untyped" for a small untyped intersection, or "t_lane_change_area" for a T-shaped lane-change area, or "other" for any remaining or unknown intersection class.
+
+Incoming traces JSON:
+[]
+
+Incoming intersections JSON:
+[]"""
 
 
 def parse_args() -> argparse.Namespace:
@@ -27,8 +40,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output-dir", required=True)
     parser.add_argument(
         "--prompt-template-jsonl",
-        required=True,
-        help="Current Dataset V2 JSONL whose first valid human message supplies the prompt.",
+        default="",
+        help=(
+            "Optional current Dataset V2 JSONL whose first human message supplies the prompt. "
+            "When omitted, use the built-in local256 prompt from the immutable 550k release."
+        ),
     )
     parser.add_argument("--difficulties", nargs="+", choices=DIFFICULTIES, default=list(DIFFICULTIES))
     parser.add_argument("--expected-counts", default=DEFAULT_EXPECTED_COUNTS)
@@ -194,8 +210,16 @@ def main() -> None:
     args = parse_args()
     reference_dir = Path(args.reference_dir).resolve()
     output_dir = Path(args.output_dir).resolve()
-    prompt_path = Path(args.prompt_template_jsonl).resolve()
-    prompt, prompt_sample_id = load_prompt_template(prompt_path)
+    if str(args.prompt_template_jsonl).strip():
+        prompt_path = Path(args.prompt_template_jsonl).resolve()
+        prompt, prompt_sample_id = load_prompt_template(prompt_path)
+        prompt_source = str(prompt_path)
+    else:
+        prompt_path = None
+        prompt = DATASET_V2_LOCAL256_PROMPT
+        prompt_sample_id = "<built-in>"
+        prompt_source = "built-in:dataset_v2_local256_550k_v1"
+    args.prompt_template_jsonl = prompt_source
     expected_counts = parse_expected_counts(args.expected_counts)
     stats: Counter = Counter()
     all_records: list[dict[str, Any]] = []
@@ -226,7 +250,8 @@ def main() -> None:
     report = {
         "reference_dir": str(reference_dir),
         "output_dir": str(output_dir),
-        "prompt_template_jsonl": str(prompt_path),
+        "prompt_template_jsonl": str(prompt_path) if prompt_path else "",
+        "prompt_source": prompt_source,
         "prompt_template_sample_id": prompt_sample_id,
         "prompt": prompt,
         "num_records": len(all_records),

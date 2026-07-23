@@ -59,9 +59,10 @@ done
 rm -rf "${RUNTIME_ROOT}" "${OUTPUT_ROOT}"
 mkdir -p "${CHECKPOINT_DIR}" "${INFERENCE_ROOT}/json" "${METRICS_ROOT}" "${LEGACY_DATA_CACHE}"
 
-export ASCEND_RT_VISIBLE_DEVICES=${ASCEND_RT_VISIBLE_DEVICES:-0,1,2,3,4,5,6,7}
+export ASCEND_RT_VISIBLE_DEVICES=${ASCEND_RT_VISIBLE_DEVICES:-4,5,6,7}
 export ASCEND_VISIBLE_DEVICES=${ASCEND_VISIBLE_DEVICES:-${ASCEND_RT_VISIBLE_DEVICES}}
 export NPU_VISIBLE_DEVICES=${NPU_VISIBLE_DEVICES:-${ASCEND_RT_VISIBLE_DEVICES}}
+NPROC_PER_NODE=${NPROC_PER_NODE:-4}
 export OMP_NUM_THREADS=${OMP_NUM_THREADS:-1}
 export TOKENIZERS_PARALLELISM=false
 export MLLM_LOG_RANK0_ONLY=1
@@ -152,7 +153,8 @@ echo "Converted set:    ${CONVERTED_SPLIT_ROOT}"
 echo "Reused DINOv2:    ${VISION_TOWER}"
 echo "Checkpoint OBS:   ${CHECKPOINT_OBS_PATH}"
 echo "Output:           ${OUTPUT_ROOT}"
-echo "Mode:             one 8-NPU inference pass for all 1000 samples"
+echo "Visible NPUs:     ${ASCEND_RT_VISIBLE_DEVICES}"
+echo "Mode:             one ${NPROC_PER_NODE}-NPU inference pass for all 1000 samples"
 echo "============================================================"
 
 python scripts/tools/convert_legacy_fixed_eval_schema.py \
@@ -233,7 +235,7 @@ PY
 echo "[single-pass-eval] starting one distributed generation pass on port ${MASTER_PORT}"
 torchrun \
   --nnodes=1 \
-  --nproc_per_node=8 \
+  --nproc_per_node="${NPROC_PER_NODE}" \
   --node_rank=0 \
   --master_addr=127.0.0.1 \
   --master_port="${MASTER_PORT}" \

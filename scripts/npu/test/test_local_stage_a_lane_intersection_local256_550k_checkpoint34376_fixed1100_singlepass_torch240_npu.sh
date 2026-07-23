@@ -315,7 +315,6 @@ torchrun \
   --eval-meter-per-pixel 0.2 \
   --eval-buffer-size 1.0 \
   --eval-match-threshold 0.33 \
-  --eval-intersection-iou-threshold 0.5 \
   --eval-centerline \
   --eval-output-json "${INFERENCE_ROOT}/eval.json"
 

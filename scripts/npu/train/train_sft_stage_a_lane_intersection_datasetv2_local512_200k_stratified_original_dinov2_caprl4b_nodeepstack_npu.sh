@@ -56,7 +56,9 @@ DATASET_EXTRACT_ROOT=${DATASET_EXTRACT_ROOT:-${OBS_CACHE}/dataset_extract_${RUN_
 DATASET_PATH=${DATASET_PATH:-${DATASET_EXTRACT_ROOT}/${DATASET_DIR_NAME}}         # Preferred extracted dataset root; resolved dynamically after unzip.
 IMAGE_FOLDER=${IMAGE_FOLDER:-}                                                    # Optional image-root override; defaults to the resolved DATASET_PATH.
 SUBSET_TARGET_SAMPLES=${SUBSET_TARGET_SAMPLES:-200000}                            # Exact number of training records selected from the finalized 550k train split.
-SUBSET_DIFFICULTY_RATIOS=${SUBSET_DIFFICULTY_RATIOS:-easy=0.30,medium=0.3560290909,hard=0.2439709091,very_hard=0.10}  # Final observed 550k composition after legal hard-to-medium redistribution.
+SUBSET_DIFFICULTY_RATIOS=${SUBSET_DIFFICULTY_RATIOS:-easy=0.30,medium=0.3560290909,hard=0.2439709091,very_hard=0.10}  # Requested composition before any shortage redistribution.
+SUBSET_SHORTAGE_POLICY=${SUBSET_SHORTAGE_POLICY:-redistribute}                    # Fill unavailable easy quota without duplicating samples.
+SUBSET_SHORTAGE_FILL_BUCKETS=${SUBSET_SHORTAGE_FILL_BUCKETS:-medium,hard}          # Preserve very-hard=10%; split the easy deficit across medium and hard.
 SUBSET_SEED=${SUBSET_SEED:-42}                                                    # Stable stratified reservoir-sampling seed.
 SUBSET_PROGRESS_EVERY=${SUBSET_PROGRESS_EVERY:-50000}                            # Progress interval while classifying the full train split.
 SUBSET_REUSE=${SUBSET_REUSE:-True}                                                # Reuse a complete subset when its source metadata and quotas still match.
@@ -294,6 +296,8 @@ SUBSET_ARGS=(
   --summary-json "${SUBSET_SUMMARY_PATH}"
   --target-samples "${SUBSET_TARGET_SAMPLES}"
   --difficulty-ratios "${SUBSET_DIFFICULTY_RATIOS}"
+  --shortage-policy "${SUBSET_SHORTAGE_POLICY}"
+  --shortage-fill-buckets "${SUBSET_SHORTAGE_FILL_BUCKETS}"
   --seed "${SUBSET_SEED}"
   --progress-every "${SUBSET_PROGRESS_EVERY}"
 )
@@ -302,7 +306,7 @@ if [[ "${SUBSET_REUSE}" =~ ^(1|true|True|TRUE|yes|YES)$ ]]; then
 fi
 echo "[stratified-subset] source=${FULL_TRAIN_PATH}"
 echo "[stratified-subset] output=${SUBSET_OUTPUT_PATH}"
-echo "[stratified-subset] target=${SUBSET_TARGET_SAMPLES} ratios=${SUBSET_DIFFICULTY_RATIOS} seed=${SUBSET_SEED}"
+echo "[stratified-subset] target=${SUBSET_TARGET_SAMPLES} ratios=${SUBSET_DIFFICULTY_RATIOS} shortage_policy=${SUBSET_SHORTAGE_POLICY} fill_buckets=${SUBSET_SHORTAGE_FILL_BUCKETS} seed=${SUBSET_SEED}"
 python scripts/tools/build_stratified_train_subset.py "${SUBSET_ARGS[@]}"
 SUBSET_EXIT=$?
 if [ "${SUBSET_EXIT}" -ne 0 ]; then
@@ -481,7 +485,7 @@ echo "Dataset root: ${DATASET_PATH}"
 echo "Data report:  ${DATASET_INSPECTION_REPORT}"
 echo "Full train:   ${FULL_TRAIN_PATH}"
 echo "Train:        ${TRAIN_PATH}"
-echo "Train subset: target=${SUBSET_TARGET_SAMPLES}, ratios=${SUBSET_DIFFICULTY_RATIOS}, seed=${SUBSET_SEED}"
+echo "Train subset: target=${SUBSET_TARGET_SAMPLES}, ratios=${SUBSET_DIFFICULTY_RATIOS}, shortage_policy=${SUBSET_SHORTAGE_POLICY}, fill_buckets=${SUBSET_SHORTAGE_FILL_BUCKETS}, seed=${SUBSET_SEED}"
 echo "Eval:         ${EVAL_PATH}"
 echo "Output:       ${OUTPUT_PATH}"
 echo "Topology:     nnodes=${NNODES}, node_rank=${NODE_RANK}, nproc_per_node=${NPROC_PER_NODE}"

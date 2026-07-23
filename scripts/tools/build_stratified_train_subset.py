@@ -55,6 +55,17 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--summary-json", type=Path, default=None)
     parser.add_argument("--target-samples", type=int, default=200_000)
     parser.add_argument("--difficulty-ratios", default=DEFAULT_RATIOS)
+    parser.add_argument(
+        "--shortage-policy",
+        choices=("error", "redistribute"),
+        default="error",
+        help="Fail on a bucket shortage, or fill the deficit from selected donor buckets.",
+    )
+    parser.add_argument(
+        "--shortage-fill-buckets",
+        default="medium,hard",
+        help="Comma-separated donor buckets used by the redistribute shortage policy.",
+    )
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--progress-every", type=int, default=50_000)
     parser.add_argument("--reuse-if-valid", action="store_true")
@@ -97,6 +108,80 @@ def allocate_quotas(target_samples: int, ratios: dict[str, float]) -> dict[str, 
     return quotas
 
 
+def parse_fill_buckets(spec: str) -> tuple[str, ...]:
+    buckets: list[str] = []
+    for raw_name in spec.split(","):
+        name = raw_name.strip()
+        if not name:
+            continue
+        if name not in DIFFICULTIES:
+            raise ValueError(f"Unknown shortage fill bucket: {name!r}")
+        if name not in buckets:
+            buckets.append(name)
+    if not buckets:
+        raise ValueError("shortage-fill-buckets must contain at least one difficulty bucket.")
+    return tuple(buckets)
+
+
+def resolve_selected_quotas(
+    requested: dict[str, int],
+    candidate_counts: dict[str, int],
+    target_samples: int,
+    ratios: dict[str, float],
+    shortage_policy: str,
+    shortage_fill_buckets: tuple[str, ...],
+) -> dict[str, int]:
+    shortages = {
+        name: {"required": requested[name], "available": int(candidate_counts.get(name, 0))}
+        for name in DIFFICULTIES
+        if int(candidate_counts.get(name, 0)) < requested[name]
+    }
+    if shortages and shortage_policy == "error":
+        raise ValueError(f"Insufficient samples for requested difficulty quotas: {shortages}")
+
+    selected = {
+        name: min(requested[name], int(candidate_counts.get(name, 0)))
+        for name in DIFFICULTIES
+    }
+    deficit = target_samples - sum(selected.values())
+    if deficit <= 0:
+        return selected
+
+    additions = {name: 0 for name in DIFFICULTIES}
+    stages = [
+        shortage_fill_buckets,
+        tuple(name for name in DIFFICULTIES if name not in shortage_fill_buckets),
+    ]
+    for stage in stages:
+        while deficit > 0:
+            eligible = [
+                name
+                for name in stage
+                if selected[name] < int(candidate_counts.get(name, 0))
+            ]
+            if not eligible:
+                break
+            positive_weights = {name: ratios[name] for name in eligible if ratios[name] > 0}
+            if positive_weights:
+                chosen = min(
+                    positive_weights,
+                    key=lambda name: ((additions[name] + 1) / positive_weights[name], name),
+                )
+            else:
+                chosen = min(eligible, key=lambda name: (additions[name], name))
+            selected[chosen] += 1
+            additions[chosen] += 1
+            deficit -= 1
+        if deficit == 0:
+            break
+
+    if deficit:
+        raise ValueError(
+            f"Insufficient non-empty samples after shortage redistribution: missing {deficit} of {target_samples}."
+        )
+    return selected
+
+
 def default_classifier(record: dict[str, Any]) -> tuple[str, bool]:
     # Keep these values aligned with data_process.build_dataset_v2.DIFFICULTY_ARGS
     # so a subset is bucketed exactly like the finalized 550k build.
@@ -120,6 +205,8 @@ def summary_matches(
     output_path: Path,
     target_samples: int,
     ratios: dict[str, float],
+    shortage_policy: str,
+    shortage_fill_buckets: tuple[str, ...],
     seed: int,
 ) -> bool:
     if not summary_path.is_file() or not output_path.is_file():
@@ -127,14 +214,28 @@ def summary_matches(
     try:
         summary = json.loads(summary_path.read_text(encoding="utf-8"))
         stat = input_path.stat()
+        candidate_counts = {
+            name: int((summary.get("candidate_counts") or {}).get(name, 0))
+            for name in DIFFICULTIES
+        }
+        expected_counts = resolve_selected_quotas(
+            allocate_quotas(target_samples, ratios),
+            candidate_counts,
+            target_samples,
+            ratios,
+            shortage_policy,
+            shortage_fill_buckets,
+        )
         return bool(
             summary.get("status") == "complete"
             and summary.get("source_size") == stat.st_size
             and summary.get("source_mtime_ns") == stat.st_mtime_ns
             and summary.get("target_samples") == target_samples
             and summary.get("difficulty_ratios") == ratios
+            and summary.get("shortage_policy") == shortage_policy
+            and summary.get("shortage_fill_buckets") == list(shortage_fill_buckets)
             and summary.get("seed") == seed
-            and summary.get("selected_counts") == allocate_quotas(target_samples, ratios)
+            and summary.get("selected_counts") == expected_counts
             and count_nonempty_lines(output_path) == target_samples
         )
     except (OSError, ValueError, TypeError, json.JSONDecodeError):
@@ -147,6 +248,8 @@ def build_subset(
     summary_path: Path,
     target_samples: int,
     ratios: dict[str, float],
+    shortage_policy: str,
+    shortage_fill_buckets: tuple[str, ...],
     seed: int,
     progress_every: int = 50_000,
     classifier: Callable[[dict[str, Any]], tuple[str, bool]] = default_classifier,
@@ -159,7 +262,11 @@ def build_subset(
     if input_path == output_path:
         raise ValueError("Input and output JSONL paths must differ.")
 
-    quotas = allocate_quotas(target_samples, ratios)
+    requested_quotas = allocate_quotas(target_samples, ratios)
+    reservoir_capacities = {
+        name: target_samples if shortage_policy == "redistribute" else requested_quotas[name]
+        for name in DIFFICULTIES
+    }
     reservoirs: dict[str, list[tuple[int, int]]] = {name: [] for name in DIFFICULTIES}
     candidate_counts: Counter[str] = Counter()
     rngs = {
@@ -192,7 +299,7 @@ def build_subset(
             candidate_counts[difficulty] += 1
             seen = candidate_counts[difficulty]
             bucket = reservoirs[difficulty]
-            quota = quotas[difficulty]
+            quota = reservoir_capacities[difficulty]
             entry = (total_records, offset)
             if len(bucket) < quota:
                 bucket.append(entry)
@@ -208,17 +315,32 @@ def build_subset(
                     flush=True,
                 )
 
-    shortages = {
-        name: {"required": quotas[name], "available": candidate_counts[name]}
-        for name in DIFFICULTIES
-        if candidate_counts[name] < quotas[name]
-    }
-    if shortages:
-        raise ValueError(f"Insufficient samples for requested difficulty quotas: {shortages}")
+    selected_quotas = resolve_selected_quotas(
+        requested_quotas,
+        candidate_counts,
+        target_samples,
+        ratios,
+        shortage_policy,
+        shortage_fill_buckets,
+    )
+    if selected_quotas != requested_quotas:
+        print(
+            "[stratified-subset] redistributed quotas "
+            f"requested={requested_quotas} selected={selected_quotas} "
+            f"fill_buckets={list(shortage_fill_buckets)}",
+            flush=True,
+        )
+
+    selected_buckets: dict[str, list[tuple[int, int]]] = {}
+    for index, name in enumerate(DIFFICULTIES):
+        bucket = list(reservoirs[name])
+        if shortage_policy == "redistribute":
+            random.Random(seed + (index + 1) * 9_000_011).shuffle(bucket)
+        selected_buckets[name] = bucket[: selected_quotas[name]]
 
     selected = sorted(
         (record_number, offset, difficulty)
-        for difficulty, bucket in reservoirs.items()
+        for difficulty, bucket in selected_buckets.items()
         for record_number, offset in bucket
     )
     if len(selected) != target_samples:
@@ -256,7 +378,10 @@ def build_subset(
         "candidate_counts": {name: candidate_counts[name] for name in DIFFICULTIES},
         "target_samples": target_samples,
         "difficulty_ratios": ratios,
+        "requested_counts": requested_quotas,
         "selected_counts": {name: selected_counts[name] for name in DIFFICULTIES},
+        "shortage_policy": shortage_policy,
+        "shortage_fill_buckets": list(shortage_fill_buckets),
         "seed": seed,
         "difficulty_rule_version": DIFFICULTY_RULE_VERSION,
         "output_sha256": digest.hexdigest(),
@@ -270,6 +395,7 @@ def build_subset(
 def main() -> None:
     args = parse_args()
     ratios = parse_ratios(args.difficulty_ratios)
+    shortage_fill_buckets = parse_fill_buckets(args.shortage_fill_buckets)
     summary_path = args.summary_json or args.output_jsonl.with_suffix(".summary.json")
     if args.reuse_if_valid and summary_matches(
         summary_path,
@@ -277,6 +403,8 @@ def main() -> None:
         args.output_jsonl.resolve(),
         args.target_samples,
         ratios,
+        args.shortage_policy,
+        shortage_fill_buckets,
         args.seed,
     ):
         print(f"[stratified-subset] reuse valid subset: {args.output_jsonl}", flush=True)
@@ -287,6 +415,8 @@ def main() -> None:
         summary_path=summary_path,
         target_samples=args.target_samples,
         ratios=ratios,
+        shortage_policy=args.shortage_policy,
+        shortage_fill_buckets=shortage_fill_buckets,
         seed=args.seed,
         progress_every=args.progress_every,
     )

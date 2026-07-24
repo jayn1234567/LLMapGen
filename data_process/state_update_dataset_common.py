@@ -1422,7 +1422,8 @@ def sort_target_lines(lines, patch_size, boundary_tol):
 
 def make_prompt(include_intersections: bool, incoming_traces, incoming_intersections=None, phase="a",
                 coord_mode: str = COORD_MODE_NORM1000, coord_range: int = DEFAULT_COORD_RANGE,
-                patch_size: int = 256, context_size=None):
+                patch_size: int = 256, context_size=None, incoming_trace_point_spacing_px=None,
+                incoming_intersections_full_polygon: bool = False):
     context_size = patch_size if context_size is None else int(context_size)
     target_roi = centered_target_roi(patch_size, context_size)
     trace_json = json.dumps(incoming_traces, ensure_ascii=False, separators=(",", ":"))
@@ -1476,18 +1477,36 @@ def make_prompt(include_intersections: bool, incoming_traces, incoming_intersect
         inter_json = json.dumps(incoming_intersections or [], ensure_ascii=False, separators=(",", ":"))
         parts.extend(["", "Incoming intersections JSON:", inter_json])
     if phase == "b":
+        if incoming_trace_point_spacing_px is None:
+            trace_rule = (
+                "Each incoming trace has 1 to 3 points. If multiple points are present, they are ordered from "
+                "the previous patch interior toward the current patch boundary."
+            )
+        else:
+            spacing = int(round(float(incoming_trace_point_spacing_px)))
+            trace_rule = (
+                f"Each incoming trace has exactly 3 points sampled about {spacing} pixels apart in the previous "
+                "patch, ordered from the previous patch interior toward the current patch boundary."
+            )
         parts.extend([
             "",
-            "Each incoming trace has 1 to 3 points. If multiple points are present, they are ordered from the previous patch interior toward the current patch boundary.",
+            trace_rule,
             "Incoming traces are continuity hints only; they may be incomplete or absent.",
         ])
         if include_intersections:
-            parts.append("Each incoming intersection has 1 to 3 boundary points from neighboring patches.")
+            if incoming_intersections_full_polygon:
+                parts.append(
+                    "Each incoming intersection contains the full polygon from a neighboring left/top patch, "
+                    "shifted into the current patch coordinate frame."
+                )
+            else:
+                parts.append("Each incoming intersection has 1 to 3 boundary points from neighboring patches.")
     return "\n".join(parts)
 
 
 def build_sft_record(row, patch_size, include_intersections, phase, coord_mode=COORD_MODE_NORM1000,
-                     coord_range=DEFAULT_COORD_RANGE, context_size=None, view_mode=None):
+                     coord_range=DEFAULT_COORD_RANGE, context_size=None, view_mode=None,
+                     incoming_trace_point_spacing_px=None, incoming_intersections_full_polygon: bool = False):
     coord_mode = normalize_coord_mode(coord_mode)
     context_size = patch_size if context_size is None else int(context_size)
     target_roi = centered_target_roi(patch_size, context_size)
@@ -1514,6 +1533,8 @@ def build_sft_record(row, patch_size, include_intersections, phase, coord_mode=C
         coord_range=coord_range,
         patch_size=patch_size,
         context_size=context_size,
+        incoming_trace_point_spacing_px=incoming_trace_point_spacing_px,
+        incoming_intersections_full_polygon=incoming_intersections_full_polygon,
     )
     meta = dict(row["meta"])
     meta.update({
@@ -1534,6 +1555,11 @@ def build_sft_record(row, patch_size, include_intersections, phase, coord_mode=C
         "target_roi_in_image": target_roi,
         "view_mode": view_mode or ("local" if context_size == patch_size else "context_center_roi"),
     })
+    if incoming_trace_point_spacing_px is not None:
+        meta["incoming_trace_point_spacing_px"] = float(incoming_trace_point_spacing_px)
+        meta["incoming_trace_point_count"] = 3
+    if incoming_intersections_full_polygon:
+        meta["incoming_intersections_full_polygon"] = True
     if include_intersections:
         meta["intersection_hint_source_train"] = "gt_left_top_neighbors" if phase == "b" else "none"
     target_text = json.dumps({"lines": target_lines}, ensure_ascii=False, separators=(",", ":"))

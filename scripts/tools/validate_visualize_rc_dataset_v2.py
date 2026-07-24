@@ -25,6 +25,12 @@ from data_process.build_dataset_v2 import (
     allocate_quotas,
     parse_ratio_spec,
 )
+from data_process.difficulty_profiles import (
+    DIFFICULTY_PROFILE_VERSION,
+    classify_metrics,
+    resolution_aware_score,
+    resolve_difficulty_profile,
+)
 from data_process.state_update_dataset_common import (
     ALLOWED_INTERSECTION_TYPES,
     ALLOWED_LANE_TYPES,
@@ -97,6 +103,30 @@ VARIANT_SPECS = {
         "task_mode": "lane_intersection",
     },
     "local512v3": {
+        "image_size": (512, 512),
+        "target_size": 512,
+        "context_image_size": 512,
+        "target_roi_in_image": [0, 0, 512, 512],
+        "view_mode": "local512",
+        "task_mode": "lane_intersection",
+    },
+    "local512v3_1000k": {
+        "image_size": (512, 512),
+        "target_size": 512,
+        "context_image_size": 512,
+        "target_roi_in_image": [0, 0, 512, 512],
+        "view_mode": "local512",
+        "task_mode": "lane_intersection",
+    },
+    "local512v3_550k_stageab": {
+        "image_size": (512, 512),
+        "target_size": 512,
+        "context_image_size": 512,
+        "target_roi_in_image": [0, 0, 512, 512],
+        "view_mode": "local512",
+        "task_mode": "lane_intersection",
+    },
+    "local512v3_rot45_135_800k": {
         "image_size": (512, 512),
         "target_size": 512,
         "context_image_size": 512,
@@ -543,6 +573,12 @@ def resolve_expected_difficulty_counts(
     return requested, requested, "requested_difficulty_ratios"
 
 
+def resolve_validation_difficulty_profile(build_metadata: dict[str, Any], target_size: int):
+    if build_metadata.get("difficulty_rule_version") != DIFFICULTY_PROFILE_VERSION:
+        return None
+    return resolve_difficulty_profile(patch_size=target_size)
+
+
 def decode_image(path: Path, expected_size: tuple[int, int]) -> str | None:
     try:
         with Image.open(path) as image:
@@ -608,6 +644,7 @@ def audit(args: argparse.Namespace) -> tuple[dict[str, Any], ErrorCollector]:
     errors = ErrorCollector(max_examples=args.max_error_examples)
     build_metadata = check_build_metadata(dataset_root, errors)
     ratios = parse_ratio_spec(args.difficulty_ratios)
+    difficulty_profile = resolve_validation_difficulty_profile(build_metadata, target_size)
     rng = random.Random(args.seed)
     reservoirs = {name: [] for name in ("easy", "medium", "hard", "very_hard")}
     reservoir_seen = Counter()
@@ -801,7 +838,11 @@ def audit(args: argparse.Namespace) -> tuple[dict[str, Any], ErrorCollector]:
 
             if split == "train" and payload is not None:
                 metrics = sample_metrics(effective_record, (target_size, target_size), DIFFICULTY_ARGS)
-                difficulty = "empty" if not effective_lines else str(metrics["difficulty"])
+                if difficulty_profile is not None:
+                    resolution_aware_score(metrics, difficulty_profile)
+                    difficulty = classify_metrics(metrics, difficulty_profile)
+                else:
+                    difficulty = "empty" if not effective_lines else str(metrics["difficulty"])
                 stats["difficulty_counts"][difficulty] += 1
                 if difficulty in reservoirs and image_path is not None and image_path.is_file():
                     update_reservoir(

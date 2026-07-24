@@ -33,6 +33,7 @@ RUN_ID=${RUN_ID:-${RUN_LABEL}_$(date -u +%Y%m%d_%H%M%S)}
 OUTPUT_ROOT=${OUTPUT_ROOT:-/cache/jn/outputs/${RUN_ID}}
 INFERENCE_ROOT=${OUTPUT_ROOT}/${CHECKPOINT_NAME}/single_pass
 METRICS_ROOT=${OUTPUT_ROOT}/${CHECKPOINT_NAME}/by_difficulty
+PATCH_SIZE=${PATCH_SIZE:-256}
 
 if [ ! -f "${ACTIVATE_SCRIPT}" ]; then
   echo "ERROR: environment activation script not found: ${ACTIVATE_SCRIPT}" >&2
@@ -274,6 +275,7 @@ echo "Fixed seed:        ${FIXED_EVAL_SEED}"
 echo "Checkpoint:        ${CHECKPOINT_DIR}"
 echo "DINOv2:            ${VISION_TOWER}"
 echo "Output:            ${OUTPUT_ROOT}"
+echo "Patch size:        ${PATCH_SIZE}"
 echo "Visible NPUs:      ${ASCEND_RT_VISIBLE_DEVICES}"
 echo "Inference mode:    one ${NPROC_PER_NODE}-NPU pass for all 1100 samples"
 echo "============================================================"
@@ -303,7 +305,7 @@ torchrun \
   --image-folder "${DATASET_ROOT}" \
   --prompt-mode dataset \
   --map-task lane_intersection \
-  --patch-size 256 \
+  --patch-size "${PATCH_SIZE}" \
   --coord-mode auto \
   --coord-range 1000 \
   --conv-template conv_qwen_3_Dinov2_huawei \
@@ -318,6 +320,15 @@ torchrun \
   --eval-centerline \
   --eval-output-json "${INFERENCE_ROOT}/eval.json"
 
+VIS_LIMIT=${VIS_LIMIT:-0}
+SPLIT_VIS_ARGS=()
+if [ "${VIS_LIMIT}" -gt 0 ]; then
+  SPLIT_VIS_ARGS=(
+    --image-folder "${DATASET_ROOT}"
+    --visualize-max-samples "${VIS_LIMIT}"
+  )
+fi
+
 python scripts/tools/split_single_pass_eval_by_difficulty.py \
   --summary-json "${INFERENCE_ROOT}/summary.json" \
   --split-root "${FIXED_EVAL_ROOT}" \
@@ -326,9 +337,9 @@ python scripts/tools/split_single_pass_eval_by_difficulty.py \
   --meter-per-pixel 0.2 \
   --buffer-size 1.0 \
   --match-threshold 0.33 \
-  --intersection-iou-threshold 0.5
+  --intersection-iou-threshold 0.5 \
+  "${SPLIT_VIS_ARGS[@]}"
 
-VIS_LIMIT=${VIS_LIMIT:-0}
 if [ "${VIS_LIMIT}" -gt 0 ]; then
   python scripts/tools/visualize_centerline.py \
     --input-dir "${INFERENCE_ROOT}" \

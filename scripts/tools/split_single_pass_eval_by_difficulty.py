@@ -212,8 +212,6 @@ def maybe_visualize_bucket(bucket_root: Path, args: argparse.Namespace) -> Path 
         str(args.buffer_size),
         "--eval-match-threshold",
         str(args.match_threshold),
-        "--eval-intersection-iou-threshold",
-        str(args.intersection_iou_threshold),
         "--max-samples",
         str(args.visualize_max_samples),
         "--no-eval-centerline",

@@ -76,8 +76,8 @@ DATASET_INSPECT_MAX_SAMPLES=${DATASET_INSPECT_MAX_SAMPLES:-0}                   
 DATASET_IMAGE_CHECKS_PER_SPLIT=${DATASET_IMAGE_CHECKS_PER_SPLIT:-64}              # Uniformly sampled images opened per split.
 DATASET_EXPECTED_IMAGE_SIZE=${DATASET_EXPECTED_IMAGE_SIZE:-512}                  # Raw image width and height in the true-local512 intersection-prompt dataset.
 DATASET_COORD_MAX=${DATASET_COORD_MAX:-1000}                                     # Expected norm1000 target-coordinate upper bound.
-DATASET_ALLOWED_TARGET_LANE_TYPES=${DATASET_ALLOWED_TARGET_LANE_TYPES:-"common right_turn other"}  # Final three-way lane taxonomy.
-DATASET_ALLOWED_TARGET_INTERSECTION_TYPES=${DATASET_ALLOWED_TARGET_INTERSECTION_TYPES:-"common t_intersection small_untyped t_lane_change_area other"}  # Final five-way intersection taxonomy.
+DATASET_ALLOWED_TARGET_LANE_TYPES=${DATASET_ALLOWED_TARGET_LANE_TYPES:-"common right_turn other"}  # Three-way centerline taxonomy emitted by this dataset package.
+DATASET_EXPECTED_PROMPT_INTERSECTION_TYPES=${DATASET_EXPECTED_PROMPT_INTERSECTION_TYPES:-"common t_intersection small_untyped t_lane_change_area other"}  # Intersection taxonomy is oracle input, not an assistant target.
 
 # ====================== training params ======================
 # Main knobs for this SFT recipe. Edit values here instead of passing one-off shell prefixes.
@@ -330,8 +330,6 @@ INSPECT_ARGS=(
   --image-checks-per-split "${DATASET_IMAGE_CHECKS_PER_SPLIT}"
   --forbid-lane-type 3
   --require-centerline-type-field
-  --require-intersection-type-field
-  --forbid-intersection-subtype-field
   --require-taxonomy-prompt
   --print-representative-samples
   --report "${DATASET_INSPECTION_REPORT}"
@@ -339,9 +337,10 @@ INSPECT_ARGS=(
 for lane_type in ${DATASET_ALLOWED_TARGET_LANE_TYPES}; do
   INSPECT_ARGS+=(--allowed-centerline-type "${lane_type}")
 done
-for intersection_type in ${DATASET_ALLOWED_TARGET_INTERSECTION_TYPES}; do
-  INSPECT_ARGS+=(--allowed-intersection-type "${intersection_type}")
-done
+# This oracle-conditioned variant deliberately removes intersections from the
+# assistant target. Their geometry and type are supplied in the user prompt,
+# so target-only intersection checks from the standard lane+intersection recipe
+# do not apply here.
 if [ "${DATASET_INSPECT_MAX_SAMPLES}" -gt 0 ]; then
   INSPECT_ARGS+=(--max-samples-per-split "${DATASET_INSPECT_MAX_SAMPLES}")
 fi
@@ -354,17 +353,18 @@ persist_inspection_output() {
     echo "[dataset-inspect] non-master node ${NODE_RANK}: skip report upload."
     return 0
   fi
-  mkdir -p "$(dirname "${CLOUD_OUTPUT_PATH}")"
-  if [ -e "${CLOUD_OUTPUT_PATH}" ]; then
-    echo "ERROR: inspection output path already exists: ${CLOUD_OUTPUT_PATH}"
+  if [ ! -f "${DATASET_INSPECTION_REPORT}" ]; then
+    echo "ERROR: inspection report does not exist: ${DATASET_INSPECTION_REPORT}"
     return 1
   fi
-  if [ ! -e "${OUTPUT_PATH}" ]; then
-    echo "ERROR: inspection output path does not exist: ${OUTPUT_PATH}"
-    return 1
+  local cloud_report="${OSB_SHARE_PATH%/}/${RUN_ID}_dataset_inspection_rank${NODE_RANK}.json"
+  local cloud_subset_summary="${OSB_SHARE_PATH%/}/${RUN_ID}_train_subset_summary_rank${NODE_RANK}.json"
+  mkdir -p "$(dirname "${cloud_report}")"
+  cp -f "${DATASET_INSPECTION_REPORT}" "${cloud_report}"
+  if [ -f "${OUTPUT_PATH}/train_subset_summary_rank${NODE_RANK}.json" ]; then
+    cp -f "${OUTPUT_PATH}/train_subset_summary_rank${NODE_RANK}.json" "${cloud_subset_summary}"
   fi
-  echo "[dataset-inspect] moving report to cloud output: ${OUTPUT_PATH} -> ${CLOUD_OUTPUT_PATH}"
-  mv "${OUTPUT_PATH}" "${CLOUD_OUTPUT_PATH}"
+  echo "[dataset-inspect] copied report to DI output: ${cloud_report}"
 }
 
 python scripts/tools/inspect_lane_intersection_training_dataset.py "${INSPECT_ARGS[@]}"

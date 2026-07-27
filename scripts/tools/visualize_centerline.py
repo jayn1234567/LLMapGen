@@ -42,10 +42,60 @@ def first_text(record: dict, keys: list[str], default: str = "[]") -> str:
     return default
 
 
+def target_roi_in_image(record: dict):
+    meta = record.get("meta") if isinstance(record.get("meta"), dict) else {}
+    raw_roi = record.get("target_roi_in_image", meta.get("target_roi_in_image"))
+    if not isinstance(raw_roi, (list, tuple)) or len(raw_roi) != 4:
+        return None
+    try:
+        x0, y0, x1, y1 = (int(value) for value in raw_roi)
+    except (TypeError, ValueError):
+        return None
+    if x0 < 0 or y0 < 0 or x1 <= x0 or y1 <= y0:
+        return None
+    return x0, y0, x1, y1
+
+
+def project_local_pixels_into_image(record: dict, payload):
+    """Map target-patch pixel coordinates onto a larger context image canvas."""
+    roi = target_roi_in_image(record)
+    if roi is None:
+        return payload
+
+    coord_cfg = record_coord_config(record, default_mode=COORD_MODE_PIXEL)
+    patch_width = max(int(coord_cfg["patch_width"]), 1)
+    patch_height = max(int(coord_cfg["patch_height"]), 1)
+    x0, y0, x1, y1 = roi
+    roi_width = x1 - x0
+    roi_height = y1 - y0
+    if roi == (0, 0, patch_width, patch_height):
+        return payload
+
+    projected = []
+    for item in normalize_lines(payload):
+        if not isinstance(item, dict):
+            projected.append(item)
+            continue
+        updated = dict(item)
+        points = item.get("points")
+        if isinstance(points, list):
+            mapped_points = []
+            for point in points:
+                if not isinstance(point, (list, tuple)) or len(point) != 2:
+                    mapped_points.append(point)
+                    continue
+                x = x0 + float(point[0]) / max(patch_width - 1, 1) * max(roi_width - 1, 1)
+                y = y0 + float(point[1]) / max(patch_height - 1, 1) * max(roi_height - 1, 1)
+                mapped_points.append([int(round(x)), int(round(y))])
+            updated["points"] = mapped_points
+        projected.append(updated)
+    return {"lines": projected}
+
+
 def payload_for_draw(record: dict, pixel_keys: list[str], raw_keys: list[str]):
     pixel_text = first_text(record, pixel_keys, default="")
     if pixel_text:
-        return load_json_maybe(pixel_text)
+        return project_local_pixels_into_image(record, load_json_maybe(pixel_text))
     raw_text = first_text(record, raw_keys)
     coord_cfg = record_coord_config(record, default_mode=COORD_MODE_PIXEL)
     if coord_cfg["coord_mode"] != COORD_MODE_PIXEL:
@@ -61,7 +111,7 @@ def payload_for_draw(record: dict, pixel_keys: list[str], raw_keys: list[str]):
             )
         except Exception:
             pass
-    return load_json_maybe(raw_text)
+    return project_local_pixels_into_image(record, load_json_maybe(raw_text))
 
 
 def payload_has_intersection(payload) -> bool:
@@ -110,6 +160,20 @@ def draw_map_lines(image: Image.Image, payload, centerline_color: tuple, interse
             draw.line([xy_points[i], xy_points[i + 1]], fill=color, width=width)
         for x, y in xy_points:
             draw.ellipse([x - 3, y - 3, x + 3, y + 3], fill=color)
+    return image
+
+
+def draw_target_roi(image: Image.Image, record: dict) -> Image.Image:
+    roi = target_roi_in_image(record)
+    if roi is None:
+        return image
+    x0, y0, x1, y1 = roi
+    if (x0, y0, x1, y1) == (0, 0, image.width, image.height):
+        return image
+    if x1 > image.width or y1 > image.height:
+        return image
+    draw = ImageDraw.Draw(image)
+    draw.rectangle([x0, y0, x1 - 1, y1 - 1], outline=(255, 255, 255), width=2)
     return image
 
 
@@ -235,8 +299,14 @@ def main():
             pred_payload = payload_for_draw(result, ["prediction_json_pixel", "response_pixel", "prediction_pixel"], ["prediction_json", "response", "prediction"])
             warn_invalid_geometry(record_id, "ground_truth", gt_payload)
             warn_invalid_geometry(record_id, "prediction", pred_payload)
-            gt_image = draw_map_lines(base_image.copy(), gt_payload, gt_color, colors["yellow"])
-            pred_image = draw_map_lines(base_image.copy(), pred_payload, pred_color, colors["blue"])
+            gt_image = draw_target_roi(
+                draw_map_lines(base_image.copy(), gt_payload, gt_color, colors["yellow"]),
+                result,
+            )
+            pred_image = draw_target_roi(
+                draw_map_lines(base_image.copy(), pred_payload, pred_color, colors["blue"]),
+                result,
+            )
 
             gt_panel = add_title(gt_image, "Ground Truth")
             pred_panel = add_title(pred_image, "Prediction")

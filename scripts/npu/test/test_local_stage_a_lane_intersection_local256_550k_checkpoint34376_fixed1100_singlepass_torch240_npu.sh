@@ -34,6 +34,7 @@ OUTPUT_ROOT=${OUTPUT_ROOT:-/cache/jn/outputs/${RUN_ID}}
 INFERENCE_ROOT=${OUTPUT_ROOT}/${CHECKPOINT_NAME}/single_pass
 METRICS_ROOT=${OUTPUT_ROOT}/${CHECKPOINT_NAME}/by_difficulty
 PATCH_SIZE=${PATCH_SIZE:-256}
+PER_DEVICE_INFER_BATCH_SIZE=${PER_DEVICE_INFER_BATCH_SIZE:-1}
 
 if [ ! -f "${ACTIVATE_SCRIPT}" ]; then
   echo "ERROR: environment activation script not found: ${ACTIVATE_SCRIPT}" >&2
@@ -276,6 +277,7 @@ echo "Checkpoint:        ${CHECKPOINT_DIR}"
 echo "DINOv2:            ${VISION_TOWER}"
 echo "Output:            ${OUTPUT_ROOT}"
 echo "Patch size:        ${PATCH_SIZE}"
+echo "Per-device batch:  ${PER_DEVICE_INFER_BATCH_SIZE}"
 echo "Visible NPUs:      ${ASCEND_RT_VISIBLE_DEVICES}"
 echo "Inference mode:    one ${NPROC_PER_NODE}-NPU pass for all 1100 samples"
 echo "============================================================"
@@ -314,6 +316,7 @@ torchrun \
   --output-json "${INFERENCE_ROOT}/summary.json" \
   --temperature 0.0 \
   --max-new-tokens "${MAX_NEW_TOKENS:-2048}" \
+  --per-device-infer-batch-size "${PER_DEVICE_INFER_BATCH_SIZE}" \
   --eval-meter-per-pixel 0.2 \
   --eval-buffer-size 1.0 \
   --eval-match-threshold 0.33 \

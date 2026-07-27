@@ -186,13 +186,54 @@ def prediction_preview(text: str, limit: int = 240) -> str:
     return text[:limit] + "..."
 
 
-def completion_token_ids(output_ids: torch.Tensor, input_ids: torch.Tensor):
-    """Return generated completion ids for both HF and completion-only generate paths."""
-    output = output_ids[0] if output_ids.ndim == 2 else output_ids
-    prompt = input_ids[0] if input_ids.ndim == 2 else input_ids
-    if output.numel() >= prompt.numel() and torch.equal(output[:prompt.numel()], prompt):
-        return output[prompt.numel():], "completion_sliced"
+def completion_token_ids(
+    output_ids: torch.Tensor,
+    input_ids: torch.Tensor,
+    attention_mask=None,
+    row_index: int = 0,
+):
+    """Return one completion from batched HF or completion-only generation."""
+    output = output_ids[row_index] if output_ids.ndim == 2 else output_ids
+    prompt_padded = input_ids[row_index] if input_ids.ndim == 2 else input_ids
+    if attention_mask is None:
+        prompt = prompt_padded
+    else:
+        mask = attention_mask[row_index] if attention_mask.ndim == 2 else attention_mask
+        prompt = prompt_padded[mask.bool()]
+    for candidate, mode in (
+        (prompt_padded, "completion_sliced_padded"),
+        (prompt, "completion_sliced"),
+    ):
+        if output.numel() >= candidate.numel() and torch.equal(output[:candidate.numel()], candidate):
+            return output[candidate.numel():], mode
     return output, "completion_only"
+
+
+def iter_batches(items, batch_size: int):
+    for start in range(0, len(items), batch_size):
+        yield items[start:start + batch_size]
+
+
+def left_pad_token_sequences(sequences: list[torch.Tensor], pad_token_id: int, device):
+    if not sequences:
+        raise ValueError("Cannot pad an empty inference batch.")
+    max_length = max(int(sequence.numel()) for sequence in sequences)
+    input_ids = torch.full(
+        (len(sequences), max_length),
+        int(pad_token_id),
+        dtype=sequences[0].dtype,
+        device=device,
+    )
+    attention_mask = torch.zeros(
+        (len(sequences), max_length),
+        dtype=torch.long,
+        device=device,
+    )
+    for row_index, sequence in enumerate(sequences):
+        length = int(sequence.numel())
+        input_ids[row_index, -length:] = sequence.to(device=device)
+        attention_mask[row_index, -length:] = 1
+    return input_ids, attention_mask
 
 
 def read_manifest(checkpoint_dir: Path) -> dict:
@@ -946,6 +987,12 @@ def main():
     parser.add_argument("--prompt", default=DEFAULT_PROMPT)
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--max-new-tokens", type=int, default=2048)
+    parser.add_argument(
+        "--per-device-infer-batch-size",
+        type=int,
+        default=int(os.environ.get("PER_DEVICE_INFER_BATCH_SIZE", "1")),
+        help="Number of samples passed to one generate() call on each device.",
+    )
     parser.add_argument("--temperature", type=float, default=0.0)
     parser.add_argument("--output-json", default="")
     parser.add_argument("--output-dir", default="")
@@ -980,6 +1027,8 @@ def main():
     parser.add_argument("--coord-mode", choices=["auto", COORD_MODE_PIXEL, COORD_MODE_NORM1000], default="auto")
     parser.add_argument("--coord-range", type=int, default=DEFAULT_COORD_RANGE)
     args = parser.parse_args()
+    if args.per_device_infer_batch_size < 1:
+        raise ValueError("--per-device-infer-batch-size must be >= 1")
     args.device = device_str
 
     evaluate_one_sample = evaluate_records = print_eval_table = None
@@ -1027,6 +1076,10 @@ def main():
         "[infer] coordinate tokens: "
         f"mode={coordinate_token_mode}, max={coordinate_token_max}"
     )
+    if args.per_device_infer_batch_size > 1:
+        tokenizer.padding_side = "left"
+        model.config.tokenizer_padding_side = "left"
+    print(f"[infer] per-device batch size: {args.per_device_infer_batch_size}")
     if args.test_json:
         with open(args.test_json, "r", encoding="utf-8") as f:
             first_char = f.read(1)
@@ -1058,45 +1111,70 @@ def main():
     if torch.distributed.is_initialized():
         rank_suffix = f"rank{torch.distributed.get_rank()}_"
 
-    results = []
-    for idx, record in indexed_records:
-        image_path = Path(record["image"])
-        if args.test_json:
-            image_path = Path(args.image_folder) / image_path
-        image_path = image_path.resolve()
+    generation_config = getattr(model, "generation_config", None)
+    pad_token_id = getattr(generation_config, "pad_token_id", None)
+    if pad_token_id is None:
+        pad_token_id = tokenizer.pad_token_id
+    eos_token_id = getattr(generation_config, "eos_token_id", None)
+    if eos_token_id is None:
+        eos_token_id = tokenizer.eos_token_id
+    if pad_token_id is None:
+        pad_token_id = eos_token_id
+    if pad_token_id is None:
+        raise ValueError("Tokenizer/model does not define pad_token_id or eos_token_id.")
 
-        image = Image.open(image_path).convert("RGB")
-        images_tensor = process_images([image], image_processor, model.config)
-        vision_tower = model.get_vision_tower()
-        dtype = vision_tower.dtype if vision_tower is not None else next(model.parameters()).dtype
-        image_device = vision_tower.device if vision_tower is not None else model.device
+    vision_tower = model.get_vision_tower()
+    dtype = vision_tower.dtype if vision_tower is not None else next(model.parameters()).dtype
+    image_device = vision_tower.device if vision_tower is not None else model.device
+
+    results = []
+    for batch_entries in iter_batches(indexed_records, args.per_device_infer_batch_size):
+        contexts = []
+        images = []
+        token_sequences = []
+        for idx, record in batch_entries:
+            image_path = Path(record["image"])
+            if args.test_json:
+                image_path = Path(args.image_folder) / image_path
+            image_path = image_path.resolve()
+            with Image.open(image_path) as image_handle:
+                image = image_handle.convert("RGB")
+            images.append(image)
+
+            if args.prompt_mode == "dataset" and record.get("conversations"):
+                prompt_text = record["conversations"][0]["value"]
+            else:
+                prompt_text = args.prompt
+            if coordinate_token_mode == COORDINATE_TOKEN_MODE_ANGLE:
+                prompt_text = append_coordinate_token_instruction(
+                    prompt_text,
+                    max_coordinate=coordinate_token_max,
+                )
+            prompt = build_prompt(prompt_text, conv_template)
+            token_sequence = tokenizer_image_token(
+                prompt,
+                tokenizer,
+                IMAGE_TOKEN_INDEX,
+                return_tensors="pt",
+            )
+            token_sequences.append(token_sequence)
+            contexts.append((idx, record, image_path, image.size, prompt))
+
+        images_tensor = process_images(images, image_processor, model.config)
         if isinstance(images_tensor, list):
             images_tensor = [img.to(dtype=dtype, device=image_device) for img in images_tensor]
         else:
             images_tensor = images_tensor.to(dtype=dtype, device=image_device)
-
-        if args.prompt_mode == "dataset" and record.get("conversations"):
-            prompt_text = record["conversations"][0]["value"]
-        else:
-            prompt_text = args.prompt
-        if coordinate_token_mode == COORDINATE_TOKEN_MODE_ANGLE:
-            prompt_text = append_coordinate_token_instruction(
-                prompt_text,
-                max_coordinate=coordinate_token_max,
-            )
-        prompt = build_prompt(prompt_text, conv_template)
-
-        input_ids = tokenizer_image_token(prompt, tokenizer, IMAGE_TOKEN_INDEX, return_tensors="pt")
-        input_ids = input_ids.unsqueeze(0).to(model.device)
-        generation_config = getattr(model, "generation_config", None)
-        pad_token_id = getattr(generation_config, "pad_token_id", None) or tokenizer.pad_token_id
-        eos_token_id = getattr(generation_config, "eos_token_id", None) or tokenizer.eos_token_id
-        attention_mask = input_ids.ne(pad_token_id).to(model.device)
+        input_ids, attention_mask = left_pad_token_sequences(
+            token_sequences,
+            pad_token_id,
+            model.device,
+        )
 
         generate_kwargs = {
             "attention_mask": attention_mask,
             "images": images_tensor,
-            "image_sizes": [image.size],
+            "image_sizes": [context[3] for context in contexts],
             "max_new_tokens": args.max_new_tokens,
             "use_cache": True,
             "do_sample": args.temperature > 0,
@@ -1109,97 +1187,46 @@ def main():
 
         with torch.inference_mode():
             output_ids = model.generate(input_ids, **generate_kwargs)
-
-        decoded_ids, decoded_mode = completion_token_ids(output_ids, input_ids)
-
-        raw_prediction = tokenizer.batch_decode(
-            decoded_ids.unsqueeze(0),
-            skip_special_tokens=False,
-        )[0].strip()
-        prediction = normalize_prediction_text(
-            raw_prediction,
-            max_coordinate=coordinate_token_max,
-        )
-        prediction_json = extract_json_payload(prediction)
-        coord_cfg = resolve_coord_config(record, args)
-
-        parse_ok = False
-        parsed_items = []
-        parsed_items_pixel = []
-        parse_error = ""
-        try:
-            parsed_items = parse_centerline_json(
-                prediction_json,
-                map_task=args.map_task,
-                patch_size=coord_cfg["patch_size"],
-                coord_mode=coord_cfg["coord_mode"],
-                coord_range=coord_cfg["coord_range"],
+        if output_ids.ndim == 1:
+            output_ids = output_ids.unsqueeze(0)
+        if int(output_ids.shape[0]) != len(contexts):
+            raise RuntimeError(
+                "generate() returned an unexpected batch dimension: "
+                f"expected={len(contexts)}, actual={int(output_ids.shape[0])}"
             )
-            parsed_items_pixel = convert_items(
-                parsed_items,
-                coord_cfg["coord_mode"],
-                COORD_MODE_PIXEL,
-                coord_cfg["patch_width"],
-                coord_cfg["patch_height"],
-                coord_range=coord_cfg["coord_range"],
-                clamp=True,
-            )
-            prediction_json = payload_to_text({"lines": parsed_items})
-            parse_ok = True
-        except Exception as exc:
-            parse_error = str(exc)
-        prediction_json_pixel = payload_to_text({"lines": parsed_items_pixel}) if parse_ok else ""
-        origin_record = {
-            "meta": record.get("meta", {}),
-            "patch_size": coord_cfg["patch_size"],
-            "patch_width": coord_cfg["patch_width"],
-            "patch_height": coord_cfg["patch_height"],
-        }
-        x0, y0 = record_origin(origin_record)
-        meta = record.get("meta", {})
-        row = int(meta.get("row", meta.get("patch_row", y0 // max(coord_cfg["patch_height"], 1))))
-        col = int(meta.get("col", meta.get("patch_col", x0 // max(coord_cfg["patch_width"], 1))))
-        tile_id = meta.get("tile_id", record.get("tile_id", "tile"))
-        lines_global = offset_lines(parsed_items_pixel, x0, y0) if parse_ok else []
 
-        result = {
-            "checkpoint_dir": str(checkpoint_dir),
-            "image": str(image_path),
-            "record_id": record.get("id", f"sample_{idx}"),
-            "tile_id": tile_id,
-            "row": row,
-            "col": col,
-            "x0": x0,
-            "y0": y0,
-            "meta": record.get("meta", {}),
-            "coord_mode": coord_cfg["coord_mode"],
-            "coord_range": coord_cfg["coord_range"],
-            "patch_size": coord_cfg["patch_size"],
-            "patch_width": coord_cfg["patch_width"],
-            "patch_height": coord_cfg["patch_height"],
-            "prompt": prompt,
-            "conv_template": conv_template,
-            "raw_prediction": raw_prediction,
-            "prediction": prediction,
-            "prediction_json": prediction_json,
-            "prediction_json_pixel": prediction_json_pixel,
-            "parse_ok": parse_ok,
-            "num_items": len(parsed_items) if parse_ok else 0,
-            "parse_error": parse_error,
-            "lines_local": parsed_items_pixel,
-            "lines_local_model": parsed_items,
-            "lines_global": lines_global,
-            "input_token_len": int(input_ids.shape[1]),
-            "output_token_len": int(output_ids.shape[1]),
-            "decoded_token_len": int(decoded_ids.numel()),
-            "decoded_mode": decoded_mode,
-            "manifest": manifest,
-        }
-        if len(record.get("conversations", [])) > 1:
-            result["ground_truth"] = record["conversations"][1]["value"]
+        for batch_row, (idx, record, image_path, _, prompt) in enumerate(contexts):
+            decoded_ids, decoded_mode = completion_token_ids(
+                output_ids,
+                input_ids,
+                attention_mask=attention_mask,
+                row_index=batch_row,
+            )
+            raw_prediction = tokenizer.batch_decode(
+                decoded_ids.unsqueeze(0),
+                skip_special_tokens=False,
+            )[0].strip()
+            prediction = normalize_prediction_text(
+                raw_prediction,
+                max_coordinate=coordinate_token_max,
+            )
+            prediction_json = extract_json_payload(prediction)
+            coord_cfg = resolve_coord_config(record, args)
+
+            parse_ok = False
+            parsed_items = []
+            parsed_items_pixel = []
+            parse_error = ""
             try:
-                result["ground_truth_pixel"] = convert_payload_text(
-                    result["ground_truth"],
+                parsed_items = parse_centerline_json(
+                    prediction_json,
+                    map_task=args.map_task,
+                    patch_size=coord_cfg["patch_size"],
+                    coord_mode=coord_cfg["coord_mode"],
+                    coord_range=coord_cfg["coord_range"],
+                )
+                parsed_items_pixel = convert_items(
+                    parsed_items,
                     coord_cfg["coord_mode"],
                     COORD_MODE_PIXEL,
                     coord_cfg["patch_width"],
@@ -1207,48 +1234,114 @@ def main():
                     coord_range=coord_cfg["coord_range"],
                     clamp=True,
                 )
-            except Exception:
-                result["ground_truth_pixel"] = result["ground_truth"]
-            if args.eval_centerline:
-                result["centerline_eval"] = vars(evaluate_one_sample(
-                    result["ground_truth_pixel"],
-                    prediction_json_pixel or prediction_json,
-                    parse_ok=parse_ok,
-                    meter_per_pixel=args.eval_meter_per_pixel,
-                    buffer_size=args.eval_buffer_size,
-                    match_threshold=args.eval_match_threshold,
-                ))
-        results.append(result)
+                prediction_json = payload_to_text({"lines": parsed_items})
+                parse_ok = True
+            except Exception as exc:
+                parse_error = str(exc)
+            prediction_json_pixel = payload_to_text({"lines": parsed_items_pixel}) if parse_ok else ""
+            origin_record = {
+                "meta": record.get("meta", {}),
+                "patch_size": coord_cfg["patch_size"],
+                "patch_width": coord_cfg["patch_width"],
+                "patch_height": coord_cfg["patch_height"],
+            }
+            x0, y0 = record_origin(origin_record)
+            meta = record.get("meta", {})
+            row = int(meta.get("row", meta.get("patch_row", y0 // max(coord_cfg["patch_height"], 1))))
+            col = int(meta.get("col", meta.get("patch_col", x0 // max(coord_cfg["patch_width"], 1))))
+            tile_id = meta.get("tile_id", record.get("tile_id", "tile"))
+            lines_global = offset_lines(parsed_items_pixel, x0, y0) if parse_ok else []
 
-        if sample_json_dir is not None:
-            sample_path = sample_json_dir / f"{rank_suffix}{idx:03d}_{sanitize_filename(str(result['record_id']))}.json"
-            sample_path.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
+            result = {
+                "idx": idx,
+                "checkpoint_dir": str(checkpoint_dir),
+                "image": str(image_path),
+                "record_id": record.get("id", f"sample_{idx}"),
+                "tile_id": tile_id,
+                "row": row,
+                "col": col,
+                "x0": x0,
+                "y0": y0,
+                "meta": record.get("meta", {}),
+                "coord_mode": coord_cfg["coord_mode"],
+                "coord_range": coord_cfg["coord_range"],
+                "patch_size": coord_cfg["patch_size"],
+                "patch_width": coord_cfg["patch_width"],
+                "patch_height": coord_cfg["patch_height"],
+                "prompt": prompt,
+                "conv_template": conv_template,
+                "raw_prediction": raw_prediction,
+                "prediction": prediction,
+                "prediction_json": prediction_json,
+                "prediction_json_pixel": prediction_json_pixel,
+                "parse_ok": parse_ok,
+                "num_items": len(parsed_items) if parse_ok else 0,
+                "parse_error": parse_error,
+                "lines_local": parsed_items_pixel,
+                "lines_local_model": parsed_items,
+                "lines_global": lines_global,
+                "input_token_len": int(attention_mask[batch_row].sum().item()),
+                "output_token_len": int(output_ids[batch_row].numel()),
+                "decoded_token_len": int(decoded_ids.numel()),
+                "decoded_mode": decoded_mode,
+                "per_device_infer_batch_size": args.per_device_infer_batch_size,
+                "manifest": manifest,
+            }
+            if len(record.get("conversations", [])) > 1:
+                result["ground_truth"] = record["conversations"][1]["value"]
+                try:
+                    result["ground_truth_pixel"] = convert_payload_text(
+                        result["ground_truth"],
+                        coord_cfg["coord_mode"],
+                        COORD_MODE_PIXEL,
+                        coord_cfg["patch_width"],
+                        coord_cfg["patch_height"],
+                        coord_range=coord_cfg["coord_range"],
+                        clamp=True,
+                    )
+                except Exception:
+                    result["ground_truth_pixel"] = result["ground_truth"]
+                if args.eval_centerline:
+                    result["centerline_eval"] = vars(evaluate_one_sample(
+                        result["ground_truth_pixel"],
+                        prediction_json_pixel or prediction_json,
+                        parse_ok=parse_ok,
+                        meter_per_pixel=args.eval_meter_per_pixel,
+                        buffer_size=args.eval_buffer_size,
+                        match_threshold=args.eval_match_threshold,
+                    ))
+            results.append(result)
 
-        print(
-            json.dumps(
-                {
-                    "idx": idx,
-                    "record_id": result["record_id"],
-                    "image": result["image"],
-                    "parse_ok": parse_ok,
-                    "num_items": result["num_items"],
-                    "parse_error": parse_error,
-                    "prediction_preview": prediction_preview(prediction),
-                    "decoded_mode": result["decoded_mode"],
-                    "input_token_len": result["input_token_len"],
-                    "output_token_len": result["output_token_len"],
-                    "decoded_token_len": result["decoded_token_len"],
-                },
-                ensure_ascii=False,
+            if sample_json_dir is not None:
+                sample_path = sample_json_dir / f"{rank_suffix}{idx:03d}_{sanitize_filename(str(result['record_id']))}.json"
+                sample_path.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
+
+            print(
+                json.dumps(
+                    {
+                        "idx": idx,
+                        "record_id": result["record_id"],
+                        "image": result["image"],
+                        "parse_ok": parse_ok,
+                        "num_items": result["num_items"],
+                        "parse_error": parse_error,
+                        "prediction_preview": prediction_preview(prediction),
+                        "decoded_mode": result["decoded_mode"],
+                        "input_token_len": result["input_token_len"],
+                        "output_token_len": result["output_token_len"],
+                        "decoded_token_len": result["decoded_token_len"],
+                        "per_device_infer_batch_size": args.per_device_infer_batch_size,
+                    },
+                    ensure_ascii=False,
+                )
             )
-        )
-        if args.print_full_output:
-            print("RAW_PREDICTION_START")
-            print(raw_prediction)
-            print("RAW_PREDICTION_END")
-            print("NORMALIZED_PREDICTION_START")
-            print(prediction)
-            print("NORMALIZED_PREDICTION_END")
+            if args.print_full_output:
+                print("RAW_PREDICTION_START")
+                print(raw_prediction)
+                print("RAW_PREDICTION_END")
+                print("NORMALIZED_PREDICTION_START")
+                print(prediction)
+                print("NORMALIZED_PREDICTION_END")
 
     if args.output_json:
         output_json_path = Path(args.output_json)

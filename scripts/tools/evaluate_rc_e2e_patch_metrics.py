@@ -290,6 +290,11 @@ def pixel_prediction(record: dict[str, Any], patch_size: int, coord_range: int) 
     pixel = record.get("prediction_json_pixel") or record.get("response_pixel")
     if pixel:
         return str(pixel)
+    # A malformed model response is a valid evaluation outcome. Keep it in the
+    # sample set as an empty prediction so it lowers recall and format validity;
+    # do not misclassify it as a GT/raster pairing failure.
+    if not bool(record.get("parse_ok", True)):
+        return ""
     raw = record.get("prediction_json") or record.get("prediction") or ""
     if not raw:
         return ""
@@ -425,6 +430,11 @@ def main() -> None:
                 flush=True,
             )
 
+    if errors:
+        error_path = Path(args.output_json).with_name("pairing_errors.json")
+        error_path.parent.mkdir(parents=True, exist_ok=True)
+        error_path.write_text(json.dumps(errors, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        print(f"[e2e-patch-eval] pairing_errors={error_path}", flush=True)
     if errors and args.require_all:
         preview = json.dumps(errors[:10], ensure_ascii=False, indent=2)
         raise RuntimeError(f"Unable to pair all prediction records; errors={len(errors)}\n{preview}")

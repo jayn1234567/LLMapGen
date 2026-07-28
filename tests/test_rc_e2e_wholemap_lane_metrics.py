@@ -5,10 +5,29 @@ from shapely.geometry import LineString
 from scripts.tools.evaluate_rc_e2e_wholemap_lane_metrics import (
     PredSegment,
     lane_match_score,
+    raw_prediction_items,
     scene_metrics,
     stitch_segments,
     summarize,
 )
+
+
+def test_raw_norm1000_coordinates_use_official_0256_scale_without_point_clamp():
+    record = {
+        "parse_ok": True,
+        "coord_mode": "norm1000",
+        "prediction_json": (
+            '{"lines":[{"category":"centerline",'
+            '"points":[[-100,500],[1000,500],[1100,500]]}]}'
+        ),
+    }
+
+    items, error, stats = raw_prediction_items(record, patch_size=256, coord_range=1000)
+
+    assert error == ""
+    assert items[0]["_local_pixel_points"] == [(-25.6, 128.0), (256.0, 128.0), (281.6, 128.0)]
+    assert stats["outside_roi_points"] == 2
+    assert stats["items_touching_outside_roi"] == 1
 
 
 def test_official_lane_score_checks_overlap_and_direction():

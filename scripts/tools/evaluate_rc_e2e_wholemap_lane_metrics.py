@@ -46,7 +46,6 @@ from scripts.tools.evaluate_rc_e2e_patch_metrics import (
     find_lane_gt,
     geojson_crs,
     load_prediction_records,
-    pixel_prediction,
     record_row_col,
     record_scene_and_tif,
     scene_root_for_inter_tif,
@@ -104,7 +103,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--cut-predicted-intersections",
         action=argparse.BooleanOptionalAction,
-        default=True,
+        default=False,
     )
     parser.add_argument(
         "--require-masks",
@@ -180,6 +179,58 @@ def payload_items(text: str) -> tuple[list[dict[str, Any]], str]:
     if not isinstance(items, list):
         return [], "prediction lines is not a list"
     return [item for item in items if isinstance(item, dict)], ""
+
+
+def raw_prediction_items(
+    record: dict[str, Any],
+    patch_size: int,
+    coord_range: int,
+) -> tuple[list[dict[str, Any]], str, dict[str, int]]:
+    stats = {
+        "source_items": 0,
+        "source_points": 0,
+        "outside_roi_points": 0,
+        "items_touching_outside_roi": 0,
+    }
+    if not bool(record.get("parse_ok", True)):
+        return [], str(record.get("parse_error") or "invalid prediction"), stats
+
+    raw = record.get("prediction_json") or record.get("prediction")
+    use_pixel_fallback = not raw
+    if use_pixel_fallback:
+        raw = record.get("prediction_json_pixel") or record.get("response_pixel")
+    if not raw:
+        return [], "prediction payload is empty", stats
+    if not isinstance(raw, str):
+        raw = json.dumps(raw, ensure_ascii=False)
+    items, error = payload_items(raw)
+    if error:
+        return [], error, stats
+
+    meta = record.get("meta") if isinstance(record.get("meta"), dict) else {}
+    coord_mode = "pixel" if use_pixel_fallback else str(
+        record.get("coord_mode") or meta.get("coord_mode") or "norm1000"
+    ).lower()
+    effective_range = int(record.get("coord_range") or meta.get("coord_range") or coord_range)
+    scale = float(patch_size) / float(effective_range) if "norm" in coord_mode else 1.0
+    maximum = float(patch_size)
+
+    converted: list[dict[str, Any]] = []
+    for item in items:
+        minimum_points = 3 if category(item) == "intersection" else 2
+        source_points = clean_points(item.get("points"), minimum_points)
+        if not source_points:
+            continue
+        local_points = [(x * scale, y * scale) for x, y in source_points]
+        outside_count = sum(
+            1 for x, y in local_points if x < 0.0 or y < 0.0 or x > maximum or y > maximum
+        )
+        stats["source_items"] += 1
+        stats["source_points"] += len(local_points)
+        stats["outside_roi_points"] += outside_count
+        stats["items_touching_outside_roi"] += int(outside_count > 0)
+        converted.append({**item, "_local_pixel_points": local_points})
+    return converted, "", stats
 
 
 def category(item: dict[str, Any]) -> str:
@@ -545,14 +596,23 @@ def build_scene_predictions(
     inter_index,
     target_crs: str,
     args: argparse.Namespace,
-) -> tuple[list[PredSegment], list[Polygon], list[dict[str, str]]]:
+) -> tuple[list[PredSegment], list[Polygon], list[dict[str, str]], dict[str, int]]:
     import rasterio
 
     raster_cache: dict[Path, tuple[Any, str]] = {}
     segments: list[PredSegment] = []
     polygons: list[Polygon] = []
     errors: list[dict[str, str]] = []
-    maximum = float(args.patch_size - 1)
+    roi = Polygon(
+        [
+            (0.0, 0.0),
+            (float(args.patch_size), 0.0),
+            (float(args.patch_size), float(args.patch_size)),
+            (0.0, float(args.patch_size)),
+            (0.0, 0.0),
+        ]
+    )
+    geometry_stats: dict[str, int] = defaultdict(int)
 
     for record in records:
         record_id = str(record.get("record_id") or record.get("id") or record.get("_prediction_file"))
@@ -566,41 +626,44 @@ def build_scene_predictions(
                 raster_cache[lane_tif] = (source.transform, source.crs.to_string())
         transform, raster_crs = raster_cache[lane_tif]
         row, col = record_row_col(record)
-        prediction_text, parse_ok, parse_error = pixel_prediction(
+        items, parse_error, record_stats = raw_prediction_items(
             record,
             args.patch_size,
             args.coord_range,
         )
-        if not parse_ok or not prediction_text:
+        for name, value in record_stats.items():
+            geometry_stats[name] += value
+        if parse_error:
             errors.append({"record_id": record_id, "error": parse_error or "invalid prediction"})
-            continue
-        items, item_error = payload_items(prediction_text)
-        if item_error:
-            errors.append({"record_id": record_id, "error": item_error})
             continue
 
         for item_index, item in enumerate(items):
             item_category = category(item)
-            minimum_points = 3 if item_category == "intersection" else 2
-            local_points = clean_points(item.get("points"), minimum_points)
-            if not local_points:
-                continue
-            local_points = [
-                (min(max(x, 0.0), maximum), min(max(y, 0.0), maximum))
-                for x, y in local_points
-            ]
-            projected_points = map_points(transform, row, col, args.patch_size, local_points)
-            if raster_crs != target_crs:
-                if item_category == "intersection":
-                    geometry = transform_geometry(Polygon(projected_points), raster_crs, target_crs)
-                    projected_points = list(geometry.exterior.coords)
-                else:
-                    geometry = transform_geometry(LineString(projected_points), raster_crs, target_crs)
-                    projected_points = list(geometry.coords)
+            local_points = item["_local_pixel_points"]
 
             if item_category == "centerline":
-                line = LineString(projected_points)
-                if not line.is_empty and line.length > 0:
+                source_line = LineString(local_points)
+                clipped_geometry = source_line.intersection(roi)
+                clipped_lines = list(iter_lines(clipped_geometry))
+                geometry_stats["source_centerline_items"] += 1
+                geometry_stats["centerline_items_geometrically_clipped"] += int(
+                    not roi.covers(source_line)
+                )
+                geometry_stats["centerline_fragments_after_roi_clip"] += len(clipped_lines)
+                for fragment_index, local_line in enumerate(clipped_lines):
+                    clipped_points = list(local_line.coords)
+                    projected_points = map_points(
+                        transform, row, col, args.patch_size, clipped_points
+                    )
+                    line = LineString(projected_points)
+                    if raster_crs != target_crs:
+                        transformed = transform_geometry(line, raster_crs, target_crs)
+                        transformed_lines = list(iter_lines(transformed))
+                        if not transformed_lines:
+                            continue
+                        line = transformed_lines[0]
+                    if line.is_empty or line.length <= 0:
+                        continue
                     source_key = f"{tif_stem}:{row}:{col}"
                     start_type = str(item.get("start_type") or "").lower()
                     end_type = str(item.get("end_type") or "").lower()
@@ -611,23 +674,41 @@ def build_scene_predictions(
                             start_is_boundary=(
                                 start_type == "cut"
                                 or is_boundary_point(
-                                    local_points[0], args.patch_size, args.boundary_pixel_tolerance
+                                    clipped_points[0], args.patch_size, args.boundary_pixel_tolerance
                                 )
                             ),
                             end_is_boundary=(
                                 end_type == "cut"
                                 or is_boundary_point(
-                                    local_points[-1], args.patch_size, args.boundary_pixel_tolerance
+                                    clipped_points[-1], args.patch_size, args.boundary_pixel_tolerance
                                 )
                             ),
                         )
                     )
             elif item_category == "intersection":
-                polygon = Polygon(projected_points)
-                if not polygon.is_valid:
-                    polygon = polygon.buffer(0)
-                polygons.extend(iter_polygons(polygon))
-    return segments, polygons, errors
+                source_polygon = Polygon(local_points)
+                if not source_polygon.is_valid:
+                    source_polygon = source_polygon.buffer(0)
+                clipped_polygon = source_polygon.intersection(roi)
+                geometry_stats["source_intersection_items"] += 1
+                geometry_stats["intersection_items_geometrically_clipped"] += int(
+                    not roi.covers(source_polygon)
+                )
+                for local_polygon in iter_polygons(clipped_polygon):
+                    projected_points = map_points(
+                        transform,
+                        row,
+                        col,
+                        args.patch_size,
+                        list(local_polygon.exterior.coords),
+                    )
+                    polygon = Polygon(projected_points)
+                    if raster_crs != target_crs:
+                        polygon = transform_geometry(polygon, raster_crs, target_crs)
+                    if not polygon.is_valid:
+                        polygon = polygon.buffer(0)
+                    polygons.extend(iter_polygons(polygon))
+    return segments, polygons, errors, dict(geometry_stats)
 
 
 def main() -> None:
@@ -671,7 +752,9 @@ def main() -> None:
     filtered_lane_types: dict[str, int] = defaultdict(int)
     total_raw_segments = 0
     total_stitched_lines = 0
+    total_lines_after_intersection_cut = 0
     total_predicted_intersections = 0
+    roi_geometry_stats: dict[str, int] = defaultdict(int)
     mask_availability = {
         mode: {"available_scenes": 0, "missing_scenes": 0}
         for mode in ("all", "high", "low")
@@ -697,12 +780,14 @@ def main() -> None:
                 f"Missing or empty E2E masks for scene {scene_id}: {missing_masks}; gt_root={gt_root}"
             )
 
-        pred_segments, pred_intersections, parse_errors = build_scene_predictions(
+        pred_segments, pred_intersections, parse_errors, scene_geometry_stats = build_scene_predictions(
             records,
             inter_index,
             target_crs,
             args,
         )
+        for name, value in scene_geometry_stats.items():
+            roi_geometry_stats[name] += value
         prediction_errors.extend({"scene_id": scene_id, **item} for item in parse_errors)
         raw_count = len(pred_segments)
         pred_lines = (
@@ -726,6 +811,7 @@ def main() -> None:
                 pred_intersections,
                 args.min_intersection_cut_segment_length,
             )
+        after_intersection_cut_count = len(pred_lines)
 
         masks = {
             "all": unary_union([mask for mask in (high_mask, low_mask) if not mask.is_empty]),
@@ -737,7 +823,9 @@ def main() -> None:
             "invalid_prediction_records": len(parse_errors),
             "raw_prediction_segments": raw_count,
             "stitched_prediction_lines": stitched_count,
+            "prediction_lines_after_intersection_cut": after_intersection_cut_count,
             "predicted_intersection_polygons": len(pred_intersections),
+            "roi_geometry_stats": scene_geometry_stats,
             "reference_lane_tif": str(reference_lane_tif),
             "lane_gt": str(gt_path),
             "missing_masks": missing_masks,
@@ -760,6 +848,7 @@ def main() -> None:
         by_scene[scene_id] = scene_result
         total_raw_segments += raw_count
         total_stitched_lines += stitched_count
+        total_lines_after_intersection_cut += after_intersection_cut_count
         total_predicted_intersections += len(pred_intersections)
         print(
             f"[e2e-wholemap-eval] scene={scene_index}/{len(grouped)} id={scene_id} "
@@ -801,7 +890,9 @@ def main() -> None:
             ),
             "raw_prediction_segments": total_raw_segments,
             "stitched_prediction_lines": total_stitched_lines,
+            "prediction_lines_after_intersection_cut": total_lines_after_intersection_cut,
             "predicted_intersection_polygons": total_predicted_intersections,
+            "roi_geometry_stats": dict(sorted(roi_geometry_stats.items())),
         },
         "metrics": {mode: summarize(totals) for mode, totals in aggregate.items()},
         "mask_availability": mask_availability,

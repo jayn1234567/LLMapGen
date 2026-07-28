@@ -286,31 +286,42 @@ def patch_ground_truth(
     return output
 
 
-def pixel_prediction(record: dict[str, Any], patch_size: int, coord_range: int) -> str:
+def pixel_prediction(
+    record: dict[str, Any],
+    patch_size: int,
+    coord_range: int,
+) -> tuple[str, bool, str]:
+    declared_parse_ok = bool(record.get("parse_ok", True))
+    declared_parse_error = str(record.get("parse_error") or "")
     pixel = record.get("prediction_json_pixel") or record.get("response_pixel")
     if pixel:
-        return str(pixel)
+        return str(pixel), declared_parse_ok, declared_parse_error
     # A malformed model response is a valid evaluation outcome. Keep it in the
     # sample set as an empty prediction so it lowers recall and format validity;
     # do not misclassify it as a GT/raster pairing failure.
-    if not bool(record.get("parse_ok", True)):
-        return ""
+    if not declared_parse_ok:
+        return "", False, declared_parse_error
     raw = record.get("prediction_json") or record.get("prediction") or ""
     if not raw:
-        return ""
+        return "", declared_parse_ok, declared_parse_error
     meta = record.get("meta") if isinstance(record.get("meta"), dict) else {}
     coord_mode = str(record.get("coord_mode") or meta.get("coord_mode") or COORD_MODE_NORM1000)
     if coord_mode == COORD_MODE_PIXEL:
-        return str(raw)
-    return convert_payload_text(
-        str(raw),
-        coord_mode,
-        COORD_MODE_PIXEL,
-        patch_size,
-        patch_size,
-        coord_range=int(record.get("coord_range") or meta.get("coord_range") or coord_range),
-        clamp=True,
-    )
+        return str(raw), declared_parse_ok, declared_parse_error
+    try:
+        converted = convert_payload_text(
+            str(raw),
+            coord_mode,
+            COORD_MODE_PIXEL,
+            patch_size,
+            patch_size,
+            coord_range=int(record.get("coord_range") or meta.get("coord_range") or coord_range),
+            clamp=True,
+        )
+        return converted, declared_parse_ok, declared_parse_error
+    except Exception as exc:
+        error = f"prediction coordinate conversion failed: {type(exc).__name__}: {exc}"
+        return "", False, error
 
 
 def raw_totals(details: dict[str, Any]) -> dict[str, Any]:
@@ -361,18 +372,22 @@ def main() -> None:
     scene_lane_cache: dict[tuple[Path, str], SceneLaneIndex] = {}
     enriched: list[dict[str, Any]] = []
     errors: list[dict[str, str]] = []
+    prediction_conversion_errors: list[dict[str, str]] = []
     scene_counts: dict[str, int] = defaultdict(int)
 
     import rasterio
 
     for index, record in enumerate(predictions, 1):
         record_id = str(record.get("record_id") or record.get("id") or f"sample_{index}")
+        stage = "resolve_record"
         try:
             scene_id, tif_stem = record_scene_and_tif(record)
+            stage = "resolve_inter_tif"
             inter_tif = inter_index[(scene_id, tif_stem)]
             lane_tif = expected_lane_tif(inter_tif)
             if not lane_tif.is_file():
                 raise FileNotFoundError(f"Lane TIF not found: {lane_tif}")
+            stage = "read_lane_tif"
             if lane_tif not in raster_cache:
                 with rasterio.open(lane_tif) as source:
                     if source.crs is None:
@@ -385,8 +400,10 @@ def main() -> None:
                     }
             raster = raster_cache[lane_tif]
             scene_root = scene_root_for_inter_tif(inter_tif)
+            stage = "resolve_lane_gt"
             gt_path = find_lane_gt(scene_root, args.baseline_name)
             lane_cache_key = (gt_path, raster["crs"])
+            stage = "load_lane_gt"
             if lane_cache_key not in scene_lane_cache:
                 scene_lane_cache[lane_cache_key] = SceneLaneIndex(
                     gt_path,
@@ -395,6 +412,7 @@ def main() -> None:
                     ignored_types=ignored_types,
                 )
             row, col = record_row_col(record)
+            stage = "clip_patch_ground_truth"
             gt_items = patch_ground_truth(
                 scene_lane_cache[lane_cache_key],
                 transform=raster["transform"],
@@ -405,13 +423,26 @@ def main() -> None:
                 patch_size=args.patch_size,
             )
             ground_truth_pixel = json.dumps({"lines": gt_items}, ensure_ascii=False, separators=(",", ":"))
-            prediction_pixel = pixel_prediction(record, args.patch_size, args.coord_range)
+            stage = "convert_prediction"
+            prediction_pixel, eval_parse_ok, eval_parse_error = pixel_prediction(
+                record,
+                args.patch_size,
+                args.coord_range,
+            )
+            if eval_parse_error and not eval_parse_ok:
+                prediction_conversion_errors.append({
+                    "record_id": record_id,
+                    "prediction_file": str(record.get("_prediction_file") or ""),
+                    "error": eval_parse_error,
+                })
             output_record = {
                 **record,
                 "record_id": record_id,
                 "scene_id": scene_id,
                 "ground_truth_pixel": ground_truth_pixel,
                 "prediction_json_pixel": prediction_pixel,
+                "parse_ok": eval_parse_ok,
+                "parse_error": eval_parse_error,
                 "ground_truth_source": str(gt_path),
                 "lane_tif": str(lane_tif),
             }
@@ -421,6 +452,7 @@ def main() -> None:
             errors.append({
                 "record_id": record_id,
                 "prediction_file": str(record.get("_prediction_file") or ""),
+                "stage": stage,
                 "error": repr(exc),
             })
         if index % 1000 == 0 or index == len(predictions):
@@ -476,10 +508,12 @@ def main() -> None:
             "prediction_records": len(predictions),
             "evaluated_records": len(enriched),
             "pairing_errors": len(errors),
+            "prediction_conversion_errors": len(prediction_conversion_errors),
             "scene_count": len(grouped),
             "records_by_scene": dict(sorted(scene_counts.items())),
             "filtered_gt_features_by_lane_type": dict(sorted(filtered_counts.items())),
             "error_examples": errors[:20],
+            "prediction_conversion_error_examples": prediction_conversion_errors[:20],
         },
         "centerline_eval": global_eval,
         "per_scene": by_scene,

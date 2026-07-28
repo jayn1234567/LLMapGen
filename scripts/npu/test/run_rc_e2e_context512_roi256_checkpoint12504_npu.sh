@@ -20,6 +20,8 @@ E2E_RAW_ROOT=${E2E_RAW_ROOT:-${E2E_WORK_ROOT}/raw_e2e_data}
 E2E_DATASET_ROOT=${E2E_DATASET_ROOT:-${E2E_WORK_ROOT}/e2e_data_context512_roi256}
 REBUILD_E2E_DATASET=${REBUILD_E2E_DATASET:-False}
 BLACK_RATIO_THRESHOLD=${BLACK_RATIO_THRESHOLD:-0.98}
+VALIDATE_RASTER_ALIGNMENT=${VALIDATE_RASTER_ALIGNMENT:-True}
+RASTER_ALIGNMENT_REPORT=${RASTER_ALIGNMENT_REPORT:-${E2E_WORK_ROOT}/raster_alignment_report.json}
 
 CHECKPOINT_NAME=${CHECKPOINT_NAME:-checkpoint-12504}
 CHECKPOINT_OBS_PATH=${CHECKPOINT_OBS_PATH:-obs://yw-ads-model-training-gy1/model-dev/rc-nn/rc_base_model/2026/07/24/4f735c63da7a4f86829b26246143e219/output/ma-job-81341482-55b8-4c28-887b-0e4166776561/checkpoint-12504/}
@@ -123,6 +125,16 @@ with zipfile.ZipFile(archive) as handle:
 PY
 else
   echo "[e2e] reuse extracted raw data: ${E2E_RAW_ROOT}"
+fi
+
+if is_true "${VALIDATE_RASTER_ALIGNMENT}"; then
+  echo "[e2e] validating inter/lane TIF pixel-grid alignment"
+  python scripts/tools/validate_rc_e2e_raster_alignment.py \
+    --input-root "${E2E_RAW_ROOT}" \
+    --patch-size 256 \
+    --output-json "${RASTER_ALIGNMENT_REPORT}"
+else
+  echo "[e2e] WARNING: raster alignment validation is disabled"
 fi
 
 if is_true "${REBUILD_E2E_DATASET}" || [ ! -s "${E2E_DATASET_ROOT}/infer.jsonl" ]; then

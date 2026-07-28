@@ -5,6 +5,11 @@ the same raw RC samples. It keeps Jiangjihua's TIFF mask, GeoJSON coordinate
 transform, lane/intersection clipping, endpoint typing, raw-sample split, and
 norm1000 target rules.
 
+Related handoff documents:
+
+- `docs/DATASET_V2_RAWLANE_550K.md`: 550k `local256` and
+  `context512_roi256` variants with PV-camera raw lane overlay.
+
 ## Built-in sources
 
 `scripts/tools/build_rc_dataset_v2_from_obs.py` contains these seven defaults:

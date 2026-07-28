@@ -109,7 +109,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--require-masks",
         action=argparse.BooleanOptionalAction,
-        default=True,
+        default=False,
     )
     parser.add_argument(
         "--require-all",
@@ -672,6 +672,10 @@ def main() -> None:
     total_raw_segments = 0
     total_stitched_lines = 0
     total_predicted_intersections = 0
+    mask_availability = {
+        mode: {"available_scenes": 0, "missing_scenes": 0}
+        for mode in ("all", "high", "low")
+    }
 
     for scene_index, (scene_id, records) in enumerate(sorted(grouped.items()), 1):
         target_crs, reference_lane_tif = scene_target_crs(records, inter_index)
@@ -736,9 +740,18 @@ def main() -> None:
             "predicted_intersection_polygons": len(pred_intersections),
             "reference_lane_tif": str(reference_lane_tif),
             "lane_gt": str(gt_path),
+            "missing_masks": missing_masks,
             "metrics": {},
         }
         for mode, mask in masks.items():
+            if mask.is_empty:
+                mask_availability[mode]["missing_scenes"] += 1
+                scene_result["metrics"][mode] = {
+                    "skipped": True,
+                    "reason": f"{mode} evaluation mask is missing or empty",
+                }
+                continue
+            mask_availability[mode]["available_scenes"] += 1
             masked_gt = keep_inside_mask(gt_lines, mask, args.min_mask_segment_length)
             masked_pred = keep_inside_mask(pred_lines, mask, args.min_mask_segment_length)
             totals = scene_metrics(masked_gt, masked_pred, args)
@@ -791,6 +804,7 @@ def main() -> None:
             "predicted_intersection_polygons": total_predicted_intersections,
         },
         "metrics": {mode: summarize(totals) for mode, totals in aggregate.items()},
+        "mask_availability": mask_availability,
         "by_scene": by_scene,
         "filtered_gt_lane_types": dict(sorted(filtered_lane_types.items())),
         "pairing_errors": pairing_errors,

@@ -1497,9 +1497,8 @@ def make_prompt(include_intersections: bool, incoming_traces, incoming_intersect
         parts.append(coord_description(coord_mode, coord_range, patch_size))
     if raw_lane_overlay:
         parts.append(
-            "The image also contains a white raw-lane overlay predicted by a camera-based small model. "
-            "Use this overlay as a noisy geometric hint only; do not copy it blindly when it conflicts "
-            "with the visible BEV evidence or the required road-map schema."
+            "The image also contains a white lane overlay predicted by a PV camera model. "
+            "Do not copy it blindly when it conflicts with the visible BEV evidence."
         )
     parts.extend([
         "",
@@ -1509,8 +1508,7 @@ def make_prompt(include_intersections: bool, incoming_traces, incoming_intersect
             '"common" for a regular centerline, "right_turn" for a right-turn-only '
             'centerline, "waiting_area" for a waiting-area centerline, "bus_lane" '
             'for a bus-lane centerline, "main_auxiliary_connector" for a connector '
-            'between main and auxiliary roads, or "other" for any remaining lane '
-            'class. Do not output centerlines from excluded raw LaneType 3 or LaneType 22.'
+            'between main and auxiliary roads, or "other" for any remaining lane class.'
         ),
     ])
     if include_intersections:

@@ -741,7 +741,7 @@ def audit(args: argparse.Namespace) -> tuple[dict[str, Any], ErrorCollector]:
                 ]
                 input_overlay = build_metadata.get("input_overlay") or {}
                 if input_overlay.get("raw_lane_overlay") or input_overlay.get("raw_lane_overlay_source") == "patch_tif/0_lane.tif":
-                    required_texts.append("raw-lane overlay")
+                    required_texts.append("white lane overlay")
                 if intersection_prompt_task:
                     required_texts.extend([PROMPT_MARKER, "centerlines only"])
                 for required_text in required_texts:

@@ -150,7 +150,7 @@ class DatasetV3BalancedBuilderTest(unittest.TestCase):
         self.assertEqual(overlaid[:, 1, 2].tolist(), [255, 255, 255])
         self.assertEqual(overlaid[:, 0, 0].tolist(), [12, 12, 12])
 
-    def test_raw_lane_prompt_mentions_noisy_overlay(self):
+    def test_raw_lane_prompt_mentions_pv_overlay(self):
         prompt = make_prompt(
             include_intersections=True,
             incoming_traces=[],
@@ -161,8 +161,9 @@ class DatasetV3BalancedBuilderTest(unittest.TestCase):
             context_size=512,
             raw_lane_overlay=True,
         )
-        self.assertIn("raw-lane overlay", prompt)
-        self.assertIn("noisy geometric hint", prompt)
+        self.assertIn("white lane overlay", prompt)
+        self.assertIn("PV camera model", prompt)
+        self.assertIn("Do not copy it blindly when it conflicts with the visible BEV evidence.", prompt)
 
 
 if __name__ == "__main__":

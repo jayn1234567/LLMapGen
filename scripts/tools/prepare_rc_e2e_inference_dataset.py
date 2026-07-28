@@ -140,8 +140,7 @@ def dataset_v2_prompt(
             '"common" for a regular centerline, "right_turn" for a right-turn-only '
             'centerline, "waiting_area" for a waiting-area centerline, "bus_lane" '
             'for a bus-lane centerline, "main_auxiliary_connector" for a connector '
-            'between main and auxiliary roads, or "other" for any remaining lane '
-            'class. Do not output centerlines from excluded raw LaneType 3 or LaneType 22.'
+            'between main and auxiliary roads, or "other" for any remaining lane class.'
         ),
         ]
     )

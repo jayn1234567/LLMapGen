@@ -611,6 +611,7 @@ def read_masked_image(
         else:
             with rasterio.open(raw_lane_path) as src:
                 raw_lane = src.read()
+            raw_lane = np.where(mask_any, raw_lane, 0)
             image = apply_raw_lane_overlay(image, raw_lane, threshold=raw_lane_threshold)
     return image, meta, transform, crs
 

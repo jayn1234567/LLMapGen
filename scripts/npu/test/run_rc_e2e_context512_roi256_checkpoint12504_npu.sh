@@ -37,6 +37,7 @@ INFER_RESULT_OBS_PATH=${INFER_RESULT_OBS_PATH:-}
 
 NUM_SAMPLES=${NUM_SAMPLES:-0}
 MAX_NEW_TOKENS=${MAX_NEW_TOKENS:-2048}
+PER_DEVICE_INFER_BATCH_SIZE=${PER_DEVICE_INFER_BATCH_SIZE:-2}
 MAX_TIFS=${MAX_TIFS:-0}
 MAX_PATCHES=${MAX_PATCHES:-0}
 
@@ -193,6 +194,7 @@ echo "Checkpoint:        ${CHECKPOINT_DIR}"
 echo "DINOv2:            ${VISION_TOWER}"
 echo "Output:            ${OUTPUT_ROOT}"
 echo "Visible NPUs:      ${ASCEND_RT_VISIBLE_DEVICES}"
+echo "Per-device batch:  ${PER_DEVICE_INFER_BATCH_SIZE}"
 echo "Target frame:      center ROI 256x256, norm1000"
 echo "Model input:       context 512x512 -> DINOv2 518x518"
 echo "============================================================"
@@ -223,6 +225,7 @@ torchrun \
   --sample-json-dir "${RAW_RESULT_DIR}" \
   --output-json "${INFERENCE_ROOT}/summary.json" \
   --temperature 0.0 \
+  --per-device-infer-batch-size "${PER_DEVICE_INFER_BATCH_SIZE}" \
   --max-new-tokens "${MAX_NEW_TOKENS}"
 
 python - "${RAW_RESULT_DIR}" <<'PY'

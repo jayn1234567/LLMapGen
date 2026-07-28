@@ -17,7 +17,11 @@ E2E_DATA_OBS_PATH=${E2E_DATA_OBS_PATH:-obs://yw-ads-training-2-gy1/data/external
 E2E_WORK_ROOT=${E2E_WORK_ROOT:-/cache/jn/e2e_eval}
 E2E_ARCHIVE_PATH=${E2E_ARCHIVE_PATH:-${E2E_WORK_ROOT}/e2e_data.zip}
 E2E_RAW_ROOT=${E2E_RAW_ROOT:-${E2E_WORK_ROOT}/raw_e2e_data}
-E2E_DATASET_ROOT=${E2E_DATASET_ROOT:-${E2E_WORK_ROOT}/e2e_data_context512_roi256}
+E2E_VIEW_MODE=${E2E_VIEW_MODE:-context512_roi256}
+E2E_TARGET_SIZE=${E2E_TARGET_SIZE:-256}
+E2E_CONTEXT_SIZE=${E2E_CONTEXT_SIZE:-512}
+E2E_PROMPT_PROFILE=${E2E_PROMPT_PROFILE:-current}
+E2E_DATASET_ROOT=${E2E_DATASET_ROOT:-${E2E_WORK_ROOT}/e2e_data_${E2E_VIEW_MODE}}
 REBUILD_E2E_DATASET=${REBUILD_E2E_DATASET:-False}
 BLACK_RATIO_THRESHOLD=${BLACK_RATIO_THRESHOLD:-0.98}
 VALIDATE_RASTER_ALIGNMENT=${VALIDATE_RASTER_ALIGNMENT:-True}
@@ -138,15 +142,16 @@ else
 fi
 
 if is_true "${REBUILD_E2E_DATASET}" || [ ! -s "${E2E_DATASET_ROOT}/infer.jsonl" ]; then
-  echo "[e2e] building context512_roi256 inference dataset"
+  echo "[e2e] building ${E2E_VIEW_MODE} inference dataset"
   python scripts/tools/prepare_rc_e2e_inference_dataset.py \
     --input-root "${E2E_RAW_ROOT}" \
     --output-root "${E2E_DATASET_ROOT}" \
-    --view-mode context512_roi256 \
-    --target-size 256 \
-    --context-size 512 \
-    --stride 256 \
+    --view-mode "${E2E_VIEW_MODE}" \
+    --target-size "${E2E_TARGET_SIZE}" \
+    --context-size "${E2E_CONTEXT_SIZE}" \
+    --stride "${E2E_TARGET_SIZE}" \
     --coord-range 1000 \
+    --prompt-profile "${E2E_PROMPT_PROFILE}" \
     --black-ratio-threshold "${BLACK_RATIO_THRESHOLD}" \
     --include-intersections \
     --max-tifs "${MAX_TIFS}" \
@@ -207,8 +212,10 @@ echo "DINOv2:            ${VISION_TOWER}"
 echo "Output:            ${OUTPUT_ROOT}"
 echo "Visible NPUs:      ${ASCEND_RT_VISIBLE_DEVICES}"
 echo "Per-device batch:  ${PER_DEVICE_INFER_BATCH_SIZE}"
-echo "Target frame:      center ROI 256x256, norm1000"
-echo "Model input:       context 512x512 -> DINOv2 518x518"
+echo "Dataset view:      ${E2E_VIEW_MODE}"
+echo "Prompt profile:    ${E2E_PROMPT_PROFILE}"
+echo "Target frame:      ${E2E_TARGET_SIZE}x${E2E_TARGET_SIZE}, norm1000"
+echo "Source image:      ${E2E_CONTEXT_SIZE}x${E2E_CONTEXT_SIZE} -> DINOv2 518x518"
 echo "============================================================"
 echo "DI_throughput: 0.00 samples/s/npu"
 

@@ -185,6 +185,7 @@ if is_true "${INSTALL_ENGINE_DEPS}" && [ ! -f "${DEPS_SENTINEL}" ]; then
     utm \
     pyyaml \
     openpyxl \
+    "pandas==2.2.3" \
     ujson \
     scikit-image
   python - "${DEPS_SENTINEL}" <<'PY'
@@ -196,12 +197,20 @@ else
   echo "[original-e2e] reuse dependency-ready environment: ${E2E_ENV_DIR}"
 fi
 
+# The archived evaluator imports pandas from problemExcelWriter.py, but its
+# original requirements omit it. Repair already-cached environments too.
+if ! python -c "import pandas" >/dev/null 2>&1; then
+  echo "[original-e2e] installing evaluator dependency missing from original requirements: pandas"
+  python -m pip install "pandas==2.2.3"
+fi
+
 python - <<'PY'
 import cv2
 import geojson
 import loguru
 import moxing
 import numpy
+import pandas
 import rasterio
 import scipy
 import shapely

@@ -21,6 +21,22 @@ from PIL import Image
 
 VIEW_LOCAL256 = "local256"
 VIEW_CONTEXT512_ROI256 = "context512_roi256"
+PROMPT_PROFILE_CURRENT = "current"
+PROMPT_PROFILE_LOCAL256_550K_V1 = "local256_550k_v1"
+
+LOCAL256_550K_V1_PROMPT = """<image>
+Please construct the complete road map in the current BEV (Bird's Eye View) image patch.
+Coordinates use a normalized 0-1000 grid over the original 256x256 image patch.
+
+Return only valid JSON in the form {"lines":[...]} with no extra explanation.
+For every centerline, include "lane_type" with exactly one of: "common" for a regular centerline, "right_turn" for a right-turn-only centerline, or "other" for any remaining lane class. Do not output U-turn reference lines.
+For every intersection, include "intersection_type" with exactly one of: "common" for a common intersection, "t_intersection" for a T-intersection, "small_untyped" for a small untyped intersection, or "t_lane_change_area" for a T-shaped lane-change area, or "other" for any remaining or unknown intersection class.
+
+Incoming traces JSON:
+[]
+
+Incoming intersections JSON:
+[]"""
 
 
 def parse_args() -> argparse.Namespace:
@@ -36,6 +52,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--context-size", type=int, default=512)
     parser.add_argument("--stride", type=int, default=256)
     parser.add_argument("--coord-range", type=int, default=1000)
+    parser.add_argument(
+        "--prompt-profile",
+        choices=(PROMPT_PROFILE_CURRENT, PROMPT_PROFILE_LOCAL256_550K_V1),
+        default=PROMPT_PROFILE_CURRENT,
+        help="Prompt schema expected by the checkpoint being evaluated.",
+    )
     parser.add_argument("--black-ratio-threshold", type=float, default=0.98)
     parser.add_argument(
         "--include-intersections",
@@ -105,7 +127,17 @@ def dataset_v2_prompt(
     context_size: int,
     coord_range: int,
     include_intersections: bool,
+    prompt_profile: str = PROMPT_PROFILE_CURRENT,
 ) -> str:
+    if prompt_profile == PROMPT_PROFILE_LOCAL256_550K_V1:
+        if view_mode != VIEW_LOCAL256 or target_size != 256 or coord_range != 1000 or not include_intersections:
+            raise ValueError(
+                "local256_550k_v1 requires local256, target_size=256, coord_range=1000, "
+                "and intersections enabled."
+            )
+        return LOCAL256_550K_V1_PROMPT
+    if prompt_profile != PROMPT_PROFILE_CURRENT:
+        raise ValueError(f"Unsupported prompt profile: {prompt_profile}")
     parts = [
         "<image>",
         "Please construct the complete road map in the current BEV (Bird's Eye View) image patch.",
@@ -248,6 +280,7 @@ def prepare_dataset(args: argparse.Namespace) -> dict[str, Any]:
         context_size=context_size,
         coord_range=args.coord_range,
         include_intersections=args.include_intersections,
+        prompt_profile=getattr(args, "prompt_profile", PROMPT_PROFILE_CURRENT),
     )
 
     manifest: list[dict[str, Any]] = []
@@ -343,6 +376,7 @@ def prepare_dataset(args: argparse.Namespace) -> dict[str, Any]:
         "stride": stride,
         "coord_mode": "norm1000",
         "coord_range": int(args.coord_range),
+        "prompt_profile": getattr(args, "prompt_profile", PROMPT_PROFILE_CURRENT),
         "black_ratio_threshold": float(args.black_ratio_threshold),
         "tif_count": len(tif_paths),
         "patch_count": kept,

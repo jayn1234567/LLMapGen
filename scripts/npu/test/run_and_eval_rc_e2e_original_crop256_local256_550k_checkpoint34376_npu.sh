@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# One command: original RC E2E plain-256 crop, checkpoint-34376 inference, and
-# repository patch-level lane evaluation.
+# One command: original RC E2E plain-256 crop, checkpoint-34376 inference,
+# repository patch metrics, and the untouched original all/low/high evaluator.
 
 SCRIPT_PATH=$(readlink -f "$0")
 SCRIPT_DIR=$(dirname "${SCRIPT_PATH}")
@@ -12,15 +12,18 @@ OUTPUT_ROOT=${OUTPUT_ROOT:-/cache/jn/outputs/${RUN_ID}}
 RAW_RESULT_DIR=${RAW_RESULT_DIR:-${OUTPUT_ROOT}/inference/json}
 INFER_RESULT_OBS_PATH=${INFER_RESULT_OBS_PATH:-obs://yw-ads-training-2-gy1/data/external/personal/h58801830/jn/output/e2e_infer/${RUN_ID}}
 PATCH_METRICS_OBS_PATH=${PATCH_METRICS_OBS_PATH:-obs://yw-ads-training-2-gy1/data/external/personal/h58801830/jn/output/e2e_metrics/${RUN_ID}_patch_metrics}
+ORIGINAL_EVAL_RUN_ID=${ORIGINAL_EVAL_RUN_ID:-${RUN_ID}_original_pipeline}
+ORIGINAL_RESULT_ROOT=${ORIGINAL_RESULT_ROOT:-${OUTPUT_ROOT}/original_pipeline_metrics}
+ORIGINAL_RESULT_OBS_PATH=${ORIGINAL_RESULT_OBS_PATH:-obs://yw-ads-training-2-gy1/data/external/personal/h58801830/jn/output/e2e_metrics/${RUN_ID}_original_pipeline}
 
-echo "[original-crop256-e2e] stage 1/2: original splitter + checkpoint-34376 inference"
+echo "[original-crop256-e2e] stage 1/3: original splitter + checkpoint-34376 inference"
 RUN_ID="${RUN_ID}" \
 OUTPUT_ROOT="${OUTPUT_ROOT}" \
 RAW_RESULT_DIR="${RAW_RESULT_DIR}" \
 INFER_RESULT_OBS_PATH="${INFER_RESULT_OBS_PATH}" \
 bash "${SCRIPT_DIR}/run_rc_e2e_original_crop256_local256_550k_checkpoint34376_npu.sh"
 
-echo "[original-crop256-e2e] stage 2/2: repository patch metrics"
+echo "[original-crop256-e2e] stage 2/3: repository patch metrics"
 EVAL_RUN_ID="${RUN_ID}_patch_metrics" \
 EVAL_ROOT="${OUTPUT_ROOT}/patch_metrics" \
 PREDICTION_DIR="${RAW_RESULT_DIR}" \
@@ -28,10 +31,25 @@ PREDICTION_OBS_PATH="${INFER_RESULT_OBS_PATH}" \
 METRICS_OBS_PATH="${PATCH_METRICS_OBS_PATH}" \
 bash "${SCRIPT_DIR}/eval_rc_e2e_context512_roi256_checkpoint12504_patch_metrics.sh"
 
+echo "[original-crop256-e2e] stage 3/3: untouched original RC E2E all/low/high metrics"
+RUN_ID="${ORIGINAL_EVAL_RUN_ID}" \
+RUN_WORK_ROOT="/cache/jn/e2e_eval/original_pipeline_runs/${ORIGINAL_EVAL_RUN_ID}" \
+RESULT_ROOT="${ORIGINAL_RESULT_ROOT}" \
+RESULT_OBS_PATH="${ORIGINAL_RESULT_OBS_PATH}" \
+PREDICTION_CACHE="${RAW_RESULT_DIR}" \
+PREDICTION_OBS_PATH="${INFER_RESULT_OBS_PATH}" \
+REUSE_PREDICTIONS=True \
+REUSE_ENGINE_ARCHIVE=True \
+bash "${SCRIPT_DIR}/eval_rc_e2e_context512_roi256_checkpoint12504_original_pipeline_npu.sh"
+
 echo "============================================================"
-echo "ORIGINAL-CROP256 CHECKPOINT-34376 E2E INFERENCE + PATCH METRICS COMPLETE"
+echo "ORIGINAL-CROP256 CHECKPOINT-34376 FULL E2E EVALUATION COMPLETE"
 echo "Inference JSON: ${RAW_RESULT_DIR}"
 echo "Patch metrics:  ${OUTPUT_ROOT}/patch_metrics/metrics.json"
+echo "Original all:   ${ORIGINAL_RESULT_ROOT}/eval_result_all"
+echo "Original low:   ${ORIGINAL_RESULT_ROOT}/eval_result_low"
+echo "Original high:  ${ORIGINAL_RESULT_ROOT}/eval_result_high"
 echo "Inference OBS:  ${INFER_RESULT_OBS_PATH}"
-echo "Metrics OBS:    ${PATCH_METRICS_OBS_PATH}"
+echo "Patch OBS:      ${PATCH_METRICS_OBS_PATH}"
+echo "Original OBS:   ${ORIGINAL_RESULT_OBS_PATH}"
 echo "============================================================"

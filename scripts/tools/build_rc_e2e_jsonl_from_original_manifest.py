@@ -28,6 +28,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--prompt-profile", default=PROMPT_PROFILE_LOCAL256_550K_V1)
     parser.add_argument("--patch-size", type=int, default=256)
     parser.add_argument("--coord-range", type=int, default=1000)
+    parser.add_argument("--black-ratio-threshold", type=float, default=1.0)
     return parser.parse_args()
 
 
@@ -51,6 +52,7 @@ def convert_manifest(
     prompt_profile: str = PROMPT_PROFILE_LOCAL256_550K_V1,
     patch_size: int = 256,
     coord_range: int = 1000,
+    black_ratio_threshold: float = 1.0,
 ) -> dict[str, Any]:
     manifest_path = Path(manifest_json).resolve()
     root = Path(output_root).resolve()
@@ -58,6 +60,8 @@ def convert_manifest(
         raise ValueError("The original RC E2E crop experiment requires patch_size=256.")
     if coord_range != 1000:
         raise ValueError("checkpoint-34376 expects coord_range=1000.")
+    if not 0.0 <= black_ratio_threshold <= 1.0:
+        raise ValueError("black_ratio_threshold must be within [0, 1].")
 
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     if not isinstance(manifest, list) or not manifest:
@@ -113,6 +117,8 @@ def convert_manifest(
                     "target_roi_in_image": [0, 0, patch_size, patch_size],
                     "view_mode": VIEW_LOCAL256,
                     "crop_backend": "original_rc_e2e_split_inter_tif_for_inference",
+                    "crop_black_ratio_threshold": black_ratio_threshold,
+                    "crop_black_ratio_comparison": ">=",
                     "coord_mode": "norm1000",
                     "coord_system": f"patch_norm{coord_range}",
                     "coord_range": coord_range,
@@ -130,6 +136,8 @@ def convert_manifest(
         "stride": patch_size,
         "view_mode": VIEW_LOCAL256,
         "crop_backend": "original_rc_e2e_split_inter_tif_for_inference",
+        "crop_black_ratio_threshold": black_ratio_threshold,
+        "crop_black_ratio_comparison": ">=",
         "prompt_profile": prompt_profile,
         "coord_mode": "norm1000",
         "coord_range": coord_range,
@@ -150,6 +158,7 @@ def main() -> None:
         prompt_profile=args.prompt_profile,
         patch_size=args.patch_size,
         coord_range=args.coord_range,
+        black_ratio_threshold=args.black_ratio_threshold,
     )
 
 

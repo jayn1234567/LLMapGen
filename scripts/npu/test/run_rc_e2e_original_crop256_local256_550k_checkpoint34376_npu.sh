@@ -21,7 +21,8 @@ ORIGINAL_ENGINE_CACHE=${ORIGINAL_ENGINE_CACHE:-${E2E_WORK_ROOT}/original_pipelin
 ORIGINAL_ENGINE_ARCHIVE=${ORIGINAL_ENGINE_ARCHIVE:-${ORIGINAL_ENGINE_CACHE}/rc_nn-sjn_e2e_eval.zip}
 ORIGINAL_ENGINE_EXTRACT_ROOT=${ORIGINAL_ENGINE_EXTRACT_ROOT:-${ORIGINAL_ENGINE_CACHE}/engine}
 
-E2E_DATASET_ROOT=${E2E_DATASET_ROOT:-${E2E_WORK_ROOT}/e2e_data_original_crop256_local256_550k_v1}
+ORIGINAL_BLACK_RATIO_THRESHOLD=${ORIGINAL_BLACK_RATIO_THRESHOLD:-1.0}
+E2E_DATASET_ROOT=${E2E_DATASET_ROOT:-${E2E_WORK_ROOT}/e2e_data_original_crop256_black1_local256_550k_v2}
 ORIGINAL_MANIFEST=${ORIGINAL_MANIFEST:-${E2E_DATASET_ROOT}/patch_manifest.json}
 REBUILD_E2E_DATASET=${REBUILD_E2E_DATASET:-False}
 
@@ -130,14 +131,34 @@ import sys
 from pathlib import Path
 target = Path(sys.argv[1]).resolve()
 allowed = Path("/cache/jn/e2e_eval").resolve()
-if allowed not in target.parents or target.name != "e2e_data_original_crop256_local256_550k_v1":
+if allowed not in target.parents or target.name != "e2e_data_original_crop256_black1_local256_550k_v2":
     raise ValueError(f"Refusing to remove unexpected dataset path: {target}")
 shutil.rmtree(target)
 PY
   fi
-  mkdir -p "${E2E_DATASET_ROOT}/images"
-  echo "[original-crop256] running untouched original splitter: ${ORIGINAL_SPLITTER}"
-  python "${ORIGINAL_SPLITTER}" \
+  mkdir -p "${E2E_DATASET_ROOT}/images" "${E2E_DATASET_ROOT}/tools"
+  RUNTIME_SPLITTER=${E2E_DATASET_ROOT}/tools/split_inter_tif_for_inference_black1.py
+  python - "${ORIGINAL_SPLITTER}" "${RUNTIME_SPLITTER}" "${ORIGINAL_BLACK_RATIO_THRESHOLD}" <<'PY'
+import re
+import sys
+from pathlib import Path
+
+source = Path(sys.argv[1]).resolve()
+destination = Path(sys.argv[2]).resolve()
+threshold = float(sys.argv[3])
+if not 0.0 <= threshold <= 1.0:
+    raise ValueError(f"black ratio threshold must be within [0,1], got {threshold}")
+text = source.read_text(encoding="utf-8")
+pattern = r"if\s+black_ratio\(pil_img\)\s*>\s*0\.98\s*:"
+replacement = f"if black_ratio(pil_img) >= {threshold:g}:"
+patched, count = re.subn(pattern, replacement, text)
+if count != 1:
+    raise RuntimeError(f"Expected exactly one original black-ratio filter, found {count}: {source}")
+destination.write_text(patched, encoding="utf-8")
+print(f"[original-crop256] runtime filter override: {replacement}")
+PY
+  echo "[original-crop256] running original splitter with black-only filter: ${RUNTIME_SPLITTER}"
+  python "${RUNTIME_SPLITTER}" \
     --input-root "${ORIGINAL_INPUT_ROOT}" \
     --output-images "${E2E_DATASET_ROOT}/images" \
     --output-json "${ORIGINAL_MANIFEST}" \
@@ -149,7 +170,8 @@ PY
     --output-root "${E2E_DATASET_ROOT}" \
     --prompt-profile local256_550k_v1 \
     --patch-size 256 \
-    --coord-range 1000
+    --coord-range 1000 \
+    --black-ratio-threshold "${ORIGINAL_BLACK_RATIO_THRESHOLD}"
 else
   echo "[original-crop256] reuse original-crop inference dataset: ${E2E_DATASET_ROOT}"
 fi

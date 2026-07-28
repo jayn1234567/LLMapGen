@@ -122,6 +122,8 @@ def test_convert_original_crop_manifest_keeps_images_and_adds_norm1000_metadata(
     assert record["image"] == "images/scene_001/0_inter/2_3.png"
     assert record["meta"]["target_roi_in_image"] == [0, 0, 256, 256]
     assert record["meta"]["coord_mode"] == "norm1000"
+    assert record["meta"]["crop_black_ratio_threshold"] == 1.0
+    assert record["meta"]["crop_black_ratio_comparison"] == ">="
     assert record["meta"]["x0"] == 768
     assert record["meta"]["y0"] == 512
     assert '"right_turn"' in record["conversations"][0]["value"]

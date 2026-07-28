@@ -486,6 +486,7 @@ def derive_split(dataset_root: Path, split: str, args: argparse.Namespace) -> di
                 view_mode=(source_record.get("meta") or {}).get("view_mode"),
                 incoming_trace_point_spacing_px=args.trace_spacing_px,
                 incoming_intersections_full_polygon=True,
+                raw_lane_overlay=bool((source_record.get("meta") or {}).get("raw_lane_overlay", False)),
             )
             write_jsonl_item(out_handle, derived)
             meta_row = merge_meta_row(base_meta_row, derived)

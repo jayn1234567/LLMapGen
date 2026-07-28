@@ -92,6 +92,7 @@ class RawSample:
     intersection_geojson: Path
     image_tiff: Path
     mask_tiff: Path
+    raw_lane_tiff: Path
 
 
 def write_json(path: Path, payload):
@@ -173,6 +174,7 @@ def required_paths(root: Path) -> RawSample:
         ),
         image_tiff=root / "inter_patch_tif" / "0_inter.tif",
         mask_tiff=root / "patch_tif" / "0_edit_poly.tif",
+        raw_lane_tiff=root / "patch_tif" / "0_lane.tif",
     )
 
 
@@ -253,6 +255,8 @@ def required_archive_member(member: tarfile.TarInfo) -> bool:
     if len(lowered) >= 2 and lowered[-2:] == ("inter_patch_tif", "0_inter.tif"):
         return True
     if len(lowered) >= 2 and lowered[-2:] == ("patch_tif", "0_edit_poly.tif"):
+        return True
+    if len(lowered) >= 2 and lowered[-2:] == ("patch_tif", "0_lane.tif"):
         return True
     if len(lowered) >= 2 and lowered[-2] == "label_check_crop" and lowered[-1].endswith(".geojson"):
         return True
@@ -560,7 +564,37 @@ def split_samples(samples, train_ratio: float, eval_ratio: float, eval_count: in
     return train_samples, eval_samples, test_samples
 
 
-def read_masked_image(image_path: Path, mask_path: Path):
+def apply_raw_lane_overlay(
+    image: np.ndarray,
+    raw_lane: np.ndarray,
+    threshold: float = 0.0,
+    value: int = 255,
+) -> np.ndarray:
+    if raw_lane.ndim == 2:
+        raw_lane = raw_lane[np.newaxis, :, :]
+    if raw_lane.shape[-2:] != image.shape[-2:]:
+        raise ValueError(
+            f"raw lane shape {raw_lane.shape[-2:]} does not match image shape {image.shape[-2:]}"
+        )
+    lane_mask = (raw_lane > threshold).any(axis=0)
+    if not lane_mask.any():
+        return image
+    output = image.copy()
+    if output.shape[0] >= 3:
+        output[:3, lane_mask] = value
+    else:
+        output[:, lane_mask] = value
+    return output
+
+
+def read_masked_image(
+    image_path: Path,
+    mask_path: Path,
+    raw_lane_path: Path | None = None,
+    raw_lane_overlay: bool = False,
+    require_raw_lane: bool = False,
+    raw_lane_threshold: float = 0.0,
+):
     with rasterio.open(image_path) as src:
         image = src.read()
         meta = src.meta.copy()
@@ -570,6 +604,14 @@ def read_masked_image(image_path: Path, mask_path: Path):
         mask = src.read()
     mask_any = (mask > 0).any(axis=0, keepdims=True)
     image = np.where(mask_any, image, 0)
+    if raw_lane_overlay:
+        if raw_lane_path is None or not raw_lane_path.exists():
+            if require_raw_lane:
+                raise FileNotFoundError(f"raw lane TIFF not found: {raw_lane_path}")
+        else:
+            with rasterio.open(raw_lane_path) as src:
+                raw_lane = src.read()
+            image = apply_raw_lane_overlay(image, raw_lane, threshold=raw_lane_threshold)
     return image, meta, transform, crs
 
 
@@ -1423,7 +1465,7 @@ def sort_target_lines(lines, patch_size, boundary_tol):
 def make_prompt(include_intersections: bool, incoming_traces, incoming_intersections=None, phase="a",
                 coord_mode: str = COORD_MODE_NORM1000, coord_range: int = DEFAULT_COORD_RANGE,
                 patch_size: int = 256, context_size=None, incoming_trace_point_spacing_px=None,
-                incoming_intersections_full_polygon: bool = False):
+                incoming_intersections_full_polygon: bool = False, raw_lane_overlay: bool = False):
     context_size = patch_size if context_size is None else int(context_size)
     target_roi = centered_target_roi(patch_size, context_size)
     trace_json = json.dumps(incoming_traces, ensure_ascii=False, separators=(",", ":"))
@@ -1452,6 +1494,12 @@ def make_prompt(include_intersections: bool, incoming_traces, incoming_intersect
         ])
     else:
         parts.append(coord_description(coord_mode, coord_range, patch_size))
+    if raw_lane_overlay:
+        parts.append(
+            "The image also contains a white raw-lane overlay predicted by a camera-based small model. "
+            "Use this overlay as a noisy geometric hint only; do not copy it blindly when it conflicts "
+            "with the visible BEV evidence or the required road-map schema."
+        )
     parts.extend([
         "",
         'Return only valid JSON in the form {"lines":[...]} with no extra explanation.',
@@ -1506,7 +1554,8 @@ def make_prompt(include_intersections: bool, incoming_traces, incoming_intersect
 
 def build_sft_record(row, patch_size, include_intersections, phase, coord_mode=COORD_MODE_NORM1000,
                      coord_range=DEFAULT_COORD_RANGE, context_size=None, view_mode=None,
-                     incoming_trace_point_spacing_px=None, incoming_intersections_full_polygon: bool = False):
+                     incoming_trace_point_spacing_px=None, incoming_intersections_full_polygon: bool = False,
+                     raw_lane_overlay: bool = False):
     coord_mode = normalize_coord_mode(coord_mode)
     context_size = patch_size if context_size is None else int(context_size)
     target_roi = centered_target_roi(patch_size, context_size)
@@ -1535,6 +1584,7 @@ def build_sft_record(row, patch_size, include_intersections, phase, coord_mode=C
         context_size=context_size,
         incoming_trace_point_spacing_px=incoming_trace_point_spacing_px,
         incoming_intersections_full_polygon=incoming_intersections_full_polygon,
+        raw_lane_overlay=raw_lane_overlay,
     )
     meta = dict(row["meta"])
     meta.update({
@@ -1560,6 +1610,9 @@ def build_sft_record(row, patch_size, include_intersections, phase, coord_mode=C
         meta["incoming_trace_point_count"] = 3
     if incoming_intersections_full_polygon:
         meta["incoming_intersections_full_polygon"] = True
+    if raw_lane_overlay:
+        meta["raw_lane_overlay"] = True
+        meta["raw_lane_overlay_source"] = "patch_tif/0_lane.tif"
     if include_intersections:
         meta["intersection_hint_source_train"] = "gt_left_top_neighbors" if phase == "b" else "none"
     target_text = json.dumps({"lines": target_lines}, ensure_ascii=False, separators=(",", ":"))
@@ -1598,7 +1651,14 @@ def process_sample(
     write_images: bool = True,
     max_empty_ratio=-1.0,
 ):
-    image_arr, meta, transform, crs = read_masked_image(sample.image_tiff, sample.mask_tiff)
+    image_arr, meta, transform, crs = read_masked_image(
+        sample.image_tiff,
+        sample.mask_tiff,
+        sample.raw_lane_tiff,
+        raw_lane_overlay=bool(getattr(args, "raw_lane_overlay", False)),
+        require_raw_lane=bool(getattr(args, "require_raw_lane", False)),
+        raw_lane_threshold=float(getattr(args, "raw_lane_threshold", 0.0)),
+    )
     image_arr, original_image_size = pad_image_to_patch_grid(image_arr, args.patch_size)
     lines = load_line_geometries(sample.lane_geojson, crs, transform, args.simplify_tolerance)
     intersections = []
@@ -1676,6 +1736,8 @@ def process_sample(
             "coord_system": f"patch_local_{args.patch_size}",
             "task_mode": "state_update_centerline_intersection" if include_intersections else "state_update_centerline",
             "raw_sample_root": str(sample.root),
+            "raw_lane_overlay": bool(getattr(args, "raw_lane_overlay", False)),
+            "raw_lane_overlay_source": "patch_tif/0_lane.tif" if bool(getattr(args, "raw_lane_overlay", False)) else "none",
         }
         rows.append({
             "id": patch_id,

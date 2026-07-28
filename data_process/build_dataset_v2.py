@@ -590,10 +590,17 @@ def write_jsonl_item(handle, payload):
     handle.write(json.dumps(payload, ensure_ascii=False, separators=(",", ":")) + "\n")
 
 
-def write_images_for_rows(sample, rows, variant_specs, patch_size, png_compress_level, skip_existing):
+def write_images_for_rows(sample, rows, variant_specs, patch_size, png_compress_level, skip_existing, args=None):
     if not rows:
         return
-    image_arr, _, _, _ = read_masked_image(sample.image_tiff, sample.mask_tiff)
+    image_arr, _, _, _ = read_masked_image(
+        sample.image_tiff,
+        sample.mask_tiff,
+        sample.raw_lane_tiff,
+        raw_lane_overlay=bool(getattr(args, "raw_lane_overlay", False)),
+        require_raw_lane=bool(getattr(args, "require_raw_lane", False)),
+        raw_lane_threshold=float(getattr(args, "raw_lane_threshold", 0.0)),
+    )
     image_arr, _ = pad_image_to_patch_grid(image_arr, patch_size)
     for row in rows:
         x0 = int(row["meta"]["x0"])
@@ -647,6 +654,7 @@ def materialize_split(samples, split_name, selected_counts, variant_specs, sourc
                 args.patch_size,
                 args.png_compress_level,
                 args.skip_existing_images,
+                args,
             )
             unique_image_count += len(rows)
             for row in rows:
@@ -668,6 +676,7 @@ def materialize_split(samples, split_name, selected_counts, variant_specs, sourc
                         coord_range=args.coord_range,
                         context_size=spec["context_size"],
                         view_mode=spec["view_mode"],
+                        raw_lane_overlay=bool(getattr(args, "raw_lane_overlay", False)),
                     )
                     record_semantic_counts = semantic_sft_record_counts(
                         sft, strict=True, require_prompt=True
@@ -728,6 +737,17 @@ def parse_args(argv=None):
     parser.add_argument("--max-intersections-per-side", type=int, default=8)
     parser.add_argument("--png-compress-level", type=int, choices=range(0, 10), default=4)
     parser.add_argument("--skip-existing-images", action="store_true")
+    parser.add_argument(
+        "--raw-lane-overlay",
+        action="store_true",
+        help="Overlay patch_tif/0_lane.tif as white raw-lane pixels on top of every input image.",
+    )
+    parser.add_argument(
+        "--require-raw-lane",
+        action="store_true",
+        help="Fail if --raw-lane-overlay is enabled and patch_tif/0_lane.tif is missing.",
+    )
+    parser.add_argument("--raw-lane-threshold", type=float, default=0.0)
     parser.add_argument("--keep-archives", action="store_true")
     parser.add_argument(
         "--archive-workers",
@@ -922,6 +942,13 @@ def main(argv=None):
             "very_hard_score_threshold": DIFFICULTY_ARGS.very_hard_score_threshold,
         },
         "baseline": "jiangjihua_tiff_geojson_mask_and_clipping",
+        "input_overlay": {
+            "raw_lane_overlay": bool(args.raw_lane_overlay),
+            "raw_lane_overlay_source": "patch_tif/0_lane.tif" if args.raw_lane_overlay else "none",
+            "raw_lane_threshold": args.raw_lane_threshold,
+            "require_raw_lane": bool(args.require_raw_lane),
+            "overlay_style": "white_pixels_on_rgb_channels",
+        },
         "task": "lane_intersection",
         "phase": "phase_a",
         "coord_mode": args.coord_mode,

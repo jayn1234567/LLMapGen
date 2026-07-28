@@ -78,6 +78,22 @@ VARIANT_SPECS = {
         "view_mode": "context512_roi256",
         "task_mode": "lane_intersection",
     },
+    "rawlane_local256_550k": {
+        "image_size": (256, 256),
+        "target_size": 256,
+        "context_image_size": 256,
+        "target_roi_in_image": [0, 0, 256, 256],
+        "view_mode": "local256",
+        "task_mode": "lane_intersection",
+    },
+    "rawlane_context512_roi256_550k": {
+        "image_size": (512, 512),
+        "target_size": 256,
+        "context_image_size": 512,
+        "target_roi_in_image": [128, 128, 384, 384],
+        "view_mode": "context512_roi256",
+        "task_mode": "lane_intersection",
+    },
     "context512_roi256v3": {
         "image_size": (512, 512),
         "target_size": 256,
@@ -723,6 +739,9 @@ def audit(args: argparse.Namespace) -> tuple[dict[str, Any], ErrorCollector]:
                     "normalized 0-1000",
                     f"{target_size}x{target_size}",
                 ]
+                input_overlay = build_metadata.get("input_overlay") or {}
+                if input_overlay.get("raw_lane_overlay") or input_overlay.get("raw_lane_overlay_source") == "patch_tif/0_lane.tif":
+                    required_texts.append("raw-lane overlay")
                 if intersection_prompt_task:
                     required_texts.extend([PROMPT_MARKER, "centerlines only"])
                 for required_text in required_texts:

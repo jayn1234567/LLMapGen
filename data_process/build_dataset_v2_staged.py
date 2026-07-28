@@ -81,6 +81,17 @@ def add_geometry_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--max-traces-per-side", type=int, default=8)
     parser.add_argument("--max-intersections-per-side", type=int, default=8)
     parser.add_argument("--png-compress-level", type=int, choices=range(0, 10), default=4)
+    parser.add_argument(
+        "--raw-lane-overlay",
+        action="store_true",
+        help="Overlay patch_tif/0_lane.tif as white raw-lane pixels on top of every input image.",
+    )
+    parser.add_argument(
+        "--require-raw-lane",
+        action="store_true",
+        help="Fail if --raw-lane-overlay is enabled and patch_tif/0_lane.tif is missing.",
+    )
+    parser.add_argument("--raw-lane-threshold", type=float, default=0.0)
 
 
 def parse_args(argv=None):
@@ -266,6 +277,14 @@ def stage_source(args) -> None:
             raise ValueError(
                 f"completed stage uses eval_test_stride={marker.get('eval_test_stride')}, expected {args.stride}"
             )
+        if bool(marker.get("raw_lane_overlay", False)) != bool(args.raw_lane_overlay):
+            raise ValueError(
+                f"completed stage raw_lane_overlay={marker.get('raw_lane_overlay')}, expected {args.raw_lane_overlay}"
+            )
+        if bool(marker.get("require_raw_lane", False)) != bool(args.require_raw_lane):
+            raise ValueError(
+                f"completed stage require_raw_lane={marker.get('require_raw_lane')}, expected {args.require_raw_lane}"
+            )
         marker_filter = marker.get("train_candidate_filter") or {}
         if str(marker_filter.get("sha256") or "") != candidate_filter_sha256:
             raise ValueError(
@@ -331,6 +350,7 @@ def stage_source(args) -> None:
                 args.patch_size,
                 args.png_compress_level,
                 skip_existing=args.resume,
+                args=args,
             )
             for row in rows:
                 metrics = classify_row(row, args.patch_size, args.coord_range)
@@ -368,6 +388,7 @@ def stage_source(args) -> None:
                         coord_range=args.coord_range,
                         context_size=spec["context_size"],
                         view_mode=spec["view_mode"],
+                        raw_lane_overlay=bool(getattr(args, "raw_lane_overlay", False)),
                     )
                     semantic_sft_record_counts(sft, strict=True, require_prompt=True)
                     write_jsonl_item(sft_writers[variant][split], sft)
@@ -397,6 +418,10 @@ def stage_source(args) -> None:
         "eval_test_stride": args.stride,
         "target_patch_size": args.patch_size,
         "context_size": args.context_size,
+        "raw_lane_overlay": bool(args.raw_lane_overlay),
+        "raw_lane_overlay_source": "patch_tif/0_lane.tif" if args.raw_lane_overlay else "none",
+        "raw_lane_threshold": args.raw_lane_threshold,
+        "require_raw_lane": bool(args.require_raw_lane),
         "variants": variants,
         "split_record_counts": dict(split_counts),
         "difficulty_counts": dict(difficulty_counts),
@@ -698,6 +723,9 @@ def finalize_stages(args) -> None:
     output_root.mkdir(parents=True, exist_ok=True)
     stage_roots = discover_stage_roots(staging_root)
     variants = selected_variants(args.views, patch_size, context_size)
+    raw_lane_overlay_values = set()
+    require_raw_lane_values = set()
+    raw_lane_threshold_values = set()
     for stage_root in stage_roots:
         summary = json.loads((stage_root / STAGE_MARKER).read_text(encoding="utf-8"))
         if summary.get("stage_version") != STAGE_VERSION or not summary.get("semantic_validation_passed"):
@@ -715,6 +743,14 @@ def finalize_stages(args) -> None:
             raise ValueError(
                 f"stage target_patch_size={stage_patch_size}, expected {patch_size}: {stage_root}"
             )
+        raw_lane_overlay_values.add(bool(summary.get("raw_lane_overlay", False)))
+        require_raw_lane_values.add(bool(summary.get("require_raw_lane", False)))
+        raw_lane_threshold_values.add(float(summary.get("raw_lane_threshold", 0.0)))
+    if len(raw_lane_overlay_values) > 1 or len(require_raw_lane_values) > 1 or len(raw_lane_threshold_values) > 1:
+        raise ValueError("cannot finalize a mixture of raw-lane and non-raw-lane source stages")
+    raw_lane_overlay = next(iter(raw_lane_overlay_values), False)
+    require_raw_lane = next(iter(require_raw_lane_values), False)
+    raw_lane_threshold = next(iter(raw_lane_threshold_values), 0.0)
 
     sample_owner, collisions = build_sample_owners(stage_roots, args.duplicate_policy)
     raw_sample_ids_by_split = collect_owned_raw_sample_splits(stage_roots, sample_owner)
@@ -809,6 +845,13 @@ def finalize_stages(args) -> None:
         "coord_range": args.coord_range,
         "target_patch_size": patch_size,
         "context_size": context_size,
+        "input_overlay": {
+            "raw_lane_overlay": raw_lane_overlay,
+            "raw_lane_overlay_source": "patch_tif/0_lane.tif" if raw_lane_overlay else "none",
+            "raw_lane_threshold": raw_lane_threshold,
+            "require_raw_lane": require_raw_lane,
+            "overlay_style": "white_pixels_on_rgb_channels",
+        },
     }
     write_json(output_root / "build_summary.json", summary)
     write_json(

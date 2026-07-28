@@ -49,6 +49,17 @@ def parse_args(argv=None):
     parser.add_argument("--train-stride", type=int, default=128)
     parser.add_argument("--secondary-local256-train-stride", type=int, default=128)
     parser.add_argument(
+        "--raw-lane-overlay",
+        action="store_true",
+        help="Overlay patch_tif/0_lane.tif as white raw-lane pixels on top of every input image.",
+    )
+    parser.add_argument(
+        "--require-raw-lane",
+        action="store_true",
+        help="Fail if --raw-lane-overlay is enabled and patch_tif/0_lane.tif is missing.",
+    )
+    parser.add_argument("--raw-lane-threshold", type=float, default=0.0)
+    parser.add_argument(
         "--difficulty-ratios",
         default="empty=0,easy=0.30,medium=0.33,hard=0.27,very_hard=0.10",
     )
@@ -101,6 +112,9 @@ def completed_stage(
     expected_patch_size: int | None = None,
     expected_train_stride: int | None = None,
     expected_eval_test_stride: int | None = None,
+    expected_raw_lane_overlay: bool | None = None,
+    expected_require_raw_lane: bool | None = None,
+    expected_raw_lane_threshold: float | None = None,
 ) -> bool:
     marker = stage_root / "stage_complete.json"
     if not marker.is_file():
@@ -130,6 +144,12 @@ def completed_stage(
     if complete and expected_eval_test_stride is not None:
         marker_eval_test_stride = payload.get("eval_test_stride")
         complete = marker_eval_test_stride is not None and int(marker_eval_test_stride) == expected_eval_test_stride
+    if complete and expected_raw_lane_overlay is not None:
+        complete = bool(payload.get("raw_lane_overlay", False)) == bool(expected_raw_lane_overlay)
+    if complete and expected_require_raw_lane is not None:
+        complete = bool(payload.get("require_raw_lane", False)) == bool(expected_require_raw_lane)
+    if complete and expected_raw_lane_threshold is not None:
+        complete = abs(float(payload.get("raw_lane_threshold", 0.0)) - float(expected_raw_lane_threshold)) <= 1e-12
     return complete
 
 
@@ -192,6 +212,11 @@ def build_stage_command(
         "--archive-workers", args.archive_workers,
         "--selective-archive-extract",
     ]
+    if args.raw_lane_overlay:
+        command.append("--raw-lane-overlay")
+    if args.require_raw_lane:
+        command.append("--require-raw-lane")
+    command.extend(["--raw-lane-threshold", args.raw_lane_threshold])
     if args.resume:
         command.append("--resume")
     if args.keep_archives:
@@ -244,6 +269,11 @@ def main(argv=None):
     print(f"[dataset-v2-stream] sources:        {len(sources)}", flush=True)
     print(f"[dataset-v2-stream] views:          {args.views}", flush=True)
     print(f"[dataset-v2-stream] target patch:   {args.patch_size}", flush=True)
+    print(
+        f"[dataset-v2-stream] raw lane:       overlay={args.raw_lane_overlay} "
+        f"require={args.require_raw_lane} threshold={args.raw_lane_threshold}",
+        flush=True,
+    )
     if secondary_staging_root is not None:
         print(f"[dataset-v2-stream] local256 stage: {secondary_staging_root}", flush=True)
         print(
@@ -276,6 +306,9 @@ def main(argv=None):
             args.patch_size,
             args.train_stride,
             eval_test_stride,
+            args.raw_lane_overlay,
+            args.require_raw_lane,
+            args.raw_lane_threshold,
         ):
             print(
                 f"[dataset-v2-stream] stale stage lacks {STAGE_VERSION}; it must be rebuilt: {stage_root}",
@@ -293,6 +326,9 @@ def main(argv=None):
                 256,
                 args.secondary_local256_train_stride,
                 256,
+                args.raw_lane_overlay,
+                args.require_raw_lane,
+                args.raw_lane_threshold,
             )
         ):
             print(
@@ -309,6 +345,9 @@ def main(argv=None):
             args.patch_size,
             args.train_stride,
             eval_test_stride,
+            args.raw_lane_overlay,
+            args.require_raw_lane,
+            args.raw_lane_threshold,
         )
         secondary_complete = secondary_stage_root is None or (
             args.resume
@@ -319,6 +358,9 @@ def main(argv=None):
                 256,
                 args.secondary_local256_train_stride,
                 256,
+                args.raw_lane_overlay,
+                args.require_raw_lane,
+                args.raw_lane_threshold,
             )
         )
         if primary_complete and secondary_complete:
@@ -376,6 +418,9 @@ def main(argv=None):
                 args.patch_size,
                 args.train_stride,
                 eval_test_stride,
+                args.raw_lane_overlay,
+                args.require_raw_lane,
+                args.raw_lane_threshold,
             )
             if not primary_complete:
                 raise RuntimeError(f"source stage validation failed: {stage_root}")
@@ -407,6 +452,9 @@ def main(argv=None):
                 256,
                 args.secondary_local256_train_stride,
                 256,
+                args.raw_lane_overlay,
+                args.require_raw_lane,
+                args.raw_lane_threshold,
             )
             if not secondary_complete:
                 raise RuntimeError(

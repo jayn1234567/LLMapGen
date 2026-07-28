@@ -3,12 +3,15 @@ import tempfile
 import unittest
 from pathlib import Path
 
+import numpy as np
+
 from data_process.build_dataset_v2 import (
     empty_candidate_pools,
     parse_ratio_spec,
     select_balanced_candidates,
 )
 from data_process.difficulty_profiles import LOCAL512_PROFILE, ROI256_PROFILE, classify_metrics
+from data_process.state_update_dataset_common import apply_raw_lane_overlay, make_prompt
 from scripts.tools.build_rc_dataset_v3_balanced_windows import (
     DIFFICULTY_RATIOS,
     expected_counts,
@@ -137,6 +140,29 @@ class DatasetV3BalancedBuilderTest(unittest.TestCase):
             }), encoding="utf-8")
             with self.assertRaisesRegex(ValueError, "very_hard"):
                 verify_audit_capacity(root, 200000)
+
+    def test_raw_lane_overlay_sets_white_hint_pixels(self):
+        image = np.zeros((3, 4, 4), dtype=np.uint8)
+        image[:] = 12
+        raw_lane = np.zeros((1, 4, 4), dtype=np.uint8)
+        raw_lane[0, 1, 2] = 255
+        overlaid = apply_raw_lane_overlay(image, raw_lane, threshold=0)
+        self.assertEqual(overlaid[:, 1, 2].tolist(), [255, 255, 255])
+        self.assertEqual(overlaid[:, 0, 0].tolist(), [12, 12, 12])
+
+    def test_raw_lane_prompt_mentions_noisy_overlay(self):
+        prompt = make_prompt(
+            include_intersections=True,
+            incoming_traces=[],
+            incoming_intersections=[],
+            coord_mode="norm1000",
+            coord_range=1000,
+            patch_size=256,
+            context_size=512,
+            raw_lane_overlay=True,
+        )
+        self.assertIn("raw-lane overlay", prompt)
+        self.assertIn("noisy geometric hint", prompt)
 
 
 if __name__ == "__main__":

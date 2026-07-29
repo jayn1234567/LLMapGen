@@ -132,3 +132,42 @@ D:\data\fulldata_rawlane\packages_rawlane\rawlane_context512_roi256_550k.tar
 
 Use a fresh `work-root` or rebuild old staging roots, because old selective
 extraction runs may not have extracted `patch_tif/0_lane.tif`.
+
+## Final 200k Training Assets
+
+The DI recipes consume the already selected 200k packages directly. They do
+not resample the records on a DI worker:
+
+| Difficulty | Records |
+|---|---:|
+| easy | 60,000 |
+| medium | 66,000 |
+| hard | 54,000 |
+| very_hard | 20,000 |
+
+```text
+local256:
+obs://yw-ads-training-2-gy1/data/external/personal/h58801830/jn/data/local256_200k_rawlane/local256_200k.tar
+
+context512_roi256:
+obs://yw-ads-training-2-gy1/data/external/personal/h58801830/jn/data/context512_roi256_200k_rawlane/context512_roi256_200k.tar
+```
+
+Each launcher requires exactly 200,000 non-empty JSONL records, validates the
+Raw-Lane overlay metadata, image size, norm1000 coordinates, semantic type
+schema, and the Raw-Lane prompt before downloading model assets.
+
+Both recipes use original DINOv2-L, CapRL-Qwen3VL-4B, no DeepStack,
+full-parameter SFT, global batch size 128, and 8 epochs.
+
+DI entry for local256:
+
+```bash
+bash scripts/npu/train/train_sft_stage_a_lane_intersection_datasetv2_rawlane_local256_200k_stratified_original_dinov2_caprl4b_nodeepstack_npu.sh
+```
+
+DI entry for context512 with center ROI256 supervision:
+
+```bash
+bash scripts/npu/train/train_sft_stage_a_lane_intersection_datasetv2_rawlane_context512_roi256_200k_stratified_original_dinov2_caprl4b_nodeepstack_npu.sh
+```

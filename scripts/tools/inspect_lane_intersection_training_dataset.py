@@ -42,6 +42,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--require-intersection-type-fields", action="store_true")
     parser.add_argument("--forbid-intersection-subtype-field", action="store_true")
     parser.add_argument("--require-taxonomy-prompt", action="store_true")
+    parser.add_argument(
+        "--required-prompt-text",
+        action="append",
+        default=[],
+        help="Case-insensitive text that must appear in every human prompt; repeat as needed.",
+    )
     parser.add_argument("--representative-sample-limit", type=int, default=32)
     parser.add_argument("--preview-chars", type=int, default=1600)
     parser.add_argument("--print-representative-samples", action="store_true")
@@ -334,6 +340,7 @@ def inspect_split(
         "prompt_mentions_lane_type": 0,
         "prompt_mentions_intersection_type": 0,
         "prompt_mentions_intersection_subtype": 0,
+        "required_prompt_text_counts": Counter(),
         "coordinate_pairs": 0,
         "coordinate_min": math.inf,
         "coordinate_max": -math.inf,
@@ -382,6 +389,10 @@ def inspect_split(
             stats["prompt_mentions_intersection_type"] += 1
         if "intersectionsubtype" in normalized_key(human_text):
             stats["prompt_mentions_intersection_subtype"] += 1
+        for required_text in args.required_prompt_text:
+            normalized_required_text = str(required_text).strip().lower()
+            if normalized_required_text and normalized_required_text in human_text:
+                stats["required_prompt_text_counts"][normalized_required_text] += 1
 
         assistant_text = conversation_text(record, ASSISTANT_ROLES)
         payload: Any = None
@@ -652,6 +663,16 @@ def build_failures(report: dict[str, Any], args: argparse.Namespace) -> list[str
                     f"{split}: only {stats['prompt_mentions_intersection_subtype']} of "
                     f"{stats['samples']} prompts mention intersectionsubtype"
                 )
+        for required_text in args.required_prompt_text:
+            normalized_required_text = str(required_text).strip().lower()
+            if not normalized_required_text:
+                continue
+            matched = stats["required_prompt_text_counts"].get(normalized_required_text, 0)
+            if matched != stats["samples"]:
+                failures.append(
+                    f"{split}: only {matched} of {stats['samples']} prompts contain "
+                    f"required text {required_text!r}"
+                )
 
     if args.require_intersection_type_field or args.require_intersection_type_fields:
         train_report = splits.get("train", {})
@@ -694,6 +715,7 @@ def main() -> None:
             "allowed_intersection_types": args.allowed_intersection_type,
             "allowed_intersection_pairs": args.allowed_intersection_pair,
             "require_taxonomy_prompt": args.require_taxonomy_prompt,
+            "required_prompt_text": args.required_prompt_text,
         },
         "splits": {},
     }

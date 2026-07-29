@@ -205,6 +205,73 @@ class TypeCleanLaneIntersectionPreparationTest(unittest.TestCase):
             )
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
+    def test_strict_inspection_requires_custom_prompt_text(self):
+        required_text = "white lane overlay predicted by a PV camera model"
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            phase_root = root / "raw" / "phase_a"
+            phase_root.mkdir(parents=True)
+            record = self.make_record()
+            for split in ("train", "eval"):
+                (phase_root / f"{split}.jsonl").write_text(
+                    json.dumps(record) + "\n", encoding="utf-8"
+                )
+            convert_dataset(
+                root / "raw",
+                root / "normalized",
+                "phase_a",
+                ["train", "eval"],
+                True,
+                0,
+            )
+
+            command = [
+                sys.executable,
+                "scripts/tools/inspect_lane_intersection_training_dataset.py",
+                "--dataset-root",
+                str(root / "normalized"),
+                "--image-root",
+                str(root / "raw"),
+                "--phase",
+                "phase_a",
+                "--splits",
+                "train",
+                "eval",
+                "--image-checks-per-split",
+                "0",
+                "--required-prompt-text",
+                required_text,
+                "--strict",
+            ]
+            missing_result = subprocess.run(
+                command,
+                cwd=Path(__file__).resolve().parents[1],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertNotEqual(missing_result.returncode, 0)
+            self.assertIn("required text", missing_result.stdout + missing_result.stderr)
+
+            for split in ("train", "eval"):
+                path = root / "normalized" / "phase_a" / f"{split}.jsonl"
+                normalized_record = json.loads(path.read_text(encoding="utf-8"))
+                normalized_record["conversations"][0]["value"] += f"\n{required_text}."
+                path.write_text(json.dumps(normalized_record) + "\n", encoding="utf-8")
+
+            passing_result = subprocess.run(
+                command,
+                cwd=Path(__file__).resolve().parents[1],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+        self.assertEqual(
+            passing_result.returncode,
+            0,
+            passing_result.stdout + passing_result.stderr,
+        )
+
     def test_unknown_intersection_pair_fails_instead_of_guessing(self):
         record = self.make_record()
         target = json.loads(record["conversations"][1]["value"])

@@ -58,7 +58,7 @@ def parse_args() -> argparse.Namespace:
         default=PROMPT_PROFILE_CURRENT,
         help="Prompt schema expected by the checkpoint being evaluated.",
     )
-    parser.add_argument("--black-ratio-threshold", type=float, default=0.98)
+    parser.add_argument("--black-ratio-threshold", type=float, default=1.0)
     parser.add_argument(
         "--include-intersections",
         action=argparse.BooleanOptionalAction,
@@ -314,7 +314,7 @@ def prepare_dataset(args: argparse.Namespace) -> dict[str, Any]:
                     x0 = col * target_size
                     target = padded[y0 : y0 + target_size, x0 : x0 + target_size]
                     ratio = black_ratio(target)
-                    if ratio > args.black_ratio_threshold:
+                    if ratio >= args.black_ratio_threshold:
                         skipped_black += 1
                         continue
                     if margin:
@@ -378,6 +378,7 @@ def prepare_dataset(args: argparse.Namespace) -> dict[str, Any]:
         "coord_range": int(args.coord_range),
         "prompt_profile": getattr(args, "prompt_profile", PROMPT_PROFILE_CURRENT),
         "black_ratio_threshold": float(args.black_ratio_threshold),
+        "black_ratio_comparison": ">=",
         "tif_count": len(tif_paths),
         "patch_count": kept,
         "skipped_black": skipped_black,

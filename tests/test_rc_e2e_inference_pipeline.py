@@ -92,6 +92,46 @@ def test_prepare_local256_550k_v1_dataset(tmp_path):
     assert Image.open(output_root / record["image"]).size == (256, 256)
 
 
+def test_prepare_context_dataset_threshold_one_skips_only_fully_black_target(tmp_path):
+    input_root = tmp_path / "raw"
+    tif_dir = (
+        input_root
+        / "scene_black_filter"
+        / "rc_one_patch_release"
+        / "center_line_v2"
+        / "inter_patch_tif"
+    )
+    tif_dir.mkdir(parents=True)
+    image = np.zeros((256, 512, 3), dtype=np.uint8)
+    image[0, 256] = 1
+    Image.fromarray(image).save(tif_dir / "0_inter.tif")
+
+    output_root = tmp_path / "prepared"
+    summary = prepare_dataset(
+        SimpleNamespace(
+            input_root=str(input_root),
+            output_root=str(output_root),
+            view_mode="context512_roi256",
+            target_size=256,
+            context_size=512,
+            stride=256,
+            coord_range=1000,
+            prompt_profile="current",
+            black_ratio_threshold=1.0,
+            include_intersections=True,
+            max_tifs=0,
+            max_patches=0,
+        )
+    )
+
+    assert summary["black_ratio_threshold"] == 1.0
+    assert summary["black_ratio_comparison"] == ">="
+    assert summary["skipped_black"] == 1
+    assert summary["patch_count"] == 1
+    record = json.loads((output_root / "infer.jsonl").read_text(encoding="utf-8"))
+    assert record["meta"]["col"] == 1
+
+
 def test_convert_original_crop_manifest_keeps_images_and_adds_norm1000_metadata(tmp_path):
     output_root = tmp_path / "original_crop"
     image_path = output_root / "images" / "scene_001" / "0_inter" / "2_3.png"

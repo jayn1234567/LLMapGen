@@ -16,6 +16,7 @@ from typing import Any
 from scripts.tools.prepare_rc_e2e_inference_dataset import (
     PROMPT_PROFILE_LOCAL256_550K_V1,
     VIEW_LOCAL256,
+    VIEW_LOCAL512,
     dataset_v2_prompt,
 )
 
@@ -56,8 +57,8 @@ def convert_manifest(
 ) -> dict[str, Any]:
     manifest_path = Path(manifest_json).resolve()
     root = Path(output_root).resolve()
-    if patch_size != 256:
-        raise ValueError("The original RC E2E crop experiment requires patch_size=256.")
+    if patch_size not in {256, 512}:
+        raise ValueError("The original RC E2E crop experiment supports patch_size 256 or 512.")
     if coord_range != 1000:
         raise ValueError("checkpoint-34376 expects coord_range=1000.")
     if not 0.0 <= black_ratio_threshold <= 1.0:
@@ -67,8 +68,9 @@ def convert_manifest(
     if not isinstance(manifest, list) or not manifest:
         raise ValueError(f"Original crop manifest is empty or invalid: {manifest_path}")
 
+    view_mode = VIEW_LOCAL256 if patch_size == 256 else VIEW_LOCAL512
     prompt = dataset_v2_prompt(
-        view_mode=VIEW_LOCAL256,
+        view_mode=view_mode,
         target_size=patch_size,
         context_size=patch_size,
         coord_range=coord_range,
@@ -115,7 +117,7 @@ def convert_manifest(
                     "context_size": patch_size,
                     "input_image_size": patch_size,
                     "target_roi_in_image": [0, 0, patch_size, patch_size],
-                    "view_mode": VIEW_LOCAL256,
+                    "view_mode": view_mode,
                     "crop_backend": "original_rc_e2e_split_inter_tif_for_inference",
                     "crop_black_ratio_threshold": black_ratio_threshold,
                     "crop_black_ratio_comparison": ">=",
@@ -134,7 +136,7 @@ def convert_manifest(
         "patch_count": len(seen_ids),
         "patch_size": patch_size,
         "stride": patch_size,
-        "view_mode": VIEW_LOCAL256,
+        "view_mode": view_mode,
         "crop_backend": "original_rc_e2e_split_inter_tif_for_inference",
         "crop_black_ratio_threshold": black_ratio_threshold,
         "crop_black_ratio_comparison": ">=",

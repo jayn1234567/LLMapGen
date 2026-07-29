@@ -135,7 +135,7 @@ if is_true "${VALIDATE_RASTER_ALIGNMENT}"; then
   echo "[e2e] validating inter/lane TIF pixel-grid alignment"
   python scripts/tools/validate_rc_e2e_raster_alignment.py \
     --input-root "${E2E_RAW_ROOT}" \
-    --patch-size 256 \
+    --patch-size "${E2E_TARGET_SIZE}" \
     --output-json "${RASTER_ALIGNMENT_REPORT}"
 else
   echo "[e2e] WARNING: raster alignment validation is disabled"
@@ -236,7 +236,7 @@ torchrun \
   --image-folder "${E2E_DATASET_ROOT}" \
   --prompt-mode dataset \
   --map-task lane_intersection \
-  --patch-size 256 \
+  --patch-size "${E2E_TARGET_SIZE}" \
   --coord-mode auto \
   --coord-range 1000 \
   --conv-template conv_qwen_3_Dinov2_huawei \

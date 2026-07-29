@@ -37,6 +37,7 @@ RECREATE_E2E_ENV=${RECREATE_E2E_ENV:-False}
 REUSE_ENGINE_ARCHIVE=${REUSE_ENGINE_ARCHIVE:-True}
 REUSE_PREDICTIONS=${REUSE_PREDICTIONS:-True}
 UPLOAD_RESULTS=${UPLOAD_RESULTS:-True}
+PREDICTION_COORD_SCALE=${PREDICTION_COORD_SCALE:-0.256}
 
 is_true() {
   case "${1:-}" in
@@ -370,7 +371,7 @@ echo "[original-e2e] step 1/5: original infer_result_format.py"
 python "${FORMAT_SCRIPT}" \
   -i "${PREDICTION_INPUT_DIR}" \
   -o "${E2E_DATA_ROOT}" \
-  --scale 0.256 \
+  --scale "${PREDICTION_COORD_SCALE}" \
   2>&1 | tee "${RESULT_ROOT}/logs/01_infer_result_format.log"
 
 export PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION=upb

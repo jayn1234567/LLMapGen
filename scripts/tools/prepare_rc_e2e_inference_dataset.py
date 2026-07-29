@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
 """Build RC end-to-end inference JSONL from ``*_inter.tif`` images.
 
-The downstream RC parser identifies every target crop by ``row_col.json`` and
-always expects coordinates in a 256x256 local target frame. This tool can save
-either that local crop or a 512x512 context image centered on the same target
-crop without changing the downstream row/column identity.
+The downstream RC parser identifies every target crop by ``row_col.json``.
+This tool can save a complete local crop (256 or 512) or a 512x512 context
+image centered on a 256 target ROI without changing row/column identity.
 """
 
 from __future__ import annotations
@@ -20,6 +19,7 @@ from PIL import Image
 
 
 VIEW_LOCAL256 = "local256"
+VIEW_LOCAL512 = "local512"
 VIEW_CONTEXT512_ROI256 = "context512_roi256"
 PROMPT_PROFILE_CURRENT = "current"
 PROMPT_PROFILE_LOCAL256_550K_V1 = "local256_550k_v1"
@@ -45,7 +45,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output-root", required=True, help="Output root for images, infer.jsonl, and manifest.")
     parser.add_argument(
         "--view-mode",
-        choices=(VIEW_LOCAL256, VIEW_CONTEXT512_ROI256),
+        choices=(VIEW_LOCAL256, VIEW_LOCAL512, VIEW_CONTEXT512_ROI256),
         default=VIEW_CONTEXT512_ROI256,
     )
     parser.add_argument("--target-size", type=int, default=256)

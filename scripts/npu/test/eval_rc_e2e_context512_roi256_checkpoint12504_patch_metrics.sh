@@ -27,6 +27,7 @@ BUFFER_SIZE=${BUFFER_SIZE:-1.0}
 MATCH_THRESHOLD=${MATCH_THRESHOLD:-0.33}
 IGNORE_LANE_TYPES=${IGNORE_LANE_TYPES:-3,4,22}
 REQUIRE_ALL=${REQUIRE_ALL:-True}
+PATCH_SIZE=${PATCH_SIZE:-256}
 
 is_true() {
   case "${1:-}" in
@@ -87,7 +88,7 @@ fi
 
 python scripts/tools/validate_rc_e2e_raster_alignment.py \
   --input-root "${E2E_RAW_ROOT}" \
-  --patch-size 256 \
+  --patch-size "${PATCH_SIZE}" \
   --output-json "${EVAL_ROOT}/raster_alignment_report.json"
 
 REQUIRE_FLAG=--require-all
@@ -102,7 +103,7 @@ python scripts/tools/evaluate_rc_e2e_patch_metrics.py \
   --output-eval-jsonl "${EVAL_JSONL}" \
   --baseline-name gt \
   --gt-crs EPSG:4326 \
-  --patch-size 256 \
+  --patch-size "${PATCH_SIZE}" \
   --coord-range 1000 \
   --meter-per-pixel "${METER_PER_PIXEL}" \
   --buffer-size "${BUFFER_SIZE}" \

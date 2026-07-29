@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Use the archived RC E2E project's own splitter to create plain 256x256
-# patches, then run checkpoint-34376 with its immutable local256-550k prompt.
+# Use the archived RC E2E project's own splitter to create plain local patches,
+# then run the matching checkpoint and prompt profile. Defaults preserve the
+# original local256 checkpoint-34376 experiment.
 
 SCRIPT_PATH=$(readlink -f "$0")
 SCRIPT_DIR=$(dirname "${SCRIPT_PATH}")
@@ -22,9 +23,14 @@ ORIGINAL_ENGINE_ARCHIVE=${ORIGINAL_ENGINE_ARCHIVE:-${ORIGINAL_ENGINE_CACHE}/rc_n
 ORIGINAL_ENGINE_EXTRACT_ROOT=${ORIGINAL_ENGINE_EXTRACT_ROOT:-${ORIGINAL_ENGINE_CACHE}/engine}
 
 ORIGINAL_BLACK_RATIO_THRESHOLD=${ORIGINAL_BLACK_RATIO_THRESHOLD:-1.0}
-E2E_DATASET_ROOT=${E2E_DATASET_ROOT:-${E2E_WORK_ROOT}/e2e_data_original_crop256_black1_local256_550k_v2}
+ORIGINAL_PATCH_SIZE=${ORIGINAL_PATCH_SIZE:-256}
+E2E_VIEW_MODE=${E2E_VIEW_MODE:-local256}
+E2E_PROMPT_PROFILE=${E2E_PROMPT_PROFILE:-local256_550k_v1}
+E2E_DATASET_TAG=${E2E_DATASET_TAG:-original_crop${ORIGINAL_PATCH_SIZE}_black1_${E2E_VIEW_MODE}_550k_v2}
+E2E_DATASET_ROOT=${E2E_DATASET_ROOT:-${E2E_WORK_ROOT}/e2e_data_${E2E_DATASET_TAG}}
 ORIGINAL_MANIFEST=${ORIGINAL_MANIFEST:-${E2E_DATASET_ROOT}/patch_manifest.json}
 REBUILD_E2E_DATASET=${REBUILD_E2E_DATASET:-False}
+BASE_INFERENCE_SCRIPT=${BASE_INFERENCE_SCRIPT:-${SCRIPT_DIR}/run_rc_e2e_local256_550k_checkpoint34376_npu.sh}
 
 is_true() {
   case "${1:-}" in
@@ -125,13 +131,14 @@ PY
 
 if is_true "${REBUILD_E2E_DATASET}" || [ ! -s "${E2E_DATASET_ROOT}/infer.jsonl" ]; then
   if is_true "${REBUILD_E2E_DATASET}" && [ -e "${E2E_DATASET_ROOT}" ]; then
-    python - "${E2E_DATASET_ROOT}" <<'PY'
+    python - "${E2E_DATASET_ROOT}" "${E2E_DATASET_TAG}" <<'PY'
 import shutil
 import sys
 from pathlib import Path
 target = Path(sys.argv[1]).resolve()
+expected_name = f"e2e_data_{sys.argv[2]}"
 allowed = Path("/cache/jn/e2e_eval").resolve()
-if allowed not in target.parents or target.name != "e2e_data_original_crop256_black1_local256_550k_v2":
+if allowed not in target.parents or target.name != expected_name:
     raise ValueError(f"Refusing to remove unexpected dataset path: {target}")
 shutil.rmtree(target)
 PY
@@ -157,30 +164,30 @@ if count != 1:
 destination.write_text(patched, encoding="utf-8")
 print(f"[original-crop256] runtime filter override: {replacement}")
 PY
-  echo "[original-crop256] running original splitter with black-only filter: ${RUNTIME_SPLITTER}"
+  echo "[original-crop] running original splitter with black-only filter: ${RUNTIME_SPLITTER}"
   python "${RUNTIME_SPLITTER}" \
     --input-root "${ORIGINAL_INPUT_ROOT}" \
     --output-images "${E2E_DATASET_ROOT}/images" \
     --output-json "${ORIGINAL_MANIFEST}" \
-    --patch-size 256 \
-    --stride 256
+    --patch-size "${ORIGINAL_PATCH_SIZE}" \
+    --stride "${ORIGINAL_PATCH_SIZE}"
 
   python scripts/tools/build_rc_e2e_jsonl_from_original_manifest.py \
     --manifest-json "${ORIGINAL_MANIFEST}" \
     --output-root "${E2E_DATASET_ROOT}" \
-    --prompt-profile local256_550k_v1 \
-    --patch-size 256 \
+    --prompt-profile "${E2E_PROMPT_PROFILE}" \
+    --patch-size "${ORIGINAL_PATCH_SIZE}" \
     --coord-range 1000 \
     --black-ratio-threshold "${ORIGINAL_BLACK_RATIO_THRESHOLD}"
 else
   echo "[original-crop256] reuse original-crop inference dataset: ${E2E_DATASET_ROOT}"
 fi
 
-export E2E_VIEW_MODE=local256
-export E2E_TARGET_SIZE=256
-export E2E_CONTEXT_SIZE=256
-export E2E_PROMPT_PROFILE=local256_550k_v1
+export E2E_VIEW_MODE
+export E2E_TARGET_SIZE=${ORIGINAL_PATCH_SIZE}
+export E2E_CONTEXT_SIZE=${ORIGINAL_PATCH_SIZE}
+export E2E_PROMPT_PROFILE
 export E2E_DATASET_ROOT
 export REBUILD_E2E_DATASET=False
 
-exec bash "${SCRIPT_DIR}/run_rc_e2e_local256_550k_checkpoint34376_npu.sh"
+exec bash "${BASE_INFERENCE_SCRIPT}"

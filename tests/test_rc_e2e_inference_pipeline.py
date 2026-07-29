@@ -127,3 +127,44 @@ def test_convert_original_crop_manifest_keeps_images_and_adds_norm1000_metadata(
     assert record["meta"]["x0"] == 768
     assert record["meta"]["y0"] == 512
     assert '"right_turn"' in record["conversations"][0]["value"]
+
+
+def test_convert_original_crop512_manifest_uses_full_local512_prompt(tmp_path):
+    output_root = tmp_path / "original_crop512"
+    image_path = output_root / "images" / "scene_512" / "0_inter" / "2_3.png"
+    image_path.parent.mkdir(parents=True)
+    Image.fromarray(np.full((512, 512, 3), 73, dtype=np.uint8)).save(image_path)
+    manifest_path = output_root / "patch_manifest.json"
+    manifest_path.write_text(
+        json.dumps(
+            [
+                {
+                    "id": "scene_512",
+                    "tif": "0_inter",
+                    "patch": "2_3.png",
+                    "row": 2,
+                    "col": 3,
+                    "image_path": image_path.as_posix(),
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    summary = convert_manifest(
+        manifest_path,
+        output_root,
+        prompt_profile="current",
+        patch_size=512,
+    )
+
+    assert summary["view_mode"] == "local512"
+    assert summary["patch_size"] == 512
+    record = json.loads((output_root / "infer.jsonl").read_text(encoding="utf-8"))
+    assert record["meta"]["target_roi_in_image"] == [0, 0, 512, 512]
+    assert record["meta"]["x0"] == 1536
+    assert record["meta"]["y0"] == 1024
+    prompt = record["conversations"][0]["value"]
+    assert "original 512x512 image patch" in prompt
+    assert '"waiting_area"' in prompt
+    assert '"intersection_type"' in prompt

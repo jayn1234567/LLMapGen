@@ -29,6 +29,7 @@ from data_process.state_update_dataset_common import (
     intersection_type_name,
     lane_type_name,
     normalize_lane_type_code,
+    required_archive_member,
     semantic_sft_record_counts,
 )
 from scripts.tools.build_rc_dataset_v2_from_obs import (
@@ -48,6 +49,65 @@ from scripts.tools.build_rc_dataset_v2_context512_windows import (
 
 
 class DatasetV2ContextTest(unittest.TestCase):
+    def test_pose_archive_member_and_two_image_record(self):
+        member = tarfile.TarInfo("sample/patch_tif/0_pose.tif")
+        member.size = 12
+        member.type = tarfile.REGTYPE
+        self.assertTrue(required_archive_member(member))
+
+        row = {
+            "id": "sample_x00000_y00000",
+            "image": "images/train/sample/sample_x00000_y00000.png",
+            "pose_image": "pose_images/train/sample/sample_x00000_y00000.png",
+            "incoming_traces": [],
+            "incoming_intersections": [],
+            "target_lines": [],
+            "meta": {"x0": 0, "y0": 0},
+        }
+        record = build_sft_record(
+            row,
+            256,
+            True,
+            "a",
+            raw_lane_overlay=True,
+            pose_second_image=True,
+        )
+        self.assertEqual(record["images"], [row["image"], row["pose_image"]])
+        prompt = record["conversations"][0]["value"]
+        self.assertEqual(prompt.count("<image>"), 2)
+        self.assertIn("historical vehicle-trajectory image", prompt)
+        self.assertEqual(
+            record["meta"]["input_image_roles"],
+            ["bev_road_structure", "historical_vehicle_trajectory"],
+        )
+
+    def test_streaming_stage_command_enables_pose_second_image(self):
+        args = parse_streaming_args([
+            "--work-root", "work",
+            "--raw-lane-overlay",
+            "--require-raw-lane",
+            "--pose-second-image",
+            "--pose-threshold", "3",
+        ])
+        command = [str(item) for item in build_stage_command(
+            args,
+            Path("raw/source"),
+            Path("stage/source"),
+            Path("raw"),
+            0,
+            "obs://bucket/source/",
+            256,
+            256,
+            256,
+            128,
+            None,
+            False,
+            "local",
+        )]
+        self.assertIn("--pose-second-image", command)
+        self.assertEqual(command[command.index("--pose-threshold") + 1], "3.0")
+        self.assertIn("--raw-lane-overlay", command)
+
     def test_dual_resolution_streaming_stage_command(self):
         args = parse_streaming_args([
             "--work-root", "work",

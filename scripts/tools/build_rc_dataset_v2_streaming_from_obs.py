@@ -60,6 +60,12 @@ def parse_args(argv=None):
     )
     parser.add_argument("--raw-lane-threshold", type=float, default=0.0)
     parser.add_argument(
+        "--pose-second-image",
+        action="store_true",
+        help="Add patch_tif/0_pose.tif as a separate second image for every sample.",
+    )
+    parser.add_argument("--pose-threshold", type=float, default=0.0)
+    parser.add_argument(
         "--difficulty-ratios",
         default="empty=0,easy=0.30,medium=0.33,hard=0.27,very_hard=0.10",
     )
@@ -115,6 +121,8 @@ def completed_stage(
     expected_raw_lane_overlay: bool | None = None,
     expected_require_raw_lane: bool | None = None,
     expected_raw_lane_threshold: float | None = None,
+    expected_pose_second_image: bool | None = None,
+    expected_pose_threshold: float | None = None,
 ) -> bool:
     marker = stage_root / "stage_complete.json"
     if not marker.is_file():
@@ -150,6 +158,10 @@ def completed_stage(
         complete = bool(payload.get("require_raw_lane", False)) == bool(expected_require_raw_lane)
     if complete and expected_raw_lane_threshold is not None:
         complete = abs(float(payload.get("raw_lane_threshold", 0.0)) - float(expected_raw_lane_threshold)) <= 1e-12
+    if complete and expected_pose_second_image is not None:
+        complete = bool(payload.get("pose_second_image", False)) == bool(expected_pose_second_image)
+    if complete and expected_pose_threshold is not None:
+        complete = abs(float(payload.get("pose_threshold", 0.0)) - float(expected_pose_threshold)) <= 1e-12
     return complete
 
 
@@ -217,6 +229,9 @@ def build_stage_command(
     if args.require_raw_lane:
         command.append("--require-raw-lane")
     command.extend(["--raw-lane-threshold", args.raw_lane_threshold])
+    if args.pose_second_image:
+        command.append("--pose-second-image")
+    command.extend(["--pose-threshold", args.pose_threshold])
     if args.resume:
         command.append("--resume")
     if args.keep_archives:
@@ -274,6 +289,11 @@ def main(argv=None):
         f"require={args.require_raw_lane} threshold={args.raw_lane_threshold}",
         flush=True,
     )
+    print(
+        f"[dataset-v2-stream] pose image:     second={args.pose_second_image} "
+        f"threshold={args.pose_threshold}",
+        flush=True,
+    )
     if secondary_staging_root is not None:
         print(f"[dataset-v2-stream] local256 stage: {secondary_staging_root}", flush=True)
         print(
@@ -309,6 +329,8 @@ def main(argv=None):
             args.raw_lane_overlay,
             args.require_raw_lane,
             args.raw_lane_threshold,
+            args.pose_second_image,
+            args.pose_threshold,
         ):
             print(
                 f"[dataset-v2-stream] stale stage lacks {STAGE_VERSION}; it must be rebuilt: {stage_root}",
@@ -329,6 +351,8 @@ def main(argv=None):
                 args.raw_lane_overlay,
                 args.require_raw_lane,
                 args.raw_lane_threshold,
+                args.pose_second_image,
+                args.pose_threshold,
             )
         ):
             print(
@@ -348,6 +372,8 @@ def main(argv=None):
             args.raw_lane_overlay,
             args.require_raw_lane,
             args.raw_lane_threshold,
+            args.pose_second_image,
+            args.pose_threshold,
         )
         secondary_complete = secondary_stage_root is None or (
             args.resume
@@ -361,6 +387,8 @@ def main(argv=None):
                 args.raw_lane_overlay,
                 args.require_raw_lane,
                 args.raw_lane_threshold,
+                args.pose_second_image,
+                args.pose_threshold,
             )
         )
         if primary_complete and secondary_complete:
@@ -421,6 +449,8 @@ def main(argv=None):
                 args.raw_lane_overlay,
                 args.require_raw_lane,
                 args.raw_lane_threshold,
+                args.pose_second_image,
+                args.pose_threshold,
             )
             if not primary_complete:
                 raise RuntimeError(f"source stage validation failed: {stage_root}")
@@ -455,6 +485,8 @@ def main(argv=None):
                 args.raw_lane_overlay,
                 args.require_raw_lane,
                 args.raw_lane_threshold,
+                args.pose_second_image,
+                args.pose_threshold,
             )
             if not secondary_complete:
                 raise RuntimeError(
@@ -481,6 +513,7 @@ def main(argv=None):
             "--intersection-target-ratio", args.intersection_target_ratio,
             "--difficulty-seed", args.difficulty_seed,
             "--duplicate-policy", args.duplicate_policy,
+            "--copy-mode", args.copy_mode,
         ]
         if args.resume:
             finalize_command.append("--resume")

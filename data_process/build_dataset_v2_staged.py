@@ -92,6 +92,12 @@ def add_geometry_args(parser: argparse.ArgumentParser) -> None:
         help="Fail if --raw-lane-overlay is enabled and patch_tif/0_lane.tif is missing.",
     )
     parser.add_argument("--raw-lane-threshold", type=float, default=0.0)
+    parser.add_argument(
+        "--pose-second-image",
+        action="store_true",
+        help="Add patch_tif/0_pose.tif as a separate second image for every sample.",
+    )
+    parser.add_argument("--pose-threshold", type=float, default=0.0)
 
 
 def parse_args(argv=None):
@@ -285,6 +291,15 @@ def stage_source(args) -> None:
             raise ValueError(
                 f"completed stage require_raw_lane={marker.get('require_raw_lane')}, expected {args.require_raw_lane}"
             )
+        if bool(marker.get("pose_second_image", False)) != bool(args.pose_second_image):
+            raise ValueError(
+                f"completed stage pose_second_image={marker.get('pose_second_image')}, "
+                f"expected {args.pose_second_image}"
+            )
+        if abs(float(marker.get("pose_threshold", 0.0)) - float(args.pose_threshold)) > 1e-12:
+            raise ValueError(
+                f"completed stage pose_threshold={marker.get('pose_threshold')}, expected {args.pose_threshold}"
+            )
         marker_filter = marker.get("train_candidate_filter") or {}
         if str(marker_filter.get("sha256") or "") != candidate_filter_sha256:
             raise ValueError(
@@ -389,6 +404,7 @@ def stage_source(args) -> None:
                         context_size=spec["context_size"],
                         view_mode=spec["view_mode"],
                         raw_lane_overlay=bool(getattr(args, "raw_lane_overlay", False)),
+                        pose_second_image=bool(getattr(args, "pose_second_image", False)),
                     )
                     semantic_sft_record_counts(sft, strict=True, require_prompt=True)
                     write_jsonl_item(sft_writers[variant][split], sft)
@@ -422,6 +438,9 @@ def stage_source(args) -> None:
         "raw_lane_overlay_source": "patch_tif/0_lane.tif" if args.raw_lane_overlay else "none",
         "raw_lane_threshold": args.raw_lane_threshold,
         "require_raw_lane": bool(args.require_raw_lane),
+        "pose_second_image": bool(args.pose_second_image),
+        "pose_image_source": "patch_tif/0_pose.tif" if args.pose_second_image else "none",
+        "pose_threshold": args.pose_threshold,
         "variants": variants,
         "split_record_counts": dict(split_counts),
         "difficulty_counts": dict(difficulty_counts),
@@ -677,15 +696,20 @@ def materialize_from_stages(
                         semantic_counts.update(
                             {f"{variant}:{key}": value for key, value in record_semantic_counts.items()}
                         )
-                        relative_image = Path(str(record["image"]))
-                        source_image = stage_root / "variants" / variant / relative_image
-                        destination_image = output_root / variant / relative_image
-                        used_mode = link_or_copy(source_image, destination_image, copy_mode, resume)
-                        link_modes[used_mode] += 1
+                        relative_images = record.get("images") or [record["image"]]
+                        if not isinstance(relative_images, list) or not relative_images:
+                            raise ValueError(f"record {patch_id} has invalid images={relative_images!r}")
+                        for relative in dict.fromkeys(str(item) for item in relative_images):
+                            relative_image = Path(relative)
+                            source_image = stage_root / "variants" / variant / relative_image
+                            destination_image = output_root / variant / relative_image
+                            used_mode = link_or_copy(source_image, destination_image, copy_mode, resume)
+                            link_modes[used_mode] += 1
                         write_jsonl_item(output_handles[variant][split], record)
                         write_jsonl_item(meta_handles[variant][split], {
                             "id": patch_id,
                             "image": record["image"],
+                            "images": relative_images,
                             "meta": record.get("meta", {}),
                             "difficulty": effective_difficulty,
                             "difficulty_score": effective_score,
@@ -726,6 +750,8 @@ def finalize_stages(args) -> None:
     raw_lane_overlay_values = set()
     require_raw_lane_values = set()
     raw_lane_threshold_values = set()
+    pose_second_image_values = set()
+    pose_threshold_values = set()
     for stage_root in stage_roots:
         summary = json.loads((stage_root / STAGE_MARKER).read_text(encoding="utf-8"))
         if summary.get("stage_version") != STAGE_VERSION or not summary.get("semantic_validation_passed"):
@@ -746,11 +772,21 @@ def finalize_stages(args) -> None:
         raw_lane_overlay_values.add(bool(summary.get("raw_lane_overlay", False)))
         require_raw_lane_values.add(bool(summary.get("require_raw_lane", False)))
         raw_lane_threshold_values.add(float(summary.get("raw_lane_threshold", 0.0)))
-    if len(raw_lane_overlay_values) > 1 or len(require_raw_lane_values) > 1 or len(raw_lane_threshold_values) > 1:
-        raise ValueError("cannot finalize a mixture of raw-lane and non-raw-lane source stages")
+        pose_second_image_values.add(bool(summary.get("pose_second_image", False)))
+        pose_threshold_values.add(float(summary.get("pose_threshold", 0.0)))
+    if (
+        len(raw_lane_overlay_values) > 1
+        or len(require_raw_lane_values) > 1
+        or len(raw_lane_threshold_values) > 1
+        or len(pose_second_image_values) > 1
+        or len(pose_threshold_values) > 1
+    ):
+        raise ValueError("cannot finalize source stages with mixed raw-lane/pose image settings")
     raw_lane_overlay = next(iter(raw_lane_overlay_values), False)
     require_raw_lane = next(iter(require_raw_lane_values), False)
     raw_lane_threshold = next(iter(raw_lane_threshold_values), 0.0)
+    pose_second_image = next(iter(pose_second_image_values), False)
+    pose_threshold = next(iter(pose_threshold_values), 0.0)
 
     sample_owner, collisions = build_sample_owners(stage_roots, args.duplicate_policy)
     raw_sample_ids_by_split = collect_owned_raw_sample_splits(stage_roots, sample_owner)
@@ -851,6 +887,17 @@ def finalize_stages(args) -> None:
             "raw_lane_threshold": raw_lane_threshold,
             "require_raw_lane": require_raw_lane,
             "overlay_style": "white_pixels_on_rgb_channels",
+        },
+        "multi_image_input": {
+            "enabled": pose_second_image,
+            "num_images_per_sample": 2 if pose_second_image else 1,
+            "image_roles": (
+                ["bev_road_structure", "historical_vehicle_trajectory"]
+                if pose_second_image else ["bev_road_structure"]
+            ),
+            "pose_image_source": "patch_tif/0_pose.tif" if pose_second_image else "none",
+            "pose_threshold": pose_threshold,
+            "pose_rendering": "white_positive_pixels_on_black_rgb",
         },
     }
     write_json(output_root / "build_summary.json", summary)

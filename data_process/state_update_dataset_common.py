@@ -66,6 +66,7 @@ ALLOWED_INTERSECTION_TYPES = frozenset({*INTERSECTION_TYPE_BY_SOURCE_PAIR.values
 IGNORED_LANE_TYPE_CODES = frozenset({3, 22})
 DEFAULT_ARCHIVE_WORKERS = 16
 ARCHIVE_EXTRACT_MARKER = ".archive_extract_complete.json"
+REQUIRED_ARCHIVE_MEMBER_VERSION = "rc_required_v2_with_pose"
 
 
 def require_geo_dependencies():
@@ -93,6 +94,7 @@ class RawSample:
     image_tiff: Path
     mask_tiff: Path
     raw_lane_tiff: Path
+    pose_tiff: Path
 
 
 def write_json(path: Path, payload):
@@ -175,6 +177,7 @@ def required_paths(root: Path) -> RawSample:
         image_tiff=root / "inter_patch_tif" / "0_inter.tif",
         mask_tiff=root / "patch_tif" / "0_edit_poly.tif",
         raw_lane_tiff=root / "patch_tif" / "0_lane.tif",
+        pose_tiff=root / "patch_tif" / "0_pose.tif",
     )
 
 
@@ -217,6 +220,7 @@ def write_archive_extract_marker(
                 "completed_at_unix": time.time(),
                 "adopted_existing_extraction": adopted_existing,
                 "extract_mode": extract_mode,
+                "required_member_version": REQUIRED_ARCHIVE_MEMBER_VERSION,
                 "extracted_files": extracted_files,
                 "extracted_bytes": extracted_bytes,
             },
@@ -239,7 +243,11 @@ def archive_extract_is_complete(archive_path: Path, extract_mode: str = "full") 
         )
         marker_mode = marker.get("extract_mode", "full")
         mode_matches = marker_mode == "full" or marker_mode == extract_mode
-        return signature_matches and mode_matches
+        member_version_matches = (
+            extract_mode != "required_only"
+            or marker.get("required_member_version") == REQUIRED_ARCHIVE_MEMBER_VERSION
+        )
+        return signature_matches and mode_matches and member_version_matches
     except (OSError, ValueError, TypeError, json.JSONDecodeError):
         return False
 
@@ -257,6 +265,8 @@ def required_archive_member(member: tarfile.TarInfo) -> bool:
     if len(lowered) >= 2 and lowered[-2:] == ("patch_tif", "0_edit_poly.tif"):
         return True
     if len(lowered) >= 2 and lowered[-2:] == ("patch_tif", "0_lane.tif"):
+        return True
+    if len(lowered) >= 2 and lowered[-2:] == ("patch_tif", "0_pose.tif"):
         return True
     if len(lowered) >= 2 and lowered[-2] == "label_check_crop" and lowered[-1].endswith(".geojson"):
         return True
@@ -614,6 +624,30 @@ def read_masked_image(
             raw_lane = np.where(mask_any, raw_lane, 0)
             image = apply_raw_lane_overlay(image, raw_lane, threshold=raw_lane_threshold)
     return image, meta, transform, crs
+
+
+def read_masked_binary_image(
+    image_path: Path,
+    mask_path: Path,
+    threshold: float = 0.0,
+) -> np.ndarray:
+    """Read a mask-like TIFF as a black RGB image with white positive pixels."""
+    if not image_path.is_file():
+        raise FileNotFoundError(f"auxiliary TIFF not found: {image_path}")
+    with rasterio.open(image_path) as src:
+        image = src.read()
+    with rasterio.open(mask_path) as src:
+        valid_mask = src.read()
+    if image.shape[-2:] != valid_mask.shape[-2:]:
+        raise ValueError(
+            f"auxiliary TIFF shape {image.shape[-2:]} does not match mask shape "
+            f"{valid_mask.shape[-2:]}: {image_path}"
+        )
+    positive = (image > threshold).any(axis=0)
+    valid = (valid_mask > 0).any(axis=0)
+    output = np.zeros((3, image.shape[-2], image.shape[-1]), dtype=np.uint8)
+    output[:, positive & valid] = 255
+    return output
 
 
 def image_chunk_to_pil(chunk: np.ndarray) -> Image.Image:
@@ -1466,14 +1500,23 @@ def sort_target_lines(lines, patch_size, boundary_tol):
 def make_prompt(include_intersections: bool, incoming_traces, incoming_intersections=None, phase="a",
                 coord_mode: str = COORD_MODE_NORM1000, coord_range: int = DEFAULT_COORD_RANGE,
                 patch_size: int = 256, context_size=None, incoming_trace_point_spacing_px=None,
-                incoming_intersections_full_polygon: bool = False, raw_lane_overlay: bool = False):
+                incoming_intersections_full_polygon: bool = False, raw_lane_overlay: bool = False,
+                pose_second_image: bool = False):
     context_size = patch_size if context_size is None else int(context_size)
     target_roi = centered_target_roi(patch_size, context_size)
     trace_json = json.dumps(incoming_traces, ensure_ascii=False, separators=(",", ":"))
-    parts = [
-        "<image>",
-        TASK_TEXT,
-    ]
+    parts = ["<image>"]
+    if pose_second_image:
+        parts.extend([
+            "<image>",
+            "The first image is the BEV road-structure image.",
+            (
+                "The second image is a historical vehicle-trajectory image: white lines are "
+                "historical vehicle trajectories on a black background. Use it as additional "
+                "evidence for road connectivity and driving direction."
+            ),
+        ])
+    parts.append(TASK_TEXT)
     if context_size > patch_size:
         if normalize_coord_mode(coord_mode) == COORD_MODE_NORM1000:
             context_coord_description = (
@@ -1554,7 +1597,7 @@ def make_prompt(include_intersections: bool, incoming_traces, incoming_intersect
 def build_sft_record(row, patch_size, include_intersections, phase, coord_mode=COORD_MODE_NORM1000,
                      coord_range=DEFAULT_COORD_RANGE, context_size=None, view_mode=None,
                      incoming_trace_point_spacing_px=None, incoming_intersections_full_polygon: bool = False,
-                     raw_lane_overlay: bool = False):
+                     raw_lane_overlay: bool = False, pose_second_image: bool = False):
     coord_mode = normalize_coord_mode(coord_mode)
     context_size = patch_size if context_size is None else int(context_size)
     target_roi = centered_target_roi(patch_size, context_size)
@@ -1584,6 +1627,7 @@ def build_sft_record(row, patch_size, include_intersections, phase, coord_mode=C
         incoming_trace_point_spacing_px=incoming_trace_point_spacing_px,
         incoming_intersections_full_polygon=incoming_intersections_full_polygon,
         raw_lane_overlay=raw_lane_overlay,
+        pose_second_image=pose_second_image,
     )
     meta = dict(row["meta"])
     meta.update({
@@ -1612,10 +1656,16 @@ def build_sft_record(row, patch_size, include_intersections, phase, coord_mode=C
     if raw_lane_overlay:
         meta["raw_lane_overlay"] = True
         meta["raw_lane_overlay_source"] = "patch_tif/0_lane.tif"
+    if pose_second_image:
+        pose_image = str(row.get("pose_image") or "")
+        if not pose_image:
+            raise ValueError(f"sample {row.get('id')} is missing pose_image")
+        meta["input_image_roles"] = ["bev_road_structure", "historical_vehicle_trajectory"]
+        meta["pose_image_source"] = "patch_tif/0_pose.tif"
     if include_intersections:
         meta["intersection_hint_source_train"] = "gt_left_top_neighbors" if phase == "b" else "none"
     target_text = json.dumps({"lines": target_lines}, ensure_ascii=False, separators=(",", ":"))
-    return {
+    record = {
         "id": row["id"],
         "image": row["image"],
         "meta": meta,
@@ -1624,6 +1674,9 @@ def build_sft_record(row, patch_size, include_intersections, phase, coord_mode=C
             {"from": "gpt", "value": target_text},
         ],
     }
+    if pose_second_image:
+        record["images"] = [row["image"], row["pose_image"]]
+    return record
 
 
 def target_has_lines(row):
@@ -1650,6 +1703,9 @@ def process_sample(
     write_images: bool = True,
     max_empty_ratio=-1.0,
 ):
+    pose_second_image = bool(getattr(args, "pose_second_image", False))
+    if pose_second_image and not sample.pose_tiff.is_file():
+        raise FileNotFoundError(f"pose TIFF not found: {sample.pose_tiff}")
     image_arr, meta, transform, crs = read_masked_image(
         sample.image_tiff,
         sample.mask_tiff,
@@ -1707,6 +1763,7 @@ def process_sample(
         y0 = row * args.stride
         patch_id = f"{sample.sample_id}_r{row:03d}_c{col:03d}"
         rel_image = Path("images") / split_name / sample.sample_id / f"{patch_id}.png"
+        rel_pose_image = Path("pose_images") / split_name / sample.sample_id / f"{patch_id}.png"
 
         incoming_traces = build_incoming_traces(
             patch_lines_by_rc, row, col, args.patch_size,
@@ -1738,7 +1795,7 @@ def process_sample(
             "raw_lane_overlay": bool(getattr(args, "raw_lane_overlay", False)),
             "raw_lane_overlay_source": "patch_tif/0_lane.tif" if bool(getattr(args, "raw_lane_overlay", False)) else "none",
         }
-        rows.append({
+        record = {
             "id": patch_id,
             "image": str(rel_image),
             "tile_id": sample.sample_id,
@@ -1750,10 +1807,23 @@ def process_sample(
             "target_lines": [public_line(line) for line in local_lines],
             "meta": meta_payload,
             **patch_source_meta[(row, col)],
-        })
+        }
+        if pose_second_image:
+            record["pose_image"] = str(rel_pose_image)
+            record["meta"]["pose_second_image"] = True
+            record["meta"]["pose_image_source"] = "patch_tif/0_pose.tif"
+        rows.append(record)
         patch_count += 1
     rows = cap_empty_rows(rows, max_empty_ratio)
     if write_images:
+        pose_arr = None
+        if pose_second_image:
+            pose_arr = read_masked_binary_image(
+                sample.pose_tiff,
+                sample.mask_tiff,
+                threshold=float(getattr(args, "pose_threshold", 0.0)),
+            )
+            pose_arr, _ = pad_image_to_patch_grid(pose_arr, args.patch_size)
         for row in rows:
             x0 = row["meta"]["x0"]
             y0 = row["meta"]["y0"]
@@ -1761,6 +1831,11 @@ def process_sample(
             out_image.parent.mkdir(parents=True, exist_ok=True)
             chunk = image_arr[:, y0:y0 + args.patch_size, x0:x0 + args.patch_size]
             image_chunk_to_pil(chunk).save(out_image)
+            if pose_arr is not None:
+                out_pose = output_root / row["pose_image"]
+                out_pose.parent.mkdir(parents=True, exist_ok=True)
+                pose_chunk = pose_arr[:, y0:y0 + args.patch_size, x0:x0 + args.patch_size]
+                image_chunk_to_pil(pose_chunk).save(out_pose)
     return rows
 
 
@@ -2002,6 +2077,8 @@ def build_dataset(include_intersections: bool, args):
                     phase,
                     coord_mode=args.coord_mode,
                     coord_range=args.coord_range,
+                    raw_lane_overlay=bool(getattr(args, "raw_lane_overlay", False)),
+                    pose_second_image=bool(getattr(args, "pose_second_image", False)),
                 )
                 for row in phase_rows
             ]

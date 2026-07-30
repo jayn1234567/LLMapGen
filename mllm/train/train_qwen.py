@@ -1613,8 +1613,10 @@ def preprocess_multimodal(
     for source in sources:
         for sentence in source:
             if DEFAULT_IMAGE_TOKEN in sentence['value']:
+                image_token_count = sentence['value'].count(DEFAULT_IMAGE_TOKEN)
                 sentence['value'] = sentence['value'].replace(DEFAULT_IMAGE_TOKEN, '').strip()
-                sentence['value'] = DEFAULT_IMAGE_TOKEN + '\n' + sentence['value']
+                image_prefix = (DEFAULT_IMAGE_TOKEN + '\n') * image_token_count
+                sentence['value'] = image_prefix + sentence['value']
                 sentence['value'] = sentence['value'].strip()
                 if "mmtag" in conversation_lib.default_conversation.version:
                     sentence['value'] = sentence['value'].replace(DEFAULT_IMAGE_TOKEN, '<Image>' + DEFAULT_IMAGE_TOKEN + '</Image>')
@@ -2214,11 +2216,26 @@ class LazySupervisedDataset(Dataset):
     def __len__(self):
         return len(self.list_data_dict)
 
+    @staticmethod
+    def _image_files(sample: dict) -> list[str]:
+        raw_images = sample.get("images")
+        if raw_images is None:
+            raw_images = sample.get("image")
+        if raw_images is None:
+            return []
+        if isinstance(raw_images, str):
+            raw_images = [raw_images]
+        if not isinstance(raw_images, list) or not raw_images:
+            raise ValueError(f"image/images must be a non-empty string or list: {raw_images!r}")
+        if not all(isinstance(item, str) and item.strip() for item in raw_images):
+            raise ValueError(f"image paths must be non-empty strings: {raw_images!r}")
+        return raw_images
+
     @property
     def lengths(self):
         length_list = []
         for sample in self.list_data_dict:
-            img_tokens = 128 if 'image' in sample else 0
+            img_tokens = 128 * len(self._image_files(sample))
             length_list.append(sum(len(conv['value'].split()) for conv in sample['conversations']) + img_tokens)
         return length_list
 
@@ -2227,7 +2244,7 @@ class LazySupervisedDataset(Dataset):
         length_list = []
         for sample in self.list_data_dict:
             cur_len = sum(len(conv['value'].split()) for conv in sample['conversations'])
-            cur_len = cur_len if 'image' in sample else -cur_len
+            cur_len = cur_len if self._image_files(sample) else -cur_len
             length_list.append(cur_len)
         return length_list
 
@@ -2246,46 +2263,78 @@ class LazySupervisedDataset(Dataset):
                 for conversation in source_conversations
             ]
 
-        if 'image' in sources[0]:
-            image_file = self.list_data_dict[i]['image']
+        image_files = self._image_files(self.list_data_dict[i])
+        if image_files:
             img_path_idx = self.list_data_dict[i]['img_path_idx']
             image_folder = self.data_args.image_folder[img_path_idx]
             processor = self.data_args.image_processor
-            image = Image.open(os.path.join(image_folder, image_file)).convert('RGB')
-            image_size = image.size
-            if self.data_args.image_aspect_ratio == 'pad':
-                def expand2square(pil_img, background_color):
-                    width, height = pil_img.size
-                    if width == height:
-                        return pil_img
-                    elif width > height:
-                        result = Image.new(pil_img.mode, (width, width), background_color)
-                        result.paste(pil_img, (0, (width - height) // 2))
-                        return result
-                    else:
-                        result = Image.new(pil_img.mode, (height, height), background_color)
-                        result.paste(pil_img, ((height - width) // 2, 0))
-                        return result
+            image_tensors = []
+            image_sizes = []
 
-                image = expand2square(image, tuple(int(x * 255) for x in processor.image_mean))
-                image = processor.preprocess(image, return_tensors='pt')['pixel_values'][0]
-            elif self.data_args.image_aspect_ratio == "anyres" or "anyres_max" in self.data_args.image_aspect_ratio:
-                image = process_anyres_image(image, self.data_args.image_processor, self.data_args.image_grid_pinpoints)
+            def expand2square(pil_img, background_color):
+                width, height = pil_img.size
+                if width == height:
+                    return pil_img
+                if width > height:
+                    result = Image.new(pil_img.mode, (width, width), background_color)
+                    result.paste(pil_img, (0, (width - height) // 2))
+                    return result
+                result = Image.new(pil_img.mode, (height, height), background_color)
+                result.paste(pil_img, ((height - width) // 2, 0))
+                return result
+
+            for image_file in image_files:
+                pil_image = Image.open(os.path.join(image_folder, image_file)).convert('RGB')
+                image_sizes.append(pil_image.size)
+                if self.data_args.image_aspect_ratio == 'pad':
+                    pil_image = expand2square(
+                        pil_image,
+                        tuple(int(x * 255) for x in processor.image_mean),
+                    )
+                    image_tensor = processor.preprocess(pil_image, return_tensors='pt')['pixel_values'][0]
+                elif self.data_args.image_aspect_ratio == "anyres" or "anyres_max" in self.data_args.image_aspect_ratio:
+                    image_tensor = process_anyres_image(
+                        pil_image,
+                        self.data_args.image_processor,
+                        self.data_args.image_grid_pinpoints,
+                    )
+                else:
+                    image_tensor = processor.preprocess(pil_image, return_tensors='pt')['pixel_values'][0]
+                image_tensors.append(image_tensor)
+            if len(image_tensors) == 1:
+                image = image_tensors[0]
+                image_size = image_sizes[0]
             else:
-                image = processor.preprocess(image, return_tensors='pt')['pixel_values'][0]
+                if not all(tensor.shape == image_tensors[0].shape for tensor in image_tensors):
+                    raise ValueError(
+                        f"multi-image sample {self.list_data_dict[i].get('id')} produced mismatched shapes: "
+                        f"{[tuple(tensor.shape) for tensor in image_tensors]}"
+                    )
+                image = torch.stack(image_tensors, dim=0)
+                image_size = image_sizes
+            prompt_image_tokens = sum(
+                str(sentence.get("value", "")).count(DEFAULT_IMAGE_TOKEN)
+                for conversation in source_conversations
+                for sentence in conversation
+            )
+            if prompt_image_tokens != len(image_files):
+                raise ValueError(
+                    f"sample {self.list_data_dict[i].get('id')} has {len(image_files)} images but "
+                    f"{prompt_image_tokens} <image> tokens"
+                )
             sources = preprocess_multimodal(source_conversations, self.data_args)
         else:
             sources = source_conversations
         data_dict = preprocess(
             sources,
             self.tokenizer,
-            has_image=('image' in self.list_data_dict[i]))
+            has_image=bool(image_files))
         if isinstance(i, int):
             data_dict = dict(input_ids=data_dict["input_ids"][0],
                              labels=data_dict["labels"][0])
 
         # image exist in the data
-        if 'image' in self.list_data_dict[i]:
+        if image_files:
             data_dict['image'] = image
             data_dict['image_size'] = image_size
         elif self.data_args.is_multimodal:

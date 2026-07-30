@@ -9,6 +9,8 @@ Related handoff documents:
 
 - `docs/DATASET_V2_RAWLANE_550K.md`: 550k `local256` and
   `context512_roi256` variants with PV-camera raw lane overlay.
+- `docs/DATASET_V2_RAWLANE_POSE_800K.md`: two-image 800k `local256` variant
+  with a raw-lane BEV image and a separate historical pose raster.
 
 ## Built-in sources
 

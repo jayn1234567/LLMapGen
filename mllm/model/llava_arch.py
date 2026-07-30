@@ -238,7 +238,8 @@ class LlavaMetaForCausalLM(ABC):
             return input_ids, position_ids, attention_mask, past_key_values, None, labels, None, None
 
         all_deepstack_features = None
-        if type(images) is list or images.ndim == 5:
+        is_multi_image_batch = torch.is_tensor(images) and images.ndim == 5
+        if type(images) is list or is_multi_image_batch:
             if type(images) is list:
                 images = [x.unsqueeze(0) if x.ndim == 3 else x for x in images]
             concat_images = torch.cat([image for image in images], dim=0)
@@ -247,12 +248,23 @@ class LlavaMetaForCausalLM(ABC):
                 image_features, all_deepstack_features = encoded
             else:
                 image_features = encoded
-            split_sizes = [image.shape[0] for image in images]
-            image_features = torch.split(image_features, split_sizes, dim=0)
+            if is_multi_image_batch:
+                # [B, N, C, H, W] contains N independent prompt images per sample.
+                # Keep one feature sequence per <image> token in batch-major order.
+                image_features = list(image_features.unbind(0))
+            else:
+                split_sizes = [image.shape[0] for image in images]
+                image_features = torch.split(image_features, split_sizes, dim=0)
             mm_patch_merge_type = getattr(self.config, 'mm_patch_merge_type', 'flat')
             image_aspect_ratio = getattr(self.config, 'image_aspect_ratio', 'square')
+            if is_multi_image_batch and mm_patch_merge_type != 'flat':
+                raise ValueError(
+                    "Multiple prompt images currently require mm_patch_merge_type='flat'; "
+                    f"got {mm_patch_merge_type!r}"
+                )
             if mm_patch_merge_type == 'flat':
-                image_features = [x.flatten(0, 1) for x in image_features]
+                if not is_multi_image_batch:
+                    image_features = [x.flatten(0, 1) for x in image_features]
             elif mm_patch_merge_type.startswith('spatial'):
                 new_image_features = []
                 for image_idx, image_feature in enumerate(image_features):

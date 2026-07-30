@@ -47,6 +47,7 @@ from data_process.state_update_dataset_common import (
     pad_image_to_patch_grid,
     process_sample,
     public_line_in_model_coord,
+    read_masked_binary_image,
     read_masked_image,
     require_geo_dependencies,
     semantic_sft_record_counts,
@@ -513,6 +514,8 @@ def annotate_translation_grid(row, patch_size):
     stable_patch_id = f"{tile_id}_x{x0:05d}_y{y0:05d}"
     row["id"] = stable_patch_id
     row["image"] = Path(row["image"]).with_name(f"{stable_patch_id}.png").as_posix()
+    if row.get("pose_image"):
+        row["pose_image"] = Path(row["pose_image"]).with_name(f"{stable_patch_id}.png").as_posix()
     row["meta"]["grid_patch_id"] = grid_patch_id
     row["meta"]["stable_patch_id"] = stable_patch_id
     row["meta"]["translation_offset"] = offset
@@ -602,22 +605,44 @@ def write_images_for_rows(sample, rows, variant_specs, patch_size, png_compress_
         raw_lane_threshold=float(getattr(args, "raw_lane_threshold", 0.0)),
     )
     image_arr, _ = pad_image_to_patch_grid(image_arr, patch_size)
+    pose_arr = None
+    if bool(getattr(args, "pose_second_image", False)):
+        pose_arr = read_masked_binary_image(
+            sample.pose_tiff,
+            sample.mask_tiff,
+            threshold=float(getattr(args, "pose_threshold", 0.0)),
+        )
+        pose_arr, _ = pad_image_to_patch_grid(pose_arr, patch_size)
     for row in rows:
         x0 = int(row["meta"]["x0"])
         y0 = int(row["meta"]["y0"])
         for spec in variant_specs.values():
             output_path = spec["root"] / row["image"]
-            if skip_existing and output_path.exists():
-                continue
-            output_path.parent.mkdir(parents=True, exist_ok=True)
-            chunk = extract_centered_context(
-                image_arr,
-                x0,
-                y0,
-                patch_size,
-                spec["context_size"],
-            )
-            image_chunk_to_pil(chunk).save(output_path, compress_level=png_compress_level)
+            if not (skip_existing and output_path.exists()):
+                output_path.parent.mkdir(parents=True, exist_ok=True)
+                chunk = extract_centered_context(
+                    image_arr,
+                    x0,
+                    y0,
+                    patch_size,
+                    spec["context_size"],
+                )
+                image_chunk_to_pil(chunk).save(output_path, compress_level=png_compress_level)
+            if pose_arr is not None:
+                pose_output_path = spec["root"] / row["pose_image"]
+                if not (skip_existing and pose_output_path.exists()):
+                    pose_output_path.parent.mkdir(parents=True, exist_ok=True)
+                    pose_chunk = extract_centered_context(
+                        pose_arr,
+                        x0,
+                        y0,
+                        patch_size,
+                        spec["context_size"],
+                    )
+                    image_chunk_to_pil(pose_chunk).save(
+                        pose_output_path,
+                        compress_level=png_compress_level,
+                    )
 
 
 def materialize_split(samples, split_name, selected_counts, variant_specs, source_by_id, args):
@@ -677,6 +702,7 @@ def materialize_split(samples, split_name, selected_counts, variant_specs, sourc
                         context_size=spec["context_size"],
                         view_mode=spec["view_mode"],
                         raw_lane_overlay=bool(getattr(args, "raw_lane_overlay", False)),
+                        pose_second_image=bool(getattr(args, "pose_second_image", False)),
                     )
                     record_semantic_counts = semantic_sft_record_counts(
                         sft, strict=True, require_prompt=True
@@ -748,6 +774,12 @@ def parse_args(argv=None):
         help="Fail if --raw-lane-overlay is enabled and patch_tif/0_lane.tif is missing.",
     )
     parser.add_argument("--raw-lane-threshold", type=float, default=0.0)
+    parser.add_argument(
+        "--pose-second-image",
+        action="store_true",
+        help="Add patch_tif/0_pose.tif as a separate second image for every sample.",
+    )
+    parser.add_argument("--pose-threshold", type=float, default=0.0)
     parser.add_argument("--keep-archives", action="store_true")
     parser.add_argument(
         "--archive-workers",

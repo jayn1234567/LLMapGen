@@ -43,6 +43,13 @@ E2E_USE_RAW_ROOT_DIRECTLY=${E2E_USE_RAW_ROOT_DIRECTLY:-False}
 E2E_DATA_SOURCE=${E2E_DATA_SOURCE:-local_archive}
 UPLOAD_RESULTS=${UPLOAD_RESULTS:-True}
 PREDICTION_COORD_SCALE=${PREDICTION_COORD_SCALE:-0.256}
+RUN_FORMAT_STEP=${RUN_FORMAT_STEP:-True}
+RUN_RULE_STEP=${RUN_RULE_STEP:-True}
+RUN_ALL_EVAL=${RUN_ALL_EVAL:-True}
+RUN_LOW_EVAL=${RUN_LOW_EVAL:-True}
+RUN_HIGH_EVAL=${RUN_HIGH_EVAL:-True}
+EVAL_SIMPLIFY_PATH=${EVAL_SIMPLIFY_PATH:-False}
+EVAL_VIS_FLAG=${EVAL_VIS_FLAG:-True}
 
 is_true() {
   case "${1:-}" in
@@ -430,20 +437,33 @@ echo "Results:          ${RESULT_ROOT}"
 echo "Result OBS:       ${RESULT_OBS_PATH}"
 echo "============================================================"
 
-echo "[original-e2e] step 1/5: original infer_result_format.py"
-python "${FORMAT_SCRIPT}" \
-  -i "${PREDICTION_INPUT_DIR}" \
-  -o "${E2E_DATA_ROOT}" \
-  --scale "${PREDICTION_COORD_SCALE}" \
-  2>&1 | tee "${RESULT_ROOT}/logs/01_infer_result_format.log"
+if is_true "${RUN_FORMAT_STEP}"; then
+  echo "[original-e2e] step 1/5: original infer_result_format.py"
+  python "${FORMAT_SCRIPT}" \
+    -i "${PREDICTION_INPUT_DIR}" \
+    -o "${E2E_DATA_ROOT}" \
+    --scale "${PREDICTION_COORD_SCALE}" \
+    2>&1 | tee "${RESULT_ROOT}/logs/01_infer_result_format.log"
+else
+  echo "[original-e2e] step 1/5: SKIP original infer_result_format.py"
+fi
 
 export PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION=upb
 export PYTHONPATH="${RULE_PROJECT}:${PYTHONPATH:-}"
-echo "[original-e2e] step 2/5: original center_lane_rule/test_rule.py"
-(
-  cd "${RULE_PROJECT}/center_lane_rule"
-  python "${RULE_ENTRY}" -i "${E2E_DATA_ROOT}" -n "${RULE_WORKERS}"
-) 2>&1 | tee "${RESULT_ROOT}/logs/02_center_lane_rule.log"
+if is_true "${RUN_RULE_STEP}"; then
+  echo "[original-e2e] step 2/5: original center_lane_rule/test_rule.py"
+  (
+    cd "${RULE_PROJECT}/center_lane_rule"
+    python "${RULE_ENTRY}" -i "${E2E_DATA_ROOT}" -n "${RULE_WORKERS}"
+  ) 2>&1 | tee "${RESULT_ROOT}/logs/02_center_lane_rule.log"
+else
+  OUTPUT_BASE_COUNT=$(find "${E2E_DATA_ROOT}" -mindepth 2 -maxdepth 2 -type d -name '*output_base' | wc -l)
+  if [ "${OUTPUT_BASE_COUNT}" -le 0 ]; then
+    echo "ERROR: RUN_RULE_STEP=False but no output_base directories exist below ${E2E_DATA_ROOT}" >&2
+    exit 2
+  fi
+  echo "[original-e2e] step 2/5: SKIP center_lane_rule; reuse ${OUTPUT_BASE_COUNT} output_base directories"
+fi
 
 CONFIG_BACKUP=${RUN_WORK_ROOT}/original_eval_config.yaml
 cp "${EVAL_CONFIG}" "${CONFIG_BACKUP}"
@@ -458,7 +478,7 @@ run_original_eval() {
   local low=$3
   local step=$4
   local output=${RESULT_ROOT}/eval_result_${mode}
-  python - "${EVAL_CONFIG}" "${E2E_DATA_ROOT}" "${output}" "${high}" "${low}" <<'PY'
+  python - "${EVAL_CONFIG}" "${E2E_DATA_ROOT}" "${output}" "${high}" "${low}" "${EVAL_SIMPLIFY_PATH}" "${EVAL_VIS_FLAG}" <<'PY'
 import sys
 from pathlib import Path
 import yaml
@@ -471,6 +491,8 @@ payload["query_name"] = "output_base"
 payload["outpath"] = sys.argv[3]
 payload["check_high_road"] = sys.argv[4].lower() == "true"
 payload["check_low_road"] = sys.argv[5].lower() == "true"
+payload["simplify_path"] = sys.argv[6].lower() == "true"
+payload["visFlag"] = sys.argv[7].lower() == "true"
 config_path.write_text(yaml.safe_dump(payload, allow_unicode=True, sort_keys=False), encoding="utf-8")
 print(f"[original-e2e] configured {config_path}: {payload}")
 PY
@@ -481,12 +503,24 @@ PY
   ) 2>&1 | tee "${RESULT_ROOT}/logs/${step}_eval_${mode}.log"
 }
 
-echo "[original-e2e] step 3/5: original E2E_EVAL all roads"
-run_original_eval all True True 03
-echo "[original-e2e] step 4/5: original E2E_EVAL low roads"
-run_original_eval low False True 04
-echo "[original-e2e] step 5/5: original E2E_EVAL high roads"
-run_original_eval high True False 05
+if is_true "${RUN_ALL_EVAL}"; then
+  echo "[original-e2e] step 3/5: original E2E_EVAL all roads"
+  run_original_eval all True True 03
+else
+  echo "[original-e2e] step 3/5: SKIP all-roads evaluation"
+fi
+if is_true "${RUN_LOW_EVAL}"; then
+  echo "[original-e2e] step 4/5: original E2E_EVAL low roads"
+  run_original_eval low False True 04
+else
+  echo "[original-e2e] step 4/5: SKIP low-roads evaluation"
+fi
+if is_true "${RUN_HIGH_EVAL}"; then
+  echo "[original-e2e] step 5/5: original E2E_EVAL high roads"
+  run_original_eval high True False 05
+else
+  echo "[original-e2e] step 5/5: SKIP high-roads evaluation"
+fi
 
 restore_config
 trap - EXIT

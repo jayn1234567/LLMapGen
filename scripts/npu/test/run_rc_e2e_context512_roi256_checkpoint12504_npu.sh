@@ -31,7 +31,12 @@ RASTER_ALIGNMENT_REPORT=${RASTER_ALIGNMENT_REPORT:-${E2E_WORK_ROOT}/raster_align
 CHECKPOINT_NAME=${CHECKPOINT_NAME:-checkpoint-12504}
 CHECKPOINT_OBS_PATH=${CHECKPOINT_OBS_PATH:-obs://yw-ads-model-training-gy1/model-dev/rc-nn/rc_base_model/2026/07/24/4f735c63da7a4f86829b26246143e219/output/ma-job-81341482-55b8-4c28-887b-0e4166776561/checkpoint-12504/}
 CHECKPOINT_CACHE_ROOT=${CHECKPOINT_CACHE_ROOT:-/cache/jn/checkpoints/context512_roi256_checkpoint12504}
+CHECKPOINT_POINTER_FILE=${CHECKPOINT_POINTER_FILE:-${CHECKPOINT_CACHE_ROOT}/.${CHECKPOINT_NAME}.validated_dir}
+if [ -z "${CHECKPOINT_DIR:-}" ] && [ -s "${CHECKPOINT_POINTER_FILE}" ]; then
+  CHECKPOINT_DIR=$(head -n 1 "${CHECKPOINT_POINTER_FILE}")
+fi
 CHECKPOINT_DIR=${CHECKPOINT_DIR:-${CHECKPOINT_CACHE_ROOT}/${CHECKPOINT_NAME}}
+REFRESH_CHECKPOINT=${REFRESH_CHECKPOINT:-False}
 
 VISION_TOWER=${VISION_TOWER:-/cache/jn/model/facebook_dinov2-large}
 VISION_TOWER_OBS_PATH=${VISION_TOWER_OBS_PATH:-obs://yw-ads-training-gy1/data/external/personal/h58801830/whu/jjh/checkpoints/facebook_dinov2-large}
@@ -68,6 +73,10 @@ has_checkpoint_weights() {
     [ -f "${root}/pytorch_model.bin.index.json" ] || \
     [ -f "${root}/adapter_model.safetensors" ] || \
     [ -f "${root}/adapter_model.bin" ]
+}
+
+validate_checkpoint_weights() {
+  python scripts/tools/validate_checkpoint_files.py --checkpoint-dir "$1"
 }
 
 if [ ! -f "${ACTIVATE_SCRIPT}" ]; then
@@ -196,7 +205,20 @@ if summary.get("prompt_profile") != expected_prompt:
 print(f"[e2e] dataset profile passed: input_raster={expected_raster} prompt={expected_prompt}")
 PY
 
-if ! has_checkpoint_weights "${CHECKPOINT_DIR}"; then
+checkpoint_ready=False
+if ! is_true "${REFRESH_CHECKPOINT}" && has_checkpoint_weights "${CHECKPOINT_DIR}"; then
+  echo "[e2e] validating cached checkpoint: ${CHECKPOINT_DIR}"
+  if validate_checkpoint_weights "${CHECKPOINT_DIR}"; then
+    checkpoint_ready=True
+  else
+    echo "WARNING: cached checkpoint is incomplete or corrupt; a fresh copy will be downloaded." >&2
+  fi
+fi
+
+if ! is_true "${checkpoint_ready}"; then
+  if [ -e "${CHECKPOINT_DIR}" ]; then
+    CHECKPOINT_DIR="${CHECKPOINT_CACHE_ROOT}/${CHECKPOINT_NAME}.validated_$(date -u +%Y%m%d_%H%M%S)"
+  fi
   echo "[e2e] downloading checkpoint ${CHECKPOINT_OBS_PATH} -> ${CHECKPOINT_DIR}"
   python - "${CHECKPOINT_OBS_PATH}" "${CHECKPOINT_DIR}" <<'PY'
 import sys
@@ -204,12 +226,16 @@ import moxing as mox
 
 mox.file.copy_parallel(sys.argv[1], sys.argv[2])
 PY
+  echo "[e2e] validating downloaded checkpoint: ${CHECKPOINT_DIR}"
+  if ! validate_checkpoint_weights "${CHECKPOINT_DIR}"; then
+    echo "ERROR: downloaded checkpoint is incomplete or corrupt: ${CHECKPOINT_DIR}" >&2
+    echo "ERROR: verify the checkpoint files in OBS before retrying: ${CHECKPOINT_OBS_PATH}" >&2
+    exit 2
+  fi
+  mkdir -p "${CHECKPOINT_CACHE_ROOT}"
+  printf '%s\n' "${CHECKPOINT_DIR}" > "${CHECKPOINT_POINTER_FILE}"
 else
-  echo "[e2e] reuse checkpoint: ${CHECKPOINT_DIR}"
-fi
-if ! has_checkpoint_weights "${CHECKPOINT_DIR}"; then
-  echo "ERROR: supported checkpoint weights were not found below ${CHECKPOINT_DIR}" >&2
-  exit 2
+  echo "[e2e] reuse validated checkpoint: ${CHECKPOINT_DIR}"
 fi
 
 if [ ! -f "${VISION_TOWER}/config.json" ]; then

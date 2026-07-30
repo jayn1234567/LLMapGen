@@ -136,24 +136,52 @@ def relabel_metadata(path: Path, source_variant: str, target_variant: str) -> No
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
 
-def completed_variant(root: Path, variant: str) -> bool:
+def variant_completion_errors(root: Path, variant: str) -> list[str]:
+    errors = []
     info_path = root / "dataset_info.json"
     train_path = root / "phase_a" / "train.jsonl"
-    if not info_path.is_file() or count_jsonl(train_path) != TARGET_SAMPLES:
-        return False
+    if not info_path.is_file():
+        errors.append(f"missing {info_path}")
+        return errors
+    train_count = count_jsonl(train_path)
+    if train_count != TARGET_SAMPLES:
+        errors.append(f"train count={train_count}, expected {TARGET_SAMPLES}: {train_path}")
     try:
         info = json.loads(info_path.read_text(encoding="utf-8"))
-    except json.JSONDecodeError:
-        return False
+    except json.JSONDecodeError as exc:
+        errors.append(f"invalid dataset_info.json: {exc}")
+        return errors
     overlay = info.get("input_overlay") or {}
     balance = info.get("balance") or {}
-    return all((
-        info.get("dataset_variant") == variant or info.get("active_variant") == variant,
-        overlay.get("raw_lane_overlay") is True,
-        overlay.get("raw_lane_overlay_source") == "patch_tif/0_lane.tif",
-        balance.get("final_bucket_counts") == expected_counts(),
-        abs(float(balance.get("actual_intersection_ratio", -1.0)) - INTERSECTION_RATIO) <= 1e-12,
-    ))
+    if info.get("dataset_variant") != variant and info.get("active_variant") != variant:
+        errors.append(
+            f"dataset_variant={info.get('dataset_variant')!r}, active_variant={info.get('active_variant')!r}, "
+            f"expected {variant!r}"
+        )
+    if overlay.get("raw_lane_overlay") is not True:
+        errors.append("input_overlay.raw_lane_overlay is not true")
+    if overlay.get("raw_lane_overlay_source") != "patch_tif/0_lane.tif":
+        errors.append(f"unexpected raw_lane_overlay_source={overlay.get('raw_lane_overlay_source')!r}")
+    bucket_counts = balance.get("final_bucket_counts")
+    if isinstance(bucket_counts, dict):
+        selected_total = sum(int(value) for value in bucket_counts.values())
+        if selected_total != TARGET_SAMPLES:
+            errors.append(f"final_bucket_counts total={selected_total}, expected {TARGET_SAMPLES}")
+    elif balance.get("selected_total") is not None and int(balance["selected_total"]) != TARGET_SAMPLES:
+        errors.append(f"selected_total={balance.get('selected_total')}, expected {TARGET_SAMPLES}")
+    try:
+        actual_intersection_ratio = float(balance.get("actual_intersection_ratio", -1.0))
+    except (TypeError, ValueError):
+        actual_intersection_ratio = -1.0
+    if abs(actual_intersection_ratio - INTERSECTION_RATIO) > 1e-8:
+        errors.append(
+            f"actual_intersection_ratio={actual_intersection_ratio}, expected {INTERSECTION_RATIO}"
+        )
+    return errors
+
+
+def completed_variant(root: Path, variant: str) -> bool:
+    return not variant_completion_errors(root, variant)
 
 
 def resolve_paths(args: argparse.Namespace) -> dict[str, Path]:
@@ -221,7 +249,8 @@ def rename_variant(output_root: Path, source_variant: str, target_variant: str, 
         print(f"[rawlane-dataset] reuse renamed variant: {target_root}", flush=True)
         return target_root
     if target_root.exists() and not completed_variant(target_root, target_variant):
-        raise ValueError(f"target variant exists but is incomplete: {target_root}")
+        errors = variant_completion_errors(target_root, target_variant)
+        raise ValueError(f"target variant exists but is incomplete: {target_root}; errors={errors}")
     if not target_root.exists():
         if not source_root.is_dir():
             raise FileNotFoundError(f"source variant not found: {source_root}")
@@ -229,7 +258,8 @@ def rename_variant(output_root: Path, source_variant: str, target_variant: str, 
     relabel_metadata(target_root / "dataset_info.json", source_variant, target_variant)
     relabel_metadata(output_root / "build_summary.json", source_variant, target_variant)
     if not completed_variant(target_root, target_variant):
-        raise ValueError(f"renamed rawlane variant failed metadata checks: {target_root}")
+        errors = variant_completion_errors(target_root, target_variant)
+        raise ValueError(f"renamed rawlane variant failed metadata checks: {target_root}; errors={errors}")
     return target_root
 
 

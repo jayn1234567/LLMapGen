@@ -37,6 +37,7 @@ INSTALL_ENGINE_DEPS=${INSTALL_ENGINE_DEPS:-True}
 RECREATE_E2E_ENV=${RECREATE_E2E_ENV:-False}
 REUSE_ENGINE_ARCHIVE=${REUSE_ENGINE_ARCHIVE:-True}
 REUSE_PREDICTIONS=${REUSE_PREDICTIONS:-True}
+RESET_PREPARED_E2E_DATA=${RESET_PREPARED_E2E_DATA:-False}
 UPLOAD_RESULTS=${UPLOAD_RESULTS:-True}
 PREDICTION_COORD_SCALE=${PREDICTION_COORD_SCALE:-0.256}
 
@@ -228,36 +229,15 @@ PY
 
 if has_extracted_e2e_data; then
   echo "[original-e2e] reuse extracted E2E data: ${E2E_RAW_ROOT}"
-  echo "[original-e2e] preparing clean E2E run data from local extraction: ${E2E_DATA_ROOT}"
-  python - "${E2E_RAW_ROOT}" "${E2E_DATA_ROOT}" <<'PY'
-import shutil
-import sys
-from pathlib import Path
-
-root = Path(sys.argv[1]).resolve()
-destination = Path(sys.argv[2]).resolve()
-run_parent = Path("/cache/jn/e2e_eval/original_pipeline_runs").resolve()
-if run_parent not in destination.parents:
-    raise ValueError(f"Refusing to prepare E2E data outside {run_parent}: {destination}")
-candidates = [root, *sorted(path for path in root.iterdir() if path.is_dir())]
-source = next(
-    (
-        candidate
-        for candidate in candidates
-        if any(
-            (child / "rc_one_patch_release").is_dir()
-            for child in candidate.iterdir()
-            if child.is_dir()
-        )
-    ),
-    None,
-)
-if source is None:
-    raise FileNotFoundError(f"Unable to resolve extracted E2E scene root below {root}")
-if destination.exists():
-    shutil.rmtree(destination)
-shutil.copytree(source, destination)
-PY
+  PREPARE_RESET_FLAG=()
+  if is_true "${RESET_PREPARED_E2E_DATA}"; then
+    PREPARE_RESET_FLAG=(--reset)
+  fi
+  python scripts/tools/prepare_rc_e2e_original_run_data.py \
+    --source-root "${E2E_RAW_ROOT}" \
+    --destination "${E2E_DATA_ROOT}" \
+    --allowed-root /cache/jn/e2e_eval/original_pipeline_runs \
+    "${PREPARE_RESET_FLAG[@]}"
 else
   if [ ! -s "${E2E_DATA_ARCHIVE}" ]; then
     echo "[original-e2e] downloading full E2E data ${E2E_DATA_OBS_PATH} -> ${E2E_DATA_ARCHIVE}"
@@ -270,24 +250,15 @@ PY
     echo "[original-e2e] reuse E2E archive: ${E2E_DATA_ARCHIVE}"
   fi
 
-  echo "[original-e2e] preparing clean E2E run data from archive: ${E2E_DATA_ROOT}"
-  python - "${E2E_DATA_ARCHIVE}" "${E2E_DATA_ROOT}" <<'PY'
-import shutil
-import sys
-import zipfile
-from pathlib import Path
-
-archive = Path(sys.argv[1]).resolve()
-destination = Path(sys.argv[2]).resolve()
-run_parent = Path("/cache/jn/e2e_eval/original_pipeline_runs").resolve()
-if run_parent not in destination.parents:
-    raise ValueError(f"Refusing to prepare E2E data outside {run_parent}: {destination}")
-if destination.exists():
-    shutil.rmtree(destination)
-destination.mkdir(parents=True)
-with zipfile.ZipFile(archive) as handle:
-    handle.extractall(destination)
-PY
+  PREPARE_RESET_FLAG=()
+  if is_true "${RESET_PREPARED_E2E_DATA}"; then
+    PREPARE_RESET_FLAG=(--reset)
+  fi
+  python scripts/tools/prepare_rc_e2e_original_run_data.py \
+    --archive "${E2E_DATA_ARCHIVE}" \
+    --destination "${E2E_DATA_ROOT}" \
+    --allowed-root /cache/jn/e2e_eval/original_pipeline_runs \
+    "${PREPARE_RESET_FLAG[@]}"
 fi
 
 if ! is_true "${REUSE_PREDICTIONS}" || ! find "${PREDICTION_CACHE}" -type f -name '*.json' -print -quit 2>/dev/null | grep -q .; then

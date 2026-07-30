@@ -39,6 +39,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--buffer-size", type=float, default=1.0)
     parser.add_argument("--match-threshold", type=float, default=0.33)
     parser.add_argument("--intersection-iou-threshold", type=float, default=0.5)
+    parser.add_argument(
+        "--map-task",
+        choices=("lane", "lane_intersection"),
+        default="lane_intersection",
+        help="Use lane for centerline-only models conditioned on oracle intersection geometry.",
+    )
     parser.add_argument("--allow-incomplete", action="store_true")
     parser.add_argument(
         "--image-folder",
@@ -155,7 +161,22 @@ def unavailable_type_metric(title: str, metric_name: str) -> dict[str, Any]:
 
 
 def build_eval(records: list[dict[str, Any]], args: argparse.Namespace) -> dict[str, Any]:
-    from infer_index.line_eval import evaluate_lane_intersection_records
+    from infer_index.line_eval import evaluate_lane_intersection_records, evaluate_records
+
+    if args.map_task == "lane":
+        lane_eval = evaluate_records(
+            records,
+            meter_per_pixel=args.meter_per_pixel,
+            buffer_size=args.buffer_size,
+            match_threshold=args.match_threshold,
+            categories="lane",
+            eval_name="Lane Evaluation Results",
+        )
+        return {
+            "centerline_eval": lane_eval,
+            "map_eval": {"lane": lane_eval},
+            "evaluation_policy": "centerline_only",
+        }
 
     map_eval = evaluate_lane_intersection_records(
         records,
@@ -205,7 +226,7 @@ def maybe_visualize_bucket(bucket_root: Path, args: argparse.Namespace) -> Path 
         "--output-dir",
         str(output_dir),
         "--map-task",
-        "lane_intersection",
+        args.map_task,
         "--eval-meter-per-pixel",
         str(args.meter_per_pixel),
         "--eval-buffer-size",
@@ -337,12 +358,15 @@ def main() -> None:
     report_path = output_root / "single_pass_split_report.json"
     report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
 
-    from infer_index.line_eval import print_lane_intersection_eval_tables
+    from infer_index.line_eval import print_eval_table, print_lane_intersection_eval_tables
 
     for difficulty in (*args.difficulties, "all_selected"):
         eval_payload = read_json(Path(report["eval_jsons"][difficulty]))
         print(f"\n[single-pass-eval] {difficulty}: {report['bucket_counts'].get(difficulty, len(combined_records))}")
-        print_lane_intersection_eval_tables(eval_payload["map_eval"])
+        if args.map_task == "lane":
+            print_eval_table(eval_payload["centerline_eval"])
+        else:
+            print_lane_intersection_eval_tables(eval_payload["map_eval"])
     print(json.dumps(report, ensure_ascii=False, indent=2), flush=True)
 
 

@@ -10,6 +10,7 @@ REPO_ROOT=$(readlink -f "${SCRIPT_DIR}/../../..")
 
 ENV_DIR=${ENV_DIR:-/home/ma-user/.conda/envs/mllm-infer-torch240-py311}
 ACTIVATE_SCRIPT=${ACTIVATE_SCRIPT:-${ENV_DIR}/activate_mllm_infer_torch240.sh}
+SKIP_ENV_ACTIVATION=${SKIP_ENV_ACTIVATION:-False}
 
 DATASET_OBS_PATH=${DATASET_OBS_PATH:-obs://yw-ads-training-2-gy1/data/external/personal/h58801830/jn/data/local256/local256.tar}
 DATASET_ARCHIVE_PATH=${DATASET_ARCHIVE_PATH:-/cache/jn/data/local256.tar}
@@ -21,6 +22,9 @@ FIXED_EVAL_ROOT=${FIXED_EVAL_ROOT:-/cache/jn/eval_sets/datasetv2_local256_550k_f
 FIXED_EVAL_COUNTS=${FIXED_EVAL_COUNTS:-easy=300,medium=300,hard=300,very_hard=200}
 FIXED_EVAL_SEED=${FIXED_EVAL_SEED:-42}
 REBUILD_FIXED_EVAL=${REBUILD_FIXED_EVAL:-False}
+EVAL_RECORD_TRANSFORM=${EVAL_RECORD_TRANSFORM:-none}
+TRANSFORMED_FIXED_EVAL_ROOT=${TRANSFORMED_FIXED_EVAL_ROOT:-${FIXED_EVAL_ROOT}_intersection_prompt}
+INFERENCE_MAP_TASK=${INFERENCE_MAP_TASK:-lane_intersection}
 
 VISION_TOWER=${VISION_TOWER:-/cache/jn/model/facebook_dinov2-large}
 CHECKPOINT_NAME=${CHECKPOINT_NAME:-checkpoint-34376}
@@ -36,12 +40,16 @@ METRICS_ROOT=${OUTPUT_ROOT}/${CHECKPOINT_NAME}/by_difficulty
 PATCH_SIZE=${PATCH_SIZE:-256}
 PER_DEVICE_INFER_BATCH_SIZE=${PER_DEVICE_INFER_BATCH_SIZE:-1}
 
-if [ ! -f "${ACTIVATE_SCRIPT}" ]; then
-  echo "ERROR: environment activation script not found: ${ACTIVATE_SCRIPT}" >&2
-  exit 2
+if [[ "${SKIP_ENV_ACTIVATION}" =~ ^(1|true|TRUE|True|yes|YES|on|ON)$ ]]; then
+  echo "[environment] using the already-active Python environment: $(command -v python)"
+else
+  if [ ! -f "${ACTIVATE_SCRIPT}" ]; then
+    echo "ERROR: environment activation script not found: ${ACTIVATE_SCRIPT}" >&2
+    exit 2
+  fi
+  # shellcheck disable=SC1090
+  source "${ACTIVATE_SCRIPT}"
 fi
-# shellcheck disable=SC1090
-source "${ACTIVATE_SCRIPT}"
 cd "${REPO_ROOT}"
 
 if [ -f /usr/local/Ascend/ascend-toolkit/set_env.sh ]; then
@@ -249,6 +257,26 @@ print(json.dumps(identity, ensure_ascii=False, indent=2))
 PY
 fi
 
+INFERENCE_EVAL_ROOT="${FIXED_EVAL_ROOT}"
+case "${EVAL_RECORD_TRANSFORM}" in
+  none)
+    ;;
+  intersection_prompt)
+    require_cache_path "${TRANSFORMED_FIXED_EVAL_ROOT}"
+    echo "[fixed-eval] converting the exact saved local512 set to oracle-intersection prompts"
+    python scripts/tools/convert_intersection_prompt_eval_set.py \
+      --input-root "${FIXED_EVAL_ROOT}" \
+      --output-root "${TRANSFORMED_FIXED_EVAL_ROOT}" \
+      --dataset-variant local512_intersection_prompt_fixed1100 \
+      --overwrite
+    INFERENCE_EVAL_ROOT="${TRANSFORMED_FIXED_EVAL_ROOT}"
+    ;;
+  *)
+    echo "ERROR: unsupported EVAL_RECORD_TRANSFORM=${EVAL_RECORD_TRANSFORM}" >&2
+    exit 2
+    ;;
+esac
+
 if ! has_checkpoint_weights "${CHECKPOINT_DIR}"; then
   mkdir -p "${CHECKPOINT_DIR}"
   echo "[checkpoint] downloading ${CHECKPOINT_OBS_PATH} -> ${CHECKPOINT_DIR}"
@@ -271,6 +299,9 @@ mkdir -p "${INFERENCE_ROOT}/json" "${METRICS_ROOT}"
 echo "============================================================"
 echo "Dataset root:      ${DATASET_ROOT}"
 echo "Fixed eval set:    ${FIXED_EVAL_ROOT}"
+echo "Inference eval:    ${INFERENCE_EVAL_ROOT}"
+echo "Record transform:  ${EVAL_RECORD_TRANSFORM}"
+echo "Map task:          ${INFERENCE_MAP_TASK}"
 echo "Fixed counts:      ${FIXED_EVAL_COUNTS} (total=1100)"
 echo "Fixed seed:        ${FIXED_EVAL_SEED}"
 echo "Checkpoint:        ${CHECKPOINT_DIR}"
@@ -302,11 +333,11 @@ torchrun \
   --mm_vision_tower_type dinov2 \
   --input_image_size 518 \
   --disable_deepstack \
-  --test-json "${FIXED_EVAL_ROOT}/all_selected.jsonl" \
+  --test-json "${INFERENCE_EVAL_ROOT}/all_selected.jsonl" \
   --num-samples 0 \
   --image-folder "${DATASET_ROOT}" \
   --prompt-mode dataset \
-  --map-task lane_intersection \
+  --map-task "${INFERENCE_MAP_TASK}" \
   --patch-size "${PATCH_SIZE}" \
   --coord-mode auto \
   --coord-range 1000 \
@@ -334,13 +365,14 @@ fi
 
 python scripts/tools/split_single_pass_eval_by_difficulty.py \
   --summary-json "${INFERENCE_ROOT}/summary.json" \
-  --split-root "${FIXED_EVAL_ROOT}" \
+  --split-root "${INFERENCE_EVAL_ROOT}" \
   --output-root "${METRICS_ROOT}" \
   --expected-counts "${FIXED_EVAL_COUNTS}" \
   --meter-per-pixel 0.2 \
   --buffer-size 1.0 \
   --match-threshold 0.33 \
   --intersection-iou-threshold 0.5 \
+  --map-task "${INFERENCE_MAP_TASK}" \
   "${SPLIT_VIS_ARGS[@]}"
 
 if [ "${VIS_LIMIT}" -gt 0 ]; then
@@ -348,7 +380,7 @@ if [ "${VIS_LIMIT}" -gt 0 ]; then
     --input-dir "${INFERENCE_ROOT}" \
     --image-folder "${DATASET_ROOT}" \
     --output-dir "${OUTPUT_ROOT}/${CHECKPOINT_NAME}/viz" \
-    --map-task lane_intersection \
+    --map-task "${INFERENCE_MAP_TASK}" \
     --max-samples "${VIS_LIMIT}" \
     --no-eval-centerline \
     --skip-whole-map-viz
@@ -357,6 +389,7 @@ fi
 echo "============================================================"
 echo "FIXED-1100 EVALUATION COMPLETE"
 echo "Saved eval set:     ${FIXED_EVAL_ROOT}"
+echo "Inference eval set: ${INFERENCE_EVAL_ROOT}"
 echo "Eval identity:      ${FIXED_EVAL_ROOT}/fixed_eval_identity.json"
 echo "Combined summary:   ${INFERENCE_ROOT}/summary.json"
 echo "Combined metrics:   ${METRICS_ROOT}/all_selected/eval.json"

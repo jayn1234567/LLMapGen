@@ -39,6 +39,7 @@ REUSE_ENGINE_ARCHIVE=${REUSE_ENGINE_ARCHIVE:-True}
 REUSE_PREDICTIONS=${REUSE_PREDICTIONS:-True}
 RESET_PREPARED_E2E_DATA=${RESET_PREPARED_E2E_DATA:-False}
 E2E_PREPARE_MODE=${E2E_PREPARE_MODE:-hardlink}
+E2E_USE_RAW_ROOT_DIRECTLY=${E2E_USE_RAW_ROOT_DIRECTLY:-False}
 UPLOAD_RESULTS=${UPLOAD_RESULTS:-True}
 PREDICTION_COORD_SCALE=${PREDICTION_COORD_SCALE:-0.256}
 
@@ -230,16 +231,22 @@ PY
 
 if has_extracted_e2e_data; then
   echo "[original-e2e] reuse extracted E2E data: ${E2E_RAW_ROOT}"
-  PREPARE_RESET_FLAG=()
-  if is_true "${RESET_PREPARED_E2E_DATA}"; then
-    PREPARE_RESET_FLAG=(--reset)
+  if is_true "${E2E_USE_RAW_ROOT_DIRECTLY}"; then
+    E2E_DATA_ROOT="${E2E_RAW_ROOT}"
+    echo "[original-e2e] DIRECT mode: original pipeline will read and write ${E2E_DATA_ROOT}"
+    echo "[original-e2e] WARNING: output_base and post-processing artifacts will modify the raw E2E tree"
+  else
+    PREPARE_RESET_FLAG=()
+    if is_true "${RESET_PREPARED_E2E_DATA}"; then
+      PREPARE_RESET_FLAG=(--reset)
+    fi
+    python scripts/tools/prepare_rc_e2e_original_run_data.py \
+      --source-root "${E2E_RAW_ROOT}" \
+      --destination "${E2E_DATA_ROOT}" \
+      --allowed-root /cache/jn/e2e_eval/original_pipeline_runs \
+      --copy-mode "${E2E_PREPARE_MODE}" \
+      "${PREPARE_RESET_FLAG[@]}"
   fi
-  python scripts/tools/prepare_rc_e2e_original_run_data.py \
-    --source-root "${E2E_RAW_ROOT}" \
-    --destination "${E2E_DATA_ROOT}" \
-    --allowed-root /cache/jn/e2e_eval/original_pipeline_runs \
-    --copy-mode "${E2E_PREPARE_MODE}" \
-    "${PREPARE_RESET_FLAG[@]}"
 else
   if [ ! -s "${E2E_DATA_ARCHIVE}" ]; then
     echo "[original-e2e] downloading full E2E data ${E2E_DATA_OBS_PATH} -> ${E2E_DATA_ARCHIVE}"

@@ -30,6 +30,7 @@ def test_resumable_directory_prepare_skips_existing_files(tmp_path):
         allowed_root=str(tmp_path / "runs"),
         reset=False,
         progress_files=1,
+        copy_mode="copy",
     )
     result = prepare(args)
 
@@ -42,3 +43,29 @@ def test_resumable_directory_prepare_skips_existing_files(tmp_path):
 
     reused = prepare(args)
     assert reused["reused_complete_tree"] is True
+
+
+def test_hardlink_prepare_does_not_copy_file_bytes(tmp_path):
+    source_root = tmp_path / "raw"
+    source_file = source_root / "scene_1" / "rc_one_patch_release" / "input.bin"
+    source_file.parent.mkdir(parents=True)
+    source_file.write_bytes(b"large-input")
+
+    destination = tmp_path / "runs" / "run_1" / "e2e_data"
+    args = SimpleNamespace(
+        source_root=str(source_root),
+        archive=None,
+        destination=str(destination),
+        allowed_root=str(tmp_path / "runs"),
+        reset=False,
+        progress_files=1,
+        copy_mode="hardlink",
+    )
+
+    result = prepare(args)
+    destination_file = destination / "scene_1" / "rc_one_patch_release" / "input.bin"
+
+    assert result["files_copied"] == 0
+    assert result["files_linked"] == 1
+    assert result["bytes_copied"] == 0
+    assert os.path.samefile(source_file, destination_file)

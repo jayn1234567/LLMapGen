@@ -38,6 +38,7 @@ RECREATE_E2E_ENV=${RECREATE_E2E_ENV:-False}
 REUSE_ENGINE_ARCHIVE=${REUSE_ENGINE_ARCHIVE:-True}
 REUSE_PREDICTIONS=${REUSE_PREDICTIONS:-True}
 RESET_PREPARED_E2E_DATA=${RESET_PREPARED_E2E_DATA:-False}
+E2E_PREPARE_MODE=${E2E_PREPARE_MODE:-hardlink}
 UPLOAD_RESULTS=${UPLOAD_RESULTS:-True}
 PREDICTION_COORD_SCALE=${PREDICTION_COORD_SCALE:-0.256}
 
@@ -237,6 +238,7 @@ if has_extracted_e2e_data; then
     --source-root "${E2E_RAW_ROOT}" \
     --destination "${E2E_DATA_ROOT}" \
     --allowed-root /cache/jn/e2e_eval/original_pipeline_runs \
+    --copy-mode "${E2E_PREPARE_MODE}" \
     "${PREPARE_RESET_FLAG[@]}"
 else
   if [ ! -s "${E2E_DATA_ARCHIVE}" ]; then

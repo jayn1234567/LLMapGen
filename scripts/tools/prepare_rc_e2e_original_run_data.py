@@ -24,6 +24,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--allowed-root", required=True)
     parser.add_argument("--reset", action="store_true", help="Delete destination before preparing it.")
     parser.add_argument("--progress-files", type=int, default=1000)
+    parser.add_argument(
+        "--copy-mode",
+        choices=("copy", "hardlink"),
+        default="copy",
+        help="Use hardlink when source and destination share a filesystem to avoid copying large immutable inputs.",
+    )
     return parser.parse_args()
 
 
@@ -75,18 +81,35 @@ def atomic_copy(source: Path, destination: Path) -> None:
         temporary.unlink(missing_ok=True)
 
 
-def maybe_report(*, scanned: int, copied: int, skipped: int, copied_bytes: int, interval: int) -> None:
+def atomic_hardlink(source: Path, destination: Path) -> None:
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    temporary = destination.with_name(f".{destination.name}.link-{os.getpid()}")
+    try:
+        os.link(source, temporary)
+        os.replace(temporary, destination)
+    except OSError as exc:
+        raise OSError(
+            f"Unable to hardlink {source} -> {destination}. "
+            "Source and destination must be on the same filesystem; use --copy-mode copy otherwise."
+        ) from exc
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def maybe_report(
+    *, scanned: int, copied: int, linked: int, skipped: int, copied_bytes: int, interval: int
+) -> None:
     if scanned == 1 or scanned % max(1, interval) == 0:
         print(
             "[original-e2e-data] "
-            f"scanned={scanned} copied={copied} skipped={skipped} "
+            f"scanned={scanned} copied={copied} linked={linked} skipped={skipped} "
             f"copied_gib={copied_bytes / (1024 ** 3):.2f}",
             flush=True,
         )
 
 
-def copy_tree_resumable(source: Path, destination: Path, progress_files: int) -> dict:
-    scanned = copied = skipped = copied_bytes = 0
+def copy_tree_resumable(source: Path, destination: Path, progress_files: int, copy_mode: str) -> dict:
+    scanned = copied = linked = skipped = copied_bytes = 0
     for source_file in source.rglob("*"):
         if not source_file.is_file():
             continue
@@ -97,12 +120,17 @@ def copy_tree_resumable(source: Path, destination: Path, progress_files: int) ->
             skipped += 1
         else:
             size = source_file.stat().st_size
-            atomic_copy(source_file, destination_file)
-            copied += 1
-            copied_bytes += size
+            if copy_mode == "hardlink":
+                atomic_hardlink(source_file, destination_file)
+                linked += 1
+            else:
+                atomic_copy(source_file, destination_file)
+                copied += 1
+                copied_bytes += size
         maybe_report(
             scanned=scanned,
             copied=copied,
+            linked=linked,
             skipped=skipped,
             copied_bytes=copied_bytes,
             interval=progress_files,
@@ -110,6 +138,7 @@ def copy_tree_resumable(source: Path, destination: Path, progress_files: int) ->
     return {
         "files_scanned": scanned,
         "files_copied": copied,
+        "files_linked": linked,
         "files_skipped": skipped,
         "bytes_copied": copied_bytes,
     }
@@ -145,6 +174,7 @@ def extract_zip_resumable(archive: Path, destination: Path, progress_files: int)
             maybe_report(
                 scanned=scanned,
                 copied=copied,
+                linked=0,
                 skipped=skipped,
                 copied_bytes=copied_bytes,
                 interval=progress_files,
@@ -152,6 +182,7 @@ def extract_zip_resumable(archive: Path, destination: Path, progress_files: int)
     return {
         "files_scanned": scanned,
         "files_copied": copied,
+        "files_linked": 0,
         "files_skipped": skipped,
         "bytes_copied": copied_bytes,
     }
@@ -186,13 +217,16 @@ def prepare(args: argparse.Namespace) -> dict:
         flush=True,
     )
     if source_kind == "directory":
-        stats = copy_tree_resumable(source_path, destination, args.progress_files)
+        copy_mode = getattr(args, "copy_mode", "copy")
+        stats = copy_tree_resumable(source_path, destination, args.progress_files, copy_mode)
     else:
+        copy_mode = "extract"
         stats = extract_zip_resumable(source_path, destination, args.progress_files)
     payload = {
         "source_kind": source_kind,
         "source_path": str(source_path),
         "destination": str(destination),
+        "copy_mode": copy_mode,
         **stats,
         "completed_at_unix": time.time(),
         "reused_complete_tree": False,

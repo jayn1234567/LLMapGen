@@ -527,7 +527,8 @@ trap - EXIT
 
 if is_true "${UPLOAD_RESULTS}" && [ -n "${RESULT_OBS_PATH}" ]; then
   echo "[original-e2e] uploading ${RESULT_ROOT} -> ${RESULT_OBS_PATH}"
-  python - "${RESULT_ROOT}" "${RESULT_OBS_PATH}" <<'PY'
+  PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION=python \
+    python - "${RESULT_ROOT}" "${RESULT_OBS_PATH}" <<'PY'
 import sys
 import moxing as mox
 mox.file.copy_parallel(sys.argv[1], sys.argv[2])

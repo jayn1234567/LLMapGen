@@ -12,13 +12,21 @@ OUTPUT_ROOT=${OUTPUT_ROOT:-/cache/jn/outputs/${RUN_ID}}
 RAW_RESULT_DIR=${RAW_RESULT_DIR:-${OUTPUT_ROOT}/inference/json}
 INFER_RESULT_OBS_PATH=${INFER_RESULT_OBS_PATH:-obs://yw-ads-training-2-gy1/data/external/personal/h58801830/jn/output/e2e_infer/${RUN_ID}}
 PATCH_METRICS_OBS_PATH=${PATCH_METRICS_OBS_PATH:-obs://yw-ads-training-2-gy1/data/external/personal/h58801830/jn/output/e2e_metrics/${RUN_ID}_patch_metrics}
+E2E_DATA_SOURCE=${E2E_DATA_SOURCE:-raw_direct}
+E2E_RAW_ROOT=${E2E_RAW_ROOT:-/cache/jn/e2e_eval/raw_e2e_data}
+E2E_DATA_ARCHIVE=${E2E_DATA_ARCHIVE:-/cache/jn/e2e_eval/e2e_data.zip}
 ORIGINAL_EVAL_RUN_ID=${ORIGINAL_EVAL_RUN_ID:-${RUN_ID}_original_pipeline}
 ORIGINAL_RUN_WORK_ROOT=${ORIGINAL_RUN_WORK_ROOT:-/cache/jn/e2e_eval/original_pipeline_runs/${ORIGINAL_EVAL_RUN_ID}}
-ORIGINAL_E2E_DATA_ROOT=${ORIGINAL_E2E_DATA_ROOT:-${ORIGINAL_RUN_WORK_ROOT}/e2e_data}
+if [ -z "${ORIGINAL_E2E_DATA_ROOT:-}" ]; then
+  if [ "${E2E_DATA_SOURCE}" = "raw_direct" ]; then
+    ORIGINAL_E2E_DATA_ROOT=${E2E_RAW_ROOT}
+  else
+    ORIGINAL_E2E_DATA_ROOT=${ORIGINAL_RUN_WORK_ROOT}/e2e_data
+  fi
+fi
 ORIGINAL_RESULT_ROOT=${ORIGINAL_RESULT_ROOT:-${OUTPUT_ROOT}/original_pipeline_metrics}
 ORIGINAL_RESULT_OBS_PATH=${ORIGINAL_RESULT_OBS_PATH:-obs://yw-ads-training-2-gy1/data/external/personal/h58801830/jn/output/e2e_metrics/${RUN_ID}_original_pipeline}
-E2E_DATA_SOURCE=${E2E_DATA_SOURCE:-local_archive}
-E2E_DATA_ARCHIVE=${E2E_DATA_ARCHIVE:-/cache/jn/e2e_eval/e2e_data.zip}
+RESET_EXISTING_MODEL_OUTPUTS=${RESET_EXISTING_MODEL_OUTPUTS:-True}
 
 echo "[rawlane-local256-e2e] stage 1/3: full checkpoint-12504 inference"
 RUN_ID="${RUN_ID}" \
@@ -51,6 +59,8 @@ REUSE_PREDICTIONS=True \
 REUSE_ENGINE_ARCHIVE=True \
 E2E_DATA_SOURCE="${E2E_DATA_SOURCE}" \
 E2E_DATA_ARCHIVE="${E2E_DATA_ARCHIVE}" \
+E2E_RAW_ROOT="${E2E_RAW_ROOT}" \
+RESET_EXISTING_MODEL_OUTPUTS="${RESET_EXISTING_MODEL_OUTPUTS}" \
 bash "${SCRIPT_DIR}/eval_rc_e2e_context512_roi256_checkpoint12504_original_pipeline_npu.sh"
 
 echo "============================================================"

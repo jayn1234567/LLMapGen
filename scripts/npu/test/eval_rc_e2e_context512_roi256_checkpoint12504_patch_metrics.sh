@@ -66,6 +66,12 @@ if [ "${E2E_DATA_SOURCE}" = "local_archive" ]; then
     --allowed-root /cache/jn/e2e_eval/original_pipeline_runs
 elif [ "${E2E_DATA_SOURCE}" = "auto" ] && has_extracted_e2e_data; then
   echo "[e2e-patch-eval] reuse extracted E2E data: ${E2E_RAW_ROOT}"
+elif [ "${E2E_DATA_SOURCE}" = "raw_direct" ]; then
+  if ! has_extracted_e2e_data; then
+    echo "ERROR: raw_direct mode requires extracted data below ${E2E_RAW_ROOT}" >&2
+    exit 2
+  fi
+  echo "[e2e-patch-eval] directly use extracted E2E data: ${E2E_RAW_ROOT}"
 elif [ "${E2E_DATA_SOURCE}" = "auto" ]; then
   if [ ! -s "${E2E_ARCHIVE_PATH}" ]; then
     echo "[e2e-patch-eval] downloading data ${E2E_DATA_OBS_PATH} -> ${E2E_ARCHIVE_PATH}"
@@ -91,7 +97,7 @@ with zipfile.ZipFile(archive) as handle:
 (destination / ".extract_complete").write_text("ok\n", encoding="utf-8")
 PY
 else
-  echo "ERROR: unsupported E2E_DATA_SOURCE=${E2E_DATA_SOURCE}; expected local_archive or auto" >&2
+  echo "ERROR: unsupported E2E_DATA_SOURCE=${E2E_DATA_SOURCE}; expected local_archive, raw_direct, or auto" >&2
   exit 2
 fi
 

@@ -50,6 +50,7 @@ RUN_LOW_EVAL=${RUN_LOW_EVAL:-True}
 RUN_HIGH_EVAL=${RUN_HIGH_EVAL:-True}
 EVAL_SIMPLIFY_PATH=${EVAL_SIMPLIFY_PATH:-False}
 EVAL_VIS_FLAG=${EVAL_VIS_FLAG:-True}
+RESET_EXISTING_MODEL_OUTPUTS=${RESET_EXISTING_MODEL_OUTPUTS:-False}
 
 is_true() {
   case "${1:-}" in
@@ -436,6 +437,39 @@ echo "Predictions:      ${PREDICTION_INPUT_DIR} (${VALID_PREDICTION_COUNT} valid
 echo "Results:          ${RESULT_ROOT}"
 echo "Result OBS:       ${RESULT_OBS_PATH}"
 echo "============================================================"
+
+if is_true "${RESET_EXISTING_MODEL_OUTPUTS}"; then
+  if ! is_true "${RUN_FORMAT_STEP}" || ! is_true "${RUN_RULE_STEP}"; then
+    echo "ERROR: RESET_EXISTING_MODEL_OUTPUTS=True requires both format and rule steps enabled." >&2
+    exit 2
+  fi
+  echo "[original-e2e] removing stale model-generated outputs below ${E2E_DATA_ROOT}"
+  python - "${E2E_DATA_ROOT}" <<'PY'
+import shutil
+import sys
+from pathlib import Path
+
+root = Path(sys.argv[1]).resolve()
+if root != Path("/cache/jn/e2e_eval/raw_e2e_data").resolve():
+    raise ValueError(f"Refusing to clean model outputs outside raw_e2e_data: {root}")
+
+removed = []
+for scene in sorted(path for path in root.iterdir() if path.is_dir()):
+    targets = [
+        scene / "output_base",
+        scene / "debug_base",
+        scene / "rc_one_patch_release" / "center_line_v2" / "lane_ins_res",
+    ]
+    for target in targets:
+        resolved = target.resolve()
+        if root not in resolved.parents:
+            raise ValueError(f"Unsafe cleanup target: {resolved}")
+        if target.is_dir():
+            shutil.rmtree(target)
+            removed.append(str(target))
+print(f"[original-e2e] removed {len(removed)} stale model-output directories")
+PY
+fi
 
 if is_true "${RUN_FORMAT_STEP}"; then
   echo "[original-e2e] step 1/5: original infer_result_format.py"

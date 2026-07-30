@@ -2,6 +2,7 @@
 import argparse
 import json
 import sys
+import time
 from pathlib import Path
 
 import torch
@@ -86,6 +87,34 @@ def silence_non_primary_rank_output():
 
 def rank_json_path(path: Path, rank: int) -> Path:
     return path.with_name(f"{path.stem}_rank{rank:05d}{path.suffix}")
+
+
+def write_json_atomic(path: Path, payload) -> None:
+    temporary = path.with_name(f".{path.name}.tmp.{os.getpid()}")
+    try:
+        temporary.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        temporary.replace(path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def wait_for_rank_jsons(
+    output_json_path: Path,
+    world_size: int,
+    timeout_seconds: int,
+) -> list[Path]:
+    rank_paths = [rank_json_path(output_json_path, rank) for rank in range(world_size)]
+    deadline = time.monotonic() + timeout_seconds
+    missing = [path for path in rank_paths if not path.is_file()]
+    while missing and time.monotonic() < deadline:
+        time.sleep(2)
+        missing = [path for path in rank_paths if not path.is_file()]
+    if missing:
+        raise TimeoutError(
+            "Timed out waiting for inference rank summaries: "
+            + ", ".join(str(path) for path in missing)
+        )
+    return rank_paths
 
 
 def normalize_prediction_text(text: str, max_coordinate: int = 1000) -> str:
@@ -950,18 +979,18 @@ def main():
     import os
     import torch
     local_rank = int(os.environ.get("LOCAL_RANK",-1))
+    rank = int(os.environ.get("RANK", local_rank if local_rank >= 0 else 0))
+    world_size = int(os.environ.get("WORLD_SIZE", "1"))
+    distributed = world_size > 1
     silence_non_primary_rank_output()
     if local_rank >= 0:
         if torch.cuda.is_available():
             torch.cuda.set_device(local_rank)
-            backend = "nccl"
             device_str = f"cuda:{local_rank}"
         else:
             if hasattr(torch, "npu") and torch.npu.is_available():
                 torch.npu.set_device(local_rank)
-            backend = "hccl"
             device_str = f"npu:{local_rank}"
-        torch.distributed.init_process_group(backend=backend)
     else:
         if torch.cuda.is_available():
             device_str = "cuda"
@@ -995,6 +1024,12 @@ def main():
     )
     parser.add_argument("--temperature", type=float, default=0.0)
     parser.add_argument("--output-json", default="")
+    parser.add_argument(
+        "--distributed-merge-timeout",
+        type=int,
+        default=int(os.environ.get("INFER_DISTRIBUTED_MERGE_TIMEOUT", "1800")),
+        help="Seconds rank 0 waits for filesystem rank summaries; no HCCL collective is used.",
+    )
     parser.add_argument("--output-dir", default="")
     parser.add_argument("--sample-json-dir", default="", help="Directory for per-sample JSON files. Defaults to output-dir.")
     parser.add_argument("--print-full-output", action="store_true")
@@ -1029,7 +1064,13 @@ def main():
     args = parser.parse_args()
     if args.per_device_infer_batch_size < 1:
         raise ValueError("--per-device-infer-batch-size must be >= 1")
+    if args.distributed_merge_timeout < 1:
+        raise ValueError("--distributed-merge-timeout must be >= 1")
     args.device = device_str
+    if distributed and args.output_json:
+        rank_json_path(Path(args.output_json), rank).unlink(missing_ok=True)
+        if rank == 0:
+            Path(args.output_json).unlink(missing_ok=True)
 
     evaluate_one_sample = evaluate_records = print_eval_table = None
     evaluate_lane_intersection_records = print_lane_intersection_eval_tables = None
@@ -1094,8 +1135,8 @@ def main():
         end = start + (args.num_samples if args.num_samples > 0 else len(records) - start)
         records = records[start:end]
         indexed_records = list(enumerate(records, start=start))
-        if torch.distributed.is_initialized():
-            indexed_records = indexed_records[torch.distributed.get_rank()::torch.distributed.get_world_size()]
+        if distributed:
+            indexed_records = indexed_records[rank::world_size]
     else:
         if not args.image:
             raise ValueError("Provide either --image or --test-json")
@@ -1108,8 +1149,8 @@ def main():
     if sample_json_dir is not None:
         sample_json_dir.mkdir(parents=True, exist_ok=True)
     rank_suffix = ""
-    if torch.distributed.is_initialized():
-        rank_suffix = f"rank{torch.distributed.get_rank()}_"
+    if distributed:
+        rank_suffix = f"rank{rank}_"
 
     generation_config = getattr(model, "generation_config", None)
     pad_token_id = getattr(generation_config, "pad_token_id", None)
@@ -1346,21 +1387,22 @@ def main():
     if args.output_json:
         output_json_path = Path(args.output_json)
         output_json_path.parent.mkdir(parents=True, exist_ok=True)
-        if torch.distributed.is_initialized():
-            rank = torch.distributed.get_rank()
-            world_size = torch.distributed.get_world_size()
+        if distributed:
             rank_output_json_path = rank_json_path(output_json_path, rank)
-            rank_output_json_path.write_text(json.dumps(results, ensure_ascii=False, indent=2), encoding="utf-8")
-            torch.distributed.barrier()
+            write_json_atomic(rank_output_json_path, results)
             if rank == 0:
                 merged_results = []
-                for rank_idx in range(world_size):
-                    rank_path = rank_json_path(output_json_path, rank_idx)
+                rank_paths = wait_for_rank_jsons(
+                    output_json_path,
+                    world_size,
+                    args.distributed_merge_timeout,
+                )
+                for rank_path in rank_paths:
                     rank_payload = json.loads(rank_path.read_text(encoding="utf-8"))
                     if isinstance(rank_payload, list):
                         merged_results.extend(item for item in rank_payload if isinstance(item, dict))
                 merged_results.sort(key=lambda item: (item.get("idx", 0), str(item.get("record_id", ""))))
-                output_json_path.write_text(json.dumps(merged_results, ensure_ascii=False, indent=2), encoding="utf-8")
+                write_json_atomic(output_json_path, merged_results)
                 if args.eval_centerline:
                     eval_summary = build_eval_payload(
                         merged_results,
@@ -1370,12 +1412,11 @@ def main():
                     )
                     eval_path = Path(args.eval_output_json) if args.eval_output_json else output_json_path.with_name("eval.json")
                     eval_path.parent.mkdir(parents=True, exist_ok=True)
-                    eval_path.write_text(json.dumps(eval_summary, ensure_ascii=False, indent=2), encoding="utf-8")
+                    write_json_atomic(eval_path, eval_summary)
                     print_eval_payload(eval_summary, args, print_eval_table, print_lane_intersection_eval_tables)
                     print(json.dumps(eval_console_payload(eval_path, eval_summary, args), ensure_ascii=False))
-            torch.distributed.barrier()
         else:
-            output_json_path.write_text(json.dumps(results, ensure_ascii=False, indent=2), encoding="utf-8")
+            write_json_atomic(output_json_path, results)
             if args.eval_centerline:
                 eval_summary = build_eval_payload(
                     results,
@@ -1385,13 +1426,9 @@ def main():
                 )
                 eval_path = Path(args.eval_output_json) if args.eval_output_json else output_json_path.with_name("eval.json")
                 eval_path.parent.mkdir(parents=True, exist_ok=True)
-                eval_path.write_text(json.dumps(eval_summary, ensure_ascii=False, indent=2), encoding="utf-8")
+                write_json_atomic(eval_path, eval_summary)
                 print_eval_payload(eval_summary, args, print_eval_table, print_lane_intersection_eval_tables)
                 print(json.dumps(eval_console_payload(eval_path, eval_summary, args), ensure_ascii=False))
-
-    if torch.distributed.is_initialized():
-        torch.distributed.destroy_process_group()
-
 
 if __name__ == "__main__":
     main()

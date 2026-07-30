@@ -305,35 +305,24 @@ torchrun \
   --per-device-infer-batch-size "${PER_DEVICE_INFER_BATCH_SIZE}" \
   --max-new-tokens "${MAX_NEW_TOKENS}"
 
-python - "${RAW_RESULT_DIR}" <<'PY'
-import json
-import sys
-from pathlib import Path
+# Some Ascend compiler workers can leave the launching shell attached to a
+# deleted temporary working directory during shutdown. Restore a stable cwd
+# before running validation and OBS upload helpers.
+cd "${REPO_ROOT}"
 
-source = Path(sys.argv[1])
-paths = sorted(source.glob("*.json"))
-if not paths:
-    raise FileNotFoundError(f"No per-patch inference JSON files found below {source}")
-
-errors = []
-for path in paths:
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-        if not isinstance(payload.get("image"), str) or not payload["image"]:
-            errors.append(f"{path.name}: missing image")
-        if not isinstance(payload.get("prediction_json"), str):
-            errors.append(f"{path.name}: missing prediction_json")
-    except Exception as exc:
-        errors.append(f"{path.name}: {exc}")
-if errors:
-    raise ValueError("Invalid raw inference JSON output: " + "; ".join(errors[:10]))
-print(f"[e2e] validated raw per-patch inference JSON files: {len(paths)}")
-PY
+python scripts/tools/verify_e2e_inference_completeness.py \
+  --infer-jsonl "${E2E_DATASET_ROOT}/infer.jsonl" \
+  --prediction-dir "${RAW_RESULT_DIR}" \
+  --output-json "${INFERENCE_ROOT}/completeness.json"
 
 if [ -n "${INFER_RESULT_OBS_PATH}" ]; then
   echo "[e2e] uploading raw inference JSON ${RAW_RESULT_DIR} -> ${INFER_RESULT_OBS_PATH}"
   python - "${RAW_RESULT_DIR}" "${INFER_RESULT_OBS_PATH}" <<'PY'
 import sys
+
+# An empty sys.path entry resolves through os.getcwd(). Removing it keeps the
+# moxing import independent of an invalid launcher cwd inherited at shutdown.
+sys.path = [entry for entry in sys.path if entry]
 import moxing as mox
 
 mox.file.copy_parallel(sys.argv[1], sys.argv[2])

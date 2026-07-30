@@ -15,7 +15,8 @@ PATCH_METRICS_OBS_PATH=${PATCH_METRICS_OBS_PATH:-obs://yw-ads-training-2-gy1/dat
 ORIGINAL_EVAL_RUN_ID=${ORIGINAL_EVAL_RUN_ID:-${RUN_ID}_original_pipeline}
 ORIGINAL_RESULT_ROOT=${ORIGINAL_RESULT_ROOT:-${OUTPUT_ROOT}/original_pipeline_metrics}
 ORIGINAL_RESULT_OBS_PATH=${ORIGINAL_RESULT_OBS_PATH:-obs://yw-ads-training-2-gy1/data/external/personal/h58801830/jn/output/e2e_metrics/${RUN_ID}_original_pipeline}
-E2E_USE_RAW_ROOT_DIRECTLY=${E2E_USE_RAW_ROOT_DIRECTLY:-True}
+E2E_DATA_SOURCE=${E2E_DATA_SOURCE:-local_archive}
+E2E_DATA_ARCHIVE=${E2E_DATA_ARCHIVE:-/cache/jn/e2e_eval/e2e_data.zip}
 
 echo "[context512-roi256-e2e] stage 1/3: checkpoint-12504 inference"
 RUN_ID="${RUN_ID}" \
@@ -41,7 +42,8 @@ PREDICTION_CACHE="${RAW_RESULT_DIR}" \
 PREDICTION_OBS_PATH="${INFER_RESULT_OBS_PATH}" \
 REUSE_PREDICTIONS=True \
 REUSE_ENGINE_ARCHIVE=True \
-E2E_USE_RAW_ROOT_DIRECTLY="${E2E_USE_RAW_ROOT_DIRECTLY}" \
+E2E_DATA_SOURCE="${E2E_DATA_SOURCE}" \
+E2E_DATA_ARCHIVE="${E2E_DATA_ARCHIVE}" \
 bash "${SCRIPT_DIR}/eval_rc_e2e_context512_roi256_checkpoint12504_original_pipeline_npu.sh"
 
 echo "============================================================"

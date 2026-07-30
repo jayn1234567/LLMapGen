@@ -39,6 +39,11 @@ is_true() {
   esac
 }
 
+has_extracted_e2e_data() {
+  [ -f "${E2E_RAW_ROOT}/.extract_complete" ] || \
+    find "${E2E_RAW_ROOT}" -type d -name rc_one_patch_release -print -quit 2>/dev/null | grep -q .
+}
+
 if [ ! -f "${ACTIVATE_SCRIPT}" ]; then
   echo "ERROR: inference environment activation script not found: ${ACTIVATE_SCRIPT}" >&2
   exit 2
@@ -50,16 +55,20 @@ export PYTHONPATH="${REPO_ROOT}:${PYTHONPATH:-}"
 
 mkdir -p "${E2E_WORK_ROOT}" "${ORIGINAL_ENGINE_CACHE}" "$(dirname "${E2E_ARCHIVE_PATH}")"
 
-if [ ! -s "${E2E_ARCHIVE_PATH}" ]; then
-  echo "[original-crop256] downloading ${E2E_DATA_OBS_PATH} -> ${E2E_ARCHIVE_PATH}"
-  python - "${E2E_DATA_OBS_PATH}" "${E2E_ARCHIVE_PATH}" <<'PY'
+if has_extracted_e2e_data; then
+  echo "[original-crop256] reuse extracted E2E data: ${E2E_RAW_ROOT}"
+else
+  if [ ! -s "${E2E_ARCHIVE_PATH}" ]; then
+    echo "[original-crop256] downloading ${E2E_DATA_OBS_PATH} -> ${E2E_ARCHIVE_PATH}"
+    python - "${E2E_DATA_OBS_PATH}" "${E2E_ARCHIVE_PATH}" <<'PY'
 import sys
 import moxing as mox
 mox.file.copy(sys.argv[1], sys.argv[2])
 PY
-fi
+  else
+    echo "[original-crop256] reuse data archive: ${E2E_ARCHIVE_PATH}"
+  fi
 
-if [ ! -f "${E2E_RAW_ROOT}/.extract_complete" ]; then
   echo "[original-crop256] extracting E2E data -> ${E2E_RAW_ROOT}"
   mkdir -p "${E2E_RAW_ROOT}"
   python - "${E2E_ARCHIVE_PATH}" "${E2E_RAW_ROOT}" <<'PY'

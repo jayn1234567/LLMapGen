@@ -22,6 +22,7 @@ E2E_CACHE_ROOT=${E2E_CACHE_ROOT:-/cache/jn/e2e_eval/original_pipeline_cache}
 ENGINE_ARCHIVE=${ENGINE_ARCHIVE:-${E2E_CACHE_ROOT}/rc_nn-sjn_e2e_eval.zip}
 ENGINE_EXTRACT_ROOT=${ENGINE_EXTRACT_ROOT:-${E2E_CACHE_ROOT}/engine}
 E2E_DATA_ARCHIVE=${E2E_DATA_ARCHIVE:-/cache/jn/e2e_eval/e2e_data.zip}
+E2E_RAW_ROOT=${E2E_RAW_ROOT:-/cache/jn/e2e_eval/raw_e2e_data}
 PREDICTION_CACHE=${PREDICTION_CACHE:-${E2E_CACHE_ROOT}/predictions/context512_roi256_checkpoint12504_e2e_data_full_v1}
 
 RUN_ID=${RUN_ID:-context512_roi256_checkpoint12504_original_e2e_$(date +%Y%m%d_%H%M%S)}
@@ -44,6 +45,11 @@ is_true() {
     1|true|TRUE|True|yes|YES|on|ON) return 0 ;;
     *) return 1 ;;
   esac
+}
+
+has_extracted_e2e_data() {
+  [ -f "${E2E_RAW_ROOT}/.extract_complete" ] || \
+    find "${E2E_RAW_ROOT}" -type d -name rc_one_patch_release -print -quit 2>/dev/null | grep -q .
 }
 
 safe_source() {
@@ -220,19 +226,52 @@ print("[original-e2e] dependency preflight passed")
 print(f"[original-e2e] numpy={numpy.__version__} shapely={shapely.__version__} rasterio={rasterio.__version__}")
 PY
 
-if [ ! -s "${E2E_DATA_ARCHIVE}" ]; then
-  echo "[original-e2e] downloading full E2E data ${E2E_DATA_OBS_PATH} -> ${E2E_DATA_ARCHIVE}"
-  python - "${E2E_DATA_OBS_PATH}" "${E2E_DATA_ARCHIVE}" <<'PY'
+if has_extracted_e2e_data; then
+  echo "[original-e2e] reuse extracted E2E data: ${E2E_RAW_ROOT}"
+  echo "[original-e2e] preparing clean E2E run data from local extraction: ${E2E_DATA_ROOT}"
+  python - "${E2E_RAW_ROOT}" "${E2E_DATA_ROOT}" <<'PY'
+import shutil
+import sys
+from pathlib import Path
+
+root = Path(sys.argv[1]).resolve()
+destination = Path(sys.argv[2]).resolve()
+run_parent = Path("/cache/jn/e2e_eval/original_pipeline_runs").resolve()
+if run_parent not in destination.parents:
+    raise ValueError(f"Refusing to prepare E2E data outside {run_parent}: {destination}")
+candidates = [root, *sorted(path for path in root.iterdir() if path.is_dir())]
+source = next(
+    (
+        candidate
+        for candidate in candidates
+        if any(
+            (child / "rc_one_patch_release").is_dir()
+            for child in candidate.iterdir()
+            if child.is_dir()
+        )
+    ),
+    None,
+)
+if source is None:
+    raise FileNotFoundError(f"Unable to resolve extracted E2E scene root below {root}")
+if destination.exists():
+    shutil.rmtree(destination)
+shutil.copytree(source, destination)
+PY
+else
+  if [ ! -s "${E2E_DATA_ARCHIVE}" ]; then
+    echo "[original-e2e] downloading full E2E data ${E2E_DATA_OBS_PATH} -> ${E2E_DATA_ARCHIVE}"
+    python - "${E2E_DATA_OBS_PATH}" "${E2E_DATA_ARCHIVE}" <<'PY'
 import sys
 import moxing as mox
 mox.file.copy(sys.argv[1], sys.argv[2])
 PY
-else
-  echo "[original-e2e] reuse E2E archive: ${E2E_DATA_ARCHIVE}"
-fi
+  else
+    echo "[original-e2e] reuse E2E archive: ${E2E_DATA_ARCHIVE}"
+  fi
 
-echo "[original-e2e] preparing clean E2E run data: ${E2E_DATA_ROOT}"
-python - "${E2E_DATA_ARCHIVE}" "${E2E_DATA_ROOT}" <<'PY'
+  echo "[original-e2e] preparing clean E2E run data from archive: ${E2E_DATA_ROOT}"
+  python - "${E2E_DATA_ARCHIVE}" "${E2E_DATA_ROOT}" <<'PY'
 import shutil
 import sys
 import zipfile
@@ -249,6 +288,7 @@ destination.mkdir(parents=True)
 with zipfile.ZipFile(archive) as handle:
     handle.extractall(destination)
 PY
+fi
 
 if ! is_true "${REUSE_PREDICTIONS}" || ! find "${PREDICTION_CACHE}" -type f -name '*.json' -print -quit 2>/dev/null | grep -q .; then
   echo "[original-e2e] downloading raw model predictions ${PREDICTION_OBS_PATH} -> ${PREDICTION_CACHE}"

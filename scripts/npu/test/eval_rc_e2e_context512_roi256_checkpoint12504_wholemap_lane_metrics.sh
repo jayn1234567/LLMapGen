@@ -40,6 +40,11 @@ is_true() {
   esac
 }
 
+has_extracted_e2e_data() {
+  [ -f "${E2E_RAW_ROOT}/.extract_complete" ] || \
+    find "${E2E_RAW_ROOT}" -type d -name rc_one_patch_release -print -quit 2>/dev/null | grep -q .
+}
+
 if [ ! -f "${ACTIVATE_SCRIPT}" ]; then
   echo "ERROR: activation script not found: ${ACTIVATE_SCRIPT}" >&2
   exit 2
@@ -51,18 +56,20 @@ export PYTHONPATH="${REPO_ROOT}:${PYTHONPATH:-}"
 
 mkdir -p "${E2E_WORK_ROOT}" "${EVAL_ROOT}" "${PREDICTION_DIR}"
 
-if [ ! -s "${E2E_ARCHIVE_PATH}" ]; then
-  echo "[e2e-wholemap-eval] downloading data ${E2E_DATA_OBS_PATH} -> ${E2E_ARCHIVE_PATH}"
-  python - "${E2E_DATA_OBS_PATH}" "${E2E_ARCHIVE_PATH}" <<'PY'
+if has_extracted_e2e_data; then
+  echo "[e2e-wholemap-eval] reuse extracted E2E data: ${E2E_RAW_ROOT}"
+else
+  if [ ! -s "${E2E_ARCHIVE_PATH}" ]; then
+    echo "[e2e-wholemap-eval] downloading data ${E2E_DATA_OBS_PATH} -> ${E2E_ARCHIVE_PATH}"
+    python - "${E2E_DATA_OBS_PATH}" "${E2E_ARCHIVE_PATH}" <<'PY'
 import sys
 import moxing as mox
 mox.file.copy(sys.argv[1], sys.argv[2])
 PY
-else
-  echo "[e2e-wholemap-eval] reuse data archive: ${E2E_ARCHIVE_PATH}"
-fi
+  else
+    echo "[e2e-wholemap-eval] reuse data archive: ${E2E_ARCHIVE_PATH}"
+  fi
 
-if [ ! -f "${E2E_RAW_ROOT}/.extract_complete" ]; then
   echo "[e2e-wholemap-eval] extracting ${E2E_ARCHIVE_PATH} -> ${E2E_RAW_ROOT}"
   mkdir -p "${E2E_RAW_ROOT}"
   python - "${E2E_ARCHIVE_PATH}" "${E2E_RAW_ROOT}" <<'PY'
@@ -75,8 +82,6 @@ with zipfile.ZipFile(archive) as handle:
     handle.extractall(destination)
 (destination / ".extract_complete").write_text("ok\n", encoding="utf-8")
 PY
-else
-  echo "[e2e-wholemap-eval] reuse extracted E2E data: ${E2E_RAW_ROOT}"
 fi
 
 if ! find "${PREDICTION_DIR}" -type f -name '*.json' -print -quit | grep -q .; then

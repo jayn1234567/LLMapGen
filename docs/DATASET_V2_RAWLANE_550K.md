@@ -158,7 +158,10 @@ Raw-Lane overlay metadata, image size, norm1000 coordinates, semantic type
 schema, and the Raw-Lane prompt before downloading model assets.
 
 Both recipes use original DINOv2-L, CapRL-Qwen3VL-4B, no DeepStack,
-full-parameter SFT, global batch size 128, and 8 epochs.
+full-parameter SFT, global batch size 128, and 8 epochs. The local256 recipe
+uses micro-batch 4 per NPU. The context512/ROI256 recipe uses micro-batch 2 and
+gradient accumulation to keep the same global batch while preserving enough
+NPU memory for full-parameter checkpoint saves.
 
 DI entry for local256:
 

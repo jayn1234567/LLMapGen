@@ -82,7 +82,7 @@ RAW_LANE_PROMPT_TEXT=${RAW_LANE_PROMPT_TEXT:-"white lane overlay predicted by a 
 # BEST_* options control train-loss, eval-loss, or infer-index best checkpoint folders.
 # Main runtime parameters and hyperparameters.
 TARGET_GLOBAL_BATCH_SIZE=${TARGET_GLOBAL_BATCH_SIZE:-128}                         # Desired global batch size used to derive gradient accumulation.
-PER_DEVICE_TRAIN_BATCH_SIZE=${PER_DEVICE_TRAIN_BATCH_SIZE:-4}                     # Micro batch size per NPU process.
+PER_DEVICE_TRAIN_BATCH_SIZE=${PER_DEVICE_TRAIN_BATCH_SIZE:-2}                     # Context512 uses a smaller micro batch to retain checkpoint-save memory headroom; 4 nodes derive accumulation=2 and keep global batch 128.
 NUM_EPOCHS=${NUM_EPOCHS:-8}                                                       # Match Jiangjihua v9 best CapRL recipe.
 MAX_STEPS=${MAX_STEPS:--1}                                                        # -1 runs NUM_EPOCHS; a positive value enables short NPU memory smoke tests.
 LR=${LR:-2e-5}                                                                    # Base learning rate for LLM and default trainable parameters.

@@ -12,6 +12,7 @@ E2E_DATA_OBS_PATH=${E2E_DATA_OBS_PATH:-obs://yw-ads-training-2-gy1/data/external
 E2E_WORK_ROOT=${E2E_WORK_ROOT:-/cache/jn/e2e_eval}
 E2E_ARCHIVE_PATH=${E2E_ARCHIVE_PATH:-${E2E_WORK_ROOT}/e2e_data.zip}
 E2E_RAW_ROOT=${E2E_RAW_ROOT:-${E2E_WORK_ROOT}/raw_e2e_data}
+E2E_DATA_SOURCE=${E2E_DATA_SOURCE:-local_archive}
 
 PREDICTION_OBS_PATH=${PREDICTION_OBS_PATH:-obs://yw-ads-training-2-gy1/data/external/personal/h58801830/jn/output/e2e_infer/context512_roi256_checkpoint12504_e2e_data_full_v1}
 EVAL_RUN_ID=${EVAL_RUN_ID:-context512_roi256_checkpoint12504_e2e_data_full_v1_patch_metrics}
@@ -52,9 +53,20 @@ export PYTHONPATH="${REPO_ROOT}:${PYTHONPATH:-}"
 
 mkdir -p "${E2E_WORK_ROOT}" "${EVAL_ROOT}" "${PREDICTION_DIR}"
 
-if has_extracted_e2e_data; then
+if [ "${E2E_DATA_SOURCE}" = "local_archive" ]; then
+  if [ ! -s "${E2E_ARCHIVE_PATH}" ]; then
+    echo "ERROR: local E2E archive not found or empty: ${E2E_ARCHIVE_PATH}" >&2
+    echo "ERROR: local_archive mode never downloads from OBS or reuses raw_e2e_data." >&2
+    exit 2
+  fi
+  echo "[e2e-patch-eval] preparing E2E data from local archive: ${E2E_ARCHIVE_PATH}"
+  python scripts/tools/prepare_rc_e2e_original_run_data.py \
+    --archive "${E2E_ARCHIVE_PATH}" \
+    --destination "${E2E_RAW_ROOT}" \
+    --allowed-root /cache/jn/e2e_eval/original_pipeline_runs
+elif [ "${E2E_DATA_SOURCE}" = "auto" ] && has_extracted_e2e_data; then
   echo "[e2e-patch-eval] reuse extracted E2E data: ${E2E_RAW_ROOT}"
-else
+elif [ "${E2E_DATA_SOURCE}" = "auto" ]; then
   if [ ! -s "${E2E_ARCHIVE_PATH}" ]; then
     echo "[e2e-patch-eval] downloading data ${E2E_DATA_OBS_PATH} -> ${E2E_ARCHIVE_PATH}"
     python - "${E2E_DATA_OBS_PATH}" "${E2E_ARCHIVE_PATH}" <<'PY'
@@ -78,6 +90,9 @@ with zipfile.ZipFile(archive) as handle:
     handle.extractall(destination)
 (destination / ".extract_complete").write_text("ok\n", encoding="utf-8")
 PY
+else
+  echo "ERROR: unsupported E2E_DATA_SOURCE=${E2E_DATA_SOURCE}; expected local_archive or auto" >&2
+  exit 2
 fi
 
 if ! find "${PREDICTION_DIR}" -type f -name '*.json' -print -quit | grep -q .; then

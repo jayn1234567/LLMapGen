@@ -23,6 +23,9 @@ VIEW_LOCAL512 = "local512"
 VIEW_CONTEXT512_ROI256 = "context512_roi256"
 PROMPT_PROFILE_CURRENT = "current"
 PROMPT_PROFILE_LOCAL256_550K_V1 = "local256_550k_v1"
+PROMPT_PROFILE_RAWLANE_LOCAL256_550K_V1 = "rawlane_local256_550k_v1"
+INPUT_RASTER_INTER = "inter"
+INPUT_RASTER_RAWLANE = "rawlane"
 
 LOCAL256_550K_V1_PROMPT = """<image>
 Please construct the complete road map in the current BEV (Bird's Eye View) image patch.
@@ -30,6 +33,21 @@ Coordinates use a normalized 0-1000 grid over the original 256x256 image patch.
 
 Return only valid JSON in the form {"lines":[...]} with no extra explanation.
 For every centerline, include "lane_type" with exactly one of: "common" for a regular centerline, "right_turn" for a right-turn-only centerline, or "other" for any remaining lane class. Do not output U-turn reference lines.
+For every intersection, include "intersection_type" with exactly one of: "common" for a common intersection, "t_intersection" for a T-intersection, "small_untyped" for a small untyped intersection, or "t_lane_change_area" for a T-shaped lane-change area, or "other" for any remaining or unknown intersection class.
+
+Incoming traces JSON:
+[]
+
+Incoming intersections JSON:
+[]"""
+
+RAWLANE_LOCAL256_550K_V1_PROMPT = """<image>
+Please construct the complete road map in the current BEV (Bird's Eye View) image patch.
+Coordinates use a normalized 0-1000 grid over the original 256x256 image patch.
+The image also contains a white lane overlay predicted by a PV camera model. Do not copy it blindly when it conflicts with the visible BEV evidence.
+
+Return only valid JSON in the form {"lines":[...]} with no extra explanation.
+For every centerline, include "lane_type" with exactly one of: "common" for a regular centerline, "right_turn" for a right-turn-only centerline, "waiting_area" for a waiting-area centerline, "bus_lane" for a bus-lane centerline, "main_auxiliary_connector" for a connector between main and auxiliary roads, or "other" for any remaining lane class.
 For every intersection, include "intersection_type" with exactly one of: "common" for a common intersection, "t_intersection" for a T-intersection, "small_untyped" for a small untyped intersection, or "t_lane_change_area" for a T-shaped lane-change area, or "other" for any remaining or unknown intersection class.
 
 Incoming traces JSON:
@@ -54,9 +72,22 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--coord-range", type=int, default=1000)
     parser.add_argument(
         "--prompt-profile",
-        choices=(PROMPT_PROFILE_CURRENT, PROMPT_PROFILE_LOCAL256_550K_V1),
+        choices=(
+            PROMPT_PROFILE_CURRENT,
+            PROMPT_PROFILE_LOCAL256_550K_V1,
+            PROMPT_PROFILE_RAWLANE_LOCAL256_550K_V1,
+        ),
         default=PROMPT_PROFILE_CURRENT,
         help="Prompt schema expected by the checkpoint being evaluated.",
+    )
+    parser.add_argument(
+        "--input-raster",
+        choices=(INPUT_RASTER_INTER, INPUT_RASTER_RAWLANE),
+        default=INPUT_RASTER_INTER,
+        help=(
+            "Model image source. 'inter' crops *_inter.tif; 'rawlane' crops the aligned "
+            "lane_patch_tif/*_lane.tif image that already contains the RawLane overlay."
+        ),
     )
     parser.add_argument("--black-ratio-threshold", type=float, default=1.0)
     parser.add_argument(
@@ -84,6 +115,11 @@ def discover_inter_tifs(input_root: Path) -> list[Path]:
         if path.parent.name == "inter_patch_tif"
     ]
     return sorted(paths, key=lambda path: (scene_id_for_tif(path), path.name, str(path)))
+
+
+def expected_rawlane_tif(inter_tif: Path) -> Path:
+    prefix = inter_tif.stem.removesuffix("_inter")
+    return inter_tif.parent.parent / "lane_patch_tif" / f"{prefix}_lane.tif"
 
 
 def _rasterio_image(path: Path) -> np.ndarray:
@@ -136,6 +172,13 @@ def dataset_v2_prompt(
                 "and intersections enabled."
             )
         return LOCAL256_550K_V1_PROMPT
+    if prompt_profile == PROMPT_PROFILE_RAWLANE_LOCAL256_550K_V1:
+        if view_mode != VIEW_LOCAL256 or target_size != 256 or coord_range != 1000 or not include_intersections:
+            raise ValueError(
+                "rawlane_local256_550k_v1 requires local256, target_size=256, "
+                "coord_range=1000, and intersections enabled."
+            )
+        return RAWLANE_LOCAL256_550K_V1_PROMPT
     if prompt_profile != PROMPT_PROFILE_CURRENT:
         raise ValueError(f"Unsupported prompt profile: {prompt_profile}")
     parts = [
@@ -212,6 +255,8 @@ def build_record(
     source_size: tuple[int, int],
     padded_size: tuple[int, int],
     prompt: str,
+    input_raster: str,
+    model_source_tif: Path,
 ) -> dict[str, Any]:
     margin = (context_size - target_size) // 2 if view_mode == VIEW_CONTEXT512_ROI256 else 0
     target_roi = [margin, margin, margin + target_size, margin + target_size]
@@ -227,6 +272,12 @@ def build_record(
             "tif_stem": tif_stem,
             "tif_prefix": tif_prefix,
             "source_tif": str(tif_path),
+            "model_source_tif": str(model_source_tif),
+            "input_raster": input_raster,
+            "raw_lane_overlay": input_raster == INPUT_RASTER_RAWLANE,
+            "raw_lane_overlay_source": (
+                "lane_patch_tif/<prefix>_lane.tif" if input_raster == INPUT_RASTER_RAWLANE else "none"
+            ),
             "row": row,
             "col": col,
             "patch_row": row,
@@ -263,12 +314,21 @@ def prepare_dataset(args: argparse.Namespace) -> dict[str, Any]:
         raise ValueError("Context size must be >= target size with an even centered margin.")
     if not 0.0 <= args.black_ratio_threshold <= 1.0:
         raise ValueError("--black-ratio-threshold must be within [0,1].")
+    input_raster = str(getattr(args, "input_raster", INPUT_RASTER_INTER))
+    if input_raster not in {INPUT_RASTER_INTER, INPUT_RASTER_RAWLANE}:
+        raise ValueError(f"Unsupported input raster: {input_raster}")
 
     tif_paths = discover_inter_tifs(input_root)
     if args.max_tifs > 0:
         tif_paths = tif_paths[: args.max_tifs]
     if not tif_paths:
         raise FileNotFoundError(f"No *_inter.tif files found below {input_root}")
+    if input_raster == INPUT_RASTER_RAWLANE:
+        missing_rawlane = [str(expected_rawlane_tif(path)) for path in tif_paths if not expected_rawlane_tif(path).is_file()]
+        if missing_rawlane:
+            raise FileNotFoundError(
+                f"Missing {len(missing_rawlane)} aligned RawLane input TIF files; examples={missing_rawlane[:10]}"
+            )
 
     images_root = output_root / "images"
     images_root.mkdir(parents=True, exist_ok=True)
@@ -291,14 +351,22 @@ def prepare_dataset(args: argparse.Namespace) -> dict[str, Any]:
         for tif_index, tif_path in enumerate(tif_paths, 1):
             scene_id = scene_id_for_tif(tif_path)
             image = read_tif_rgb(tif_path)
+            model_source_tif = expected_rawlane_tif(tif_path) if input_raster == INPUT_RASTER_RAWLANE else tif_path
+            model_source_image = read_tif_rgb(model_source_tif)
+            if model_source_image.shape[:2] != image.shape[:2]:
+                raise ValueError(
+                    f"Input raster size mismatch: inter={image.shape[:2]} rawlane={model_source_image.shape[:2]} "
+                    f"for {tif_path}"
+                )
             source_height, source_width = image.shape[:2]
             padded = pad_bottom_right(image, target_size)
+            model_padded = pad_bottom_right(model_source_image, target_size)
             padded_height, padded_width = padded.shape[:2]
             margin = (context_size - target_size) // 2
             context_canvas = (
-                np.pad(padded, ((margin, margin), (margin, margin), (0, 0)), constant_values=0)
+                np.pad(model_padded, ((margin, margin), (margin, margin), (0, 0)), constant_values=0)
                 if margin
-                else padded
+                else model_padded
             )
             rows = padded_height // target_size
             cols = padded_width // target_size
@@ -320,7 +388,7 @@ def prepare_dataset(args: argparse.Namespace) -> dict[str, Any]:
                     if margin:
                         model_image = context_canvas[y0 : y0 + context_size, x0 : x0 + context_size]
                     else:
-                        model_image = target
+                        model_image = model_padded[y0 : y0 + target_size, x0 : x0 + target_size]
 
                     relative_image = Path("images") / scene_id / tif_path.stem / f"{row}_{col}.png"
                     image_path = output_root / relative_image
@@ -340,6 +408,8 @@ def prepare_dataset(args: argparse.Namespace) -> dict[str, Any]:
                         source_size=(source_width, source_height),
                         padded_size=(padded_width, padded_height),
                         prompt=prompt,
+                        input_raster=input_raster,
+                        model_source_tif=model_source_tif,
                     )
                     jsonl_handle.write(json.dumps(record, ensure_ascii=False, separators=(",", ":")) + "\n")
                     manifest.append(
@@ -355,6 +425,8 @@ def prepare_dataset(args: argparse.Namespace) -> dict[str, Any]:
                             "black_ratio": ratio,
                             "image_path": relative_image.as_posix(),
                             "target_roi_in_image": record["meta"]["target_roi_in_image"],
+                            "model_source_tif": str(model_source_tif),
+                            "input_raster": input_raster,
                         }
                     )
                     kept += 1
@@ -377,6 +449,11 @@ def prepare_dataset(args: argparse.Namespace) -> dict[str, Any]:
         "coord_mode": "norm1000",
         "coord_range": int(args.coord_range),
         "prompt_profile": getattr(args, "prompt_profile", PROMPT_PROFILE_CURRENT),
+        "input_raster": input_raster,
+        "raw_lane_overlay": input_raster == INPUT_RASTER_RAWLANE,
+        "raw_lane_overlay_source": (
+            "lane_patch_tif/<prefix>_lane.tif" if input_raster == INPUT_RASTER_RAWLANE else "none"
+        ),
         "black_ratio_threshold": float(args.black_ratio_threshold),
         "black_ratio_comparison": ">=",
         "tif_count": len(tif_paths),

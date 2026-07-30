@@ -4,6 +4,7 @@ import json
 from types import SimpleNamespace
 
 import numpy as np
+import pytest
 from PIL import Image
 
 from scripts.tools.build_rc_e2e_jsonl_from_original_manifest import convert_manifest
@@ -90,6 +91,81 @@ def test_prepare_local256_550k_v1_dataset(tmp_path):
     assert '"right_turn"' in prompt
     assert '"waiting_area"' not in prompt
     assert Image.open(output_root / record["image"]).size == (256, 256)
+
+
+def test_prepare_rawlane_local256_uses_precomposited_lane_tif(tmp_path):
+    input_root = tmp_path / "raw"
+    centerline_root = input_root / "scene_rawlane" / "rc_one_patch_release" / "center_line_v2"
+    inter_dir = centerline_root / "inter_patch_tif"
+    lane_dir = centerline_root / "lane_patch_tif"
+    inter_dir.mkdir(parents=True)
+    lane_dir.mkdir(parents=True)
+
+    inter = np.full((256, 256, 3), 91, dtype=np.uint8)
+    rawlane = np.full((256, 256, 3), 37, dtype=np.uint8)
+    rawlane[20:24, 30:34] = 255
+    Image.fromarray(inter).save(inter_dir / "0_inter.tif")
+    Image.fromarray(rawlane).save(lane_dir / "0_lane.tif")
+
+    output_root = tmp_path / "prepared_rawlane"
+    summary = prepare_dataset(
+        SimpleNamespace(
+            input_root=str(input_root),
+            output_root=str(output_root),
+            view_mode="local256",
+            target_size=256,
+            context_size=256,
+            stride=256,
+            coord_range=1000,
+            prompt_profile="rawlane_local256_550k_v1",
+            input_raster="rawlane",
+            black_ratio_threshold=1.0,
+            include_intersections=True,
+            max_tifs=0,
+            max_patches=0,
+        )
+    )
+
+    assert summary["input_raster"] == "rawlane"
+    assert summary["raw_lane_overlay"] is True
+    record = json.loads((output_root / "infer.jsonl").read_text(encoding="utf-8"))
+    assert record["meta"]["input_raster"] == "rawlane"
+    assert record["meta"]["model_source_tif"].replace("\\", "/").endswith("lane_patch_tif/0_lane.tif")
+    assert "white lane overlay predicted by a PV camera model" in record["conversations"][0]["value"]
+    rendered = np.asarray(Image.open(output_root / record["image"]))
+    assert np.array_equal(rendered, rawlane)
+
+
+def test_prepare_rawlane_local256_requires_aligned_lane_tif(tmp_path):
+    input_root = tmp_path / "raw"
+    inter_dir = (
+        input_root
+        / "scene_missing_rawlane"
+        / "rc_one_patch_release"
+        / "center_line_v2"
+        / "inter_patch_tif"
+    )
+    inter_dir.mkdir(parents=True)
+    Image.fromarray(np.full((256, 256, 3), 91, dtype=np.uint8)).save(inter_dir / "0_inter.tif")
+
+    with pytest.raises(FileNotFoundError, match="RawLane input TIF"):
+        prepare_dataset(
+            SimpleNamespace(
+                input_root=str(input_root),
+                output_root=str(tmp_path / "prepared_missing"),
+                view_mode="local256",
+                target_size=256,
+                context_size=256,
+                stride=256,
+                coord_range=1000,
+                prompt_profile="rawlane_local256_550k_v1",
+                input_raster="rawlane",
+                black_ratio_threshold=1.0,
+                include_intersections=True,
+                max_tifs=0,
+                max_patches=0,
+            )
+        )
 
 
 def test_prepare_context_dataset_threshold_one_skips_only_fully_black_target(tmp_path):

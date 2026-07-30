@@ -189,3 +189,10 @@ test recipe matrix and evaluate checkpoints trained by
 | `layer_fusion` | Direct multi-layer ViT feature fusion before the projector. |
 | `deepstack` | Per-layer visual residual injection into Qwen decoder layers. |
 | `lora_llm` | Inference entry intended for checkpoints trained with LLM LoRA. |
+# RawLane local256 full E2E evaluation
+
+`run_and_eval_rc_e2e_rawlane_local256_checkpoint12504_full_npu.sh` evaluates
+the RawLane-local256 checkpoint by cropping the aligned
+`lane_patch_tif/*_lane.tif` image directly. That raster already contains the
+RawLane overlay; it must not be overlaid a second time. The matching
+`*_inter.tif` remains the reference for the patch grid and black-patch filter.

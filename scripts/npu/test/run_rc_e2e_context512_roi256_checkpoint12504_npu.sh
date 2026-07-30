@@ -21,6 +21,7 @@ E2E_VIEW_MODE=${E2E_VIEW_MODE:-context512_roi256}
 E2E_TARGET_SIZE=${E2E_TARGET_SIZE:-256}
 E2E_CONTEXT_SIZE=${E2E_CONTEXT_SIZE:-512}
 E2E_PROMPT_PROFILE=${E2E_PROMPT_PROFILE:-current}
+E2E_INPUT_RASTER=${E2E_INPUT_RASTER:-inter}
 E2E_DATASET_ROOT=${E2E_DATASET_ROOT:-${E2E_WORK_ROOT}/e2e_data_${E2E_VIEW_MODE}}
 REBUILD_E2E_DATASET=${REBUILD_E2E_DATASET:-False}
 BLACK_RATIO_THRESHOLD=${BLACK_RATIO_THRESHOLD:-1.0}
@@ -157,6 +158,7 @@ if is_true "${REBUILD_E2E_DATASET}" || [ ! -s "${E2E_DATASET_ROOT}/infer.jsonl" 
     --stride "${E2E_TARGET_SIZE}" \
     --coord-range 1000 \
     --prompt-profile "${E2E_PROMPT_PROFILE}" \
+    --input-raster "${E2E_INPUT_RASTER}" \
     --black-ratio-threshold "${BLACK_RATIO_THRESHOLD}" \
     --include-intersections \
     --max-tifs "${MAX_TIFS}" \
@@ -169,6 +171,30 @@ if [ ! -s "${E2E_DATASET_ROOT}/infer.jsonl" ]; then
   echo "ERROR: E2E inference JSONL was not produced." >&2
   exit 2
 fi
+
+python - "${E2E_DATASET_ROOT}/dataset_summary.json" "${E2E_INPUT_RASTER}" "${E2E_PROMPT_PROFILE}" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+summary_path = Path(sys.argv[1])
+if not summary_path.is_file():
+    raise FileNotFoundError(f"E2E dataset summary not found: {summary_path}")
+summary = json.loads(summary_path.read_text(encoding="utf-8"))
+expected_raster = sys.argv[2]
+expected_prompt = sys.argv[3]
+if summary.get("input_raster", "inter") != expected_raster:
+    raise ValueError(
+        f"Cached E2E dataset input_raster={summary.get('input_raster')!r}, expected {expected_raster!r}. "
+        "Set REBUILD_E2E_DATASET=True or use a separate E2E_DATASET_ROOT."
+    )
+if summary.get("prompt_profile") != expected_prompt:
+    raise ValueError(
+        f"Cached E2E dataset prompt_profile={summary.get('prompt_profile')!r}, expected {expected_prompt!r}. "
+        "Set REBUILD_E2E_DATASET=True or use a separate E2E_DATASET_ROOT."
+    )
+print(f"[e2e] dataset profile passed: input_raster={expected_raster} prompt={expected_prompt}")
+PY
 
 if ! has_checkpoint_weights "${CHECKPOINT_DIR}"; then
   echo "[e2e] downloading checkpoint ${CHECKPOINT_OBS_PATH} -> ${CHECKPOINT_DIR}"
@@ -219,6 +245,7 @@ echo "Visible NPUs:      ${ASCEND_RT_VISIBLE_DEVICES}"
 echo "Per-device batch:  ${PER_DEVICE_INFER_BATCH_SIZE}"
 echo "Dataset view:      ${E2E_VIEW_MODE}"
 echo "Prompt profile:    ${E2E_PROMPT_PROFILE}"
+echo "Input raster:      ${E2E_INPUT_RASTER}"
 echo "Target frame:      ${E2E_TARGET_SIZE}x${E2E_TARGET_SIZE}, norm1000"
 echo "Source image:      ${E2E_CONTEXT_SIZE}x${E2E_CONTEXT_SIZE} -> DINOv2 518x518"
 echo "============================================================"

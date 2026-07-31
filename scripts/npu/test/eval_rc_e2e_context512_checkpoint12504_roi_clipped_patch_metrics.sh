@@ -19,6 +19,7 @@ SANITIZE_REPORT=${SANITIZE_REPORT:-${EVAL_ROOT}/prediction_roi_clip_report.json}
 VIZ_INPUT_DIR=${VIZ_INPUT_DIR:-${EVAL_ROOT}/visualization_input}
 VIZ_OUTPUT_DIR=${VIZ_OUTPUT_DIR:-${EVAL_ROOT}/visualizations}
 VIS_LIMIT=${VIS_LIMIT:-200}
+EVAL_JSONL=${EVAL_JSONL:-${EVAL_ROOT}/eval_records.jsonl}
 
 if [ ! -f "${ACTIVATE_SCRIPT}" ]; then
   echo "ERROR: activation script not found: ${ACTIVATE_SCRIPT}" >&2
@@ -44,13 +45,18 @@ PREDICTION_DIR="${CLIPPED_PREDICTION_DIR}" \
 EVAL_RUN_ID="${SOURCE_RUN_ID}_roi_clipped_patch_metrics" \
 EVAL_ROOT="${EVAL_ROOT}" \
 METRICS_JSON="${EVAL_ROOT}/metrics.json" \
-EVAL_JSONL="${EVAL_ROOT}/eval_records.jsonl" \
+EVAL_JSONL="${EVAL_JSONL}" \
 METRICS_OBS_PATH="" \
 REQUIRE_ALL=True \
 bash "${SCRIPT_DIR}/eval_rc_e2e_context512_roi256_checkpoint12504_patch_metrics.sh"
 
 mkdir -p "${VIZ_INPUT_DIR}" "${VIZ_OUTPUT_DIR}"
-ln -sfn "${EVAL_ROOT}/eval_records.jsonl" "${VIZ_INPUT_DIR}/summary.jsonl"
+if [ ! -s "${EVAL_JSONL}" ]; then
+  echo "ERROR: visualization source JSONL not found or empty: ${EVAL_JSONL}" >&2
+  exit 2
+fi
+rm -f "${VIZ_INPUT_DIR}/summary.json" "${VIZ_INPUT_DIR}/summary.jsonl"
+cp "${EVAL_JSONL}" "${VIZ_INPUT_DIR}/summary.jsonl"
 python scripts/tools/visualize_centerline.py \
   --input-dir "${VIZ_INPUT_DIR}" \
   --image-folder "${IMAGE_FOLDER}" \
@@ -64,6 +70,6 @@ echo "============================================================"
 echo "ROI-CLIPPED PATCH METRICS COMPLETE"
 echo "Clip report: ${SANITIZE_REPORT}"
 echo "Metrics:     ${EVAL_ROOT}/metrics.json"
-echo "Eval JSONL:  ${EVAL_ROOT}/eval_records.jsonl"
+echo "Eval JSONL:  ${EVAL_JSONL}"
 echo "Visuals:     ${VIZ_OUTPUT_DIR}"
 echo "============================================================"

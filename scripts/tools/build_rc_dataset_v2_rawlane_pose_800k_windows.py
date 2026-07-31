@@ -66,6 +66,11 @@ def parse_args(argv=None) -> argparse.Namespace:
     parser.add_argument("--visualize-per-difficulty", type=int, default=0)
     parser.add_argument("--skip-download", action="store_true")
     parser.add_argument("--skip-stage", action="store_true")
+    parser.add_argument(
+        "--stage-only",
+        action="store_true",
+        help="Complete all source stages, then stop before finalization, validation, and packaging.",
+    )
     parser.add_argument("--skip-validation", action="store_true")
     parser.add_argument("--skip-package", action="store_true")
     parser.add_argument("--keep-raw-source-after-stage", action="store_true")
@@ -141,6 +146,8 @@ def run_streaming_builder(paths: dict[str, Path], args: argparse.Namespace) -> N
     ]
     if args.skip_download:
         command.append("--skip-download")
+    if args.stage_only:
+        command.append("--skip-finalize")
     if args.keep_raw_source_after_stage:
         command.append("--keep-raw-source-after-stage")
     if args.keep_archives:
@@ -326,6 +333,13 @@ def main(argv=None) -> None:
     )
 
     run_streaming_builder(paths, args)
+    if args.stage_only:
+        print(
+            "[rawlane-pose-dataset] all available sources staged; "
+            "create the fixed source split manifest next.",
+            flush=True,
+        )
+        return
     variant_roots = {
         target: rename_variant(
             paths["output_root"], source, target, args.resume, fixed_split_sha256

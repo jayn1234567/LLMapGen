@@ -13,7 +13,13 @@ silently changing the benchmark.
 
 ## Recommended V1 Selection
 
-After all seven sources have completed staging, create a source-balanced
+First complete all seven source stages without finalizing a random split:
+
+```powershell
+python scripts\tools\build_rc_dataset_v2_rawlane_pose_800k_windows.py --work-root "D:\data\fulldata_rawlane_pose" --obsutil-path "C:\Users\jWX1497058\Downloads\obsutil_windows_amd64\obsutil_windows_amd64_5.8.3\obsutil.exe" --stage-only --resume
+```
+
+Then create a source-balanced
 manifest with 14 eval maps and 7 test maps:
 
 ```powershell

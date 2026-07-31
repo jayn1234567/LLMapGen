@@ -21,6 +21,9 @@ ORIGINAL_RESULT_ROOT=${ORIGINAL_RESULT_ROOT:-${OUTPUT_ROOT}/original_pipeline_me
 RULE_WORKERS=${RULE_WORKERS:-16}
 EVAL_VIS_FLAG=${EVAL_VIS_FLAG:-False}
 RUN_ORIGINAL_E2E=${RUN_ORIGINAL_E2E:-False}
+RUN_ALL_EVAL=${RUN_ALL_EVAL:-True}
+RUN_LOW_EVAL=${RUN_LOW_EVAL:-True}
+RUN_HIGH_EVAL=${RUN_HIGH_EVAL:-True}
 
 is_true() {
   case "${1:-}" in
@@ -139,7 +142,7 @@ if ! is_true "${RUN_ORIGINAL_E2E}"; then
   exit 0
 fi
 
-echo "[gt-oracle-e2e] stage 4/4: untouched original all-roads pipeline"
+echo "[gt-oracle-e2e] stage 4/4: original all/low/high road evaluation pipeline"
 E2E_DATA_SOURCE=raw_copy \
 E2E_RAW_ROOT="${RAW_E2E_ROOT}" \
 E2E_DATA_ROOT="${RUN_WORK_ROOT}/e2e_data" \
@@ -156,9 +159,9 @@ INSTALL_ENGINE_DEPS=False \
 RULE_WORKERS="${RULE_WORKERS}" \
 RUN_FORMAT_STEP=True \
 RUN_RULE_STEP=True \
-RUN_ALL_EVAL=True \
-RUN_LOW_EVAL=False \
-RUN_HIGH_EVAL=False \
+RUN_ALL_EVAL="${RUN_ALL_EVAL}" \
+RUN_LOW_EVAL="${RUN_LOW_EVAL}" \
+RUN_HIGH_EVAL="${RUN_HIGH_EVAL}" \
 EVAL_SIMPLIFY_PATH=False \
 EVAL_VIS_FLAG="${EVAL_VIS_FLAG}" \
 UPLOAD_RESULTS=False \
@@ -169,7 +172,9 @@ echo "GT-NONEMPTY ORACLE E2E COMPLETE"
 echo "Suppression report: ${ORACLE_REPORT}"
 echo "Patch comparison:   ${PATCH_COMPARISON_JSON}"
 echo "Oracle predictions: ${ORACLE_PREDICTION_DIR}"
-echo "Original metrics:   ${ORIGINAL_RESULT_ROOT}/eval_result_all"
+echo "Original all:       ${ORIGINAL_RESULT_ROOT}/eval_result_all"
+echo "Original low:       ${ORIGINAL_RESULT_ROOT}/eval_result_low"
+echo "Original high:      ${ORIGINAL_RESULT_ROOT}/eval_result_high"
 echo "Run-local E2E data: ${RUN_WORK_ROOT}/e2e_data"
 echo "WARNING: diagnostic oracle metric; do not report as production performance."
 echo "============================================================"

@@ -97,7 +97,7 @@ LOGGING_STEPS=${LOGGING_STEPS:-10}                                              
 EVAL_STEPS=${EVAL_STEPS:-2000}                                                    # Evaluation interval when ENABLE_EVAL is true.
 EVAL_SAMPLE_LIMIT=${EVAL_SAMPLE_LIMIT:-10000}                                     # Deterministic eval-loss subset size; 0 uses the full eval split.
 PER_DEVICE_EVAL_BATCH_SIZE=${PER_DEVICE_EVAL_BATCH_SIZE:-1}                       # Keep eval memory below the training micro-batch peak.
-CHECKPOINT_SAVE_MODE=${CHECKPOINT_SAVE_MODE:-sharded}                             # sharded is the stable default; original restores the pre-sharding rank0 save path.
+CHECKPOINT_SAVE_MODE=${CHECKPOINT_SAVE_MODE:-original}                            # Proven formal path: rank0 writes ordinary gathered checkpoints after NPU cache cleanup.
 case "${CHECKPOINT_SAVE_MODE}" in
   sharded)
     DEEPSPEED_CONFIG=${DEEPSPEED_CONFIG:-scripts/deepspeed_zero3_no_merge.json}
@@ -112,9 +112,9 @@ case "${CHECKPOINT_SAVE_MODE}" in
     exit 2
     ;;
 esac
-ENABLE_EVAL=${ENABLE_EVAL:-False}                                                 # Disabled by default; dedicated smoke/formal runs may opt in.
+ENABLE_EVAL=${ENABLE_EVAL:-True}                                                  # Formal run reports deterministic eval loss every EVAL_STEPS.
 SAVE_BEST_EVAL_LOSS=${SAVE_BEST_EVAL_LOSS:-False}                                 # Keep false when eval is only used to annotate regular checkpoints.
-SAVE_BEST_TRAIN_LOSS=False                                                        # Direct best-model copies require consolidation; select from regular sharded checkpoints instead.
+SAVE_BEST_TRAIN_LOSS=False                                                        # Use regular checkpoints only; avoid extra save-time model copies.
 BEST_TRAIN_LOSS_START_STEP=${BEST_TRAIN_LOSS_START_STEP:-5000}                    # Step threshold before best-train-loss checkpointing starts.
 SAVE_BEST_INFER_INDEX=${SAVE_BEST_INFER_INDEX:-False}                             # Whether to run inference-based best checkpoint selection.
 BEST_INFER_INDEX_METRIC=${BEST_INFER_INDEX_METRIC:-length_f1}                     # Metric used for inference-based best checkpoint selection.

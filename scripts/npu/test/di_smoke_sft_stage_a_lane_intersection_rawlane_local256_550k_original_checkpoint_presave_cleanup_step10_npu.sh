@@ -32,6 +32,7 @@ export SAVE_BEST_INFER_INDEX=False
 export SWANLAB_ENABLE=False
 export CHECKPOINT_SAVE_MODE=original
 export DEEPSPEED_CONFIG=scripts/deepspeed_zero3.json
+export ENABLE_EVAL=False
 export MLLM_NPU_EMPTY_CACHE_BEFORE_CHECKPOINT=True
 export MLLM_SKIP_DISTRIBUTED_FLOS_ON_SAVE=False
 

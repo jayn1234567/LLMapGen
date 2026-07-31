@@ -6,26 +6,42 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[1]
 TRAIN_SCRIPT = REPO_ROOT / "scripts/npu/train/train_sft_stage_a_lane_intersection_datasetv2_rawlane_local256_550k_original_dinov2_caprl4b_nodeepstack_npu.sh"
 ZERO3_CONFIG = REPO_ROOT / "scripts/deepspeed_zero3_no_merge.json"
+ZERO3_GATHER_CONFIG = REPO_ROOT / "scripts/deepspeed_zero3.json"
 DI_STEP10_SMOKE = REPO_ROOT / "scripts/npu/test/di_smoke_sft_stage_a_lane_intersection_rawlane_local256_550k_zero3_step10_npu.sh"
 DI_ORIGINAL_SAVE_STEP10_SMOKE = REPO_ROOT / "scripts/npu/test/di_smoke_sft_stage_a_lane_intersection_rawlane_local256_550k_original_checkpoint_presave_cleanup_step10_npu.sh"
 DI_ORIGINAL_SAVE_EVAL_STEP10_SMOKE = REPO_ROOT / "scripts/npu/test/di_smoke_sft_stage_a_lane_intersection_rawlane_local256_550k_original_checkpoint_eval_loss_presave_cleanup_step10_npu.sh"
 
 
 class RawLaneZero3ShardedRecipeTest(unittest.TestCase):
-    def test_recipe_keeps_batch_four_and_never_gathers_during_save(self):
+    def test_formal_recipe_uses_original_save_with_eval_loss(self):
         script = TRAIN_SCRIPT.read_text(encoding="utf-8")
-        config = json.loads(ZERO3_CONFIG.read_text(encoding="utf-8"))
+        config = json.loads(ZERO3_GATHER_CONFIG.read_text(encoding="utf-8"))
 
         self.assertIn("PER_DEVICE_TRAIN_BATCH_SIZE=${PER_DEVICE_TRAIN_BATCH_SIZE:-4}", script)
-        self.assertIn("CHECKPOINT_SAVE_MODE=${CHECKPOINT_SAVE_MODE:-sharded}", script)
-        self.assertIn("DEEPSPEED_CONFIG=${DEEPSPEED_CONFIG:-scripts/deepspeed_zero3_no_merge.json}", script)
+        self.assertIn("TARGET_GLOBAL_BATCH_SIZE=${TARGET_GLOBAL_BATCH_SIZE:-128}", script)
+        self.assertIn("CHECKPOINT_SAVE_MODE=${CHECKPOINT_SAVE_MODE:-original}", script)
+        self.assertIn("DEEPSPEED_CONFIG=${DEEPSPEED_CONFIG:-scripts/deepspeed_zero3.json}", script)
+        self.assertIn("ENABLE_EVAL=${ENABLE_EVAL:-True}", script)
+        self.assertIn("EVAL_STEPS=${EVAL_STEPS:-2000}", script)
+        self.assertIn("EVAL_SAMPLE_LIMIT=${EVAL_SAMPLE_LIMIT:-10000}", script)
+        self.assertIn("PER_DEVICE_EVAL_BATCH_SIZE=${PER_DEVICE_EVAL_BATCH_SIZE:-1}", script)
+        self.assertIn("SAVE_STEPS=${SAVE_STEPS:-1000}", script)
         self.assertIn('--save_on_each_node "${SAVE_ON_EACH_NODE}"', script)
         self.assertIn("MLLM_NPU_EMPTY_CACHE_BEFORE_CHECKPOINT", script)
         self.assertIn("MLLM_SKIP_DISTRIBUTED_FLOS_ON_SAVE", script)
-        self.assertIn("zero_shards/node_${NODE_RANK}", script)
-        self.assertFalse(
+        self.assertTrue(
             config["zero_optimization"]["gather_16bit_weights_on_model_save"]
         )
+
+    def test_sharded_smokes_explicitly_override_formal_defaults(self):
+        di_smoke = DI_STEP10_SMOKE.read_text(encoding="utf-8")
+        local_smoke = (REPO_ROOT / "scripts/npu/test/smoke_sft_stage_a_lane_intersection_rawlane_local256_550k_zero3_sharded_checkpoint_npu.sh").read_text(encoding="utf-8")
+        config = json.loads(ZERO3_CONFIG.read_text(encoding="utf-8"))
+
+        self.assertIn("export CHECKPOINT_SAVE_MODE=sharded", di_smoke)
+        self.assertIn("export ENABLE_EVAL=False", di_smoke)
+        self.assertIn("CHECKPOINT_SAVE_MODE=sharded", local_smoke)
+        self.assertFalse(config["zero_optimization"]["gather_16bit_weights_on_model_save"])
 
     def test_di_smoke_saves_at_step_ten_without_changing_formal_defaults(self):
         formal_script = TRAIN_SCRIPT.read_text(encoding="utf-8")
@@ -57,7 +73,7 @@ class RawLaneZero3ShardedRecipeTest(unittest.TestCase):
         formal_script = TRAIN_SCRIPT.read_text(encoding="utf-8")
         smoke_script = DI_ORIGINAL_SAVE_EVAL_STEP10_SMOKE.read_text(encoding="utf-8")
 
-        self.assertIn("ENABLE_EVAL=${ENABLE_EVAL:-False}", formal_script)
+        self.assertIn("ENABLE_EVAL=${ENABLE_EVAL:-True}", formal_script)
         self.assertIn("SAVE_BEST_EVAL_LOSS=${SAVE_BEST_EVAL_LOSS:-False}", formal_script)
         self.assertIn('--prediction_loss_only True', formal_script)
         self.assertIn('--per_device_eval_batch_size "${PER_DEVICE_EVAL_BATCH_SIZE}"', formal_script)

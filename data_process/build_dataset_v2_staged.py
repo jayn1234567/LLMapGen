@@ -58,6 +58,13 @@ from data_process.state_update_dataset_common import (
     validate_rows,
     write_json,
 )
+from data_process.fixed_source_splits import (
+    SPLIT_POLICY as FIXED_SPLIT_POLICY,
+    fixed_split_descriptor,
+    load_fixed_source_split_manifest,
+    split_for_raw_sample,
+    validate_fixed_holdout_coverage,
+)
 from scripts.tools.tag_hard_map_samples import DIFFICULTY_RULE_VERSION
 
 
@@ -113,6 +120,11 @@ def parse_args(argv=None):
     stage.add_argument("--split-seed", type=int, default=42)
     stage.add_argument("--train-ratio", type=float, default=0.90)
     stage.add_argument("--eval-ratio", type=float, default=0.05)
+    stage.add_argument(
+        "--fixed-source-split-manifest",
+        default=os.environ.get("RC_FIXED_SOURCE_SPLIT_MANIFEST", ""),
+        help="Explicit raw_sample_id eval/test manifest; all unlisted large maps become train.",
+    )
     stage.add_argument("--archive-workers", type=int, default=1)
     stage.add_argument("--selective-archive-extract", action="store_true")
     stage.add_argument("--keep-archives", action="store_true")
@@ -163,6 +175,15 @@ def parse_args(argv=None):
     finalize.add_argument("--patch-size", type=int, default=256)
     finalize.add_argument("--context-size", type=int, default=512)
     finalize.add_argument("--coord-range", type=int, default=DEFAULT_COORD_RANGE)
+    finalize.add_argument(
+        "--fixed-source-split-manifest",
+        default=os.environ.get("RC_FIXED_SOURCE_SPLIT_MANIFEST", ""),
+    )
+    finalize.add_argument(
+        "--allow-missing-fixed-holdouts",
+        action="store_true",
+        help="Allow a source subset to omit fixed eval/test maps. Training leakage still fails.",
+    )
     return parser.parse_args(argv)
 
 
@@ -261,6 +282,11 @@ def stage_source(args) -> None:
     candidate_jsonl = Path(candidate_jsonl_text) if candidate_jsonl_text else None
     allowed_train_ids = load_train_candidate_ids(candidate_jsonl) if candidate_jsonl else None
     candidate_filter_sha256 = file_sha256(candidate_jsonl) if candidate_jsonl else ""
+    fixed_manifest_text = str(getattr(args, "fixed_source_split_manifest", "") or "").strip()
+    fixed_manifest = (
+        load_fixed_source_split_manifest(fixed_manifest_text) if fixed_manifest_text else None
+    )
+    fixed_descriptor = fixed_split_descriptor(fixed_manifest)
     if args.resume and marker_path.is_file():
         marker = json.loads(marker_path.read_text(encoding="utf-8"))
         if marker.get("stage_version") != STAGE_VERSION or not marker.get("semantic_validation_passed"):
@@ -305,6 +331,12 @@ def stage_source(args) -> None:
             raise ValueError(
                 f"completed stage uses a different train candidate filter: {marker_path}"
             )
+        marker_fixed = marker.get("fixed_source_split") or {}
+        expected_fixed_sha = str((fixed_descriptor or {}).get("file_sha256") or "")
+        if str(marker_fixed.get("file_sha256") or "") != expected_fixed_sha:
+            raise ValueError(
+                f"completed stage uses a different fixed source split manifest: {marker_path}"
+            )
         print(f"[dataset-v2-stage] completed shard already exists: {marker_path}", flush=True)
         if args.delete_input_root_after_stage and input_root.exists():
             if not args.delete_root_parent:
@@ -335,7 +367,9 @@ def stage_source(args) -> None:
     semantic_counts = Counter()
     try:
         for sample in tqdm(samples, desc=f"stage source {args.source_index}", unit="sample"):
-            split = stable_sample_split(sample.sample_id, args.split_seed, args.train_ratio, args.eval_ratio)
+            split = split_for_raw_sample(sample.sample_id, fixed_manifest)
+            if split is None:
+                split = stable_sample_split(sample.sample_id, args.split_seed, args.train_ratio, args.eval_ratio)
             process_args = copy.copy(args)
             process_args.stride = args.train_stride if split == "train" else args.stride
             rows = process_sample(
@@ -426,7 +460,7 @@ def stage_source(args) -> None:
         "source_uri": args.source_uri or str(input_root),
         "input_root": str(input_root),
         "raw_sample_count": len(samples),
-        "split_policy": "sha256_sample_id_seed_threshold",
+        "split_policy": FIXED_SPLIT_POLICY if fixed_manifest else "sha256_sample_id_seed_threshold",
         "split_seed": args.split_seed,
         "train_ratio": args.train_ratio,
         "eval_ratio": args.eval_ratio,
@@ -452,6 +486,7 @@ def stage_source(args) -> None:
             "sha256": candidate_filter_sha256,
             "unique_ids": len(allowed_train_ids),
         } if candidate_jsonl else None,
+        "fixed_source_split": fixed_descriptor,
         "selective_archive_extract": bool(args.selective_archive_extract),
     }
     if sum(split_counts.values()) <= 0:
@@ -742,6 +777,12 @@ def finalize_stages(args) -> None:
     if not 0 <= args.intersection_target_ratio <= 1:
         raise ValueError("--intersection-target-ratio must be in [0, 1]")
     ratios = parse_ratio_spec(args.difficulty_ratios)
+    fixed_manifest_text = str(getattr(args, "fixed_source_split_manifest", "") or "").strip()
+    fixed_manifest = (
+        load_fixed_source_split_manifest(fixed_manifest_text) if fixed_manifest_text else None
+    )
+    fixed_descriptor = fixed_split_descriptor(fixed_manifest)
+    expected_fixed_sha = str((fixed_descriptor or {}).get("file_sha256") or "")
     staging_root = Path(args.staging_root)
     output_root = Path(args.output_root)
     output_root.mkdir(parents=True, exist_ok=True)
@@ -769,6 +810,12 @@ def finalize_stages(args) -> None:
             raise ValueError(
                 f"stage target_patch_size={stage_patch_size}, expected {patch_size}: {stage_root}"
             )
+        stage_fixed = summary.get("fixed_source_split") or {}
+        if str(stage_fixed.get("file_sha256") or "") != expected_fixed_sha:
+            raise ValueError(
+                f"stage fixed split manifest does not match finalization: {stage_root}; "
+                f"stage_sha={stage_fixed.get('file_sha256')!r}, expected_sha={expected_fixed_sha!r}"
+            )
         raw_lane_overlay_values.add(bool(summary.get("raw_lane_overlay", False)))
         require_raw_lane_values.add(bool(summary.get("require_raw_lane", False)))
         raw_lane_threshold_values.add(float(summary.get("raw_lane_threshold", 0.0)))
@@ -790,6 +837,13 @@ def finalize_stages(args) -> None:
 
     sample_owner, collisions = build_sample_owners(stage_roots, args.duplicate_policy)
     raw_sample_ids_by_split = collect_owned_raw_sample_splits(stage_roots, sample_owner)
+    fixed_coverage = None
+    if fixed_manifest is not None:
+        fixed_coverage = validate_fixed_holdout_coverage(
+            raw_sample_ids_by_split,
+            fixed_manifest,
+            allow_missing=bool(getattr(args, "allow_missing_fixed_holdouts", False)),
+        )
     candidate_jsonl_text = str(getattr(args, "train_candidate_jsonl", "") or "").strip()
     candidate_jsonl = Path(candidate_jsonl_text) if candidate_jsonl_text else None
     allowed_train_ids = load_train_candidate_ids(candidate_jsonl) if candidate_jsonl else None
@@ -876,7 +930,9 @@ def finalize_stages(args) -> None:
         "record_counts": counts,
         "image_materialization_modes": link_modes,
         "semantic_target_counts": semantic_counts,
-        "split_policy": "sha256_sample_id_seed_threshold",
+        "split_policy": FIXED_SPLIT_POLICY if fixed_manifest else "sha256_sample_id_seed_threshold",
+        "fixed_source_split": fixed_descriptor,
+        "fixed_source_split_coverage": fixed_coverage,
         "coord_mode": COORD_MODE_NORM1000,
         "coord_range": args.coord_range,
         "target_patch_size": patch_size,
@@ -939,6 +995,8 @@ def finalize_stages(args) -> None:
         "dataset_version": summary["dataset_version"],
         "split_unit": "raw_sample_id",
         "split_policy": summary["split_policy"],
+        "fixed_source_split": fixed_descriptor,
+        "fixed_source_split_coverage": fixed_coverage,
         "raw_sample_owner_count": len(sample_owner),
         "duplicate_policy": args.duplicate_policy,
         "duplicate_raw_sample_events": collisions,

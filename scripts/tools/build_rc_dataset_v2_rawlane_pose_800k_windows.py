@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import shlex
 import subprocess
 import sys
@@ -24,6 +25,7 @@ if str(REPO_ROOT) not in sys.path:
 
 from scripts.tools.build_rc_dataset_v2_from_obs import DEFAULT_SOURCE_OBS_ROOTS, create_variant_tar
 from scripts.tools.build_rc_dataset_v2_rawlane_256_context_windows import relabel_metadata
+from data_process.fixed_source_splits import load_fixed_source_split_manifest
 
 
 TARGET_SAMPLES = 800_000
@@ -50,6 +52,12 @@ def parse_args(argv=None) -> argparse.Namespace:
     parser.add_argument("--archive-workers", type=int, default=16)
     parser.add_argument("--train-stride", type=int, default=128)
     parser.add_argument("--split-seed", type=int, default=42)
+    parser.add_argument(
+        "--fixed-source-split-manifest",
+        default=os.environ.get("RC_FIXED_SOURCE_SPLIT_MANIFEST", ""),
+        help="Reusable fixed large-map eval/test manifest.",
+    )
+    parser.add_argument("--allow-missing-fixed-holdouts", action="store_true")
     parser.add_argument("--difficulty-seed", type=int, default=20260713)
     parser.add_argument("--raw-lane-threshold", type=float, default=0.0)
     parser.add_argument("--pose-threshold", type=float, default=0.0)
@@ -145,12 +153,16 @@ def run_streaming_builder(paths: dict[str, Path], args: argparse.Namespace) -> N
         command.extend(["--obsutil-path", args.obsutil_path])
     if args.obsutil_config:
         command.extend(["--obsutil-config", args.obsutil_config])
+    if args.fixed_source_split_manifest:
+        command.extend(["--fixed-source-split-manifest", args.fixed_source_split_manifest])
+    if args.allow_missing_fixed_holdouts:
+        command.append("--allow-missing-fixed-holdouts")
     for source in args.source_obs_root or DEFAULT_SOURCE_OBS_ROOTS:
         command.extend(["--source-obs-root", source])
     run(command)
 
 
-def completion_errors(root: Path) -> list[str]:
+def completion_errors(root: Path, expected_fixed_split_sha256: str = "") -> list[str]:
     errors = []
     train_path = root / "phase_a" / "train.jsonl"
     info_path = root / "dataset_info.json"
@@ -172,23 +184,41 @@ def completion_errors(root: Path) -> list[str]:
     balance = info.get("balance") or {}
     if abs(float(balance.get("actual_intersection_ratio", -1.0)) - INTERSECTION_RATIO) > 1e-8:
         errors.append(f"invalid intersection ratio={balance.get('actual_intersection_ratio')}")
+    fixed = info.get("fixed_source_split") or {}
+    actual_fixed_sha = str(fixed.get("file_sha256") or "")
+    if actual_fixed_sha != expected_fixed_split_sha256:
+        errors.append(
+            f"fixed split sha256={actual_fixed_sha!r}, expected={expected_fixed_split_sha256!r}"
+        )
     return errors
 
 
-def rename_variant(output_root: Path, source_variant: str, target_variant: str, resume: bool) -> Path:
+def rename_variant(
+    output_root: Path,
+    source_variant: str,
+    target_variant: str,
+    resume: bool,
+    expected_fixed_split_sha256: str,
+) -> Path:
     source_root = output_root / source_variant
     target_root = output_root / target_variant
-    if resume and target_root.is_dir() and not completion_errors(target_root):
+    if resume and target_root.is_dir() and not completion_errors(
+        target_root, expected_fixed_split_sha256
+    ):
         print(f"[rawlane-pose-dataset] reuse variant: {target_root}", flush=True)
         return target_root
     if target_root.exists():
-        raise ValueError(f"target variant exists but is incomplete: {target_root}; {completion_errors(target_root)}")
+        raise ValueError(
+            f"target variant exists but is incompatible: {target_root}; "
+            f"{completion_errors(target_root, expected_fixed_split_sha256)}. "
+            "Use a new --work-root/output-root for a new benchmark split."
+        )
     if not source_root.is_dir():
         raise FileNotFoundError(f"source variant not found: {source_root}")
     source_root.rename(target_root)
     relabel_metadata(target_root / "dataset_info.json", source_variant, target_variant)
     relabel_metadata(output_root / "build_summary.json", source_variant, target_variant)
-    errors = completion_errors(target_root)
+    errors = completion_errors(target_root, expected_fixed_split_sha256)
     if errors:
         raise ValueError(f"renamed pose variant failed checks: {target_root}; errors={errors}")
     return target_root
@@ -275,6 +305,13 @@ def validate_variant(root: Path, variant: str, args: argparse.Namespace) -> None
 
 def main(argv=None) -> None:
     args = parse_args(argv)
+    fixed_manifest = (
+        load_fixed_source_split_manifest(args.fixed_source_split_manifest)
+        if args.fixed_source_split_manifest else None
+    )
+    if fixed_manifest is not None:
+        args.fixed_source_split_manifest = str(fixed_manifest["path"])
+    fixed_split_sha256 = str((fixed_manifest or {}).get("file_sha256") or "")
     paths = resolve_paths(args)
     for key, value in paths.items():
         value.mkdir(parents=True, exist_ok=True)
@@ -283,10 +320,16 @@ def main(argv=None) -> None:
     print(f"[rawlane-pose-dataset] difficulty: {DIFFICULTY_RATIOS}", flush=True)
     print("[rawlane-pose-dataset] image 1: BEV + patch_tif/0_lane.tif", flush=True)
     print("[rawlane-pose-dataset] image 2: patch_tif/0_pose.tif", flush=True)
+    print(
+        f"[rawlane-pose-dataset] fixed split: {args.fixed_source_split_manifest or '<disabled>'}",
+        flush=True,
+    )
 
     run_streaming_builder(paths, args)
     variant_roots = {
-        target: rename_variant(paths["output_root"], source, target, args.resume)
+        target: rename_variant(
+            paths["output_root"], source, target, args.resume, fixed_split_sha256
+        )
         for source, target in VARIANT_NAMES.items()
     }
     if not args.skip_validation:
@@ -312,6 +355,7 @@ def main(argv=None) -> None:
         "image_roles": ["bev_road_structure", "historical_vehicle_trajectory"],
         "raw_lane_source": "patch_tif/0_lane.tif",
         "pose_source": "patch_tif/0_pose.tif",
+        "fixed_source_split_manifest": args.fixed_source_split_manifest or None,
     }
     summary_path = paths["output_root"] / "rawlane_pose_build_summary.json"
     summary_path.write_text(json.dumps(summary, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")

@@ -4,6 +4,7 @@ import shutil
 import tarfile
 import tempfile
 import unittest
+from collections import Counter
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -21,6 +22,12 @@ from data_process.build_dataset_v2 import (
     select_balanced_candidates,
 )
 from data_process.build_dataset_v2_staged import STAGE_VERSION, finalize_stages, stable_sample_split
+from data_process.fixed_source_splits import (
+    assignment_manifest_id,
+    load_fixed_source_split_manifest,
+    split_for_raw_sample,
+    validate_fixed_holdout_coverage,
+)
 from data_process.state_update_dataset_common import (
     build_sft_record,
     centered_target_roi,
@@ -45,6 +52,12 @@ from scripts.tools.build_rc_dataset_v2_context512_windows import (
     build_compact_id_filter,
     subset_spec,
     verify_id_pairing,
+)
+from scripts.tools.create_fixed_source_split_manifest import (
+    add_representativeness_scores,
+    main as create_fixed_source_split_manifest,
+    select_source_balanced,
+    target_profile,
 )
 
 
@@ -168,6 +181,162 @@ class DatasetV2ContextTest(unittest.TestCase):
         second = stable_sample_split("sample_123", 42, 0.9, 0.05)
         self.assertEqual(first, second)
         self.assertIn(first, {"train", "eval", "test"})
+
+    def test_fixed_large_map_manifest_assigns_complement_to_train(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "fixed.json"
+            eval_ids = ["map_eval_a", "map_eval_b"]
+            test_ids = ["map_test_a"]
+            path.write_text(json.dumps({
+                "format_version": "rc_fixed_source_split_v1",
+                "manifest_id": assignment_manifest_id(eval_ids, test_ids),
+                "raw_sample_ids_by_split": {"eval": eval_ids, "test": test_ids},
+            }), encoding="utf-8")
+            manifest = load_fixed_source_split_manifest(path)
+            self.assertEqual(split_for_raw_sample("map_eval_a", manifest), "eval")
+            self.assertEqual(split_for_raw_sample("map_test_a", manifest), "test")
+            self.assertEqual(split_for_raw_sample("new_future_map", manifest), "train")
+            report = validate_fixed_holdout_coverage(
+                {
+                    "train": ["new_future_map"],
+                    "eval": eval_ids,
+                    "test": test_ids,
+                },
+                manifest,
+            )
+            self.assertEqual(report["status"], "passed")
+            with self.assertRaisesRegex(ValueError, "leaked into train"):
+                validate_fixed_holdout_coverage(
+                    {
+                        "train": ["map_eval_a", "new_future_map"],
+                        "eval": ["map_eval_b"],
+                        "test": test_ids,
+                    },
+                    manifest,
+                )
+
+    def test_streaming_stage_command_and_resume_bind_fixed_manifest_hash(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            fixed_path = root / "fixed.json"
+            fixed_path.write_text(json.dumps({
+                "format_version": "rc_fixed_source_split_v1",
+                "raw_sample_ids_by_split": {"eval": ["eval_map"], "test": ["test_map"]},
+            }), encoding="utf-8")
+            args = parse_streaming_args([
+                "--work-root", str(root / "work"),
+                "--fixed-source-split-manifest", str(fixed_path),
+            ])
+            command = [str(item) for item in build_stage_command(
+                args,
+                root / "raw" / "source",
+                root / "stage" / "source",
+                root / "raw",
+                0,
+                "obs://bucket/source/",
+                256,
+                512,
+                256,
+                128,
+                None,
+                False,
+                "both",
+            )]
+            self.assertEqual(
+                command[command.index("--fixed-source-split-manifest") + 1],
+                str(fixed_path),
+            )
+            manifest = load_fixed_source_split_manifest(fixed_path)
+            stage_root = root / "stage_marker"
+            stage_root.mkdir()
+            marker = {
+                "stage_version": STAGE_VERSION,
+                "semantic_validation_passed": True,
+                "raw_sample_count": 2,
+                "split_record_counts": {"eval": 1, "test": 1},
+                "train_candidate_filter": {"sha256": ""},
+                "fixed_source_split": {"file_sha256": manifest["file_sha256"]},
+            }
+            (stage_root / "stage_complete.json").write_text(json.dumps(marker), encoding="utf-8")
+            self.assertTrue(completed_stage(
+                stage_root,
+                expected_fixed_split_sha256=manifest["file_sha256"],
+            ))
+            self.assertFalse(completed_stage(
+                stage_root,
+                expected_fixed_split_sha256="different",
+            ))
+
+    def test_fixed_manifest_selection_balances_seven_sources(self):
+        candidates = []
+        for source_index in range(7):
+            for map_index in range(4):
+                candidates.append({
+                    "raw_sample_id": f"source_{source_index}_map_{map_index}",
+                    "source_index": source_index,
+                    "source_uri": f"obs://source/{source_index}",
+                    "base_patch_count": 100 + map_index,
+                    "intersection_patch_count": 30,
+                    "intersection_ratio": 30 / (100 + map_index),
+                    "difficulty_counts": {
+                        "easy": 30,
+                        "medium": 33,
+                        "hard": 27,
+                        "very_hard": 10 + map_index,
+                    },
+                })
+        profile = target_profile(candidates)
+        add_representativeness_scores(candidates, profile)
+        eval_items = select_source_balanced(candidates, 14, 7, set())
+        eval_ids = {item["raw_sample_id"] for item in eval_items}
+        test_items = select_source_balanced(candidates, 7, 8, eval_ids)
+        self.assertEqual(Counter(item["source_index"] for item in eval_items), Counter({i: 2 for i in range(7)}))
+        self.assertEqual(Counter(item["source_index"] for item in test_items), Counter({i: 1 for i in range(7)}))
+        self.assertFalse(eval_ids & {item["raw_sample_id"] for item in test_items})
+
+    def test_fixed_manifest_cli_reads_completed_staging(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            staging_root = Path(temp_dir) / "staging"
+            for source_index in range(7):
+                stage_root = staging_root / f"source_{source_index:02d}"
+                records_root = stage_root / "records"
+                records_root.mkdir(parents=True)
+                (stage_root / "stage_complete.json").write_text(json.dumps({
+                    "source_index": source_index,
+                    "source_uri": f"obs://source/{source_index}",
+                }), encoding="utf-8")
+                rows = []
+                for map_index in range(3):
+                    raw_id = f"source_{source_index}_map_{map_index}"
+                    for patch_index in range(2):
+                        rows.append(json.dumps({
+                            "id": f"{raw_id}_patch_{patch_index}",
+                            "raw_sample_id": raw_id,
+                            "source_index": source_index,
+                            "grid_kind": "base",
+                            "difficulty": "medium",
+                            "has_intersection": patch_index == 0,
+                        }))
+                (records_root / "train.index.jsonl").write_text(
+                    "\n".join(rows) + "\n", encoding="utf-8"
+                )
+                for split in ("eval", "test"):
+                    (records_root / f"{split}.index.jsonl").write_text("", encoding="utf-8")
+            output = Path(temp_dir) / "fixed.json"
+            create_fixed_source_split_manifest([
+                "--staging-root", str(staging_root),
+                "--output", str(output),
+                "--eval-count", "14",
+                "--test-count", "7",
+            ])
+            manifest = load_fixed_source_split_manifest(output)
+            self.assertEqual(len(manifest["eval_ids"]), 14)
+            self.assertEqual(len(manifest["test_ids"]), 7)
+            payload = json.loads(output.read_text(encoding="utf-8"))
+            source_counts = Counter(
+                item["source_index"] for item in payload["selected_sources"].values()
+            )
+            self.assertEqual(source_counts, Counter({i: 3 for i in range(7)}))
 
     def test_resume_rejects_pre_semantic_stage_markers(self):
         with tempfile.TemporaryDirectory() as temp_dir:

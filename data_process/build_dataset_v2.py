@@ -16,6 +16,7 @@ norm1000 conversion stay aligned with the Jiangjihua data pipeline.
 import argparse
 import copy
 import json
+import os
 import random
 import sys
 from collections import Counter
@@ -54,6 +55,13 @@ from data_process.state_update_dataset_common import (
     split_samples,
     validate_rows,
     write_json,
+)
+from data_process.fixed_source_splits import (
+    SPLIT_POLICY as FIXED_SPLIT_POLICY,
+    fixed_split_descriptor,
+    load_fixed_source_split_manifest,
+    split_for_raw_sample,
+    validate_fixed_holdout_coverage,
 )
 from scripts.tools.tag_hard_map_samples import DIFFICULTY_RULE_VERSION, sample_metrics
 
@@ -751,6 +759,12 @@ def parse_args(argv=None):
     parser.add_argument("--eval-ratio", type=float, default=0.05)
     parser.add_argument("--eval-count", type=int, default=-1)
     parser.add_argument("--split-seed", type=int, default=42)
+    parser.add_argument(
+        "--fixed-source-split-manifest",
+        default=os.environ.get("RC_FIXED_SOURCE_SPLIT_MANIFEST", ""),
+        help="Explicit raw_sample_id eval/test manifest; all unlisted large maps become train.",
+    )
+    parser.add_argument("--allow-missing-fixed-holdouts", action="store_true")
     parser.add_argument("--duplicate-policy", choices=["last", "first", "error"], default="last")
     parser.add_argument("--limit-samples", type=int, default=None)
     parser.add_argument("--max-patches-per-sample", type=int, default=None)
@@ -834,13 +848,32 @@ def main(argv=None):
     )
     if not samples:
         raise FileNotFoundError("no valid raw samples found across the supplied input roots")
-    train_samples, eval_samples, test_samples = split_samples(
-        samples,
-        args.train_ratio,
-        args.eval_ratio,
-        args.eval_count,
-        args.split_seed,
+    fixed_manifest_text = str(args.fixed_source_split_manifest or "").strip()
+    fixed_manifest = (
+        load_fixed_source_split_manifest(fixed_manifest_text) if fixed_manifest_text else None
     )
+    fixed_descriptor = fixed_split_descriptor(fixed_manifest)
+    if fixed_manifest is None:
+        train_samples, eval_samples, test_samples = split_samples(
+            samples,
+            args.train_ratio,
+            args.eval_ratio,
+            args.eval_count,
+            args.split_seed,
+        )
+        fixed_coverage = None
+    else:
+        grouped = {split: [] for split in ("train", "eval", "test")}
+        for sample in samples:
+            grouped[split_for_raw_sample(sample.sample_id, fixed_manifest)].append(sample)
+        train_samples, eval_samples, test_samples = (
+            grouped["train"], grouped["eval"], grouped["test"]
+        )
+        fixed_coverage = validate_fixed_holdout_coverage(
+            {split: [sample.sample_id for sample in grouped[split]] for split in grouped},
+            fixed_manifest,
+            allow_missing=args.allow_missing_fixed_holdouts,
+        )
     train_process_args = copy.copy(args)
     train_process_args.stride = args.train_stride
 
@@ -939,6 +972,9 @@ def main(argv=None):
         "ignored_source_lane_type_codes": sorted(IGNORED_LANE_TYPE_CODES),
         "semantic_validation_passed": True,
         "split_unit": "raw_sample_folder",
+        "split_policy": FIXED_SPLIT_POLICY if fixed_manifest else "seeded_random_raw_sample_split",
+        "fixed_source_split": fixed_descriptor,
+        "fixed_source_split_coverage": fixed_coverage,
         "split_seed": args.split_seed,
         "train_ratio": args.train_ratio,
         "eval_ratio": args.eval_ratio,
@@ -963,6 +999,9 @@ def main(argv=None):
         "ignored_source_lane_type_codes": sorted(IGNORED_LANE_TYPE_CODES),
         "semantic_validation_passed": True,
         "difficulty_rule_version": DIFFICULTY_RULE_VERSION,
+        "split_policy": split_manifest["split_policy"],
+        "fixed_source_split": fixed_descriptor,
+        "fixed_source_split_coverage": fixed_coverage,
         "difficulty_rule": {
             "cut_affects_difficulty": False,
             "strict_easy_required": True,

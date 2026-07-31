@@ -295,6 +295,15 @@ python -m mllm.train.train_qwen \
     --logging_steps 10
 ```
 
+### 固定大图评估划分
+
+可比的数据集版本必须在裁 patch 之前，按 `raw_sample_id` 使用同一份固定
+eval/test 大图 manifest。构建时传
+`--fixed-source-split-manifest <rc_fixed_large_maps_vN.json>`，或设置环境变量
+`RC_FIXED_SOURCE_SPLIT_MANIFEST`。名单之外的新大图默认属于 train；禁止固定
+eval/test 大图进入训练集。manifest 的生成、版本化和完整性检查见
+`docs/FIXED_SOURCE_EVAL_SPLIT.md`。
+
 ---
 
 ## 验证矩阵

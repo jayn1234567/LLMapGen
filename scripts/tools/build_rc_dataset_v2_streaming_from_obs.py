@@ -71,6 +71,12 @@ def parse_args(argv=None):
     )
     parser.add_argument("--intersection-target-ratio", type=float, default=0.30)
     parser.add_argument("--split-seed", type=int, default=42)
+    parser.add_argument(
+        "--fixed-source-split-manifest",
+        default=os.environ.get("RC_FIXED_SOURCE_SPLIT_MANIFEST", ""),
+        help="Explicit raw_sample_id eval/test manifest shared by every dataset variant.",
+    )
+    parser.add_argument("--allow-missing-fixed-holdouts", action="store_true")
     parser.add_argument("--difficulty-seed", type=int, default=20260713)
     parser.add_argument("--duplicate-policy", choices=["last", "first", "error"], default="last")
     parser.add_argument("--archive-workers", type=int, default=1)
@@ -123,6 +129,7 @@ def completed_stage(
     expected_raw_lane_threshold: float | None = None,
     expected_pose_second_image: bool | None = None,
     expected_pose_threshold: float | None = None,
+    expected_fixed_split_sha256: str | None = None,
 ) -> bool:
     marker = stage_root / "stage_complete.json"
     if not marker.is_file():
@@ -162,6 +169,9 @@ def completed_stage(
         complete = bool(payload.get("pose_second_image", False)) == bool(expected_pose_second_image)
     if complete and expected_pose_threshold is not None:
         complete = abs(float(payload.get("pose_threshold", 0.0)) - float(expected_pose_threshold)) <= 1e-12
+    if complete and expected_fixed_split_sha256 is not None:
+        fixed = payload.get("fixed_source_split") or {}
+        complete = str(fixed.get("file_sha256") or "") == expected_fixed_split_sha256
     return complete
 
 
@@ -232,6 +242,9 @@ def build_stage_command(
     if args.pose_second_image:
         command.append("--pose-second-image")
     command.extend(["--pose-threshold", args.pose_threshold])
+    fixed_manifest = str(getattr(args, "fixed_source_split_manifest", "") or "").strip()
+    if fixed_manifest:
+        command.extend(["--fixed-source-split-manifest", fixed_manifest])
     if args.resume:
         command.append("--resume")
     if args.keep_archives:
@@ -266,6 +279,15 @@ def main(argv=None):
     output_root = Path(args.output_root) if args.output_root else work_root / "output"
     candidate_jsonl = Path(args.train_candidate_jsonl) if args.train_candidate_jsonl else None
     candidate_filter_sha256 = file_sha256(candidate_jsonl) if candidate_jsonl else ""
+    fixed_manifest = (
+        Path(args.fixed_source_split_manifest).expanduser().resolve()
+        if args.fixed_source_split_manifest else None
+    )
+    if fixed_manifest is not None and not fixed_manifest.is_file():
+        raise FileNotFoundError(f"fixed source split manifest not found: {fixed_manifest}")
+    if fixed_manifest is not None:
+        args.fixed_source_split_manifest = str(fixed_manifest)
+    fixed_split_sha256 = file_sha256(fixed_manifest) if fixed_manifest else ""
     eval_test_stride = args.eval_test_stride or args.patch_size
     expected_variants = selected_variants(args.views, args.patch_size, args.context_size)
     paths = [work_root, raw_root, staging_root, output_root]
@@ -301,6 +323,10 @@ def main(argv=None):
             flush=True,
         )
     print(f"[dataset-v2-stream] target records: {args.train_target_samples}", flush=True)
+    print(
+        f"[dataset-v2-stream] fixed split:     {fixed_manifest or '<disabled>'}",
+        flush=True,
+    )
     print(f"[dataset-v2-stream] free disk:      {shutil.disk_usage(work_root).free / (1024 ** 3):.1f} GiB", flush=True)
     print("============================================================", flush=True)
 
@@ -331,6 +357,7 @@ def main(argv=None):
             args.raw_lane_threshold,
             args.pose_second_image,
             args.pose_threshold,
+            fixed_split_sha256,
         ):
             print(
                 f"[dataset-v2-stream] stale stage lacks {STAGE_VERSION}; it must be rebuilt: {stage_root}",
@@ -353,6 +380,7 @@ def main(argv=None):
                 args.raw_lane_threshold,
                 args.pose_second_image,
                 args.pose_threshold,
+                fixed_split_sha256,
             )
         ):
             print(
@@ -374,6 +402,7 @@ def main(argv=None):
             args.raw_lane_threshold,
             args.pose_second_image,
             args.pose_threshold,
+            fixed_split_sha256,
         )
         secondary_complete = secondary_stage_root is None or (
             args.resume
@@ -389,6 +418,7 @@ def main(argv=None):
                 args.raw_lane_threshold,
                 args.pose_second_image,
                 args.pose_threshold,
+                fixed_split_sha256,
             )
         )
         if primary_complete and secondary_complete:
@@ -451,6 +481,7 @@ def main(argv=None):
                 args.raw_lane_threshold,
                 args.pose_second_image,
                 args.pose_threshold,
+                fixed_split_sha256,
             )
             if not primary_complete:
                 raise RuntimeError(f"source stage validation failed: {stage_root}")
@@ -487,6 +518,7 @@ def main(argv=None):
                 args.raw_lane_threshold,
                 args.pose_second_image,
                 args.pose_threshold,
+                fixed_split_sha256,
             )
             if not secondary_complete:
                 raise RuntimeError(
@@ -517,6 +549,10 @@ def main(argv=None):
         ]
         if args.resume:
             finalize_command.append("--resume")
+        if fixed_manifest is not None:
+            finalize_command.extend(["--fixed-source-split-manifest", fixed_manifest])
+        if args.allow_missing_fixed_holdouts:
+            finalize_command.append("--allow-missing-fixed-holdouts")
         run(finalize_command)
 
     if not args.skip_upload:

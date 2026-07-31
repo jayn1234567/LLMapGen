@@ -2,16 +2,21 @@
 
 ## Purpose
 
-`rawlane_pose_local256_800k` is a two-image Stage-A lane/intersection SFT
-dataset. It keeps the existing Dataset V2 geometry, semantic classes,
-norm1000 coordinates, split policy, and difficulty selection.
+The raw-lane + pose build contains two paired Stage-A lane/intersection SFT
+datasets: `rawlane_pose_local256_800k` and
+`rawlane_pose_context512_roi256_800k`. They keep the existing Dataset V2
+geometry, semantic classes, norm1000 coordinates, split policy, and difficulty
+selection.
 
 Each sample contains:
 
-1. a 256x256 BEV road image with `patch_tif/0_lane.tif` rendered as a white
-   PV-camera lane overlay;
-2. a separate 256x256 black-background historical vehicle-trajectory image
-   built from `patch_tif/0_pose.tif`.
+1. a BEV road image with `patch_tif/0_lane.tif` rendered as a white PV-camera
+   lane overlay;
+2. a separate black-background historical vehicle-trajectory image built from
+   `patch_tif/0_pose.tif`.
+
+The local variant stores two 256x256 images. The context variant stores two
+512x512 context images and supervises only the central 256x256 ROI.
 
 The pose raster is never painted onto the BEV image. Both source rasters are
 masked by `patch_tif/0_edit_poly.tif` and cropped at identical coordinates.
@@ -66,7 +71,7 @@ of `<image>` tokens.
 <image>
 <image>
 The first image is the BEV road-structure image.
-The second image is a historical vehicle-trajectory image: white lines are historical vehicle trajectories on a black background. Use it as additional evidence for road connectivity and driving direction.
+The second image is a historical vehicle-trajectory image: white lines are historical vehicle trajectories on a black background.
 ```
 
 The existing raw-lane prompt sentence remains attached to the first image.
@@ -84,8 +89,10 @@ TIFF/GeoJSON members, globally balances 800k unique training records, validates
 every two-image pair, and creates:
 
 ```text
-D:\data\fulldata_rawlane_pose\output_rawlane_pose_local256\rawlane_pose_local256_800k
+D:\data\fulldata_rawlane_pose\output_rawlane_pose_256_context\rawlane_pose_local256_800k
+D:\data\fulldata_rawlane_pose\output_rawlane_pose_256_context\rawlane_pose_context512_roi256_800k
 D:\data\fulldata_rawlane_pose\packages_rawlane_pose\rawlane_pose_local256_800k.tar
+D:\data\fulldata_rawlane_pose\packages_rawlane_pose\rawlane_pose_context512_roi256_800k.tar
 ```
 
 Use `--skip-download --resume` when the raw sources are already present. Use

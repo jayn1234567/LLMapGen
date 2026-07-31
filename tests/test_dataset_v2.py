@@ -76,6 +76,8 @@ class DatasetV2ContextTest(unittest.TestCase):
         prompt = record["conversations"][0]["value"]
         self.assertEqual(prompt.count("<image>"), 2)
         self.assertIn("historical vehicle-trajectory image", prompt)
+        self.assertNotIn("additional evidence", prompt)
+        self.assertNotIn("driving direction", prompt)
         self.assertEqual(
             record["meta"]["input_image_roles"],
             ["bev_road_structure", "historical_vehicle_trajectory"],

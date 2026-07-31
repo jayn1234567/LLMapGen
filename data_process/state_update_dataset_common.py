@@ -1512,8 +1512,7 @@ def make_prompt(include_intersections: bool, incoming_traces, incoming_intersect
             "The first image is the BEV road-structure image.",
             (
                 "The second image is a historical vehicle-trajectory image: white lines are "
-                "historical vehicle trajectories on a black background. Use it as additional "
-                "evidence for road connectivity and driving direction."
+                "historical vehicle trajectories on a black background."
             ),
         ])
     parts.append(TASK_TEXT)

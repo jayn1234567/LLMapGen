@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build an 800k local256 Dataset V2 with raw-lane overlay and a pose image.
+"""Build paired 800k local/context Dataset V2 views with raw lane and pose.
 
 Each SFT record contains two prompt images:
 
@@ -14,6 +14,7 @@ import json
 import shlex
 import subprocess
 import sys
+from itertools import zip_longest
 from pathlib import Path
 
 
@@ -28,8 +29,10 @@ from scripts.tools.build_rc_dataset_v2_rawlane_256_context_windows import relabe
 TARGET_SAMPLES = 800_000
 DIFFICULTY_RATIOS = "empty=0,easy=0.30,medium=0.33,hard=0.27,very_hard=0.10"
 INTERSECTION_RATIO = 0.30
-SOURCE_VARIANT = "local256"
-TARGET_VARIANT = "rawlane_pose_local256_800k"
+VARIANT_NAMES = {
+    "local256": "rawlane_pose_local256_800k",
+    "context512_roi256": "rawlane_pose_context512_roi256_800k",
+}
 
 
 def parse_args(argv=None) -> argparse.Namespace:
@@ -84,11 +87,11 @@ def resolve_paths(args: argparse.Namespace) -> dict[str, Path]:
         "raw_root": Path(args.raw_root).expanduser().resolve() if args.raw_root else work_root / "raw_sources",
         "staging_root": (
             Path(args.staging_root).expanduser().resolve()
-            if args.staging_root else work_root / "staging_rawlane_pose_local256"
+            if args.staging_root else work_root / "staging_rawlane_pose_256_context"
         ),
         "output_root": (
             Path(args.output_root).expanduser().resolve()
-            if args.output_root else work_root / "output_rawlane_pose_local256"
+            if args.output_root else work_root / "output_rawlane_pose_256_context"
         ),
         "package_root": (
             Path(args.package_root).expanduser().resolve()
@@ -107,9 +110,9 @@ def run_streaming_builder(paths: dict[str, Path], args: argparse.Namespace) -> N
         "--raw-root", paths["raw_root"],
         "--staging-root", paths["staging_root"],
         "--output-root", paths["output_root"],
-        "--views", "local",
+        "--views", "both",
         "--patch-size", 256,
-        "--context-size", 256,
+        "--context-size", 512,
         "--eval-test-stride", 256,
         "--train-target-samples", TARGET_SAMPLES,
         "--train-stride", args.train_stride,
@@ -172,9 +175,9 @@ def completion_errors(root: Path) -> list[str]:
     return errors
 
 
-def rename_variant(output_root: Path, resume: bool) -> Path:
-    source_root = output_root / SOURCE_VARIANT
-    target_root = output_root / TARGET_VARIANT
+def rename_variant(output_root: Path, source_variant: str, target_variant: str, resume: bool) -> Path:
+    source_root = output_root / source_variant
+    target_root = output_root / target_variant
     if resume and target_root.is_dir() and not completion_errors(target_root):
         print(f"[rawlane-pose-dataset] reuse variant: {target_root}", flush=True)
         return target_root
@@ -183,8 +186,8 @@ def rename_variant(output_root: Path, resume: bool) -> Path:
     if not source_root.is_dir():
         raise FileNotFoundError(f"source variant not found: {source_root}")
     source_root.rename(target_root)
-    relabel_metadata(target_root / "dataset_info.json", SOURCE_VARIANT, TARGET_VARIANT)
-    relabel_metadata(output_root / "build_summary.json", SOURCE_VARIANT, TARGET_VARIANT)
+    relabel_metadata(target_root / "dataset_info.json", source_variant, target_variant)
+    relabel_metadata(output_root / "build_summary.json", source_variant, target_variant)
     errors = completion_errors(target_root)
     if errors:
         raise ValueError(f"renamed pose variant failed checks: {target_root}; errors={errors}")
@@ -225,7 +228,33 @@ def validate_two_image_records(root: Path) -> None:
     print(f"[rawlane-pose-dataset] two-image records passed: {counts}", flush=True)
 
 
-def validate_variant(root: Path, args: argparse.Namespace) -> None:
+def validate_variant_pairing(variant_roots: dict[str, Path]) -> None:
+    local_root = variant_roots[VARIANT_NAMES["local256"]]
+    context_root = variant_roots[VARIANT_NAMES["context512_roi256"]]
+    for split in ("train", "eval", "test"):
+        local_path = local_root / "phase_a" / f"{split}.jsonl"
+        context_path = context_root / "phase_a" / f"{split}.jsonl"
+        with (
+            local_path.open("r", encoding="utf-8-sig") as local_handle,
+            context_path.open("r", encoding="utf-8-sig") as context_handle,
+        ):
+            for line_number, (local_line, context_line) in enumerate(
+                zip_longest(local_handle, context_handle),
+                start=1,
+            ):
+                if local_line is None or context_line is None:
+                    raise ValueError(f"variant length mismatch for {split} at line {line_number}")
+                local_id = json.loads(local_line)["id"]
+                context_id = json.loads(context_line)["id"]
+                if local_id != context_id:
+                    raise ValueError(
+                        f"variant id mismatch for {split} line {line_number}: "
+                        f"{local_id!r} != {context_id!r}"
+                    )
+        print(f"[rawlane-pose-dataset] paired ids passed: {split}", flush=True)
+
+
+def validate_variant(root: Path, variant: str, args: argparse.Namespace) -> None:
     if args.skip_validation:
         return
     validate_two_image_records(root)
@@ -233,11 +262,11 @@ def validate_variant(root: Path, args: argparse.Namespace) -> None:
         sys.executable,
         "scripts/tools/validate_visualize_rc_dataset_v2.py",
         "--dataset-root", root,
-        "--variant", TARGET_VARIANT,
+        "--variant", variant,
         "--expected-train-samples", TARGET_SAMPLES,
         "--difficulty-ratios", DIFFICULTY_RATIOS,
         "--expected-intersection-ratio", INTERSECTION_RATIO,
-        "--output-dir", root.parent / f"{TARGET_VARIANT}_validation",
+        "--output-dir", root.parent / f"{variant}_validation",
         "--visualize-per-difficulty", args.visualize_per_difficulty,
         "--image-decode-mode", args.image_decode_mode,
         "--skip-distribution-check",
@@ -256,19 +285,25 @@ def main(argv=None) -> None:
     print("[rawlane-pose-dataset] image 2: patch_tif/0_pose.tif", flush=True)
 
     run_streaming_builder(paths, args)
-    variant_root = rename_variant(paths["output_root"], args.resume)
-    validate_variant(variant_root, args)
+    variant_roots = {
+        target: rename_variant(paths["output_root"], source, target, args.resume)
+        for source, target in VARIANT_NAMES.items()
+    }
+    if not args.skip_validation:
+        validate_variant_pairing(variant_roots)
+    for variant, variant_root in variant_roots.items():
+        validate_variant(variant_root, variant, args)
 
     packages = []
     if not args.skip_package:
-        package = paths["package_root"] / f"{TARGET_VARIANT}.tar"
-        create_variant_tar(variant_root, package, args.resume)
-        packages.append(str(package))
+        for variant, variant_root in variant_roots.items():
+            package = paths["package_root"] / f"{variant}.tar"
+            create_variant_tar(variant_root, package, args.resume)
+            packages.append(str(package))
 
     summary = {
         "status": "passed",
-        "variant": TARGET_VARIANT,
-        "dataset_root": str(variant_root),
+        "variants": {name: str(root) for name, root in variant_roots.items()},
         "packages": packages,
         "target_samples": TARGET_SAMPLES,
         "difficulty_ratios": DIFFICULTY_RATIOS,

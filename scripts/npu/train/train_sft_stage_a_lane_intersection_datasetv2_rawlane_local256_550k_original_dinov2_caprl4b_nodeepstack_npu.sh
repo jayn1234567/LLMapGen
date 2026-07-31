@@ -82,7 +82,7 @@ RAW_LANE_PROMPT_TEXT=${RAW_LANE_PROMPT_TEXT:-"white lane overlay predicted by a 
 # BEST_* options control train-loss, eval-loss, or infer-index best checkpoint folders.
 # Main runtime parameters and hyperparameters.
 TARGET_GLOBAL_BATCH_SIZE=${TARGET_GLOBAL_BATCH_SIZE:-128}                         # Desired global batch size used to derive gradient accumulation.
-PER_DEVICE_TRAIN_BATCH_SIZE=${PER_DEVICE_TRAIN_BATCH_SIZE:-2}                     # Leave NPU headroom for ZeRO-3 checkpoint collectives; 32 NPUs derive accumulation=2 and keep global batch 128.
+PER_DEVICE_TRAIN_BATCH_SIZE=${PER_DEVICE_TRAIN_BATCH_SIZE:-4}                     # Jiangjihua-compatible per-NPU micro batch; ZeRO-3 checkpoints remain sharded to avoid full-model gather.
 NUM_EPOCHS=${NUM_EPOCHS:-8}                                                       # Match Jiangjihua v9 best CapRL recipe.
 MAX_STEPS=${MAX_STEPS:--1}                                                        # -1 runs NUM_EPOCHS; a positive value enables short NPU memory smoke tests.
 LR=${LR:-2e-5}                                                                    # Base learning rate for LLM and default trainable parameters.
@@ -96,10 +96,10 @@ SAVE_TOTAL_LIMIT=${SAVE_TOTAL_LIMIT:-15}                                        
 LOGGING_STEPS=${LOGGING_STEPS:-10}                                                # Training log interval in optimizer steps.
 EVAL_STEPS=${EVAL_STEPS:-2000}                                                    # Evaluation interval when ENABLE_EVAL is true.
 EVAL_SAMPLE_LIMIT=${EVAL_SAMPLE_LIMIT:-10000}                                     # Deterministic eval-loss subset size; 0 uses the full eval split.
-DEEPSPEED_CONFIG=${DEEPSPEED_CONFIG:-scripts/deepspeed_zero3.json}                # DeepSpeed config path for full-parameter SFT. LoRA scripts may leave it unused.
+DEEPSPEED_CONFIG=scripts/deepspeed_zero3_no_merge.json                            # Fixed for this recipe: keep ZeRO-3 checkpoints sharded and merge selected checkpoints later on CPU.
 ENABLE_EVAL=False                                                                 # This recipe deliberately avoids in-training eval to remove the eval/save NPU peak.
 SAVE_BEST_EVAL_LOSS=False                                                         # Eval-loss checkpointing is disabled together with Trainer evaluation.
-SAVE_BEST_TRAIN_LOSS=${SAVE_BEST_TRAIN_LOSS:-True}                                # Whether to save a best checkpoint by training loss.
+SAVE_BEST_TRAIN_LOSS=False                                                        # Direct best-model copies require consolidation; select from regular sharded checkpoints instead.
 BEST_TRAIN_LOSS_START_STEP=${BEST_TRAIN_LOSS_START_STEP:-5000}                    # Step threshold before best-train-loss checkpointing starts.
 SAVE_BEST_INFER_INDEX=${SAVE_BEST_INFER_INDEX:-False}                             # Whether to run inference-based best checkpoint selection.
 BEST_INFER_INDEX_METRIC=${BEST_INFER_INDEX_METRIC:-length_f1}                     # Metric used for inference-based best checkpoint selection.
@@ -151,6 +151,8 @@ export OMP_NUM_THREADS=${OMP_NUM_THREADS:-1}                                    
 export MLLM_LOG_RANK0_ONLY=${MLLM_LOG_RANK0_ONLY:-1}                              # Limit project logs to rank 0 when set.
 export TOKENIZERS_PARALLELISM=${TOKENIZERS_PARALLELISM:-false}                    # Disable tokenizer worker parallelism warnings.
 export PYTHONPATH="${REPO_ROOT}:${PYTHONPATH:-}"                                  # Ensure project modules are importable.
+export MLLM_NPU_EMPTY_CACHE_BEFORE_CHECKPOINT=${MLLM_NPU_EMPTY_CACHE_BEFORE_CHECKPOINT:-True}  # Release unused reserved NPU memory immediately before each regular save.
+export MLLM_SKIP_DISTRIBUTED_FLOS_ON_SAVE=${MLLM_SKIP_DISTRIBUTED_FLOS_ON_SAVE:-True}  # Avoid the nonessential Trainer FLOPs all-rank concat at peak memory.
 
 # Dependency installation for managed NPU images. Set INSTALL_DEPS=False on prebuilt images.
 INSTALL_DEPS=${INSTALL_DEPS:-True}                                                # Whether the script installs Python dependencies before launch.
@@ -509,6 +511,8 @@ echo "Output:       ${OUTPUT_PATH}"
 echo "Topology:     nnodes=${NNODES}, node_rank=${NODE_RANK}, nproc_per_node=${NPROC_PER_NODE}"
 echo "Batch:        per_device=${PER_DEVICE_TRAIN_BATCH_SIZE}, accumulation=${GRADIENT_ACCUMULATION_STEPS}, effective=$((MICRO_BATCH * GRADIENT_ACCUMULATION_STEPS))"
 echo "Schedule/LR:  epochs=${NUM_EPOCHS}, max_steps=${MAX_STEPS}, llm=${LR}, projector=${MM_PROJECTOR_LR}, vision=${MM_VISION_TOWER_LR}"
+echo "Checkpoint:   sharded ZeRO-3, config=${DEEPSPEED_CONFIG}, gather16=False, empty_cache=${MLLM_NPU_EMPTY_CACHE_BEFORE_CHECKPOINT}, skip_distributed_flos=${MLLM_SKIP_DISTRIBUTED_FLOS_ON_SAVE}"
+echo "Shard upload: every node publishes its local rank shards under ${CLOUD_OUTPUT_PATH}/zero_shards/node_<rank>"
 echo "============================================================"
 
 # Launch the recipe entrypoint. Training uses HCCL/DDP and full SFT may add DeepSpeed.
@@ -555,6 +559,7 @@ torchrun \
   --save_strategy steps \
   --save_steps "${SAVE_STEPS}" \
   --save_total_limit "${SAVE_TOTAL_LIMIT}" \
+  --save_on_each_node True \
   --save_best_train_loss "${SAVE_BEST_TRAIN_LOSS}" \
   --best_train_loss_start_step "${BEST_TRAIN_LOSS_START_STEP}" \
   --best_train_loss_dir best \
@@ -596,27 +601,52 @@ if [ "${TRAIN_EXIT}" -ne 0 ]; then
   exit "${TRAIN_EXIT}"
 fi
 
-# Rank 0 moves final training artifacts to the platform cloud output path.
-if [[ "${NODE_RANK}" == "0" ]]; then
-  mkdir -p "$(dirname "${CLOUD_OUTPUT_PATH}")"
-  if [ -e "${CLOUD_OUTPUT_PATH}" ]; then
-    echo "ERROR: cloud output path already exists, refusing to overwrite: ${CLOUD_OUTPUT_PATH}"
-    exit 1
-  fi
-  if [ ! -e "${OUTPUT_PATH}" ]; then
-    echo "ERROR: local training output path does not exist: ${OUTPUT_PATH}"
-    echo "LOCAL_MODEL_SAVE_ROOT contents:"
-    ls -la "${LOCAL_MODEL_SAVE_ROOT}" || true
-    exit 1
-  fi
-  echo "Moving rank0 local output to cloud output: ${OUTPUT_PATH} -> ${CLOUD_OUTPUT_PATH}"
-  mv "${OUTPUT_PATH}" "${CLOUD_OUTPUT_PATH}"
-  MOVE_EXIT=$?
-  if [ "${MOVE_EXIT}" -ne 0 ]; then
-    echo "ERROR: failed to move local output to cloud output with exit code ${MOVE_EXIT}"
-    exit "${MOVE_EXIT}"
-  fi
-  echo "Final cloud output path: ${CLOUD_OUTPUT_PATH}"
-else
-  echo "Non-master node ${NODE_RANK}: skip cloud output move."
+# Every node owns different ZeRO-3 data-parallel shards on node-local storage.
+# Persist every node under a unique directory; keeping rank0 alone would create
+# an incomplete checkpoint that cannot be reconstructed after a multi-node job.
+python - "${OUTPUT_PATH}/zero3_shard_layout.json" "${NNODES}" "${NODE_RANK}" "${NPROC_PER_NODE}" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+nnodes = int(sys.argv[2])
+node_rank = int(sys.argv[3])
+nproc_per_node = int(sys.argv[4])
+path.write_text(
+    json.dumps(
+        {
+            "format": "deepspeed_zero3_node_shards",
+            "expected_nodes": nnodes,
+            "node_rank": node_rank,
+            "nproc_per_node": nproc_per_node,
+            "expected_world_size": nnodes * nproc_per_node,
+            "gather_16bit_weights_on_model_save": False,
+        },
+        indent=2,
+    )
+    + "\n",
+    encoding="utf-8",
+)
+PY
+CLOUD_NODE_OUTPUT_PATH="${CLOUD_OUTPUT_PATH}/zero_shards/node_${NODE_RANK}"
+mkdir -p "$(dirname "${CLOUD_NODE_OUTPUT_PATH}")"
+if [ -e "${CLOUD_NODE_OUTPUT_PATH}" ]; then
+  echo "ERROR: cloud node output already exists, refusing to overwrite: ${CLOUD_NODE_OUTPUT_PATH}"
+  exit 1
 fi
+if [ ! -e "${OUTPUT_PATH}" ]; then
+  echo "ERROR: local training output path does not exist: ${OUTPUT_PATH}"
+  echo "LOCAL_MODEL_SAVE_ROOT contents:"
+  ls -la "${LOCAL_MODEL_SAVE_ROOT}" || true
+  exit 1
+fi
+echo "Moving node ${NODE_RANK} ZeRO shards to cloud output: ${OUTPUT_PATH} -> ${CLOUD_NODE_OUTPUT_PATH}"
+mv "${OUTPUT_PATH}" "${CLOUD_NODE_OUTPUT_PATH}"
+MOVE_EXIT=$?
+if [ "${MOVE_EXIT}" -ne 0 ]; then
+  echo "ERROR: failed to move node ${NODE_RANK} shards with exit code ${MOVE_EXIT}"
+  exit "${MOVE_EXIT}"
+fi
+echo "Final sharded run root: ${CLOUD_OUTPUT_PATH}"
+echo "Node ${NODE_RANK} shard path: ${CLOUD_NODE_OUTPUT_PATH}"

@@ -1,3 +1,4 @@
+import gc
 import json
 import os
 import subprocess
@@ -24,6 +25,27 @@ from mllm.model.qwen_token_utils import sync_qwen_token_config
 
 
 ALL_LAYERNORM_LAYERS = [nn.LayerNorm, nn.BatchNorm2d]
+
+
+def _env_flag(name: str, default: bool = False) -> bool:
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _release_device_cache_before_checkpoint() -> bool:
+    if not _env_flag("MLLM_NPU_EMPTY_CACHE_BEFORE_CHECKPOINT"):
+        return False
+
+    npu = getattr(torch, "npu", None)
+    if npu is None or not npu.is_available():
+        return False
+
+    gc.collect()
+    npu.synchronize()
+    npu.empty_cache()
+    return True
 
 
 def _ensure_generation_config(model):
@@ -268,6 +290,21 @@ class LengthGroupedSampler(Sampler):
 
 class LLaVATrainer(Trainer):
 
+    def store_flos(self):
+        if not _env_flag("MLLM_SKIP_DISTRIBUTED_FLOS_ON_SAVE"):
+            return super().store_flos()
+
+        # FLOPs are logging metadata. Avoid the tiny all-rank concat performed by
+        # Transformers at checkpoint time when an NPU is already near capacity.
+        world_size = max(1, int(getattr(self.args, "world_size", 1) or 1))
+        self.state.total_flos += float(self.current_flos or 0.0) * world_size
+        self.current_flos = 0
+        if not getattr(self, "_logged_local_flos_store", False):
+            logger.info(
+                "Using local FLOPs accounting; distributed FLOPs checkpoint collective is disabled."
+            )
+            self._logged_local_flos_store = True
+
     def _rotate_checkpoints(self, use_mtime=False, output_dir=None) -> None:
         if self.args.save_total_limit is None or self.args.save_total_limit <= 0:
             return
@@ -477,6 +514,8 @@ class LLaVATrainer(Trainer):
             model.generation_config.temperature = None
             model.generation_config.top_p = None
             sync_qwen_token_config(model=model)
+            if _release_device_cache_before_checkpoint():
+                logger.info("Released unused NPU cache before checkpoint save.")
             super(LLaVATrainer, self)._save_checkpoint(model, trial)
             write_qwen_multimodal_checkpoint_metadata(self.model, output_dir, self)
             self._rotate_checkpoints(output_dir=run_dir)

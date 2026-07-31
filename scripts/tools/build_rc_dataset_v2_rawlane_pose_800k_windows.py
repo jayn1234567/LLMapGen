@@ -139,6 +139,7 @@ def run_streaming_builder(paths: dict[str, Path], args: argparse.Namespace) -> N
         "--copy-mode", args.copy_mode,
         "--raw-lane-overlay",
         "--require-raw-lane",
+        "--save-raw-lane-image",
         "--raw-lane-threshold", args.raw_lane_threshold,
         "--pose-second-image",
         "--pose-threshold", args.pose_threshold,
@@ -184,6 +185,12 @@ def completion_errors(root: Path, expected_fixed_split_sha256: str = "") -> list
     overlay = info.get("input_overlay") or {}
     if overlay.get("raw_lane_overlay") is not True:
         errors.append("raw_lane_overlay is not true")
+    auxiliary = info.get("auxiliary_image_assets") or {}
+    raw_lane_asset = auxiliary.get("raw_lane") or {}
+    if raw_lane_asset.get("saved") is not True:
+        errors.append(f"raw lane auxiliary image is not saved: {raw_lane_asset!r}")
+    if raw_lane_asset.get("active_model_input") is not False:
+        errors.append(f"raw lane auxiliary unexpectedly active: {raw_lane_asset!r}")
     if multi.get("enabled") is not True or int(multi.get("num_images_per_sample", 0)) != 2:
         errors.append(f"invalid multi_image_input={multi!r}")
     if multi.get("pose_image_source") != "patch_tif/0_pose.tif":
@@ -246,6 +253,15 @@ def validate_two_image_records(root: Path) -> None:
                     raise ValueError(f"{jsonl_path}:{line_number} expected two images, got {images!r}")
                 if record.get("image") != images[0]:
                     raise ValueError(f"{jsonl_path}:{line_number} primary image mismatch")
+                raw_lane_image = str(record.get("raw_lane_image") or "")
+                if not raw_lane_image.startswith(f"raw_lane_images/{split}/"):
+                    raise ValueError(
+                        f"{jsonl_path}:{line_number} invalid raw lane path: {raw_lane_image!r}"
+                    )
+                if raw_lane_image in images:
+                    raise ValueError(
+                        f"{jsonl_path}:{line_number} raw lane must remain an inactive auxiliary image"
+                    )
                 if not str(images[0]).startswith(f"images/{split}/"):
                     raise ValueError(f"{jsonl_path}:{line_number} invalid BEV path: {images[0]!r}")
                 if not str(images[1]).startswith(f"pose_images/{split}/"):
@@ -256,6 +272,10 @@ def validate_two_image_records(root: Path) -> None:
                 for relative in images:
                     if not (root / relative).is_file():
                         raise FileNotFoundError(f"{jsonl_path}:{line_number} missing image: {root / relative}")
+                if not (root / raw_lane_image).is_file():
+                    raise FileNotFoundError(
+                        f"{jsonl_path}:{line_number} missing raw lane image: {root / raw_lane_image}"
+                    )
                 count += 1
                 if count % 100_000 == 0:
                     print(f"[rawlane-pose-dataset] validated {split}: {count}", flush=True)
@@ -327,6 +347,7 @@ def main(argv=None) -> None:
     print(f"[rawlane-pose-dataset] difficulty: {DIFFICULTY_RATIOS}", flush=True)
     print("[rawlane-pose-dataset] image 1: BEV + patch_tif/0_lane.tif", flush=True)
     print("[rawlane-pose-dataset] image 2: patch_tif/0_pose.tif", flush=True)
+    print("[rawlane-pose-dataset] saved auxiliary: patch_tif/0_lane.tif", flush=True)
     print(
         f"[rawlane-pose-dataset] fixed split: {args.fixed_source_split_manifest or '<disabled>'}",
         flush=True,
@@ -369,6 +390,8 @@ def main(argv=None) -> None:
         "image_roles": ["bev_road_structure", "historical_vehicle_trajectory"],
         "raw_lane_source": "patch_tif/0_lane.tif",
         "pose_source": "patch_tif/0_pose.tif",
+        "raw_lane_auxiliary_saved": True,
+        "raw_lane_auxiliary_active_input": False,
         "fixed_source_split_manifest": args.fixed_source_split_manifest or None,
     }
     summary_path = paths["output_root"] / "rawlane_pose_build_summary.json"

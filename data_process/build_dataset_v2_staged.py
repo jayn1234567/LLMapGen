@@ -100,6 +100,11 @@ def add_geometry_args(parser: argparse.ArgumentParser) -> None:
     )
     parser.add_argument("--raw-lane-threshold", type=float, default=0.0)
     parser.add_argument(
+        "--save-raw-lane-image",
+        action="store_true",
+        help="Save raw lane as a separate black/white auxiliary PNG without activating it as input.",
+    )
+    parser.add_argument(
         "--pose-second-image",
         action="store_true",
         help="Add patch_tif/0_pose.tif as a separate second image for every sample.",
@@ -317,6 +322,11 @@ def stage_source(args) -> None:
             raise ValueError(
                 f"completed stage require_raw_lane={marker.get('require_raw_lane')}, expected {args.require_raw_lane}"
             )
+        if bool(marker.get("save_raw_lane_image", False)) != bool(args.save_raw_lane_image):
+            raise ValueError(
+                f"completed stage save_raw_lane_image={marker.get('save_raw_lane_image')}, "
+                f"expected {args.save_raw_lane_image}"
+            )
         if bool(marker.get("pose_second_image", False)) != bool(args.pose_second_image):
             raise ValueError(
                 f"completed stage pose_second_image={marker.get('pose_second_image')}, "
@@ -439,6 +449,7 @@ def stage_source(args) -> None:
                         view_mode=spec["view_mode"],
                         raw_lane_overlay=bool(getattr(args, "raw_lane_overlay", False)),
                         pose_second_image=bool(getattr(args, "pose_second_image", False)),
+                        save_raw_lane_image=bool(getattr(args, "save_raw_lane_image", False)),
                     )
                     semantic_sft_record_counts(sft, strict=True, require_prompt=True)
                     write_jsonl_item(sft_writers[variant][split], sft)
@@ -472,6 +483,8 @@ def stage_source(args) -> None:
         "raw_lane_overlay_source": "patch_tif/0_lane.tif" if args.raw_lane_overlay else "none",
         "raw_lane_threshold": args.raw_lane_threshold,
         "require_raw_lane": bool(args.require_raw_lane),
+        "save_raw_lane_image": bool(args.save_raw_lane_image),
+        "raw_lane_auxiliary_directory": "raw_lane_images" if args.save_raw_lane_image else "none",
         "pose_second_image": bool(args.pose_second_image),
         "pose_image_source": "patch_tif/0_pose.tif" if args.pose_second_image else "none",
         "pose_threshold": args.pose_threshold,
@@ -734,7 +747,11 @@ def materialize_from_stages(
                         relative_images = record.get("images") or [record["image"]]
                         if not isinstance(relative_images, list) or not relative_images:
                             raise ValueError(f"record {patch_id} has invalid images={relative_images!r}")
-                        for relative in dict.fromkeys(str(item) for item in relative_images):
+                        auxiliary_images = []
+                        if record.get("raw_lane_image"):
+                            auxiliary_images.append(str(record["raw_lane_image"]))
+                        all_image_assets = [str(item) for item in relative_images] + auxiliary_images
+                        for relative in dict.fromkeys(all_image_assets):
                             relative_image = Path(relative)
                             source_image = stage_root / "variants" / variant / relative_image
                             destination_image = output_root / variant / relative_image
@@ -745,6 +762,7 @@ def materialize_from_stages(
                             "id": patch_id,
                             "image": record["image"],
                             "images": relative_images,
+                            "raw_lane_image": record.get("raw_lane_image"),
                             "meta": record.get("meta", {}),
                             "difficulty": effective_difficulty,
                             "difficulty_score": effective_score,
@@ -791,6 +809,7 @@ def finalize_stages(args) -> None:
     raw_lane_overlay_values = set()
     require_raw_lane_values = set()
     raw_lane_threshold_values = set()
+    save_raw_lane_image_values = set()
     pose_second_image_values = set()
     pose_threshold_values = set()
     for stage_root in stage_roots:
@@ -819,12 +838,14 @@ def finalize_stages(args) -> None:
         raw_lane_overlay_values.add(bool(summary.get("raw_lane_overlay", False)))
         require_raw_lane_values.add(bool(summary.get("require_raw_lane", False)))
         raw_lane_threshold_values.add(float(summary.get("raw_lane_threshold", 0.0)))
+        save_raw_lane_image_values.add(bool(summary.get("save_raw_lane_image", False)))
         pose_second_image_values.add(bool(summary.get("pose_second_image", False)))
         pose_threshold_values.add(float(summary.get("pose_threshold", 0.0)))
     if (
         len(raw_lane_overlay_values) > 1
         or len(require_raw_lane_values) > 1
         or len(raw_lane_threshold_values) > 1
+        or len(save_raw_lane_image_values) > 1
         or len(pose_second_image_values) > 1
         or len(pose_threshold_values) > 1
     ):
@@ -832,6 +853,7 @@ def finalize_stages(args) -> None:
     raw_lane_overlay = next(iter(raw_lane_overlay_values), False)
     require_raw_lane = next(iter(require_raw_lane_values), False)
     raw_lane_threshold = next(iter(raw_lane_threshold_values), 0.0)
+    save_raw_lane_image = next(iter(save_raw_lane_image_values), False)
     pose_second_image = next(iter(pose_second_image_values), False)
     pose_threshold = next(iter(pose_threshold_values), 0.0)
 
@@ -943,6 +965,17 @@ def finalize_stages(args) -> None:
             "raw_lane_threshold": raw_lane_threshold,
             "require_raw_lane": require_raw_lane,
             "overlay_style": "white_pixels_on_rgb_channels",
+            "raw_lane_auxiliary_saved": save_raw_lane_image,
+            "raw_lane_auxiliary_directory": "raw_lane_images" if save_raw_lane_image else "none",
+        },
+        "auxiliary_image_assets": {
+            "raw_lane": {
+                "saved": save_raw_lane_image,
+                "active_model_input": False,
+                "source": "patch_tif/0_lane.tif" if save_raw_lane_image else "none",
+                "rendering": "white_positive_pixels_on_black_rgb",
+                "record_field": "raw_lane_image" if save_raw_lane_image else "none",
+            }
         },
         "multi_image_input": {
             "enabled": pose_second_image,

@@ -15,7 +15,8 @@ silently changing the benchmark.
 
 The recommended path is the one-command orchestrator. It completes bootstrap
 staging, freezes the manifest, rebuilds under the fixed split, validates both
-views, and creates both tar packages:
+views, saves raw lane as an inactive auxiliary PNG for future three-image
+ablations, and creates both tar packages:
 
 ```powershell
 python scripts\tools\build_rc_dataset_v2_rawlane_pose_800k_fixed_eval_windows.py --obsutil-path "C:\Users\jWX1497058\Downloads\obsutil_windows_amd64\obsutil_windows_amd64_5.8.3\obsutil.exe" --resume

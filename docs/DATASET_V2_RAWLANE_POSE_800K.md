@@ -13,13 +13,18 @@ Each sample contains:
 1. a BEV road image with `patch_tif/0_lane.tif` rendered as a white PV-camera
    lane overlay;
 2. a separate black-background historical vehicle-trajectory image built from
-   `patch_tif/0_pose.tif`.
+   `patch_tif/0_pose.tif`;
+3. an auxiliary black-background raw-lane image built from
+   `patch_tif/0_lane.tif` and stored for later three-image ablations.
 
 The local variant stores two 256x256 images. The context variant stores two
 512x512 context images and supervises only the central 256x256 ROI.
 
 The pose raster is never painted onto the BEV image. Both source rasters are
 masked by `patch_tif/0_edit_poly.tif` and cropped at identical coordinates.
+The auxiliary raw-lane image is saved under `raw_lane_images/`, but is not in
+the active `images` array and therefore does not change this dataset's current
+two-image training behavior or memory use.
 
 ## Target Distribution
 
@@ -47,12 +52,16 @@ difficulty buckets. Exact repeats are not introduced.
     "images/train/.../sample.png",
     "pose_images/train/.../sample.png"
   ],
+  "raw_lane_image": "raw_lane_images/train/.../sample.png",
   "meta": {
     "input_image_roles": [
       "bev_road_structure",
       "historical_vehicle_trajectory"
     ],
-    "pose_image_source": "patch_tif/0_pose.tif"
+    "pose_image_source": "patch_tif/0_pose.tif",
+    "raw_lane_auxiliary_image": true,
+    "raw_lane_image_source": "patch_tif/0_lane.tif",
+    "raw_lane_image_role": "pv_camera_raw_lane"
   },
   "conversations": [
     {"from": "human", "value": "<image>\n<image>\n..."},
@@ -63,7 +72,9 @@ difficulty buckets. Exact repeats are not introduced.
 
 The compatibility `image` field remains the primary BEV path. Training code
 uses `images` when it is present and checks that its length equals the number
-of `<image>` tokens.
+of `<image>` tokens. `raw_lane_image` is an inactive auxiliary field: the
+current prompt still has two `<image>` tokens, so the raw-lane-only PNG is not
+loaded by the model.
 
 ## Prompt Addition
 
@@ -86,7 +97,7 @@ python scripts\tools\build_rc_dataset_v2_rawlane_pose_800k_windows.py --work-roo
 
 The wrapper downloads and stages one source at a time, keeps only required
 TIFF/GeoJSON members, globally balances 800k unique training records, validates
-every two-image pair, and creates:
+every two-image pair and its auxiliary raw-lane image, and creates:
 
 ```text
 D:\data\fulldata_rawlane_pose\output_rawlane_pose_256_context\rawlane_pose_local256_800k
@@ -116,3 +127,12 @@ visual-token sequence in prompt order.
 Two full DINO image streams roughly double visual-token memory and sequence
 length. Before a formal training run, use a short NPU smoke test and verify
 that the configured model maximum length leaves enough room for target JSON.
+
+For a future three-image ablation, build a derived JSONL whose active `images`
+order is explicitly defined, for example `[BEV overlay, raw lane, pose]`, and
+add a third `<image>` token plus a matching prompt description. This preserves
+the exact same samples and crops without rerunning source extraction. Note that
+this order presents raw-lane information both in the BEV overlay and as a
+separate image. A clean modality-isolation experiment such as
+`[clean BEV, raw lane, pose]` additionally requires saving a BEV image before
+the raw-lane overlay is applied.

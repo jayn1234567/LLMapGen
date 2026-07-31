@@ -77,6 +77,7 @@ class DatasetV2ContextTest(unittest.TestCase):
             "id": "sample_x00000_y00000",
             "image": "images/train/sample/sample_x00000_y00000.png",
             "pose_image": "pose_images/train/sample/sample_x00000_y00000.png",
+            "raw_lane_image": "raw_lane_images/train/sample/sample_x00000_y00000.png",
             "incoming_traces": [],
             "incoming_intersections": [],
             "target_lines": [],
@@ -89,8 +90,11 @@ class DatasetV2ContextTest(unittest.TestCase):
             "a",
             raw_lane_overlay=True,
             pose_second_image=True,
+            save_raw_lane_image=True,
         )
         self.assertEqual(record["images"], [row["image"], row["pose_image"]])
+        self.assertEqual(record["raw_lane_image"], row["raw_lane_image"])
+        self.assertNotIn(record["raw_lane_image"], record["images"])
         prompt = record["conversations"][0]["value"]
         self.assertEqual(prompt.count("<image>"), 2)
         self.assertIn("historical vehicle-trajectory image", prompt)
@@ -106,6 +110,7 @@ class DatasetV2ContextTest(unittest.TestCase):
             "--work-root", "work",
             "--raw-lane-overlay",
             "--require-raw-lane",
+            "--save-raw-lane-image",
             "--pose-second-image",
             "--pose-threshold", "3",
         ])
@@ -127,6 +132,7 @@ class DatasetV2ContextTest(unittest.TestCase):
         self.assertIn("--pose-second-image", command)
         self.assertEqual(command[command.index("--pose-threshold") + 1], "3.0")
         self.assertIn("--raw-lane-overlay", command)
+        self.assertIn("--save-raw-lane-image", command)
 
     def test_dual_resolution_streaming_stage_command(self):
         args = parse_streaming_args([

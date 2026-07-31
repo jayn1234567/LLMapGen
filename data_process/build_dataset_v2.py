@@ -524,6 +524,10 @@ def annotate_translation_grid(row, patch_size):
     row["image"] = Path(row["image"]).with_name(f"{stable_patch_id}.png").as_posix()
     if row.get("pose_image"):
         row["pose_image"] = Path(row["pose_image"]).with_name(f"{stable_patch_id}.png").as_posix()
+    if row.get("raw_lane_image"):
+        row["raw_lane_image"] = Path(row["raw_lane_image"]).with_name(
+            f"{stable_patch_id}.png"
+        ).as_posix()
     row["meta"]["grid_patch_id"] = grid_patch_id
     row["meta"]["stable_patch_id"] = stable_patch_id
     row["meta"]["translation_offset"] = offset
@@ -621,6 +625,14 @@ def write_images_for_rows(sample, rows, variant_specs, patch_size, png_compress_
             threshold=float(getattr(args, "pose_threshold", 0.0)),
         )
         pose_arr, _ = pad_image_to_patch_grid(pose_arr, patch_size)
+    raw_lane_arr = None
+    if bool(getattr(args, "save_raw_lane_image", False)):
+        raw_lane_arr = read_masked_binary_image(
+            sample.raw_lane_tiff,
+            sample.mask_tiff,
+            threshold=float(getattr(args, "raw_lane_threshold", 0.0)),
+        )
+        raw_lane_arr, _ = pad_image_to_patch_grid(raw_lane_arr, patch_size)
     for row in rows:
         x0 = int(row["meta"]["x0"])
         y0 = int(row["meta"]["y0"])
@@ -649,6 +661,21 @@ def write_images_for_rows(sample, rows, variant_specs, patch_size, png_compress_
                     )
                     image_chunk_to_pil(pose_chunk).save(
                         pose_output_path,
+                        compress_level=png_compress_level,
+                    )
+            if raw_lane_arr is not None:
+                raw_lane_output_path = spec["root"] / row["raw_lane_image"]
+                if not (skip_existing and raw_lane_output_path.exists()):
+                    raw_lane_output_path.parent.mkdir(parents=True, exist_ok=True)
+                    raw_lane_chunk = extract_centered_context(
+                        raw_lane_arr,
+                        x0,
+                        y0,
+                        patch_size,
+                        spec["context_size"],
+                    )
+                    image_chunk_to_pil(raw_lane_chunk).save(
+                        raw_lane_output_path,
                         compress_level=png_compress_level,
                     )
 
@@ -711,6 +738,7 @@ def materialize_split(samples, split_name, selected_counts, variant_specs, sourc
                         view_mode=spec["view_mode"],
                         raw_lane_overlay=bool(getattr(args, "raw_lane_overlay", False)),
                         pose_second_image=bool(getattr(args, "pose_second_image", False)),
+                        save_raw_lane_image=bool(getattr(args, "save_raw_lane_image", False)),
                     )
                     record_semantic_counts = semantic_sft_record_counts(
                         sft, strict=True, require_prompt=True
@@ -788,6 +816,11 @@ def parse_args(argv=None):
         help="Fail if --raw-lane-overlay is enabled and patch_tif/0_lane.tif is missing.",
     )
     parser.add_argument("--raw-lane-threshold", type=float, default=0.0)
+    parser.add_argument(
+        "--save-raw-lane-image",
+        action="store_true",
+        help="Save patch_tif/0_lane.tif as a separate black/white auxiliary PNG.",
+    )
     parser.add_argument(
         "--pose-second-image",
         action="store_true",
@@ -1019,6 +1052,17 @@ def main(argv=None):
             "raw_lane_threshold": args.raw_lane_threshold,
             "require_raw_lane": bool(args.require_raw_lane),
             "overlay_style": "white_pixels_on_rgb_channels",
+            "raw_lane_auxiliary_saved": bool(args.save_raw_lane_image),
+            "raw_lane_auxiliary_directory": "raw_lane_images" if args.save_raw_lane_image else "none",
+        },
+        "auxiliary_image_assets": {
+            "raw_lane": {
+                "saved": bool(args.save_raw_lane_image),
+                "active_model_input": False,
+                "source": "patch_tif/0_lane.tif" if args.save_raw_lane_image else "none",
+                "rendering": "white_positive_pixels_on_black_rgb",
+                "record_field": "raw_lane_image" if args.save_raw_lane_image else "none",
+            }
         },
         "task": "lane_intersection",
         "phase": "phase_a",

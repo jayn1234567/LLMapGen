@@ -1596,7 +1596,8 @@ def make_prompt(include_intersections: bool, incoming_traces, incoming_intersect
 def build_sft_record(row, patch_size, include_intersections, phase, coord_mode=COORD_MODE_NORM1000,
                      coord_range=DEFAULT_COORD_RANGE, context_size=None, view_mode=None,
                      incoming_trace_point_spacing_px=None, incoming_intersections_full_polygon: bool = False,
-                     raw_lane_overlay: bool = False, pose_second_image: bool = False):
+                     raw_lane_overlay: bool = False, pose_second_image: bool = False,
+                     save_raw_lane_image: bool = False):
     coord_mode = normalize_coord_mode(coord_mode)
     context_size = patch_size if context_size is None else int(context_size)
     target_roi = centered_target_roi(patch_size, context_size)
@@ -1655,6 +1656,13 @@ def build_sft_record(row, patch_size, include_intersections, phase, coord_mode=C
     if raw_lane_overlay:
         meta["raw_lane_overlay"] = True
         meta["raw_lane_overlay_source"] = "patch_tif/0_lane.tif"
+    if save_raw_lane_image:
+        raw_lane_image = str(row.get("raw_lane_image") or "")
+        if not raw_lane_image:
+            raise ValueError(f"sample {row.get('id')} is missing raw_lane_image")
+        meta["raw_lane_auxiliary_image"] = True
+        meta["raw_lane_image_source"] = "patch_tif/0_lane.tif"
+        meta["raw_lane_image_role"] = "pv_camera_raw_lane"
     if pose_second_image:
         pose_image = str(row.get("pose_image") or "")
         if not pose_image:
@@ -1675,6 +1683,8 @@ def build_sft_record(row, patch_size, include_intersections, phase, coord_mode=C
     }
     if pose_second_image:
         record["images"] = [row["image"], row["pose_image"]]
+    if save_raw_lane_image:
+        record["raw_lane_image"] = row["raw_lane_image"]
     return record
 
 
@@ -1703,8 +1713,11 @@ def process_sample(
     max_empty_ratio=-1.0,
 ):
     pose_second_image = bool(getattr(args, "pose_second_image", False))
+    save_raw_lane_image = bool(getattr(args, "save_raw_lane_image", False))
     if pose_second_image and not sample.pose_tiff.is_file():
         raise FileNotFoundError(f"pose TIFF not found: {sample.pose_tiff}")
+    if save_raw_lane_image and not sample.raw_lane_tiff.is_file():
+        raise FileNotFoundError(f"raw lane TIFF not found: {sample.raw_lane_tiff}")
     image_arr, meta, transform, crs = read_masked_image(
         sample.image_tiff,
         sample.mask_tiff,
@@ -1763,6 +1776,7 @@ def process_sample(
         patch_id = f"{sample.sample_id}_r{row:03d}_c{col:03d}"
         rel_image = Path("images") / split_name / sample.sample_id / f"{patch_id}.png"
         rel_pose_image = Path("pose_images") / split_name / sample.sample_id / f"{patch_id}.png"
+        rel_raw_lane_image = Path("raw_lane_images") / split_name / sample.sample_id / f"{patch_id}.png"
 
         incoming_traces = build_incoming_traces(
             patch_lines_by_rc, row, col, args.patch_size,
@@ -1811,6 +1825,10 @@ def process_sample(
             record["pose_image"] = str(rel_pose_image)
             record["meta"]["pose_second_image"] = True
             record["meta"]["pose_image_source"] = "patch_tif/0_pose.tif"
+        if save_raw_lane_image:
+            record["raw_lane_image"] = str(rel_raw_lane_image)
+            record["meta"]["raw_lane_auxiliary_image"] = True
+            record["meta"]["raw_lane_image_source"] = "patch_tif/0_lane.tif"
         rows.append(record)
         patch_count += 1
     rows = cap_empty_rows(rows, max_empty_ratio)
@@ -1823,6 +1841,14 @@ def process_sample(
                 threshold=float(getattr(args, "pose_threshold", 0.0)),
             )
             pose_arr, _ = pad_image_to_patch_grid(pose_arr, args.patch_size)
+        raw_lane_arr = None
+        if save_raw_lane_image:
+            raw_lane_arr = read_masked_binary_image(
+                sample.raw_lane_tiff,
+                sample.mask_tiff,
+                threshold=float(getattr(args, "raw_lane_threshold", 0.0)),
+            )
+            raw_lane_arr, _ = pad_image_to_patch_grid(raw_lane_arr, args.patch_size)
         for row in rows:
             x0 = row["meta"]["x0"]
             y0 = row["meta"]["y0"]
@@ -1835,6 +1861,11 @@ def process_sample(
                 out_pose.parent.mkdir(parents=True, exist_ok=True)
                 pose_chunk = pose_arr[:, y0:y0 + args.patch_size, x0:x0 + args.patch_size]
                 image_chunk_to_pil(pose_chunk).save(out_pose)
+            if raw_lane_arr is not None:
+                out_raw_lane = output_root / row["raw_lane_image"]
+                out_raw_lane.parent.mkdir(parents=True, exist_ok=True)
+                raw_lane_chunk = raw_lane_arr[:, y0:y0 + args.patch_size, x0:x0 + args.patch_size]
+                image_chunk_to_pil(raw_lane_chunk).save(out_raw_lane)
     return rows
 
 
@@ -2078,6 +2109,7 @@ def build_dataset(include_intersections: bool, args):
                     coord_range=args.coord_range,
                     raw_lane_overlay=bool(getattr(args, "raw_lane_overlay", False)),
                     pose_second_image=bool(getattr(args, "pose_second_image", False)),
+                    save_raw_lane_image=bool(getattr(args, "save_raw_lane_image", False)),
                 )
                 for row in phase_rows
             ]

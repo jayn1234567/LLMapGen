@@ -85,7 +85,8 @@ python "${CONVERTER}" "${ASSEMBLED_DIR}" "${OUTPUT_DIR}/pytorch_model.bin"
 for name in \
   config.json generation_config.json trainer_state.json training_args.bin \
   tokenizer.json tokenizer_config.json special_tokens_map.json added_tokens.json \
-  chat_template.jinja vocab.json merges.txt preprocessor_config.json \
+  chat_template.jinja vocab.json merges.txt tokenizer.model preprocessor_config.json \
+  args.json qwen_multimodal_checkpoint.json \
   rc_dinov2_centerline_json_modules.pt rc_dinov2_centerline_json_modules.pth; do
   if [ -f "${ASSEMBLED_DIR}/${name}" ]; then
     cp -f "${ASSEMBLED_DIR}/${name}" "${OUTPUT_DIR}/${name}"

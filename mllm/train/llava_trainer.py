@@ -42,8 +42,8 @@ def _release_device_cache_before_checkpoint() -> bool:
     if npu is None or not npu.is_available():
         return False
 
-    gc.collect()
     npu.synchronize()
+    gc.collect()
     npu.empty_cache()
     return True
 

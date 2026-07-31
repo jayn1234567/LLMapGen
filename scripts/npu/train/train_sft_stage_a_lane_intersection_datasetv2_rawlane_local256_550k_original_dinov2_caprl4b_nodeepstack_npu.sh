@@ -96,7 +96,21 @@ SAVE_TOTAL_LIMIT=${SAVE_TOTAL_LIMIT:-15}                                        
 LOGGING_STEPS=${LOGGING_STEPS:-10}                                                # Training log interval in optimizer steps.
 EVAL_STEPS=${EVAL_STEPS:-2000}                                                    # Evaluation interval when ENABLE_EVAL is true.
 EVAL_SAMPLE_LIMIT=${EVAL_SAMPLE_LIMIT:-10000}                                     # Deterministic eval-loss subset size; 0 uses the full eval split.
-DEEPSPEED_CONFIG=scripts/deepspeed_zero3_no_merge.json                            # Fixed for this recipe: keep ZeRO-3 checkpoints sharded and merge selected checkpoints later on CPU.
+CHECKPOINT_SAVE_MODE=${CHECKPOINT_SAVE_MODE:-sharded}                             # sharded is the stable default; original restores the pre-sharding rank0 save path.
+case "${CHECKPOINT_SAVE_MODE}" in
+  sharded)
+    DEEPSPEED_CONFIG=${DEEPSPEED_CONFIG:-scripts/deepspeed_zero3_no_merge.json}
+    SAVE_ON_EACH_NODE=True
+    ;;
+  original)
+    DEEPSPEED_CONFIG=${DEEPSPEED_CONFIG:-scripts/deepspeed_zero3.json}
+    SAVE_ON_EACH_NODE=False
+    ;;
+  *)
+    echo "ERROR: unsupported CHECKPOINT_SAVE_MODE=${CHECKPOINT_SAVE_MODE}; expected sharded or original."
+    exit 2
+    ;;
+esac
 ENABLE_EVAL=False                                                                 # This recipe deliberately avoids in-training eval to remove the eval/save NPU peak.
 SAVE_BEST_EVAL_LOSS=False                                                         # Eval-loss checkpointing is disabled together with Trainer evaluation.
 SAVE_BEST_TRAIN_LOSS=False                                                        # Direct best-model copies require consolidation; select from regular sharded checkpoints instead.
@@ -152,7 +166,11 @@ export MLLM_LOG_RANK0_ONLY=${MLLM_LOG_RANK0_ONLY:-1}                            
 export TOKENIZERS_PARALLELISM=${TOKENIZERS_PARALLELISM:-false}                    # Disable tokenizer worker parallelism warnings.
 export PYTHONPATH="${REPO_ROOT}:${PYTHONPATH:-}"                                  # Ensure project modules are importable.
 export MLLM_NPU_EMPTY_CACHE_BEFORE_CHECKPOINT=${MLLM_NPU_EMPTY_CACHE_BEFORE_CHECKPOINT:-True}  # Release unused reserved NPU memory immediately before each regular save.
-export MLLM_SKIP_DISTRIBUTED_FLOS_ON_SAVE=${MLLM_SKIP_DISTRIBUTED_FLOS_ON_SAVE:-True}  # Avoid the nonessential Trainer FLOPs all-rank concat at peak memory.
+if [[ "${CHECKPOINT_SAVE_MODE}" == "sharded" ]]; then
+  export MLLM_SKIP_DISTRIBUTED_FLOS_ON_SAVE=${MLLM_SKIP_DISTRIBUTED_FLOS_ON_SAVE:-True}  # Stable sharded mode avoids a nonessential save-time collective.
+else
+  export MLLM_SKIP_DISTRIBUTED_FLOS_ON_SAVE=${MLLM_SKIP_DISTRIBUTED_FLOS_ON_SAVE:-False} # Original mode changes only pre-save synchronization/cache cleanup.
+fi
 
 # Dependency installation for managed NPU images. Set INSTALL_DEPS=False on prebuilt images.
 INSTALL_DEPS=${INSTALL_DEPS:-True}                                                # Whether the script installs Python dependencies before launch.
@@ -511,8 +529,22 @@ echo "Output:       ${OUTPUT_PATH}"
 echo "Topology:     nnodes=${NNODES}, node_rank=${NODE_RANK}, nproc_per_node=${NPROC_PER_NODE}"
 echo "Batch:        per_device=${PER_DEVICE_TRAIN_BATCH_SIZE}, accumulation=${GRADIENT_ACCUMULATION_STEPS}, effective=$((MICRO_BATCH * GRADIENT_ACCUMULATION_STEPS))"
 echo "Schedule/LR:  epochs=${NUM_EPOCHS}, max_steps=${MAX_STEPS}, llm=${LR}, projector=${MM_PROJECTOR_LR}, vision=${MM_VISION_TOWER_LR}"
-echo "Checkpoint:   sharded ZeRO-3, config=${DEEPSPEED_CONFIG}, gather16=False, empty_cache=${MLLM_NPU_EMPTY_CACHE_BEFORE_CHECKPOINT}, skip_distributed_flos=${MLLM_SKIP_DISTRIBUTED_FLOS_ON_SAVE}"
-echo "Shard upload: every node publishes its local rank shards under ${CLOUD_OUTPUT_PATH}/zero_shards/node_<rank>"
+ZERO3_GATHER_16BIT=$(python - "${DEEPSPEED_CONFIG}" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], "r", encoding="utf-8") as handle:
+    config = json.load(handle)
+enabled = bool(config.get("zero_optimization", {}).get("gather_16bit_weights_on_model_save", False))
+print("True" if enabled else "False")
+PY
+)
+echo "Checkpoint:   mode=${CHECKPOINT_SAVE_MODE}, ZeRO-3 config=${DEEPSPEED_CONFIG}, gather16=${ZERO3_GATHER_16BIT}, empty_cache=${MLLM_NPU_EMPTY_CACHE_BEFORE_CHECKPOINT}, skip_distributed_flos=${MLLM_SKIP_DISTRIBUTED_FLOS_ON_SAVE}"
+if [[ "${CHECKPOINT_SAVE_MODE}" == "sharded" ]]; then
+  echo "Shard upload: every node publishes its local rank shards under ${CLOUD_OUTPUT_PATH}/zero_shards/node_<rank>"
+else
+  echo "Checkpoint upload: original rank0 consolidated output -> ${CLOUD_OUTPUT_PATH}"
+fi
 echo "============================================================"
 
 # Launch the recipe entrypoint. Training uses HCCL/DDP and full SFT may add DeepSpeed.
@@ -559,7 +591,7 @@ torchrun \
   --save_strategy steps \
   --save_steps "${SAVE_STEPS}" \
   --save_total_limit "${SAVE_TOTAL_LIMIT}" \
-  --save_on_each_node True \
+  --save_on_each_node "${SAVE_ON_EACH_NODE}" \
   --save_best_train_loss "${SAVE_BEST_TRAIN_LOSS}" \
   --best_train_loss_start_step "${BEST_TRAIN_LOSS_START_STEP}" \
   --best_train_loss_dir best \
@@ -601,10 +633,38 @@ if [ "${TRAIN_EXIT}" -ne 0 ]; then
   exit "${TRAIN_EXIT}"
 fi
 
-# Every node owns different ZeRO-3 data-parallel shards on node-local storage.
-# Persist every node under a unique directory; keeping rank0 alone would create
-# an incomplete checkpoint that cannot be reconstructed after a multi-node job.
-python - "${OUTPUT_PATH}/zero3_shard_layout.json" "${NNODES}" "${NODE_RANK}" "${NPROC_PER_NODE}" <<'PY'
+if [[ "${CHECKPOINT_SAVE_MODE}" == "original" ]]; then
+  # Preserve the original recipe's output behavior: only rank0 publishes the
+  # ordinary gathered checkpoint tree. There is no zero_shards layout or CPU merge.
+  if [[ "${NODE_RANK}" == "0" ]]; then
+    mkdir -p "$(dirname "${CLOUD_OUTPUT_PATH}")"
+    if [ -e "${CLOUD_OUTPUT_PATH}" ]; then
+      echo "ERROR: cloud output path already exists, refusing to overwrite: ${CLOUD_OUTPUT_PATH}"
+      exit 1
+    fi
+    if [ ! -e "${OUTPUT_PATH}" ]; then
+      echo "ERROR: local training output path does not exist: ${OUTPUT_PATH}"
+      echo "LOCAL_MODEL_SAVE_ROOT contents:"
+      ls -la "${LOCAL_MODEL_SAVE_ROOT}" || true
+      exit 1
+    fi
+    echo "Moving rank0 local output to cloud output: ${OUTPUT_PATH} -> ${CLOUD_OUTPUT_PATH}"
+    mv "${OUTPUT_PATH}" "${CLOUD_OUTPUT_PATH}"
+    MOVE_EXIT=$?
+    if [ "${MOVE_EXIT}" -ne 0 ]; then
+      echo "ERROR: failed to move rank0 output with exit code ${MOVE_EXIT}"
+      exit "${MOVE_EXIT}"
+    fi
+    echo "Final cloud output path: ${CLOUD_OUTPUT_PATH}"
+  else
+    echo "Non-master node ${NODE_RANK}: skip cloud output move."
+  fi
+  exit 0
+fi
+
+# Sharded mode persists every node because each node owns distinct ZeRO-3
+# optimizer partitions that are required by offline reconstruction.
+python - "${OUTPUT_PATH}/zero3_shard_layout.json" "${NNODES}" "${NODE_RANK}" "${NPROC_PER_NODE}" "${ZERO3_GATHER_16BIT}" <<'PY'
 import json
 import sys
 from pathlib import Path
@@ -613,6 +673,7 @@ path = Path(sys.argv[1])
 nnodes = int(sys.argv[2])
 node_rank = int(sys.argv[3])
 nproc_per_node = int(sys.argv[4])
+gather_16bit = sys.argv[5].strip().lower() == "true"
 path.write_text(
     json.dumps(
         {
@@ -621,7 +682,7 @@ path.write_text(
             "node_rank": node_rank,
             "nproc_per_node": nproc_per_node,
             "expected_world_size": nnodes * nproc_per_node,
-            "gather_16bit_weights_on_model_save": False,
+            "gather_16bit_weights_on_model_save": gather_16bit,
         },
         indent=2,
     )

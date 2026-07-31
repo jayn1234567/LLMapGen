@@ -94,6 +94,7 @@ LORA_R=${LORA_R:-8}                                                             
 LORA_ALPHA=${LORA_ALPHA:-16}                                                      # LoRA scaling alpha.
 LORA_DROPOUT=${LORA_DROPOUT:-0.05}                                                # LoRA branch dropout.
 LORA_BIAS=${LORA_BIAS:-none}                                                      # Do not train base-model bias parameters through PEFT.
+DDP_FIND_UNUSED_PARAMETERS=${DDP_FIND_UNUSED_PARAMETERS:-True}                    # Required because penultimate-layer/no-DeepStack leaves registered visual parameters outside the loss graph.
 WEIGHT_DECAY=${WEIGHT_DECAY:-0.0}                                                 # Weight decay used by the trainer.
 WARMUP_RATIO=${WARMUP_RATIO:-0.03}                                                # Warmup ratio for the cosine learning-rate schedule.
 MODEL_MAX_LENGTH=${MODEL_MAX_LENGTH:-4096}                                        # Maximum text sequence length.
@@ -521,6 +522,7 @@ echo "Vision OBS:   ${MODEL_OBS_PATH}/${VISION_TOWER_NAME}"
 echo "Vision train: full DINOv2 tower"
 echo "LLM train:    LoRA scope=${LORA_TARGET_SCOPE}, r=${LORA_R}, alpha=${LORA_ALPHA}, dropout=${LORA_DROPOUT}, bias=${LORA_BIAS}"
 echo "Projector:    full-parameter training"
+echo "DDP graph:    find_unused_parameters=${DDP_FIND_UNUSED_PARAMETERS}, gradient_checkpointing_use_reentrant=False"
 echo "Vision layer: ${MM_VISION_SELECT_LAYER}"
 echo "Layer fusion: ${VISION_LAYER_FUSION_INDEXES:-off} (${VISION_LAYER_FUSION_TYPE})"
 echo "Coord tokens: ${COORDINATE_TOKEN_MODE} (max=${COORDINATE_TOKEN_MAX})"
@@ -620,7 +622,7 @@ torchrun \
   --swanlab_log_dir "${SWANLAB_LOG_DIR}" \
   --swanlab_api_host "${SWANLAB_API_HOST}" \
   --swanlab_web_host "${SWANLAB_WEB_HOST}" \
-  --ddp_find_unused_parameters False \
+  --ddp_find_unused_parameters "${DDP_FIND_UNUSED_PARAMETERS}" \
   --ddp_backend hccl
 
 TRAIN_EXIT=$?                                                                     # Captured training process exit code before cleanup/upload handling.

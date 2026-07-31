@@ -13,6 +13,7 @@ SMOKE_SCRIPT = REPO_ROOT / (
     "smoke_sft_stage_a_lane_intersection_datasetv2_rawlane_local256_550k_"
     "original_dinov2_caprl4b_nodeepstack_lora_llm_npu.sh"
 )
+TRAIN_ENTRY = REPO_ROOT / "mllm/train/train_qwen.py"
 
 
 class RawLaneLoraRecipeTest(unittest.TestCase):
@@ -44,10 +45,12 @@ class RawLaneLoraRecipeTest(unittest.TestCase):
             "LORA_R=${LORA_R:-8}",
             "LORA_ALPHA=${LORA_ALPHA:-16}",
             "LORA_DROPOUT=${LORA_DROPOUT:-0.05}",
+            "DDP_FIND_UNUSED_PARAMETERS=${DDP_FIND_UNUSED_PARAMETERS:-True}",
             '--lora_enable "${LORA_ENABLE}"',
             '--lora_target_scope "${LORA_TARGET_SCOPE}"',
             "--unfreeze_mm_vision_tower True",
             "--disable_deepstack True",
+            '--ddp_find_unused_parameters "${DDP_FIND_UNUSED_PARAMETERS}"',
         )
         for fragment in expected:
             self.assertIn(fragment, self.script)
@@ -86,12 +89,22 @@ class RawLaneLoraRecipeTest(unittest.TestCase):
             "INSTALL_DEPS=False",
             "ENABLE_MOXING_UPGRADE=False",
             "MLLM_NPU_EMPTY_CACHE_BEFORE_CHECKPOINT=True",
+            "DDP_FIND_UNUSED_PARAMETERS=True",
             "Released unused NPU cache before checkpoint save.",
             "non_lora_trainables.bin",
             "adapter_config.json",
         )
         for fragment in expected:
             self.assertIn(fragment, smoke)
+
+    def test_ddp_unused_detection_uses_non_reentrant_checkpointing(self):
+        entry = TRAIN_ENTRY.read_text(encoding="utf-8")
+        self.assertIn("training_args.ddp_find_unused_parameters is True", entry)
+        self.assertIn(
+            'training_args.gradient_checkpointing_kwargs = {"use_reentrant": False}',
+            entry,
+        )
+        self.assertIn("DDP find_unused_parameters=True is incompatible", entry)
 
 
 if __name__ == "__main__":

@@ -2447,6 +2447,23 @@ def train(attn_implementation=None):
         rank0_print("DeepStack disabled: using ViT main feature + mm_projector only.")
     if (
         training_args.gradient_checkpointing
+        and training_args.ddp_find_unused_parameters is True
+    ):
+        checkpointing_kwargs = training_args.gradient_checkpointing_kwargs
+        if checkpointing_kwargs is None:
+            training_args.gradient_checkpointing_kwargs = {"use_reentrant": False}
+            rank0_print(
+                "Using non-reentrant gradient checkpointing because DDP unused-parameter "
+                "detection is enabled."
+            )
+        elif checkpointing_kwargs.get("use_reentrant", False):
+            raise ValueError(
+                "DDP find_unused_parameters=True is incompatible with reentrant gradient "
+                "checkpointing for this multimodal graph. Set "
+                "--gradient_checkpointing_kwargs '{\"use_reentrant\": false}'."
+            )
+    if (
+        training_args.gradient_checkpointing
         and training_args.deepspeed
         and training_args.gradient_checkpointing_kwargs is None
     ):

@@ -14,12 +14,17 @@ DATASET_ROOT=${DATASET_ROOT:-/cache/jn/e2e_eval/e2e_data_context512_roi256_black
 MANIFEST_JSON=${MANIFEST_JSON:-${DATASET_ROOT}/patch_manifest.json}
 INFER_JSONL=${INFER_JSONL:-${DATASET_ROOT}/infer.jsonl}
 PREDICTION_DIR=${PREDICTION_DIR:-/cache/jn/outputs/${BASE_RUN_ID}/inference/json}
+PREDICTION_PARENT=$(dirname "${PREDICTION_DIR}")
+SANITIZE_REPORT=${SANITIZE_REPORT:-${PREDICTION_PARENT}/prediction_roi_clip_report.json}
 RAW_E2E_ROOT=${RAW_E2E_ROOT:-/cache/jn/e2e_eval/raw_e2e_data}
 MAX_OLD_BLACK_RATIO=${MAX_OLD_BLACK_RATIO:-0.98}
 DIAG_RUN_ID=${DIAG_RUN_ID:-context512_black_threshold_ab_$(date -u +%Y%m%d_%H%M%S)}
 OUTPUT_ROOT=${OUTPUT_ROOT:-/cache/jn/outputs/${DIAG_RUN_ID}}
 FILTERED_PREDICTION_DIR=${FILTERED_PREDICTION_DIR:-${OUTPUT_ROOT}/predictions_black_lt_098}
 ADDED_PREDICTION_DIR=${ADDED_PREDICTION_DIR:-${OUTPUT_ROOT}/predictions_black_ge_098_lt_100}
+IMAGE_FOLDER=${IMAGE_FOLDER:-${DATASET_ROOT}}
+VISUALIZE_PATCH_AB=${VISUALIZE_PATCH_AB:-True}
+VIS_LIMIT=${VIS_LIMIT:-200}
 RUN_WHOLEMAP_AB=${RUN_WHOLEMAP_AB:-False}
 
 is_true() {
@@ -89,6 +94,27 @@ run_patch_eval() {
   METRICS_OBS_PATH="" \
   REQUIRE_ALL=False \
   bash "${SCRIPT_DIR}/eval_rc_e2e_context512_roi256_checkpoint12504_patch_metrics.sh"
+
+  if is_true "${VISUALIZE_PATCH_AB}"; then
+    local viz_input=${eval_root}/visualization_input
+    local viz_output=${eval_root}/visualizations
+    local eval_jsonl=${eval_root}/eval_records.jsonl
+    if [ ! -s "${eval_jsonl}" ]; then
+      echo "ERROR: visualization source JSONL not found or empty: ${eval_jsonl}" >&2
+      exit 2
+    fi
+    mkdir -p "${viz_input}" "${viz_output}"
+    rm -f "${viz_input}/summary.json" "${viz_input}/summary.jsonl"
+    cp "${eval_jsonl}" "${viz_input}/summary.jsonl"
+    python scripts/tools/visualize_centerline.py \
+      --input-dir "${viz_input}" \
+      --image-folder "${IMAGE_FOLDER}" \
+      --output-dir "${viz_output}" \
+      --map-task lane \
+      --max-samples "${VIS_LIMIT}" \
+      --no-eval-centerline \
+      --skip-whole-map-viz
+  fi
 }
 
 run_patch_eval black_lt_098 "${FILTERED_PREDICTION_DIR}"
@@ -96,11 +122,14 @@ run_patch_eval black_ge_098_lt_100 "${ADDED_PREDICTION_DIR}"
 run_patch_eval black_lt_100 "${PREDICTION_DIR}"
 
 PATCH_SUMMARY_PATH=${OUTPUT_ROOT}/patch_metric_comparison.json
+ROI_RELATION_STATS_PATH=${OUTPUT_ROOT}/roi_relation_stats.json
 python - \
   "${OUTPUT_ROOT}/black_lt_098_patch_metrics/metrics.json" \
   "${OUTPUT_ROOT}/black_ge_098_lt_100_patch_metrics/metrics.json" \
   "${OUTPUT_ROOT}/black_lt_100_patch_metrics/metrics.json" \
-  "${PATCH_SUMMARY_PATH}" <<'PY'
+  "${PATCH_SUMMARY_PATH}" \
+  "${SANITIZE_REPORT}" \
+  "${ROI_RELATION_STATS_PATH}" <<'PY'
 import json
 import sys
 from pathlib import Path
@@ -139,6 +168,18 @@ summary["full_minus_legacy"] = {
 }
 
 output_path = Path(sys.argv[4])
+sanitize_report = Path(sys.argv[5])
+relation_output_path = Path(sys.argv[6])
+if sanitize_report.is_file():
+    sanitize_payload = json.loads(sanitize_report.read_text(encoding="utf-8"))
+    relation_stats = sanitize_payload.get("roi_relation_stats", {})
+    summary["roi_relation_stats"] = relation_stats
+    relation_output_path.write_text(
+        json.dumps(relation_stats, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+else:
+    summary["roi_relation_stats_error"] = f"sanitize report not found: {sanitize_report}"
 output_path.write_text(json.dumps(summary, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 print(json.dumps(summary, ensure_ascii=False, indent=2))
 PY
@@ -149,6 +190,12 @@ echo "Comparison: ${PATCH_SUMMARY_PATH}"
 echo "Legacy:     ${OUTPUT_ROOT}/black_lt_098_patch_metrics/metrics.json"
 echo "Added only: ${OUTPUT_ROOT}/black_ge_098_lt_100_patch_metrics/metrics.json"
 echo "Full set:   ${OUTPUT_ROOT}/black_lt_100_patch_metrics/metrics.json"
+echo "Relations:  ${ROI_RELATION_STATS_PATH}"
+if is_true "${VISUALIZE_PATCH_AB}"; then
+  echo "Legacy viz: ${OUTPUT_ROOT}/black_lt_098_patch_metrics/visualizations"
+  echo "Added viz:  ${OUTPUT_ROOT}/black_ge_098_lt_100_patch_metrics/visualizations"
+  echo "Full viz:   ${OUTPUT_ROOT}/black_lt_100_patch_metrics/visualizations"
+fi
 echo "============================================================"
 
 if ! is_true "${RUN_WHOLEMAP_AB}"; then

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
@@ -8,7 +9,17 @@ import pytest
 from PIL import Image
 
 from scripts.tools.build_rc_e2e_jsonl_from_original_manifest import convert_manifest
-from scripts.tools.prepare_rc_e2e_inference_dataset import prepare_dataset
+from scripts.tools.prepare_rc_e2e_inference_dataset import is_original_engine_debug_tif, prepare_dataset
+
+
+def test_original_engine_debug_tif_detection_is_scoped():
+    generated = Path("/root/scene/debug_base/nn_output/inter_patch_tif/0_inter.tif")
+    source = Path(
+        "/root/scene/rc_one_patch_release/center_line_v2/inter_patch_tif/0_inter.tif"
+    )
+
+    assert is_original_engine_debug_tif(generated)
+    assert not is_original_engine_debug_tif(source)
 
 
 def test_prepare_context512_roi256_dataset(tmp_path):

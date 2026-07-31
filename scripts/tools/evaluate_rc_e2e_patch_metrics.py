@@ -23,7 +23,11 @@ if str(REPO_ROOT) not in sys.path:
 
 from infer_index.line_eval import evaluate_records, format_eval_table
 from mllm.coord_utils import COORD_MODE_NORM1000, COORD_MODE_PIXEL, convert_payload_text
-from scripts.tools.prepare_rc_e2e_inference_dataset import discover_inter_tifs, scene_id_for_tif
+from scripts.tools.prepare_rc_e2e_inference_dataset import (
+    discover_inter_tifs,
+    is_original_engine_debug_tif,
+    scene_id_for_tif,
+)
 
 
 def parse_args() -> argparse.Namespace:
@@ -98,6 +102,8 @@ def scene_root_for_inter_tif(inter_tif: Path) -> Path:
 def build_inter_tif_index(raw_root: Path) -> dict[tuple[str, str], Path]:
     index: dict[tuple[str, str], Path] = {}
     for path in discover_inter_tifs(raw_root):
+        if is_original_engine_debug_tif(path):
+            continue
         key = (scene_id_for_tif(path), path.stem)
         if key in index:
             raise ValueError(f"Duplicate inter TIF key {key}: {index[key]} and {path}")

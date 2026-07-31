@@ -108,6 +108,14 @@ def scene_id_for_tif(tif_path: Path) -> str:
     raise ValueError(f"Unable to find scene ID above rc_one_patch_release: {tif_path}")
 
 
+def is_original_engine_debug_tif(path: Path) -> bool:
+    return (
+        path.parent.name == "inter_patch_tif"
+        and path.parent.parent.name == "nn_output"
+        and path.parent.parent.parent.name == "debug_base"
+    )
+
+
 def discover_inter_tifs(input_root: Path) -> list[Path]:
     paths = [
         path

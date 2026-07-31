@@ -51,6 +51,8 @@ RUN_HIGH_EVAL=${RUN_HIGH_EVAL:-True}
 EVAL_SIMPLIFY_PATH=${EVAL_SIMPLIFY_PATH:-False}
 EVAL_VIS_FLAG=${EVAL_VIS_FLAG:-True}
 RESET_EXISTING_MODEL_OUTPUTS=${RESET_EXISTING_MODEL_OUTPUTS:-False}
+EXPECTED_E2E_SCENES=${EXPECTED_E2E_SCENES:-110}
+FILL_MISSING_SCENE_PREDICTIONS=${FILL_MISSING_SCENE_PREDICTIONS:-True}
 
 is_true() {
   case "${1:-}" in
@@ -498,6 +500,18 @@ else
   fi
   echo "[original-e2e] step 2/5: SKIP center_lane_rule; reuse ${OUTPUT_BASE_COUNT} output_base directories"
 fi
+
+SCENE_COMPLETENESS_ARGS=()
+if is_true "${FILL_MISSING_SCENE_PREDICTIONS}"; then
+  SCENE_COMPLETENESS_ARGS+=(--fill-missing-predictions)
+fi
+python scripts/tools/ensure_rc_e2e_scene_outputs.py \
+  --e2e-root "${E2E_DATA_ROOT}" \
+  --report-json "${RESULT_ROOT}/scene_output_completeness.json" \
+  --expected-scenes "${EXPECTED_E2E_SCENES}" \
+  --baseline-suffix gt \
+  --query-suffix output_base \
+  "${SCENE_COMPLETENESS_ARGS[@]}"
 
 CONFIG_BACKUP=${RUN_WORK_ROOT}/original_eval_config.yaml
 cp "${EVAL_CONFIG}" "${CONFIG_BACKUP}"

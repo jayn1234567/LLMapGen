@@ -24,6 +24,7 @@ RUN_ORIGINAL_E2E=${RUN_ORIGINAL_E2E:-False}
 RUN_ALL_EVAL=${RUN_ALL_EVAL:-True}
 RUN_LOW_EVAL=${RUN_LOW_EVAL:-True}
 RUN_HIGH_EVAL=${RUN_HIGH_EVAL:-True}
+ORIGINAL_E2E_DATA_SOURCE=${ORIGINAL_E2E_DATA_SOURCE:-raw_copy}
 
 is_true() {
   case "${1:-}" in
@@ -143,7 +144,7 @@ if ! is_true "${RUN_ORIGINAL_E2E}"; then
 fi
 
 echo "[gt-oracle-e2e] stage 4/4: original all/low/high road evaluation pipeline"
-E2E_DATA_SOURCE=raw_copy \
+E2E_DATA_SOURCE="${ORIGINAL_E2E_DATA_SOURCE}" \
 E2E_RAW_ROOT="${RAW_E2E_ROOT}" \
 E2E_DATA_ROOT="${RUN_WORK_ROOT}/e2e_data" \
 E2E_PREPARE_MODE=hardlink \

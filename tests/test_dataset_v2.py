@@ -59,6 +59,11 @@ from scripts.tools.create_fixed_source_split_manifest import (
     select_source_balanced,
     target_profile,
 )
+from scripts.tools.build_rc_dataset_v2_rawlane_pose_800k_fixed_eval_windows import (
+    bootstrap_command as fixed_eval_bootstrap_command,
+    final_build_command as fixed_eval_final_build_command,
+    parse_args as parse_fixed_eval_build_args,
+)
 
 
 class DatasetV2ContextTest(unittest.TestCase):
@@ -337,6 +342,26 @@ class DatasetV2ContextTest(unittest.TestCase):
                 item["source_index"] for item in payload["selected_sources"].values()
             )
             self.assertEqual(source_counts, Counter({i: 3 for i in range(7)}))
+
+    def test_one_command_fixed_eval_builder_bootstraps_then_builds_fixed(self):
+        args = parse_fixed_eval_build_args([
+            "--bootstrap-work-root", r"D:\bootstrap",
+            "--fixed-work-root", r"D:\fixed",
+            "--manifest-path", r"D:\splits\v1.json",
+            "--obsutil-path", r"C:\tools\obsutil.exe",
+            "--resume",
+        ])
+        bootstrap = [str(item) for item in fixed_eval_bootstrap_command(args)]
+        self.assertIn("--stage-only", bootstrap)
+        self.assertIn("--resume", bootstrap)
+        final = [str(item) for item in fixed_eval_final_build_command(
+            args, Path(r"D:\splits\v1.json")
+        )]
+        self.assertEqual(
+            final[final.index("--fixed-source-split-manifest") + 1],
+            r"D:\splits\v1.json",
+        )
+        self.assertNotIn("--stage-only", final)
 
     def test_resume_rejects_pre_semantic_stage_markers(self):
         with tempfile.TemporaryDirectory() as temp_dir:

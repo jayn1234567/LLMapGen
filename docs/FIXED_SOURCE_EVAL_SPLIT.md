@@ -13,6 +13,16 @@ silently changing the benchmark.
 
 ## Recommended V1 Selection
 
+The recommended path is the one-command orchestrator. It completes bootstrap
+staging, freezes the manifest, rebuilds under the fixed split, validates both
+views, and creates both tar packages:
+
+```powershell
+python scripts\tools\build_rc_dataset_v2_rawlane_pose_800k_fixed_eval_windows.py --obsutil-path "C:\Users\jWX1497058\Downloads\obsutil_windows_amd64\obsutil_windows_amd64_5.8.3\obsutil.exe" --resume
+```
+
+The individual commands below remain useful for auditing or recovery.
+
 First complete all seven source stages without finalizing a random split:
 
 ```powershell

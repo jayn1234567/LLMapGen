@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Compare <=0.98 and <1.0 patch sets with the same predictions and patch GT.
+# Compare <0.98 and <1.0 patch sets with the same predictions and patch GT.
 # Whole-map A/B remains available but is disabled by default because it reruns
 # the original formatter and rule engine twice.
 
@@ -18,8 +18,8 @@ RAW_E2E_ROOT=${RAW_E2E_ROOT:-/cache/jn/e2e_eval/raw_e2e_data}
 MAX_OLD_BLACK_RATIO=${MAX_OLD_BLACK_RATIO:-0.98}
 DIAG_RUN_ID=${DIAG_RUN_ID:-context512_black_threshold_ab_$(date -u +%Y%m%d_%H%M%S)}
 OUTPUT_ROOT=${OUTPUT_ROOT:-/cache/jn/outputs/${DIAG_RUN_ID}}
-FILTERED_PREDICTION_DIR=${FILTERED_PREDICTION_DIR:-${OUTPUT_ROOT}/predictions_black_le_098}
-ADDED_PREDICTION_DIR=${ADDED_PREDICTION_DIR:-${OUTPUT_ROOT}/predictions_black_gt_098_lt_100}
+FILTERED_PREDICTION_DIR=${FILTERED_PREDICTION_DIR:-${OUTPUT_ROOT}/predictions_black_lt_098}
+ADDED_PREDICTION_DIR=${ADDED_PREDICTION_DIR:-${OUTPUT_ROOT}/predictions_black_ge_098_lt_100}
 RUN_WHOLEMAP_AB=${RUN_WHOLEMAP_AB:-False}
 
 is_true() {
@@ -54,12 +54,13 @@ python scripts/tools/verify_e2e_inference_completeness.py \
   --prediction-dir "${PREDICTION_DIR}" \
   --output-json "${OUTPUT_ROOT}/full_prediction_completeness.json"
 
-echo "[threshold-ab] selecting the legacy <=${MAX_OLD_BLACK_RATIO} subset"
+echo "[threshold-ab] selecting the legacy <${MAX_OLD_BLACK_RATIO} subset"
 python scripts/tools/filter_e2e_predictions_by_black_ratio.py \
   --manifest-json "${MANIFEST_JSON}" \
   --prediction-dir "${PREDICTION_DIR}" \
   --output-dir "${FILTERED_PREDICTION_DIR}" \
   --max-black-ratio "${MAX_OLD_BLACK_RATIO}" \
+  --max-exclusive \
   --reset \
   --strict
 
@@ -69,8 +70,8 @@ python scripts/tools/filter_e2e_predictions_by_black_ratio.py \
   --prediction-dir "${PREDICTION_DIR}" \
   --output-dir "${ADDED_PREDICTION_DIR}" \
   --min-black-ratio "${MAX_OLD_BLACK_RATIO}" \
-  --min-exclusive \
   --max-black-ratio 1.0 \
+  --max-exclusive \
   --reset \
   --strict
 
@@ -90,21 +91,21 @@ run_patch_eval() {
   bash "${SCRIPT_DIR}/eval_rc_e2e_context512_roi256_checkpoint12504_patch_metrics.sh"
 }
 
-run_patch_eval black_le_098 "${FILTERED_PREDICTION_DIR}"
-run_patch_eval black_gt_098_lt_100 "${ADDED_PREDICTION_DIR}"
+run_patch_eval black_lt_098 "${FILTERED_PREDICTION_DIR}"
+run_patch_eval black_ge_098_lt_100 "${ADDED_PREDICTION_DIR}"
 run_patch_eval black_lt_100 "${PREDICTION_DIR}"
 
 PATCH_SUMMARY_PATH=${OUTPUT_ROOT}/patch_metric_comparison.json
 python - \
-  "${OUTPUT_ROOT}/black_le_098_patch_metrics/metrics.json" \
-  "${OUTPUT_ROOT}/black_gt_098_lt_100_patch_metrics/metrics.json" \
+  "${OUTPUT_ROOT}/black_lt_098_patch_metrics/metrics.json" \
+  "${OUTPUT_ROOT}/black_ge_098_lt_100_patch_metrics/metrics.json" \
   "${OUTPUT_ROOT}/black_lt_100_patch_metrics/metrics.json" \
   "${PATCH_SUMMARY_PATH}" <<'PY'
 import json
 import sys
 from pathlib import Path
 
-labels = ("black_ratio_le_0.98", "black_ratio_gt_0.98_lt_1.0", "black_ratio_lt_1.0")
+labels = ("black_ratio_lt_0.98", "black_ratio_ge_0.98_lt_1.0", "black_ratio_lt_1.0")
 summary = {}
 for label, value in zip(labels, sys.argv[1:4]):
     path = Path(value)
@@ -145,8 +146,8 @@ PY
 echo "============================================================"
 echo "CONTEXT512 PATCH BLACK-THRESHOLD A/B COMPLETE"
 echo "Comparison: ${PATCH_SUMMARY_PATH}"
-echo "Legacy:     ${OUTPUT_ROOT}/black_le_098_patch_metrics/metrics.json"
-echo "Added only: ${OUTPUT_ROOT}/black_gt_098_lt_100_patch_metrics/metrics.json"
+echo "Legacy:     ${OUTPUT_ROOT}/black_lt_098_patch_metrics/metrics.json"
+echo "Added only: ${OUTPUT_ROOT}/black_ge_098_lt_100_patch_metrics/metrics.json"
 echo "Full set:   ${OUTPUT_ROOT}/black_lt_100_patch_metrics/metrics.json"
 echo "============================================================"
 
@@ -185,14 +186,14 @@ run_wholemap_eval() {
 }
 
 # Run the subset first so the raw tree is left with the current full-set output.
-run_wholemap_eval black_le_098 "${FILTERED_PREDICTION_DIR}"
+run_wholemap_eval black_lt_098 "${FILTERED_PREDICTION_DIR}"
 run_wholemap_eval black_lt_100 "${PREDICTION_DIR}"
 
 SUMMARY_PATH=${OUTPUT_ROOT}/metric_comparison.txt
 {
-  echo "legacy subset: black_ratio <= ${MAX_OLD_BLACK_RATIO}"
+  echo "legacy subset: black_ratio < ${MAX_OLD_BLACK_RATIO}"
   grep -E "Lane instance total matched num|Lane length gt matched|patch.*found|patch evaluated" \
-    "${OUTPUT_ROOT}/black_le_098/logs/03_eval_all.log" || true
+    "${OUTPUT_ROOT}/black_lt_098/logs/03_eval_all.log" || true
   echo
   echo "current full set: black_ratio < 1.0"
   grep -E "Lane instance total matched num|Lane length gt matched|patch.*found|patch evaluated" \
@@ -202,7 +203,7 @@ SUMMARY_PATH=${OUTPUT_ROOT}/metric_comparison.txt
 echo "============================================================"
 echo "CONTEXT512 BLACK-THRESHOLD A/B COMPLETE"
 echo "Comparison: ${SUMMARY_PATH}"
-echo "Subset:     ${OUTPUT_ROOT}/black_le_098"
+echo "Subset:     ${OUTPUT_ROOT}/black_lt_098"
 echo "Full set:   ${OUTPUT_ROOT}/black_lt_100"
 echo "The raw E2E tree now contains the clean full-set model outputs."
 echo "============================================================"

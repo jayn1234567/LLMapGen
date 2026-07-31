@@ -54,6 +54,7 @@ def main() -> None:
     parser.add_argument("--min-black-ratio", type=float, default=0.0)
     parser.add_argument("--max-black-ratio", type=float, default=0.98)
     parser.add_argument("--min-exclusive", action="store_true")
+    parser.add_argument("--max-exclusive", action="store_true")
     parser.add_argument("--reset", action="store_true")
     parser.add_argument("--strict", action="store_true")
     args = parser.parse_args()
@@ -102,7 +103,8 @@ def main() -> None:
             missing_manifest_ids.append(item_id)
             continue
         lower_selected = ratio > args.min_black_ratio if args.min_exclusive else ratio >= args.min_black_ratio
-        if lower_selected and ratio <= args.max_black_ratio:
+        upper_selected = ratio < args.max_black_ratio if args.max_exclusive else ratio <= args.max_black_ratio
+        if lower_selected and upper_selected:
             link_or_copy(path, output_dir / path.name)
             selected += 1
             selected_ratios.append(ratio)
@@ -118,7 +120,7 @@ def main() -> None:
         "output_dir": str(output_dir),
         "selection": (
             f"{args.min_black_ratio} {'<' if args.min_exclusive else '<='} "
-            f"black_ratio <= {args.max_black_ratio}"
+            f"black_ratio {'<' if args.max_exclusive else '<='} {args.max_black_ratio}"
         ),
         "manifest_records": len(ratios),
         "prediction_files": len(prediction_files),

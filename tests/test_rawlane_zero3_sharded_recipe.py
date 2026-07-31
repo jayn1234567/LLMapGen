@@ -8,6 +8,7 @@ TRAIN_SCRIPT = REPO_ROOT / "scripts/npu/train/train_sft_stage_a_lane_intersectio
 ZERO3_CONFIG = REPO_ROOT / "scripts/deepspeed_zero3_no_merge.json"
 DI_STEP10_SMOKE = REPO_ROOT / "scripts/npu/test/di_smoke_sft_stage_a_lane_intersection_rawlane_local256_550k_zero3_step10_npu.sh"
 DI_ORIGINAL_SAVE_STEP10_SMOKE = REPO_ROOT / "scripts/npu/test/di_smoke_sft_stage_a_lane_intersection_rawlane_local256_550k_original_checkpoint_presave_cleanup_step10_npu.sh"
+DI_ORIGINAL_SAVE_EVAL_STEP10_SMOKE = REPO_ROOT / "scripts/npu/test/di_smoke_sft_stage_a_lane_intersection_rawlane_local256_550k_original_checkpoint_eval_loss_presave_cleanup_step10_npu.sh"
 
 
 class RawLaneZero3ShardedRecipeTest(unittest.TestCase):
@@ -51,6 +52,22 @@ class RawLaneZero3ShardedRecipeTest(unittest.TestCase):
         self.assertIn("export MLLM_NPU_EMPTY_CACHE_BEFORE_CHECKPOINT=True", smoke_script)
         self.assertIn("export MLLM_SKIP_DISTRIBUTED_FLOS_ON_SAVE=False", smoke_script)
         self.assertIn("zero_shards=False cpu_merge=False", smoke_script)
+
+    def test_eval_loss_smoke_uses_loss_only_eval_before_original_save(self):
+        formal_script = TRAIN_SCRIPT.read_text(encoding="utf-8")
+        smoke_script = DI_ORIGINAL_SAVE_EVAL_STEP10_SMOKE.read_text(encoding="utf-8")
+
+        self.assertIn("ENABLE_EVAL=${ENABLE_EVAL:-False}", formal_script)
+        self.assertIn("SAVE_BEST_EVAL_LOSS=${SAVE_BEST_EVAL_LOSS:-False}", formal_script)
+        self.assertIn('--prediction_loss_only True', formal_script)
+        self.assertIn('--per_device_eval_batch_size "${PER_DEVICE_EVAL_BATCH_SIZE}"', formal_script)
+        self.assertIn("export ENABLE_EVAL=True", smoke_script)
+        self.assertIn("export EVAL_STEPS=10", smoke_script)
+        self.assertIn("export EVAL_SAMPLE_LIMIT=${EVAL_SAMPLE_LIMIT:-256}", smoke_script)
+        self.assertIn("export PER_DEVICE_EVAL_BATCH_SIZE=1", smoke_script)
+        self.assertIn("export SAVE_BEST_EVAL_LOSS=False", smoke_script)
+        self.assertIn("export CHECKPOINT_SAVE_MODE=original", smoke_script)
+        self.assertIn("export MLLM_NPU_EMPTY_CACHE_BEFORE_CHECKPOINT=True", smoke_script)
 
 
 if __name__ == "__main__":

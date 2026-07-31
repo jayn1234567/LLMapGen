@@ -96,6 +96,7 @@ SAVE_TOTAL_LIMIT=${SAVE_TOTAL_LIMIT:-15}                                        
 LOGGING_STEPS=${LOGGING_STEPS:-10}                                                # Training log interval in optimizer steps.
 EVAL_STEPS=${EVAL_STEPS:-2000}                                                    # Evaluation interval when ENABLE_EVAL is true.
 EVAL_SAMPLE_LIMIT=${EVAL_SAMPLE_LIMIT:-10000}                                     # Deterministic eval-loss subset size; 0 uses the full eval split.
+PER_DEVICE_EVAL_BATCH_SIZE=${PER_DEVICE_EVAL_BATCH_SIZE:-1}                       # Keep eval memory below the training micro-batch peak.
 CHECKPOINT_SAVE_MODE=${CHECKPOINT_SAVE_MODE:-sharded}                             # sharded is the stable default; original restores the pre-sharding rank0 save path.
 case "${CHECKPOINT_SAVE_MODE}" in
   sharded)
@@ -111,8 +112,8 @@ case "${CHECKPOINT_SAVE_MODE}" in
     exit 2
     ;;
 esac
-ENABLE_EVAL=False                                                                 # This recipe deliberately avoids in-training eval to remove the eval/save NPU peak.
-SAVE_BEST_EVAL_LOSS=False                                                         # Eval-loss checkpointing is disabled together with Trainer evaluation.
+ENABLE_EVAL=${ENABLE_EVAL:-False}                                                 # Disabled by default; dedicated smoke/formal runs may opt in.
+SAVE_BEST_EVAL_LOSS=${SAVE_BEST_EVAL_LOSS:-False}                                 # Keep false when eval is only used to annotate regular checkpoints.
 SAVE_BEST_TRAIN_LOSS=False                                                        # Direct best-model copies require consolidation; select from regular sharded checkpoints instead.
 BEST_TRAIN_LOSS_START_STEP=${BEST_TRAIN_LOSS_START_STEP:-5000}                    # Step threshold before best-train-loss checkpointing starts.
 SAVE_BEST_INFER_INDEX=${SAVE_BEST_INFER_INDEX:-False}                             # Whether to run inference-based best checkpoint selection.
@@ -495,6 +496,8 @@ if [[ "${ENABLE_EVAL}" =~ ^(1|true|True|TRUE|yes|YES)$ ]]; then
     --eval_data_path "${EVAL_PATH}"
     --eval_image_folder "${IMAGE_FOLDER}"
     --eval_sample_limit "${EVAL_SAMPLE_LIMIT}"
+    --per_device_eval_batch_size "${PER_DEVICE_EVAL_BATCH_SIZE}"
+    --prediction_loss_only True
     "${EVAL_STRATEGY_ARG}" steps
     --eval_steps "${EVAL_STEPS}"
     --save_best_eval_loss "${SAVE_BEST_EVAL_LOSS}"
@@ -529,6 +532,7 @@ echo "Output:       ${OUTPUT_PATH}"
 echo "Topology:     nnodes=${NNODES}, node_rank=${NODE_RANK}, nproc_per_node=${NPROC_PER_NODE}"
 echo "Batch:        per_device=${PER_DEVICE_TRAIN_BATCH_SIZE}, accumulation=${GRADIENT_ACCUMULATION_STEPS}, effective=$((MICRO_BATCH * GRADIENT_ACCUMULATION_STEPS))"
 echo "Schedule/LR:  epochs=${NUM_EPOCHS}, max_steps=${MAX_STEPS}, llm=${LR}, projector=${MM_PROJECTOR_LR}, vision=${MM_VISION_TOWER_LR}"
+echo "Eval loss:    enabled=${ENABLE_EVAL}, steps=${EVAL_STEPS}, samples=${EVAL_SAMPLE_LIMIT}, per_device_batch=${PER_DEVICE_EVAL_BATCH_SIZE}, prediction_loss_only=True"
 ZERO3_GATHER_16BIT=$(python - "${DEEPSPEED_CONFIG}" <<'PY'
 import json
 import sys

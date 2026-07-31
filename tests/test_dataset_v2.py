@@ -64,6 +64,9 @@ from scripts.tools.build_rc_dataset_v2_rawlane_pose_800k_fixed_eval_windows impo
     final_build_command as fixed_eval_final_build_command,
     parse_args as parse_fixed_eval_build_args,
 )
+from scripts.tools.build_rc_dataset_v2_rawlane_pose_800k_windows import (
+    DIFFICULTY_RATIOS as RAWLANE_POSE_DIFFICULTY_RATIOS,
+)
 
 
 class DatasetV2ContextTest(unittest.TestCase):
@@ -175,6 +178,19 @@ class DatasetV2ContextTest(unittest.TestCase):
             False,
         )]
         self.assertEqual(primary_command[primary_command.index("--views") + 1], "both")
+
+    def test_streaming_parser_accepts_finalize_copy_mode(self):
+        args = parse_streaming_args([
+            "--work-root", "work",
+            "--copy-mode", "copy",
+        ])
+        self.assertEqual(args.copy_mode, "copy")
+
+    def test_rawlane_pose_recipe_reserves_nonblack_empty_samples(self):
+        self.assertEqual(
+            RAWLANE_POSE_DIFFICULTY_RATIOS,
+            "empty=0.05,easy=0.25,medium=0.33,hard=0.27,very_hard=0.10",
+        )
 
     def test_lane_type_mapping_and_exclusions(self):
         self.assertEqual(IGNORED_LANE_TYPE_CODES, frozenset({3, 22}))

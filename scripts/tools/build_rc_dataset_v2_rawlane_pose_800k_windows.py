@@ -25,11 +25,12 @@ if str(REPO_ROOT) not in sys.path:
 
 from scripts.tools.build_rc_dataset_v2_from_obs import DEFAULT_SOURCE_OBS_ROOTS, create_variant_tar
 from scripts.tools.build_rc_dataset_v2_rawlane_256_context_windows import relabel_metadata
+from data_process.build_dataset_v2 import allocate_quotas, parse_ratio_spec
 from data_process.fixed_source_splits import load_fixed_source_split_manifest
 
 
 TARGET_SAMPLES = 800_000
-DIFFICULTY_RATIOS = "empty=0,easy=0.30,medium=0.33,hard=0.27,very_hard=0.10"
+DIFFICULTY_RATIOS = "empty=0.05,easy=0.25,medium=0.33,hard=0.27,very_hard=0.10"
 INTERSECTION_RATIO = 0.30
 VARIANT_NAMES = {
     "local256": "rawlane_pose_local256_800k",
@@ -196,6 +197,22 @@ def completion_errors(root: Path, expected_fixed_split_sha256: str = "") -> list
     if multi.get("pose_image_source") != "patch_tif/0_pose.tif":
         errors.append(f"invalid pose_image_source={multi.get('pose_image_source')!r}")
     balance = info.get("balance") or {}
+    expected_ratios = parse_ratio_spec(DIFFICULTY_RATIOS)
+    actual_ratios = balance.get("target_ratios") or {}
+    for name, expected in expected_ratios.items():
+        actual = float(actual_ratios.get(name, -1.0))
+        if abs(actual - expected) > 1e-8:
+            errors.append(
+                f"invalid target difficulty ratio {name}={actual}; expected={expected}"
+            )
+    expected_counts = allocate_quotas(TARGET_SAMPLES, expected_ratios)
+    actual_counts = balance.get("final_bucket_counts") or {}
+    for name, expected in expected_counts.items():
+        actual = int(actual_counts.get(name, -1))
+        if actual != expected:
+            errors.append(
+                f"invalid final difficulty count {name}={actual}; expected={expected}"
+            )
     if abs(float(balance.get("actual_intersection_ratio", -1.0)) - INTERSECTION_RATIO) > 1e-8:
         errors.append(f"invalid intersection ratio={balance.get('actual_intersection_ratio')}")
     fixed = info.get("fixed_source_split") or {}

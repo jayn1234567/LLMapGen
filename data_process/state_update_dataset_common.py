@@ -1738,7 +1738,8 @@ def process_sample(
     for y0 in range(0, height - args.patch_size + 1, args.stride):
         for x0 in range(0, width - args.patch_size + 1, args.stride):
             chunk = image_arr[:, y0:y0 + args.patch_size, x0:x0 + args.patch_size]
-            if np.all(chunk == 0):
+            nonblack_pixel_count = int(np.count_nonzero(np.any(chunk != 0, axis=0)))
+            if nonblack_pixel_count == 0:
                 continue
             row = y0 // args.stride
             col = x0 // args.stride
@@ -1805,6 +1806,9 @@ def process_sample(
             "coord_system": f"patch_local_{args.patch_size}",
             "task_mode": "state_update_centerline_intersection" if include_intersections else "state_update_centerline",
             "raw_sample_root": str(sample.root),
+            "target_patch_nonblack_pixel_ratio": (
+                nonblack_pixel_count / float(args.patch_size * args.patch_size)
+            ),
             "raw_lane_overlay": bool(getattr(args, "raw_lane_overlay", False)),
             "raw_lane_overlay_source": "patch_tif/0_lane.tif" if bool(getattr(args, "raw_lane_overlay", False)) else "none",
         }

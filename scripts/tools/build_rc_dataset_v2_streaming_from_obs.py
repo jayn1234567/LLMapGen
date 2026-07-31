@@ -90,6 +90,12 @@ def parse_args(argv=None):
     parser.add_argument("--obsutil-config", default="")
     parser.add_argument("--obsutil-jobs", type=int, default=8)
     parser.add_argument("--upload-mode", choices=["tar", "directory"], default="tar")
+    parser.add_argument(
+        "--copy-mode",
+        choices=["hardlink", "copy"],
+        default="hardlink",
+        help="How finalization materializes staged image assets.",
+    )
     parser.add_argument("--remove-package-after-upload", action="store_true")
     parser.add_argument("--keep-raw-source-after-stage", action="store_true")
     parser.add_argument("--keep-archives", action="store_true")

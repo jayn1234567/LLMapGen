@@ -29,8 +29,8 @@ two-image training behavior or memory use.
 ## Target Distribution
 
 - train samples: 800,000 unique patch ids
-- empty: 0%
-- easy: 30%
+- empty: 5%
+- easy: 25%
 - medium: 33%
 - hard: 27%
 - very hard: 10%
@@ -41,6 +41,14 @@ two-image training behavior or memory use.
 If a requested difficulty bucket lacks candidates, the existing Dataset V2
 redistribution policy fills it with unique candidates from neighboring useful
 difficulty buckets. Exact repeats are not introduced.
+
+An `empty` sample has no lane or intersection target (`target_lines=[]`) but
+its masked target patch is not fully black. Fully black target patches are
+dropped before candidate balancing and cannot consume the 5% quota. Each
+record stores `meta.target_patch_nonblack_pixel_ratio` for auditing; it is
+strictly greater than zero for every retained sample. For the raw-lane recipe,
+this ratio is measured on the actual first model image after the white raw-lane
+overlay is applied.
 
 ## Record Format
 

@@ -12,6 +12,7 @@ SOURCE_OUTPUT_ROOT=${SOURCE_OUTPUT_ROOT:-/cache/jn/outputs/${SOURCE_RUN_ID}}
 PREDICTION_DIR=${PREDICTION_DIR:-${SOURCE_OUTPUT_ROOT}/inference/json}
 E2E_RAW_ROOT=${E2E_RAW_ROOT:-/cache/jn/e2e_eval/raw_e2e_data}
 IMAGE_FOLDER=${IMAGE_FOLDER:-/cache/jn/e2e_eval/fresh_original_runs/${SOURCE_RUN_ID}/context512_roi256_dataset}
+MANIFEST_JSON=${MANIFEST_JSON:-${IMAGE_FOLDER}/patch_manifest.json}
 EVAL_ROOT=${EVAL_ROOT:-${SOURCE_OUTPUT_ROOT}/roi_clipped_patch_metrics}
 CLIPPED_PREDICTION_DIR=${CLIPPED_PREDICTION_DIR:-${EVAL_ROOT}/predictions}
 SANITIZE_REPORT=${SANITIZE_REPORT:-${EVAL_ROOT}/prediction_roi_clip_report.json}
@@ -32,6 +33,7 @@ python scripts/tools/sanitize_rc_e2e_predictions_for_original_formatter.py \
   --input-dir "${PREDICTION_DIR}" \
   --output-dir "${CLIPPED_PREDICTION_DIR}" \
   --report-json "${SANITIZE_REPORT}" \
+  --manifest-json "${MANIFEST_JSON}" \
   --roi-min 0 \
   --roi-max 1000 \
   --reset

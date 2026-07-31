@@ -23,6 +23,7 @@ def test_drops_centerline_fully_outside_roi():
 
     assert lines == []
     assert stats["dropped_outside_roi_centerlines"] == 1
+    assert stats["roi_relation_line_counts"]["both_endpoints_outside_no_roi_intersection"] == 1
 
 
 def test_keeps_centerline_with_outside_endpoints_crossing_roi():
@@ -32,6 +33,7 @@ def test_keeps_centerline_with_outside_endpoints_crossing_roi():
     assert lines[0]["points"] == [[0.0, 500.0], [1000.0, 500.0]]
     assert stats["dropped_outside_roi_centerlines"] == 0
     assert stats["clipped_centerlines"] == 1
+    assert stats["roi_relation_line_counts"]["both_endpoints_outside_crosses_roi"] == 1
 
 
 def test_clips_centerline_with_one_endpoint_outside_roi():
@@ -40,6 +42,7 @@ def test_clips_centerline_with_one_endpoint_outside_roi():
     assert len(lines) == 1
     assert lines[0]["points"] == [[500.0, 500.0], [1000.0, 500.0]]
     assert stats["clipped_centerlines"] == 1
+    assert stats["roi_relation_line_counts"]["one_endpoint_inside_one_outside"] == 1
 
 
 def test_keeps_centerline_on_inclusive_roi_boundary():
@@ -58,3 +61,4 @@ def test_splits_polyline_that_leaves_and_reenters_roi():
         [[1000.0, 900.0], [200.0, 900.0], [100.0, 900.0]],
     ]
     assert stats["output_centerline_fragments"] == 2
+    assert stats["roi_relation_line_counts"]["both_endpoints_inside_but_leaves_roi"] == 1

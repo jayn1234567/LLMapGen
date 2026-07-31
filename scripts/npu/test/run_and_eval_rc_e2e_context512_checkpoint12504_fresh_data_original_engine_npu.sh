@@ -27,6 +27,8 @@ ORIGINAL_ENGINE_EXTRACT_ROOT=${ORIGINAL_ENGINE_EXTRACT_ROOT:-${RUN_ROOT}/origina
 INFERENCE_OUTPUT_ROOT=${INFERENCE_OUTPUT_ROOT:-/cache/jn/outputs/${RUN_ID}}
 RAW_RESULT_DIR=${RAW_RESULT_DIR:-${INFERENCE_OUTPUT_ROOT}/inference/json}
 ORIGINAL_RESULT_ROOT=${ORIGINAL_RESULT_ROOT:-${INFERENCE_OUTPUT_ROOT}/original_engine_all_roads}
+FORMAT_INPUT_DIR=${FORMAT_INPUT_DIR:-${RUN_ROOT}/original_formatter_input}
+SANITIZE_REPORT=${SANITIZE_REPORT:-${ORIGINAL_RESULT_ROOT}/prediction_sanitize_report.json}
 
 EXPECTED_SCENES=${EXPECTED_SCENES:-110}
 BLACK_RATIO_THRESHOLD=${BLACK_RATIO_THRESHOLD:-1.0}
@@ -205,9 +207,16 @@ conda activate "${E2E_ENV_DIR}"
 export PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION=upb
 
 mkdir -p "${ORIGINAL_RESULT_ROOT}/logs"
+echo "[fresh-original] sanitizing formatter input without changing the original engine"
+python scripts/tools/sanitize_rc_e2e_predictions_for_original_formatter.py \
+  --input-dir "${RAW_RESULT_DIR}" \
+  --output-dir "${FORMAT_INPUT_DIR}" \
+  --report-json "${SANITIZE_REPORT}" \
+  --reset
+
 echo "[fresh-original] original step 1/3: infer_result_format.py"
 python "${FORMAT_SCRIPT}" \
-  -i "${RAW_RESULT_DIR}" \
+  -i "${FORMAT_INPUT_DIR}" \
   -o "${FRESH_E2E_ROOT}" \
   --scale "${PREDICTION_COORD_SCALE}" \
   2>&1 | tee "${ORIGINAL_RESULT_ROOT}/logs/01_infer_result_format.log"

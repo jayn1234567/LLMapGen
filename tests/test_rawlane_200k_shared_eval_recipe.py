@@ -40,8 +40,11 @@ class RawLane200kSeed42EvalRecipeTest(unittest.TestCase):
         expected = (
             "local256_200k_rawlane/local256_200k.tar",
             "context512_roi256_200k_rawlane/context512_roi256_200k.tar",
-            'EVAL_SOURCE_JSONL="${RAWLANE_LOCAL_DATASET_ROOT}/phase_a/eval.jsonl"',
-            'EVAL_SOURCE_JSONL="${RAWLANE_CONTEXT_DATASET_ROOT}/phase_a/eval.jsonl"',
+            "prepare_and_resolve_dataset",
+            "extract_root.rglob(\"train.jsonl\")",
+            "resolve_eval_jsonl",
+            'EVAL_SOURCE_JSONL="${RAWLANE_LOCAL_EVAL_JSONL}"',
+            'EVAL_SOURCE_JSONL="${RAWLANE_CONTEXT_EVAL_JSONL}"',
         )
         for fragment in expected:
             self.assertIn(fragment, self.script)

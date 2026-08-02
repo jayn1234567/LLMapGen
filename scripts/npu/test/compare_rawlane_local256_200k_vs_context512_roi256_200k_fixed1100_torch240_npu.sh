@@ -78,6 +78,96 @@ mox.file.copy_parallel(sys.argv[1], sys.argv[2])
 PY
 }
 
+copy_obs_file() {
+  local source_path=$1
+  local target_path=$2
+  mkdir -p "$(dirname "${target_path}")"
+  python - "${source_path}" "${target_path}" <<'PY'
+import sys
+import moxing as mox
+
+print(f"[obs-download] {sys.argv[1]} -> {sys.argv[2]}", flush=True)
+mox.file.copy(sys.argv[1], sys.argv[2])
+PY
+}
+
+prepare_and_resolve_dataset() {
+  local obs_path=$1
+  local archive_path=$2
+  local extract_root=$3
+  local preferred_name=$4
+
+  if ! find "${extract_root}" -type f \( -path '*/phase_a/eval.jsonl' -o -path '*/phase_a/val.jsonl' \) -print -quit 2>/dev/null | grep -q .; then
+    if [ ! -s "${archive_path}" ]; then
+      copy_obs_file "${obs_path}" "${archive_path}" >&2
+    else
+      echo "[dataset] reuse archive: ${archive_path}" >&2
+    fi
+    mkdir -p "${extract_root}"
+    echo "[dataset] extracting ${archive_path} -> ${extract_root}" >&2
+    tar -xf "${archive_path}" -C "${extract_root}"
+  else
+    echo "[dataset] reuse extracted files: ${extract_root}" >&2
+  fi
+
+  python - "${extract_root}" "${preferred_name}" <<'PY'
+import sys
+from pathlib import Path
+
+extract_root = Path(sys.argv[1]).resolve()
+preferred_name = sys.argv[2]
+preferred = extract_root / preferred_name
+phase_roots = []
+flat_roots = []
+
+def add(root):
+    root = root.resolve()
+    phase = root / "phase_a"
+    if (phase / "train.jsonl").is_file() and any(
+        path.is_file() for path in (phase / "eval.jsonl", phase / "val.jsonl")
+    ):
+        if root not in phase_roots:
+            phase_roots.append(root)
+        return
+    if (root / "train.jsonl").is_file() and any(
+        path.is_file() for path in (root / "eval.jsonl", root / "val.jsonl")
+    ):
+        if root not in flat_roots:
+            flat_roots.append(root)
+
+add(preferred)
+add(extract_root)
+for train_path in sorted(extract_root.rglob("train.jsonl")):
+    if "__MACOSX" in train_path.parts:
+        continue
+    root = train_path.parent.parent if train_path.parent.name == "phase_a" else train_path.parent
+    add(root)
+
+resolved = phase_roots or flat_roots
+if len(resolved) != 1:
+    preview = "\n".join(str(root) for root in resolved[:20]) or "<none>"
+    raise SystemExit(f"Unable to resolve exactly one Dataset V2 root below {extract_root}:\n{preview}")
+print(resolved[0])
+PY
+}
+
+resolve_eval_jsonl() {
+  local dataset_root=$1
+  local candidate
+  for candidate in \
+    "${dataset_root}/phase_a/eval.jsonl" \
+    "${dataset_root}/phase_a/val.jsonl" \
+    "${dataset_root}/eval.jsonl" \
+    "${dataset_root}/val.jsonl"; do
+    if [ -f "${candidate}" ]; then
+      echo "${candidate}"
+      return 0
+    fi
+  done
+  echo "ERROR: no eval.jsonl or val.jsonl found below ${dataset_root}" >&2
+  return 2
+}
+
 if [ ! -f "${VISION_TOWER}/config.json" ]; then
   copy_obs_parallel "${VISION_TOWER_OBS_PATH}" "${VISION_TOWER}"
 fi
@@ -85,6 +175,19 @@ if [ ! -f "${VISION_TOWER}/config.json" ]; then
   echo "ERROR: DINOv2 download is incomplete: ${VISION_TOWER}" >&2
   exit 2
 fi
+
+RAWLANE_LOCAL_DATASET_ROOT=$(prepare_and_resolve_dataset \
+  "${RAWLANE_LOCAL_DATASET_OBS_PATH}" \
+  "${RAWLANE_LOCAL_ARCHIVE_PATH}" \
+  "${RAWLANE_LOCAL_EXTRACT_ROOT}" \
+  local256_200k)
+RAWLANE_CONTEXT_DATASET_ROOT=$(prepare_and_resolve_dataset \
+  "${RAWLANE_CONTEXT_DATASET_OBS_PATH}" \
+  "${RAWLANE_CONTEXT_ARCHIVE_PATH}" \
+  "${RAWLANE_CONTEXT_EXTRACT_ROOT}" \
+  context512_roi256_200k)
+RAWLANE_LOCAL_EVAL_JSONL=$(resolve_eval_jsonl "${RAWLANE_LOCAL_DATASET_ROOT}")
+RAWLANE_CONTEXT_EVAL_JSONL=$(resolve_eval_jsonl "${RAWLANE_CONTEXT_DATASET_ROOT}")
 
 mkdir -p "${COMPARE_ROOT}"
 echo "============================================================"
@@ -96,6 +199,8 @@ echo "Per-device batch:   ${PER_DEVICE_INFER_BATCH_SIZE}"
 echo "Difficulty counts:  ${FIXED_EVAL_COUNTS}"
 echo "Seed for each set:  ${FIXED_EVAL_SEED}"
 echo "Same sample IDs:    false"
+echo "Local dataset root: ${RAWLANE_LOCAL_DATASET_ROOT}"
+echo "Context data root:  ${RAWLANE_CONTEXT_DATASET_ROOT}"
 echo "============================================================"
 
 COMMON_EVAL_ENV=(
@@ -117,7 +222,7 @@ env "${COMMON_EVAL_ENV[@]}" \
   DATASET_ARCHIVE_PATH="${RAWLANE_LOCAL_ARCHIVE_PATH}" \
   DATASET_EXTRACT_ROOT="${RAWLANE_LOCAL_EXTRACT_ROOT}" \
   DATASET_ROOT="${RAWLANE_LOCAL_DATASET_ROOT}" \
-  EVAL_SOURCE_JSONL="${RAWLANE_LOCAL_DATASET_ROOT}/phase_a/eval.jsonl" \
+  EVAL_SOURCE_JSONL="${RAWLANE_LOCAL_EVAL_JSONL}" \
   FIXED_EVAL_ROOT="${RAWLANE_LOCAL_FIXED_EVAL_ROOT}" \
   CHECKPOINT_NAME=checkpoint-12504 \
   CHECKPOINT_OBS_PATH="${RAWLANE_LOCAL_CHECKPOINT_OBS_PATH}" \
@@ -131,7 +236,7 @@ env "${COMMON_EVAL_ENV[@]}" \
   DATASET_ARCHIVE_PATH="${RAWLANE_CONTEXT_ARCHIVE_PATH}" \
   DATASET_EXTRACT_ROOT="${RAWLANE_CONTEXT_EXTRACT_ROOT}" \
   DATASET_ROOT="${RAWLANE_CONTEXT_DATASET_ROOT}" \
-  EVAL_SOURCE_JSONL="${RAWLANE_CONTEXT_DATASET_ROOT}/phase_a/eval.jsonl" \
+  EVAL_SOURCE_JSONL="${RAWLANE_CONTEXT_EVAL_JSONL}" \
   FIXED_EVAL_ROOT="${RAWLANE_CONTEXT_FIXED_EVAL_ROOT}" \
   CHECKPOINT_NAME=checkpoint-12504 \
   CHECKPOINT_OBS_PATH="${RAWLANE_CONTEXT_CHECKPOINT_OBS_PATH}" \

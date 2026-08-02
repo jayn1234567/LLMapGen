@@ -1,5 +1,6 @@
 import os
 import unittest
+from pathlib import Path
 from unittest import mock
 
 try:
@@ -45,6 +46,19 @@ class CheckpointMemoryGuardTest(unittest.TestCase):
             self.assertTrue(llava_trainer._release_device_cache_before_checkpoint())
         collect.assert_called_once_with()
         self.assertEqual(fake_npu.calls, ["synchronize", "empty_cache"])
+
+    def test_checkpoint_cleanup_marker_is_not_hidden_at_info_log_level(self):
+        trainer_source = (
+            Path(__file__).resolve().parents[1] / "mllm/train/llava_trainer.py"
+        ).read_text(encoding="utf-8")
+        self.assertIn(
+            'print("Released unused NPU cache before checkpoint save.", flush=True)',
+            trainer_source,
+        )
+        self.assertNotIn(
+            'logger.info("Released unused NPU cache before checkpoint save.")',
+            trainer_source,
+        )
 
 
 if __name__ == "__main__":

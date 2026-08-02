@@ -515,7 +515,10 @@ class LLaVATrainer(Trainer):
             model.generation_config.top_p = None
             sync_qwen_token_config(model=model)
             if _release_device_cache_before_checkpoint():
-                logger.info("Released unused NPU cache before checkpoint save.")
+                # This marker is consumed by NPU smoke validation. Use a rank0
+                # print so it remains visible even when Trainer INFO logs are filtered.
+                if self.is_world_process_zero():
+                    print("Released unused NPU cache before checkpoint save.", flush=True)
             super(LLaVATrainer, self)._save_checkpoint(model, trial)
             write_qwen_multimodal_checkpoint_metadata(self.model, output_dir, self)
             self._rotate_checkpoints(output_dir=run_dir)

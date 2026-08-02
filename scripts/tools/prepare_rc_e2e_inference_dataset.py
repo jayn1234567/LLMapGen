@@ -24,6 +24,7 @@ VIEW_CONTEXT512_ROI256 = "context512_roi256"
 PROMPT_PROFILE_CURRENT = "current"
 PROMPT_PROFILE_LOCAL256_550K_V1 = "local256_550k_v1"
 PROMPT_PROFILE_RAWLANE_LOCAL256_550K_V1 = "rawlane_local256_550k_v1"
+PROMPT_PROFILE_RAWLANE_CONTEXT512_ROI256_200K_V1 = "rawlane_context512_roi256_200k_v1"
 INPUT_RASTER_INTER = "inter"
 INPUT_RASTER_RAWLANE = "rawlane"
 
@@ -76,6 +77,7 @@ def parse_args() -> argparse.Namespace:
             PROMPT_PROFILE_CURRENT,
             PROMPT_PROFILE_LOCAL256_550K_V1,
             PROMPT_PROFILE_RAWLANE_LOCAL256_550K_V1,
+            PROMPT_PROFILE_RAWLANE_CONTEXT512_ROI256_200K_V1,
         ),
         default=PROMPT_PROFILE_CURRENT,
         help="Prompt schema expected by the checkpoint being evaluated.",
@@ -187,7 +189,20 @@ def dataset_v2_prompt(
                 "coord_range=1000, and intersections enabled."
             )
         return RAWLANE_LOCAL256_550K_V1_PROMPT
-    if prompt_profile != PROMPT_PROFILE_CURRENT:
+    rawlane_context_profile = prompt_profile == PROMPT_PROFILE_RAWLANE_CONTEXT512_ROI256_200K_V1
+    if rawlane_context_profile:
+        if (
+            view_mode != VIEW_CONTEXT512_ROI256
+            or target_size != 256
+            or context_size != 512
+            or coord_range != 1000
+            or not include_intersections
+        ):
+            raise ValueError(
+                "rawlane_context512_roi256_200k_v1 requires context512_roi256, "
+                "target_size=256, context_size=512, coord_range=1000, and intersections enabled."
+            )
+    elif prompt_profile != PROMPT_PROFILE_CURRENT:
         raise ValueError(f"Unsupported prompt profile: {prompt_profile}")
     parts = [
         "<image>",
@@ -213,6 +228,11 @@ def dataset_v2_prompt(
             f"Coordinates use a normalized 0-{coord_range} grid over the original "
             f"{target_size}x{target_size} image patch."
         )
+    if rawlane_context_profile:
+        parts.append(
+            "The image also contains a white lane overlay predicted by a PV camera model. "
+            "Do not copy it blindly when it conflicts with the visible BEV evidence."
+        )
 
     parts.extend(
         [
@@ -228,12 +248,21 @@ def dataset_v2_prompt(
         ]
     )
     if include_intersections:
-        parts.append(
-            'For every intersection, include "intersection_type" with exactly one of: '
-            '"common" for a common intersection, "t_intersection" for a T-intersection, '
-            '"small_untyped" for a small untyped intersection, '
-            '"t_lane_change_area" for a T-shaped lane-change area, or "other" for any remaining class.'
-        )
+        if rawlane_context_profile:
+            parts.append(
+                'For every intersection, include "intersection_type" with exactly one of: '
+                '"common" for a common intersection, "t_intersection" for a T-intersection, '
+                '"small_untyped" for a small untyped intersection, or '
+                '"t_lane_change_area" for a T-shaped lane-change area, or "other" '
+                'for any remaining or unknown intersection class.'
+            )
+        else:
+            parts.append(
+                'For every intersection, include "intersection_type" with exactly one of: '
+                '"common" for a common intersection, "t_intersection" for a T-intersection, '
+                '"small_untyped" for a small untyped intersection, '
+                '"t_lane_change_area" for a T-shaped lane-change area, or "other" for any remaining class.'
+            )
     parts.extend(["", "Incoming traces JSON:", "[]"])
     if include_intersections:
         parts.extend(["", "Incoming intersections JSON:", "[]"])

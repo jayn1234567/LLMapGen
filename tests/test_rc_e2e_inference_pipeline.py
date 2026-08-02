@@ -179,6 +179,54 @@ def test_prepare_rawlane_local256_requires_aligned_lane_tif(tmp_path):
         )
 
 
+def test_prepare_rawlane_context512_roi256_matches_training_prompt(tmp_path):
+    input_root = tmp_path / "raw"
+    centerline_root = input_root / "scene_rawlane_context" / "rc_one_patch_release" / "center_line_v2"
+    inter_dir = centerline_root / "inter_patch_tif"
+    lane_dir = centerline_root / "lane_patch_tif"
+    inter_dir.mkdir(parents=True)
+    lane_dir.mkdir(parents=True)
+
+    inter = np.full((512, 512, 3), 91, dtype=np.uint8)
+    rawlane = np.full((512, 512, 3), 37, dtype=np.uint8)
+    rawlane[20:24, 30:34] = 255
+    Image.fromarray(inter).save(inter_dir / "0_inter.tif")
+    Image.fromarray(rawlane).save(lane_dir / "0_lane.tif")
+
+    output_root = tmp_path / "prepared_rawlane_context"
+    summary = prepare_dataset(
+        SimpleNamespace(
+            input_root=str(input_root),
+            output_root=str(output_root),
+            view_mode="context512_roi256",
+            target_size=256,
+            context_size=512,
+            stride=256,
+            coord_range=1000,
+            prompt_profile="rawlane_context512_roi256_200k_v1",
+            input_raster="rawlane",
+            black_ratio_threshold=1.0,
+            include_intersections=True,
+            max_tifs=0,
+            max_patches=0,
+        )
+    )
+
+    assert summary["patch_count"] == 4
+    assert summary["input_raster"] == "rawlane"
+    assert summary["prompt_profile"] == "rawlane_context512_roi256_200k_v1"
+    records = [json.loads(line) for line in (output_root / "infer.jsonl").read_text(encoding="utf-8").splitlines()]
+    record = records[0]
+    prompt = record["conversations"][0]["value"]
+    assert record["meta"]["target_roi_in_image"] == [128, 128, 384, 384]
+    assert "white lane overlay predicted by a PV camera model" in prompt
+    assert "central 256x256 target ROI [128,128,384,384)" in prompt
+    assert '"waiting_area"' in prompt
+    rendered = np.asarray(Image.open(output_root / record["image"]))
+    assert rendered.shape == (512, 512, 3)
+    assert np.array_equal(rendered[128:384, 128:384], rawlane[:256, :256])
+
+
 def test_prepare_context_dataset_threshold_one_skips_only_fully_black_target(tmp_path):
     input_root = tmp_path / "raw"
     tif_dir = (

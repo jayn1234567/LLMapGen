@@ -200,10 +200,9 @@ RawLane overlay; it must not be overlaid a second time. The matching
 ## Raw-Lane 200k shared fixed-set comparison
 
 `compare_rawlane_local256_200k_vs_context512_roi256_200k_fixed1100_torch240_npu.sh`
-compares the Raw-Lane local256 and context512/ROI256 checkpoint-12504 models.
-It recreates the canonical Dataset V2 local256 fixed set with seed 42 and
-`easy=300,medium=300,hard=300,very_hard=200`, then requires all 1100 sample
-identities to map into both Raw-Lane datasets. The context view keeps its own
-512 image and ROI prompt while reusing byte-identical assistant ground truth
-from the local view. Per-difficulty metrics, combined metrics, visualizations,
-and `rawlane200k_shared_fixed1100_comparison.json` are written in one run.
+evaluates the Raw-Lane local256 and context512/ROI256 checkpoint-12504 models.
+Each dataset independently creates and persists its own deterministic holdout
+with seed 42 and `easy=300,medium=300,hard=300,very_hard=200`. The two sets do
+not require identical sample IDs. Per-difficulty metrics, combined metrics,
+visualizations, and `rawlane200k_seed42_independent_eval_summary.json` are
+written in one run.

@@ -36,10 +36,11 @@ class RawLane200kSeed42EvalRecipeTest(unittest.TestCase):
         self.assertNotIn("--require-all", self.script)
         self.assertNotIn("remap_fixed_eval_to_dataset.py", self.script)
 
-    def test_uses_each_rawlane_dataset_directly(self):
+    def test_resolves_the_real_local256_archive_root(self):
         expected = (
             "local256_200k_rawlane/local256_200k.tar",
             "context512_roi256_200k_rawlane/context512_roi256_200k.tar",
+            "RAWLANE_LOCAL_EXTRACT_ROOT}/local256}",
             "prepare_and_resolve_dataset",
             "extract_root.rglob(\"train.jsonl\")",
             "resolve_eval_jsonl",
@@ -48,6 +49,7 @@ class RawLane200kSeed42EvalRecipeTest(unittest.TestCase):
         )
         for fragment in expected:
             self.assertIn(fragment, self.script)
+        self.assertNotIn("RAWLANE_LOCAL_EXTRACT_ROOT}/local256_200k}", self.script)
 
     def test_runs_batched_multidevice_inference_and_writes_summary(self):
         expected = (

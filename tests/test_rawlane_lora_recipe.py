@@ -8,6 +8,11 @@ TRAIN_SCRIPT = REPO_ROOT / (
     "train_sft_stage_a_lane_intersection_datasetv2_rawlane_local256_550k_"
     "original_dinov2_caprl4b_nodeepstack_lora_llm_npu.sh"
 )
+TRAIN_SCRIPT_200K = REPO_ROOT / (
+    "scripts/npu/train/"
+    "train_sft_stage_a_lane_intersection_datasetv2_rawlane_local256_200k_"
+    "stratified_original_dinov2_caprl4b_nodeepstack_lora_llm_npu.sh"
+)
 SMOKE_SCRIPT = REPO_ROOT / (
     "scripts/npu/test/"
     "smoke_sft_stage_a_lane_intersection_datasetv2_rawlane_local256_550k_"
@@ -105,6 +110,40 @@ class RawLaneLoraRecipeTest(unittest.TestCase):
             entry,
         )
         self.assertIn("DDP find_unused_parameters=True is incompatible", entry)
+
+    def test_200k_recipe_only_changes_dataset_scale_and_experiment_identity(self):
+        script = TRAIN_SCRIPT_200K.read_text(encoding="utf-8")
+        expected_200k = (
+            "Dataset V2 Raw-Lane local256 stratified 200k",
+            "local256_200k_rawlane/local256_200k.tar",
+            "DATASET_DIR_NAME=${DATASET_DIR_NAME:-local256_200k}",
+            "EXPECTED_TRAIN_SAMPLES=${EXPECTED_TRAIN_SAMPLES:-200000}",
+            "datasetv2_rawlane_local256_200k_stratified_original_dinov2_caprl4b_lora_llm_",
+        )
+        shared_training_recipe = (
+            "EXPECTED_NNODES=${EXPECTED_NNODES:-4}",
+            "EXPECTED_NPROC_PER_NODE=${EXPECTED_NPROC_PER_NODE:-8}",
+            "TARGET_GLOBAL_BATCH_SIZE=${TARGET_GLOBAL_BATCH_SIZE:-128}",
+            "PER_DEVICE_TRAIN_BATCH_SIZE=${PER_DEVICE_TRAIN_BATCH_SIZE:-4}",
+            "NUM_EPOCHS=${NUM_EPOCHS:-8}",
+            "LR=${LR:-2e-4}",
+            "MM_PROJECTOR_LR=${MM_PROJECTOR_LR:-2e-4}",
+            "MM_VISION_TOWER_LR=${MM_VISION_TOWER_LR:-2e-5}",
+            "LORA_TARGET_SCOPE=${LORA_TARGET_SCOPE:-llm}",
+            "DDP_FIND_UNUSED_PARAMETERS=${DDP_FIND_UNUSED_PARAMETERS:-True}",
+            "ENABLE_EVAL=${ENABLE_EVAL:-True}",
+            "EVAL_STEPS=${EVAL_STEPS:-2000}",
+            "EVAL_SAMPLE_LIMIT=${EVAL_SAMPLE_LIMIT:-10000}",
+            "SAVE_STEPS=${SAVE_STEPS:-1000}",
+            "MLLM_NPU_EMPTY_CACHE_BEFORE_CHECKPOINT=${MLLM_NPU_EMPTY_CACHE_BEFORE_CHECKPOINT:-True}",
+        )
+        for fragment in expected_200k + shared_training_recipe:
+            self.assertIn(fragment, script)
+        self.assertNotIn(
+            "rawlane_local256_550k/rawlane_local256_550k.tar",
+            script,
+        )
+        self.assertNotIn("--deepspeed", script)
 
 
 if __name__ == "__main__":

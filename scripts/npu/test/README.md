@@ -234,5 +234,6 @@ existing directory of per-patch inference JSON files and runs the original
 formatter, center-lane rule engine, and all/low/high evaluators. It downloads a
 fresh E2E archive into a run-local directory, does not rerun model inference,
 and does not suppress empty-GT patches or clip predictions using ground truth.
-Malformed prediction JSON is treated as a hard error and is recorded in
-`invalid_predictions.json`.
+Malformed prediction JSON is recorded in `invalid_predictions.json` and counts
+as no prediction by default; set `FAIL_ON_INVALID_PREDICTIONS=True` to stop
+instead. A repeated run with the same `RUN_ID` reuses a completed extraction.

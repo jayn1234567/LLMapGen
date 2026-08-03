@@ -21,7 +21,9 @@ class ExternalLocal256E2EEvalScriptTest(unittest.TestCase):
         self.assertIn("RUN_LOW_EVAL=True", text)
         self.assertIn("RUN_HIGH_EVAL=True", text)
         self.assertIn("EXPECTED_E2E_SCENES=\"${EXPECTED_E2E_SCENES}\"", text)
-        self.assertIn("FAIL_ON_INVALID_PREDICTIONS=True", text)
+        self.assertIn("RESET_PREPARED_E2E_DATA=${RESET_PREPARED_E2E_DATA:-False}", text)
+        self.assertIn("FAIL_ON_INVALID_PREDICTIONS=${FAIL_ON_INVALID_PREDICTIONS:-False}", text)
+        self.assertIn('FAIL_ON_INVALID_PREDICTIONS="${FAIL_ON_INVALID_PREDICTIONS}"', text)
         self.assertNotIn("suppress_e2e_predictions_without_patch_gt.py", text)
         self.assertNotIn("infer_centerline", text)
 

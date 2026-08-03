@@ -227,6 +227,15 @@ regular `pytorch_model.bin`, then runs the fixed 1100-sample Raw-Lane local256
 evaluation with combined, per-difficulty, and visualization outputs. The merge
 is CPU/RAM/disk intensive; all node shards from the same step are required.
 
+### Raw-Lane local256 200k Qwen LoRA
+
+`test_local_rawlane_local256_200k_lora_checkpoint12504_fixed1100_torch240_npu.sh`
+downloads the ordinary rank-0 LoRA checkpoint, the CapRL-Qwen3VL-4B base, and
+the original DINOv2 tower. It extracts the same Qwen text LLM base used during
+training, restores `non_lora_trainables.bin`, merges the adapter, and evaluates
+the persistent 1100-sample Raw-Lane local256 comparison set.
+
+
 ### External local256 per-patch predictions
 
 `eval_external_local256_predictions_fresh_obs_original_e2e_npu.sh` consumes an

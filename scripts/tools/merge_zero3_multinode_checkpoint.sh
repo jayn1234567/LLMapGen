@@ -23,6 +23,7 @@ trap cleanup EXIT
 NODE_COUNT=0
 EXPECTED_NODES=
 EXPECTED_WORLD_SIZE=
+DIRECT_GLOBAL_STEP=False
 for node_dir in "${SHARD_ROOT}"/node_*; do
   [ -d "${node_dir}" ] || continue
   checkpoint_dir=${node_dir}/${CHECKPOINT_NAME}
@@ -52,9 +53,34 @@ PY
     echo "ERROR: inconsistent ZeRO shard layout metadata in ${layout}" >&2
     exit 1
   fi
-  # Optimizer shards have globally unique ZeRO rank names. Shared metadata can
-  # be taken from the first node; later copies do not overwrite it.
-  cp -an "${checkpoint_dir}/." "${ASSEMBLED_DIR}/"
+  # A regular Trainer checkpoint stores global_step* and zero_to_fp32.py below
+  # checkpoint-*. A final DeepSpeed save can instead expose global_step*
+  # directly below node_*. Preserve the wrapper expected by zero_to_fp32.py in
+  # both cases while combining globally unique rank shard names.
+  if [[ "${CHECKPOINT_NAME}" == global_step* ]]; then
+    DIRECT_GLOBAL_STEP=True
+    mkdir -p "${ASSEMBLED_DIR}/${CHECKPOINT_NAME}"
+    cp -an "${checkpoint_dir}/." "${ASSEMBLED_DIR}/${CHECKPOINT_NAME}/"
+    printf '%s\n' "${CHECKPOINT_NAME}" > "${ASSEMBLED_DIR}/latest"
+  else
+    cp -an "${checkpoint_dir}/." "${ASSEMBLED_DIR}/"
+  fi
+
+  if [ "${NODE_COUNT}" -eq 1 ]; then
+    for name in \
+      zero_to_fp32.py latest config.json generation_config.json trainer_state.json training_args.bin \
+      tokenizer.json tokenizer_config.json special_tokens_map.json added_tokens.json \
+      chat_template.jinja vocab.json merges.txt tokenizer.model preprocessor_config.json \
+      args.json qwen_multimodal_checkpoint.json \
+      rc_dinov2_centerline_json_modules.pt rc_dinov2_centerline_json_modules.pth; do
+      if [ -f "${node_dir}/${name}" ]; then
+        cp -f "${node_dir}/${name}" "${ASSEMBLED_DIR}/${name}"
+      fi
+    done
+    if [[ "${CHECKPOINT_NAME}" == global_step* ]]; then
+      printf '%s\n' "${CHECKPOINT_NAME}" > "${ASSEMBLED_DIR}/latest"
+    fi
+  fi
 done
 
 if [ "${NODE_COUNT}" -eq 0 ]; then
@@ -74,7 +100,7 @@ fi
 
 OPTIM_SHARDS=$(find "${ASSEMBLED_DIR}" -type f -name '*optim_states.pt' | wc -l)
 MODEL_SHARDS=$(find "${ASSEMBLED_DIR}" -type f -name '*model_states.pt' | wc -l)
-echo "[zero3-merge] nodes=${NODE_COUNT} optimizer_shards=${OPTIM_SHARDS} model_shards=${MODEL_SHARDS}"
+echo "[zero3-merge] nodes=${NODE_COUNT} optimizer_shards=${OPTIM_SHARDS} model_shards=${MODEL_SHARDS} direct_global_step=${DIRECT_GLOBAL_STEP}"
 if [ "${OPTIM_SHARDS}" -lt "${EXPECTED_WORLD_SIZE}" ]; then
   echo "ERROR: shard assembly is incomplete: optimizer_shards=${OPTIM_SHARDS}, expected_world_size=${EXPECTED_WORLD_SIZE}" >&2
   exit 1

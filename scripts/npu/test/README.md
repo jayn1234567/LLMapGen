@@ -206,3 +206,11 @@ with seed 42 and `easy=300,medium=300,hard=300,very_hard=200`. The two sets do
 not require identical sample IDs. Per-difficulty metrics, combined metrics,
 visualizations, and `rawlane200k_seed42_independent_eval_summary.json` are
 written in one run.
+### Raw-Lane 550k multi-node ZeRO-3 final checkpoint
+
+`test_local_rawlane550k_zero3_globalstep34376_merge_eval_torch240_npu.sh`
+downloads all four `zero_shards/node_*` directories for the configured
+`global_step*`, validates and merges the 32-rank DeepSpeed checkpoint into a
+regular `pytorch_model.bin`, then runs the fixed 1100-sample Raw-Lane local256
+evaluation with combined, per-difficulty, and visualization outputs. The merge
+is CPU/RAM/disk intensive; all node shards from the same step are required.

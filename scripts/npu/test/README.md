@@ -226,3 +226,13 @@ downloads all four `zero_shards/node_*` directories for the configured
 regular `pytorch_model.bin`, then runs the fixed 1100-sample Raw-Lane local256
 evaluation with combined, per-difficulty, and visualization outputs. The merge
 is CPU/RAM/disk intensive; all node shards from the same step are required.
+
+### External local256 per-patch predictions
+
+`eval_external_local256_predictions_fresh_obs_original_e2e_npu.sh` consumes an
+existing directory of per-patch inference JSON files and runs the original
+formatter, center-lane rule engine, and all/low/high evaluators. It downloads a
+fresh E2E archive into a run-local directory, does not rerun model inference,
+and does not suppress empty-GT patches or clip predictions using ground truth.
+Malformed prediction JSON is treated as a hard error and is recorded in
+`invalid_predictions.json`.

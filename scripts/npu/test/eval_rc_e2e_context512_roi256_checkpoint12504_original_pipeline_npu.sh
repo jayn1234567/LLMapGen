@@ -53,6 +53,7 @@ EVAL_VIS_FLAG=${EVAL_VIS_FLAG:-True}
 RESET_EXISTING_MODEL_OUTPUTS=${RESET_EXISTING_MODEL_OUTPUTS:-False}
 EXPECTED_E2E_SCENES=${EXPECTED_E2E_SCENES:-110}
 FILL_MISSING_SCENE_PREDICTIONS=${FILL_MISSING_SCENE_PREDICTIONS:-True}
+FAIL_ON_INVALID_PREDICTIONS=${FAIL_ON_INVALID_PREDICTIONS:-False}
 
 is_true() {
   case "${1:-}" in
@@ -417,6 +418,11 @@ PY
 VALID_PREDICTION_COUNT=$(find "${PREDICTION_INPUT_DIR}" -maxdepth 1 -type f -name '*.json' | wc -l)
 INVALID_PREDICTION_COUNT=$((PREDICTION_COUNT - VALID_PREDICTION_COUNT))
 echo "[original-e2e] formatter input: valid=${VALID_PREDICTION_COUNT} invalid=${INVALID_PREDICTION_COUNT}"
+if is_true "${FAIL_ON_INVALID_PREDICTIONS}" && [ "${INVALID_PREDICTION_COUNT}" -ne 0 ]; then
+  echo "ERROR: found ${INVALID_PREDICTION_COUNT} invalid prediction JSON files." >&2
+  echo "ERROR: inspect ${RESULT_ROOT}/invalid_predictions.json" >&2
+  exit 2
+fi
 
 mkdir -p "${RESULT_ROOT}/logs"
 cat > "${RESULT_ROOT}/run_manifest.txt" <<EOF

@@ -53,12 +53,20 @@ export NPU_VISIBLE_DEVICES=${NPU_VISIBLE_DEVICES:-${ASCEND_RT_VISIBLE_DEVICES}}
 NPROC_PER_NODE=${NPROC_PER_NODE:-8}
 PER_DEVICE_INFER_BATCH_SIZE=${PER_DEVICE_INFER_BATCH_SIZE:-2}
 VIS_LIMIT=${VIS_LIMIT:-50}
+MERGE_ONLY=${MERGE_ONLY:-False}
 RUN_ID=${RUN_ID:-rawlane550k_zero3_globalstep34376_fixed1100_$(date -u +%Y%m%d_%H%M%S)}
 OUTPUT_ROOT=${OUTPUT_ROOT:-/cache/jn/outputs/${RUN_ID}}
 
 export OMP_NUM_THREADS=${OMP_NUM_THREADS:-1}
 export TOKENIZERS_PARALLELISM=false
 export PYTHONPATH="${REPO_ROOT}:${PYTHONPATH:-}"
+
+is_true() {
+  case "${1:-}" in
+    1|true|TRUE|True|yes|YES|on|ON) return 0 ;;
+    *) return 1 ;;
+  esac
+}
 
 mkdir -p "${LOCAL_RUN_ROOT}/zero_shards" "$(dirname "${DATASET_ARCHIVE_PATH}")" \
   "${DATASET_EXTRACT_ROOT}" "$(dirname "${VISION_TOWER}")" "${OUTPUT_ROOT}"
@@ -180,6 +188,15 @@ fi
 if [ ! -f "${MERGED_CHECKPOINT_DIR}/config.json" ]; then
   echo "ERROR: merged checkpoint is missing config.json: ${MERGED_CHECKPOINT_DIR}" >&2
   exit 2
+fi
+
+if is_true "${MERGE_ONLY}"; then
+  echo "============================================================"
+  echo "ZERO-3 MERGE COMPLETE (MERGE_ONLY)"
+  echo "Merged checkpoint: ${MERGED_CHECKPOINT_DIR}"
+  echo "Model weights:     ${MERGED_CHECKPOINT_DIR}/pytorch_model.bin"
+  echo "============================================================"
+  exit 0
 fi
 
 if [ ! -f "${VISION_TOWER}/config.json" ]; then

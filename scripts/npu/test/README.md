@@ -209,6 +209,18 @@ written in one run.
 ### Raw-Lane 550k multi-node ZeRO-3 final checkpoint
 
 `test_local_rawlane550k_zero3_globalstep34376_merge_eval_torch240_npu.sh`
+
+To merge the same four-node ZeRO-3 checkpoint and run a full fresh-OBS
+RawLane local256 end-to-end evaluation with GT-empty suppression and original
+all/low/high metrics, use:
+
+```bash
+bash scripts/npu/test/eval_rawlane550k_zero3_globalstep34376_gt_empty_fresh_obs_original_e2e_npu.sh
+```
+
+The wrapper defaults to NPUs `2,3,4,5,6,7` with inference batch size 32 per
+device. The merge/eval helper also accepts `MERGE_ONLY=True` when only the
+regular `pytorch_model.bin` checkpoint is required.
 downloads all four `zero_shards/node_*` directories for the configured
 `global_step*`, validates and merges the 32-rank DeepSpeed checkpoint into a
 regular `pytorch_model.bin`, then runs the fixed 1100-sample Raw-Lane local256

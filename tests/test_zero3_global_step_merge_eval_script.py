@@ -23,6 +23,8 @@ class Zero3GlobalStepMergeEvalScriptTest(unittest.TestCase):
         self.assertIn("merge_zero3_multinode_checkpoint.sh", text)
         self.assertIn("fixed1100_singlepass_torch240_npu.sh", text)
         self.assertIn("VIS_LIMIT=${VIS_LIMIT:-50}", text)
+        self.assertIn("MERGE_ONLY=${MERGE_ONLY:-False}", text)
+        self.assertIn('if is_true "${MERGE_ONLY}"', text)
 
 
 if __name__ == "__main__":

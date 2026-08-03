@@ -241,10 +241,10 @@ y_pixel = round(y_norm / coord_range * (patch_height - 1))
 
 | 配置文件 | gather_16bit_weights | 用途 |
 |---------|---------------------|------|
-| `deepspeed_zero3.json` | true | 训练时自动合并权重 (可能 OOM) |
-| `deepspeed_zero3_no_merge.json` | false | 训练时保持分片 (推荐) |
+| `deepspeed_zero3.json` | true | 正式训练默认：保存普通可直接加载的 checkpoint |
+| `deepspeed_zero3_no_merge.json` | false | 仅在用户明确要求时使用 ZeRO 分片保存 |
 
-使用 no_merge 时，训练结束后 NPU 脚本会自动运行 `zero_to_fp32.py` 将每个 checkpoint 的分片合并为 `model.safetensors`。
+正式训练禁止默认生成 `zero_shards/node_*`。全参数训练由 rank 0 保存普通聚合 checkpoint；LoRA 训练由 rank 0 保存 adapter 和 `non_lora_trainables.bin`。只有用户明确要求分片保存时，才允许启用 `deepspeed_zero3_no_merge.json` 或 `CHECKPOINT_SAVE_MODE=sharded`，并且必须同时提供完整性校验与离线合并入口。
 
 ### Checkpoint 分片支持
 

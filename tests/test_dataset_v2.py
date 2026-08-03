@@ -69,9 +69,42 @@ from scripts.tools.build_rc_dataset_v2_rawlane_pose_800k_windows import (
     parse_args as parse_rawlane_pose_args,
     run_streaming_builder as run_rawlane_pose_builder,
 )
+from scripts.tools.build_rc_dataset_v2_rawlane_pose_context512_roi256_550k_from_staging_windows import (
+    DIFFICULTY_RATIOS as CONTEXT_550K_DIFFICULTY_RATIOS,
+    TARGET_SAMPLES as CONTEXT_550K_TARGET_SAMPLES,
+    finalize_command as context_550k_finalize_command,
+    parse_args as parse_context_550k_args,
+)
 
 
 class DatasetV2ContextTest(unittest.TestCase):
+    def test_context_550k_wrapper_reuses_staging_without_obs(self):
+        args = parse_context_550k_args([
+            "--staging-root", r"D:\bootstrap\staging",
+            "--work-root", r"D:\fixed",
+            "--fixed-source-split-manifest", r"D:\splits\v1.json",
+            "--resume",
+        ])
+        command = [str(item) for item in context_550k_finalize_command(
+            args,
+            Path(r"D:\bootstrap\staging"),
+            Path(r"D:\fixed\output"),
+            Path(r"D:\splits\v1.json"),
+        )]
+        self.assertEqual(command[command.index("--views") + 1], "context")
+        self.assertEqual(
+            int(command[command.index("--train-target-samples") + 1]),
+            CONTEXT_550K_TARGET_SAMPLES,
+        )
+        self.assertEqual(
+            command[command.index("--difficulty-ratios") + 1],
+            CONTEXT_550K_DIFFICULTY_RATIOS,
+        )
+        self.assertIn("--repartition-existing-stages-by-fixed-manifest", command)
+        self.assertIn("--resume", command)
+        self.assertNotIn("--source-obs-root", command)
+        self.assertNotIn("--stage", command)
+
     def test_pose_archive_member_and_two_image_record(self):
         member = tarfile.TarInfo("sample/patch_tif/0_pose.tif")
         member.size = 12

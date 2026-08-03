@@ -214,13 +214,19 @@ def run_streaming_builder(paths: dict[str, Path], args: argparse.Namespace) -> N
     run(command)
 
 
-def completion_errors(root: Path, expected_fixed_split_sha256: str = "") -> list[str]:
+def completion_errors(
+    root: Path,
+    expected_fixed_split_sha256: str = "",
+    target_samples: int = TARGET_SAMPLES,
+    difficulty_ratios: str = DIFFICULTY_RATIOS,
+    intersection_ratio: float = INTERSECTION_RATIO,
+) -> list[str]:
     errors = []
     train_path = root / "phase_a" / "train.jsonl"
     info_path = root / "dataset_info.json"
     train_count = count_jsonl(train_path)
-    if train_count != TARGET_SAMPLES:
-        errors.append(f"train count={train_count}, expected={TARGET_SAMPLES}")
+    if train_count != target_samples:
+        errors.append(f"train count={train_count}, expected={target_samples}")
     if not info_path.is_file():
         errors.append(f"missing {info_path}")
         return errors
@@ -240,7 +246,7 @@ def completion_errors(root: Path, expected_fixed_split_sha256: str = "") -> list
     if multi.get("pose_image_source") != "patch_tif/0_pose.tif":
         errors.append(f"invalid pose_image_source={multi.get('pose_image_source')!r}")
     balance = info.get("balance") or {}
-    expected_ratios = parse_ratio_spec(DIFFICULTY_RATIOS)
+    expected_ratios = parse_ratio_spec(difficulty_ratios)
     actual_ratios = balance.get("target_ratios") or {}
     for name, expected in expected_ratios.items():
         actual = float(actual_ratios.get(name, -1.0))
@@ -248,7 +254,7 @@ def completion_errors(root: Path, expected_fixed_split_sha256: str = "") -> list
             errors.append(
                 f"invalid target difficulty ratio {name}={actual}; expected={expected}"
             )
-    expected_counts = allocate_quotas(TARGET_SAMPLES, expected_ratios)
+    expected_counts = allocate_quotas(target_samples, expected_ratios)
     actual_counts = balance.get("final_bucket_counts") or {}
     for name, expected in expected_counts.items():
         actual = int(actual_counts.get(name, -1))
@@ -256,7 +262,7 @@ def completion_errors(root: Path, expected_fixed_split_sha256: str = "") -> list
             errors.append(
                 f"invalid final difficulty count {name}={actual}; expected={expected}"
             )
-    if abs(float(balance.get("actual_intersection_ratio", -1.0)) - INTERSECTION_RATIO) > 1e-8:
+    if abs(float(balance.get("actual_intersection_ratio", -1.0)) - intersection_ratio) > 1e-8:
         errors.append(f"invalid intersection ratio={balance.get('actual_intersection_ratio')}")
     fixed = info.get("fixed_source_split") or {}
     actual_fixed_sha = str(fixed.get("file_sha256") or "")
@@ -273,18 +279,25 @@ def rename_variant(
     target_variant: str,
     resume: bool,
     expected_fixed_split_sha256: str,
+    target_samples: int = TARGET_SAMPLES,
+    difficulty_ratios: str = DIFFICULTY_RATIOS,
+    intersection_ratio: float = INTERSECTION_RATIO,
 ) -> Path:
     source_root = output_root / source_variant
     target_root = output_root / target_variant
-    if resume and target_root.is_dir() and not completion_errors(
-        target_root, expected_fixed_split_sha256
-    ):
+    check_args = (
+        expected_fixed_split_sha256,
+        target_samples,
+        difficulty_ratios,
+        intersection_ratio,
+    )
+    if resume and target_root.is_dir() and not completion_errors(target_root, *check_args):
         print(f"[rawlane-pose-dataset] reuse variant: {target_root}", flush=True)
         return target_root
     if target_root.exists():
         raise ValueError(
             f"target variant exists but is incompatible: {target_root}; "
-            f"{completion_errors(target_root, expected_fixed_split_sha256)}. "
+            f"{completion_errors(target_root, *check_args)}. "
             "Use a new --work-root/output-root for a new benchmark split."
         )
     if not source_root.is_dir():
@@ -292,13 +305,16 @@ def rename_variant(
     source_root.rename(target_root)
     relabel_metadata(target_root / "dataset_info.json", source_variant, target_variant)
     relabel_metadata(output_root / "build_summary.json", source_variant, target_variant)
-    errors = completion_errors(target_root, expected_fixed_split_sha256)
+    errors = completion_errors(target_root, *check_args)
     if errors:
         raise ValueError(f"renamed pose variant failed checks: {target_root}; errors={errors}")
     return target_root
 
 
-def validate_two_image_records(root: Path) -> None:
+def validate_two_image_records(
+    root: Path,
+    expected_train_samples: int = TARGET_SAMPLES,
+) -> None:
     counts = {}
     for split in ("train", "eval", "test"):
         jsonl_path = root / "phase_a" / f"{split}.jsonl"
@@ -340,7 +356,7 @@ def validate_two_image_records(root: Path) -> None:
                 if count % 100_000 == 0:
                     print(f"[rawlane-pose-dataset] validated {split}: {count}", flush=True)
         counts[split] = count
-    if counts.get("train") != TARGET_SAMPLES:
+    if counts.get("train") != expected_train_samples:
         raise ValueError(f"two-image validation train count mismatch: {counts}")
     print(f"[rawlane-pose-dataset] two-image records passed: {counts}", flush=True)
 

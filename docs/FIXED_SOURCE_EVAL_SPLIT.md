@@ -100,6 +100,17 @@ they do not duplicate PNG payload bytes on the same NTFS volume. Existing
 packaged datasets are fingerprinted and will not be silently reused under a
 new manifest.
 
+To derive only a 550k context512/ROI256 release from that same bootstrap
+staging, run:
+
+```powershell
+python scripts\tools\build_rc_dataset_v2_rawlane_pose_context512_roi256_550k_from_staging_windows.py --resume
+```
+
+This entry has no OBS arguments by design. It performs fixed-manifest
+repartitioning, context-only finalization, two-image validation, and tar
+packaging without downloading or restaging the seven sources.
+
 ## Comparability Boundary
 
 The manifest fixes source geography and prevents leakage. Strict metric

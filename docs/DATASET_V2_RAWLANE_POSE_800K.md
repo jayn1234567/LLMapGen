@@ -125,6 +125,35 @@ See `docs/FIXED_SOURCE_EVAL_SPLIT.md` for manifest creation and leakage checks.
 The fixed-eval one-command wrapper adds `--reuse-staging-root` automatically.
 It never performs a second OBS download after bootstrap staging completes.
 
+### Additional context512/ROI256 550k release
+
+The completed bootstrap staging can also produce a context-only 550k release
+without downloading, extracting, or staging any source again:
+
+```powershell
+python scripts\tools\build_rc_dataset_v2_rawlane_pose_context512_roi256_550k_from_staging_windows.py --resume
+```
+
+Its fixed defaults are:
+
+- bootstrap staging: `D:\data\fulldata_rawlane_pose\staging_rawlane_pose_256_context`;
+- frozen split: `D:\data\fixed_splits\rc_fixed_large_maps_v1.json`;
+- train samples: 550,000;
+- difficulty: empty 5%, easy 25%, medium 33%, hard 27%, very hard 10%;
+- intersection samples: 30%;
+- view: 512x512 input with center 256x256 ROI supervision.
+
+The command validates all active BEV/pose pairs and saved raw-lane auxiliary
+images, then creates:
+
+```text
+D:\data\fulldata_rawlane_pose_fixed_v1\output_rawlane_pose_context512_roi256_550k\rawlane_pose_context512_roi256_550k
+D:\data\fulldata_rawlane_pose_fixed_v1\packages_rawlane_pose\rawlane_pose_context512_roi256_550k.tar
+```
+
+The fixed eval/test large maps are identical to the 800k fixed release. The
+train set is independently balanced to the 550k quotas.
+
 Use `--skip-download --resume` when the raw sources are already present. Use
 `--skip-stage --resume` only after all source stage markers have completed.
 

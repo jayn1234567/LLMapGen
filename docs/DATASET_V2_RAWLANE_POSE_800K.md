@@ -117,10 +117,13 @@ D:\data\fulldata_rawlane_pose\packages_rawlane_pose\rawlane_pose_context512_roi2
 For comparable evaluation, pass the canonical large-map split manifest:
 
 ```powershell
-python scripts\tools\build_rc_dataset_v2_rawlane_pose_800k_windows.py --work-root "D:\data\fulldata_rawlane_pose" --fixed-source-split-manifest "D:\data\fixed_splits\rc_fixed_large_maps_v1.json" --obsutil-path "C:\Users\jWX1497058\Downloads\obsutil_windows_amd64\obsutil_windows_amd64_5.8.3\obsutil.exe" --resume
+python scripts\tools\build_rc_dataset_v2_rawlane_pose_800k_windows.py --work-root "D:\data\fulldata_rawlane_pose_fixed_v1" --reuse-staging-root "D:\data\fulldata_rawlane_pose\staging_rawlane_pose_256_context" --fixed-source-split-manifest "D:\data\fixed_splits\rc_fixed_large_maps_v1.json" --resume
 ```
 
 See `docs/FIXED_SOURCE_EVAL_SPLIT.md` for manifest creation and leakage checks.
+
+The fixed-eval one-command wrapper adds `--reuse-staging-root` automatically.
+It never performs a second OBS download after bootstrap staging completes.
 
 Use `--skip-download --resume` when the raw sources are already present. Use
 `--skip-stage --resume` only after all source stage markers have completed.

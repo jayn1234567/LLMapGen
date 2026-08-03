@@ -17,7 +17,7 @@ import os
 import shutil
 import sys
 from collections import Counter
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 try:
     from tqdm import tqdm
@@ -188,6 +188,14 @@ def parse_args(argv=None):
         "--allow-missing-fixed-holdouts",
         action="store_true",
         help="Allow a source subset to omit fixed eval/test maps. Training leakage still fails.",
+    )
+    finalize.add_argument(
+        "--repartition-existing-stages-by-fixed-manifest",
+        action="store_true",
+        help=(
+            "Reuse hash-split staging with --fixed-source-split-manifest instead of rebuilding raw "
+            "sources. Fixed eval/test keep base-grid patches only; available train candidates are reused."
+        ),
     )
     return parser.parse_args(argv)
 
@@ -566,16 +574,77 @@ def build_sample_owners(stage_roots: list[Path], duplicate_policy: str):
     return owner, collisions
 
 
-def collect_owned_raw_sample_splits(stage_roots: list[Path], sample_owner: dict[str, int]) -> dict[str, list[str]]:
+def effective_record_split(
+    item: dict,
+    source_split: str,
+    fixed_manifest: dict | None = None,
+    repartition_fixed: bool = False,
+) -> str:
+    if not repartition_fixed:
+        return source_split
+    if fixed_manifest is None:
+        raise ValueError("fixed manifest is required when repartitioning existing stages")
+    return str(split_for_raw_sample(str(item["raw_sample_id"]), fixed_manifest))
+
+
+def keep_repartitioned_record(item: dict, target_split: str, repartition_fixed: bool) -> bool:
+    if not repartition_fixed or target_split == "train":
+        return True
+    # Bootstrap train uses stride=128 and therefore contains translated-grid
+    # augmentation. Evaluation must remain on the canonical stride=256 grid.
+    return str(item.get("grid_kind") or "") == "base"
+
+
+def remap_split_asset_path(relative: str, source_split: str, target_split: str) -> str:
+    path = PurePosixPath(str(relative))
+    if source_split == target_split:
+        return path.as_posix()
+    parts = list(path.parts)
+    if len(parts) < 3 or parts[1] != source_split:
+        raise ValueError(
+            f"cannot remap staged asset {relative!r} from {source_split} to {target_split}"
+        )
+    parts[1] = target_split
+    return PurePosixPath(*parts).as_posix()
+
+
+def remap_record_split_assets(record: dict, source_split: str, target_split: str) -> dict:
+    if source_split == target_split:
+        return record
+    remapped = dict(record)
+    for field in ("image", "pose_image", "raw_lane_image"):
+        if remapped.get(field):
+            remapped[field] = remap_split_asset_path(
+                str(remapped[field]), source_split, target_split
+            )
+    if remapped.get("images"):
+        remapped["images"] = [
+            remap_split_asset_path(str(item), source_split, target_split)
+            for item in remapped["images"]
+        ]
+    return remapped
+
+
+def collect_owned_raw_sample_splits(
+    stage_roots: list[Path],
+    sample_owner: dict[str, int],
+    fixed_manifest: dict | None = None,
+    repartition_fixed: bool = False,
+) -> dict[str, list[str]]:
     split_ids = {split: set() for split in ("train", "eval", "test")}
     for stage_root in stage_roots:
         summary = json.loads((stage_root / STAGE_MARKER).read_text(encoding="utf-8"))
         source_index = int(summary["source_index"])
-        for split in split_ids:
-            for _, item in iter_jsonl(stage_root / "records" / f"{split}.index.jsonl"):
+        for source_split in split_ids:
+            for _, item in iter_jsonl(stage_root / "records" / f"{source_split}.index.jsonl"):
                 raw_sample_id = str(item["raw_sample_id"])
-                if sample_owner.get(raw_sample_id) == source_index:
-                    split_ids[split].add(raw_sample_id)
+                if sample_owner.get(raw_sample_id) != source_index:
+                    continue
+                target_split = effective_record_split(
+                    item, source_split, fixed_manifest, repartition_fixed
+                )
+                if keep_repartitioned_record(item, target_split, repartition_fixed):
+                    split_ids[target_split].add(raw_sample_id)
     for left, right in (("train", "eval"), ("train", "test"), ("eval", "test")):
         overlap = split_ids[left] & split_ids[right]
         if overlap:
@@ -634,29 +703,38 @@ def load_candidate_pools(
     allowed_train_ids=None,
     difficulty_overrides=None,
     require_complete_override=False,
+    fixed_manifest=None,
+    repartition_fixed=False,
 ):
     base_pools = empty_candidate_pools()
     translated_pools = empty_candidate_pools()
     seen_patch_ids = set()
     candidate_counts = Counter()
     for stage_root in stage_roots:
-        for _, item in iter_jsonl(stage_root / "records" / "train.index.jsonl"):
-            if sample_owner.get(str(item["raw_sample_id"])) != int(item["source_index"]):
-                continue
-            patch_id = str(item["id"])
-            if allowed_train_ids is not None and patch_id not in allowed_train_ids:
-                continue
-            if patch_id in seen_patch_ids:
-                continue
-            seen_patch_ids.add(patch_id)
-            override = (difficulty_overrides or {}).get(patch_id)
-            if override is None and require_complete_override and str(item.get("stratum")) != "empty":
-                raise ValueError(f"difficulty override is missing non-empty train id: {patch_id}")
-            stratum = str((override or item)["stratum"])
-            pool_type = "intersection" if item.get("has_intersection") else "plain"
-            pools = base_pools if item.get("grid_kind") == "base" else translated_pools
-            pools[stratum][pool_type].append(patch_id)
-            candidate_counts[stratum] += 1
+        source_splits = ("train", "eval", "test") if repartition_fixed else ("train",)
+        for source_split in source_splits:
+            for _, item in iter_jsonl(stage_root / "records" / f"{source_split}.index.jsonl"):
+                if sample_owner.get(str(item["raw_sample_id"])) != int(item["source_index"]):
+                    continue
+                target_split = effective_record_split(
+                    item, source_split, fixed_manifest, repartition_fixed
+                )
+                if target_split != "train":
+                    continue
+                patch_id = str(item["id"])
+                if allowed_train_ids is not None and patch_id not in allowed_train_ids:
+                    continue
+                if patch_id in seen_patch_ids:
+                    continue
+                seen_patch_ids.add(patch_id)
+                override = (difficulty_overrides or {}).get(patch_id)
+                if override is None and require_complete_override and str(item.get("stratum")) != "empty":
+                    raise ValueError(f"difficulty override is missing non-empty train id: {patch_id}")
+                stratum = str((override or item)["stratum"])
+                pool_type = "intersection" if item.get("has_intersection") else "plain"
+                pools = base_pools if item.get("grid_kind") == "base" else translated_pools
+                pools[stratum][pool_type].append(patch_id)
+                candidate_counts[stratum] += 1
     return base_pools, translated_pools, candidate_counts
 
 
@@ -693,6 +771,8 @@ def materialize_from_stages(
     copy_mode,
     resume,
     difficulty_overrides=None,
+    fixed_manifest=None,
+    repartition_fixed=False,
 ):
     output_handles = {}
     meta_handles = {}
@@ -714,11 +794,13 @@ def materialize_from_stages(
     seen_by_split = {split: set() for split in ("train", "eval", "test")}
     try:
         for stage_root in stage_roots:
-            for split in ("train", "eval", "test"):
-                index_path = stage_root / "records" / f"{split}.index.jsonl"
+            for source_split in ("train", "eval", "test"):
+                index_path = stage_root / "records" / f"{source_split}.index.jsonl"
                 indexes = iter_jsonl(index_path)
                 sft_iters = {
-                    variant: iter_jsonl(stage_root / "records" / variant / f"{split}.jsonl")
+                    variant: iter_jsonl(
+                        stage_root / "records" / variant / f"{source_split}.jsonl"
+                    )
                     for variant in variants
                 }
                 for _, index_item in indexes:
@@ -728,37 +810,59 @@ def materialize_from_stages(
                         raise ValueError(f"stage index/SFT order mismatch for {patch_id}")
                     if sample_owner.get(str(index_item["raw_sample_id"])) != int(index_item["source_index"]):
                         continue
-                    if patch_id in seen_by_split[split]:
+                    target_split = effective_record_split(
+                        index_item, source_split, fixed_manifest, repartition_fixed
+                    )
+                    if not keep_repartitioned_record(
+                        index_item, target_split, repartition_fixed
+                    ):
                         continue
-                    if split == "train" and patch_id not in selected_train_ids:
+                    if patch_id in seen_by_split[target_split]:
                         continue
-                    seen_by_split[split].add(patch_id)
-                    override = (difficulty_overrides or {}).get(patch_id) if split == "train" else None
+                    if target_split == "train" and patch_id not in selected_train_ids:
+                        continue
+                    seen_by_split[target_split].add(patch_id)
+                    override = (
+                        (difficulty_overrides or {}).get(patch_id)
+                        if target_split == "train" else None
+                    )
                     effective_difficulty = (override or index_item).get("difficulty")
                     effective_score = (override or index_item).get("difficulty_score")
                     effective_stratum = (override or index_item).get("stratum")
                     for variant, record in sft_items.items():
+                        source_record = record
+                        record = remap_record_split_assets(
+                            source_record, source_split, target_split
+                        )
                         record_semantic_counts = semantic_sft_record_counts(
                             record, strict=True, require_prompt=True
                         )
                         semantic_counts.update(
                             {f"{variant}:{key}": value for key, value in record_semantic_counts.items()}
                         )
+                        source_relative_images = source_record.get("images") or [
+                            source_record["image"]
+                        ]
                         relative_images = record.get("images") or [record["image"]]
                         if not isinstance(relative_images, list) or not relative_images:
                             raise ValueError(f"record {patch_id} has invalid images={relative_images!r}")
-                        auxiliary_images = []
-                        if record.get("raw_lane_image"):
-                            auxiliary_images.append(str(record["raw_lane_image"]))
-                        all_image_assets = [str(item) for item in relative_images] + auxiliary_images
-                        for relative in dict.fromkeys(all_image_assets):
-                            relative_image = Path(relative)
-                            source_image = stage_root / "variants" / variant / relative_image
-                            destination_image = output_root / variant / relative_image
+                        source_assets = [str(item) for item in source_relative_images]
+                        target_assets = [str(item) for item in relative_images]
+                        if source_record.get("raw_lane_image"):
+                            source_assets.append(str(source_record["raw_lane_image"]))
+                            target_assets.append(str(record["raw_lane_image"]))
+                        asset_pairs = dict.fromkeys(zip(source_assets, target_assets))
+                        for source_relative, target_relative in asset_pairs:
+                            source_image = (
+                                stage_root / "variants" / variant / Path(source_relative)
+                            )
+                            destination_image = (
+                                output_root / variant / Path(target_relative)
+                            )
                             used_mode = link_or_copy(source_image, destination_image, copy_mode, resume)
                             link_modes[used_mode] += 1
-                        write_jsonl_item(output_handles[variant][split], record)
-                        write_jsonl_item(meta_handles[variant][split], {
+                        write_jsonl_item(output_handles[variant][target_split], record)
+                        write_jsonl_item(meta_handles[variant][target_split], {
                             "id": patch_id,
                             "image": record["image"],
                             "images": relative_images,
@@ -771,13 +875,15 @@ def materialize_from_stages(
                             "grid_kind": index_item.get("grid_kind"),
                             "source_index": index_item.get("source_index"),
                         })
-                        counts[f"{variant}:{split}"] += 1
+                        counts[f"{variant}:{target_split}"] += 1
                 for variant, iterator in sft_iters.items():
                     try:
                         next(iterator)
                     except StopIteration:
                         continue
-                    raise ValueError(f"extra staged SFT rows in {stage_root} {variant}/{split}")
+                    raise ValueError(
+                        f"extra staged SFT rows in {stage_root} {variant}/{source_split}"
+                    )
     finally:
         close_writers(output_handles, meta_handles)
     return dict(counts), dict(link_modes), dict(semantic_counts)
@@ -799,6 +905,14 @@ def finalize_stages(args) -> None:
     fixed_manifest = (
         load_fixed_source_split_manifest(fixed_manifest_text) if fixed_manifest_text else None
     )
+    repartition_fixed = bool(
+        getattr(args, "repartition_existing_stages_by_fixed_manifest", False)
+    )
+    if repartition_fixed and fixed_manifest is None:
+        raise ValueError(
+            "--repartition-existing-stages-by-fixed-manifest requires "
+            "--fixed-source-split-manifest"
+        )
     fixed_descriptor = fixed_split_descriptor(fixed_manifest)
     expected_fixed_sha = str((fixed_descriptor or {}).get("file_sha256") or "")
     staging_root = Path(args.staging_root)
@@ -830,7 +944,10 @@ def finalize_stages(args) -> None:
                 f"stage target_patch_size={stage_patch_size}, expected {patch_size}: {stage_root}"
             )
         stage_fixed = summary.get("fixed_source_split") or {}
-        if str(stage_fixed.get("file_sha256") or "") != expected_fixed_sha:
+        stage_fixed_sha = str(stage_fixed.get("file_sha256") or "")
+        fixed_mismatch = stage_fixed_sha != expected_fixed_sha
+        reusable_bootstrap_stage = repartition_fixed and not stage_fixed_sha
+        if fixed_mismatch and not reusable_bootstrap_stage:
             raise ValueError(
                 f"stage fixed split manifest does not match finalization: {stage_root}; "
                 f"stage_sha={stage_fixed.get('file_sha256')!r}, expected_sha={expected_fixed_sha!r}"
@@ -858,7 +975,12 @@ def finalize_stages(args) -> None:
     pose_threshold = next(iter(pose_threshold_values), 0.0)
 
     sample_owner, collisions = build_sample_owners(stage_roots, args.duplicate_policy)
-    raw_sample_ids_by_split = collect_owned_raw_sample_splits(stage_roots, sample_owner)
+    raw_sample_ids_by_split = collect_owned_raw_sample_splits(
+        stage_roots,
+        sample_owner,
+        fixed_manifest=fixed_manifest,
+        repartition_fixed=repartition_fixed,
+    )
     fixed_coverage = None
     if fixed_manifest is not None:
         fixed_coverage = validate_fixed_holdout_coverage(
@@ -887,6 +1009,8 @@ def finalize_stages(args) -> None:
         allowed_train_ids,
         difficulty_overrides,
         require_complete_override=override_jsonl is not None,
+        fixed_manifest=fixed_manifest,
+        repartition_fixed=repartition_fixed,
     )
     selected_counts, balance_report = select_balanced_candidates(
         base_pools,
@@ -916,6 +1040,8 @@ def finalize_stages(args) -> None:
         args.copy_mode,
         args.resume,
         difficulty_overrides,
+        fixed_manifest=fixed_manifest,
+        repartition_fixed=repartition_fixed,
     )
     for variant in variants:
         if counts.get(f"{variant}:train", 0) != args.train_target_samples:
@@ -955,6 +1081,12 @@ def finalize_stages(args) -> None:
         "split_policy": FIXED_SPLIT_POLICY if fixed_manifest else "sha256_sample_id_seed_threshold",
         "fixed_source_split": fixed_descriptor,
         "fixed_source_split_coverage": fixed_coverage,
+        "source_stage_split_repartition": {
+            "enabled": repartition_fixed,
+            "source_policy": "bootstrap_hash_split" if repartition_fixed else "native_stage_split",
+            "fixed_holdout_grid_policy": "base_only" if repartition_fixed else "native_stage_grid",
+            "train_candidate_policy": "reuse_all_available_grids",
+        },
         "coord_mode": COORD_MODE_NORM1000,
         "coord_range": args.coord_range,
         "target_patch_size": patch_size,

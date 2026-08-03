@@ -43,6 +43,14 @@ def parse_args(argv=None) -> argparse.Namespace:
     parser.add_argument("--work-root", default=r"D:\data\fulldata_rawlane_pose")
     parser.add_argument("--raw-root", default="")
     parser.add_argument("--staging-root", default="")
+    parser.add_argument(
+        "--reuse-staging-root",
+        default="",
+        help=(
+            "Finalize directly from an existing bootstrap staging root using the fixed manifest. "
+            "This skips OBS download, extraction, and source restaging."
+        ),
+    )
     parser.add_argument("--output-root", default="")
     parser.add_argument("--package-root", default="")
     parser.add_argument("--source-obs-root", action="append", default=[])
@@ -115,6 +123,41 @@ def resolve_paths(args: argparse.Namespace) -> dict[str, Path]:
 
 
 def run_streaming_builder(paths: dict[str, Path], args: argparse.Namespace) -> None:
+    if args.reuse_staging_root:
+        if not args.fixed_source_split_manifest:
+            raise ValueError("--reuse-staging-root requires --fixed-source-split-manifest")
+        reuse_root = Path(args.reuse_staging_root).expanduser().resolve()
+        if not reuse_root.is_dir():
+            raise FileNotFoundError(f"bootstrap staging root not found: {reuse_root}")
+        command = [
+            sys.executable,
+            "data_process/build_dataset_v2_staged.py",
+            "finalize",
+            "--staging-root", reuse_root,
+            "--output-root", paths["output_root"],
+            "--views", "both",
+            "--patch-size", 256,
+            "--context-size", 512,
+            "--train-target-samples", TARGET_SAMPLES,
+            "--difficulty-ratios", DIFFICULTY_RATIOS,
+            "--intersection-target-ratio", INTERSECTION_RATIO,
+            "--difficulty-seed", args.difficulty_seed,
+            "--duplicate-policy", "last",
+            "--copy-mode", args.copy_mode,
+            "--fixed-source-split-manifest", args.fixed_source_split_manifest,
+            "--repartition-existing-stages-by-fixed-manifest",
+        ]
+        if args.allow_missing_fixed_holdouts:
+            command.append("--allow-missing-fixed-holdouts")
+        if args.resume:
+            command.append("--resume")
+        print(
+            "[rawlane-pose-dataset] reuse bootstrap staging; "
+            "OBS download/extraction/restaging are disabled",
+            flush=True,
+        )
+        run(command)
+        return
     if args.skip_stage:
         return
     command = [
@@ -370,20 +413,36 @@ def main(argv=None) -> None:
         flush=True,
     )
 
-    run_streaming_builder(paths, args)
-    if args.stage_only:
+    existing_variant_roots = {
+        target: paths["output_root"] / target
+        for target in VARIANT_NAMES.values()
+    }
+    reuse_completed_outputs = bool(args.resume) and all(
+        root.is_dir() and not completion_errors(root, fixed_split_sha256)
+        for root in existing_variant_roots.values()
+    )
+    if reuse_completed_outputs:
+        print(
+            "[rawlane-pose-dataset] reuse completed final variants; skip staging/finalize",
+            flush=True,
+        )
+        variant_roots = existing_variant_roots
+    else:
+        run_streaming_builder(paths, args)
+    if args.stage_only and not reuse_completed_outputs:
         print(
             "[rawlane-pose-dataset] all available sources staged; "
             "create the fixed source split manifest next.",
             flush=True,
         )
         return
-    variant_roots = {
-        target: rename_variant(
-            paths["output_root"], source, target, args.resume, fixed_split_sha256
-        )
-        for source, target in VARIANT_NAMES.items()
-    }
+    if not reuse_completed_outputs:
+        variant_roots = {
+            target: rename_variant(
+                paths["output_root"], source, target, args.resume, fixed_split_sha256
+            )
+            for source, target in VARIANT_NAMES.items()
+        }
     if not args.skip_validation:
         validate_variant_pairing(variant_roots)
     for variant, variant_root in variant_roots.items():
@@ -410,6 +469,7 @@ def main(argv=None) -> None:
         "raw_lane_auxiliary_saved": True,
         "raw_lane_auxiliary_active_input": False,
         "fixed_source_split_manifest": args.fixed_source_split_manifest or None,
+        "reused_bootstrap_staging_root": args.reuse_staging_root or None,
     }
     summary_path = paths["output_root"] / "rawlane_pose_build_summary.json"
     summary_path.write_text(json.dumps(summary, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")

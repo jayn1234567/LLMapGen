@@ -66,6 +66,8 @@ from scripts.tools.build_rc_dataset_v2_rawlane_pose_800k_fixed_eval_windows impo
 )
 from scripts.tools.build_rc_dataset_v2_rawlane_pose_800k_windows import (
     DIFFICULTY_RATIOS as RAWLANE_POSE_DIFFICULTY_RATIOS,
+    parse_args as parse_rawlane_pose_args,
+    run_streaming_builder as run_rawlane_pose_builder,
 )
 
 
@@ -191,6 +193,27 @@ class DatasetV2ContextTest(unittest.TestCase):
             RAWLANE_POSE_DIFFICULTY_RATIOS,
             "empty=0.05,easy=0.25,medium=0.33,hard=0.27,very_hard=0.10",
         )
+
+    def test_rawlane_pose_reuse_staging_runs_finalize_without_streaming_download(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            staging_root = root / "bootstrap_staging"
+            staging_root.mkdir()
+            args = parse_rawlane_pose_args([
+                "--work-root", str(root / "fixed"),
+                "--reuse-staging-root", str(staging_root),
+                "--fixed-source-split-manifest", str(root / "fixed.json"),
+                "--resume",
+            ])
+            paths = {"output_root": root / "fixed" / "output"}
+            with patch(
+                "scripts.tools.build_rc_dataset_v2_rawlane_pose_800k_windows.run"
+            ) as mocked_run:
+                run_rawlane_pose_builder(paths, args)
+            command = [str(item) for item in mocked_run.call_args.args[0]]
+            self.assertIn("data_process/build_dataset_v2_staged.py", command)
+            self.assertIn("--repartition-existing-stages-by-fixed-manifest", command)
+            self.assertNotIn("scripts/tools/build_rc_dataset_v2_streaming_from_obs.py", command)
 
     def test_lane_type_mapping_and_exclusions(self):
         self.assertEqual(IGNORED_LANE_TYPE_CODES, frozenset({3, 22}))
@@ -382,6 +405,10 @@ class DatasetV2ContextTest(unittest.TestCase):
         self.assertEqual(
             final[final.index("--fixed-source-split-manifest") + 1],
             r"D:\splits\v1.json",
+        )
+        self.assertEqual(
+            final[final.index("--reuse-staging-root") + 1],
+            str(Path(r"D:\bootstrap").resolve() / "staging_rawlane_pose_256_context"),
         )
         self.assertNotIn("--stage-only", final)
 
@@ -620,6 +647,142 @@ class DatasetV2ContextTest(unittest.TestCase):
             )
             self.assertTrue(filtered_summary["train_candidate_filter"]["selection_is_subset"])
             self.assertEqual(filtered_summary["train_candidate_filter"]["unique_ids"], 2)
+
+    def test_finalize_repartitions_bootstrap_staging_without_raw_sources(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            staging_root = root / "bootstrap_staging"
+            stage_root = staging_root / "source_00"
+            records_root = stage_root / "records"
+            variant_records = records_root / "local256"
+            variant_records.mkdir(parents=True)
+            rows = {
+                "train": [
+                    ("map_eval_base", "map_eval", "base"),
+                    ("map_eval_shift", "map_eval", "translated"),
+                ],
+                "eval": [("map_train_base", "map_train", "base")],
+                "test": [("map_test_base", "map_test", "base")],
+            }
+            for source_split, split_rows in rows.items():
+                index_lines = []
+                sft_lines = []
+                for patch_id, raw_sample_id, grid_kind in split_rows:
+                    image = f"images/{source_split}/{raw_sample_id}/{patch_id}.png"
+                    pose_image = f"pose_images/{source_split}/{raw_sample_id}/{patch_id}.png"
+                    raw_lane_image = (
+                        f"raw_lane_images/{source_split}/{raw_sample_id}/{patch_id}.png"
+                    )
+                    for relative in (image, pose_image, raw_lane_image):
+                        image_path = stage_root / "variants" / "local256" / relative
+                        image_path.parent.mkdir(parents=True, exist_ok=True)
+                        image_path.write_bytes(b"png")
+                    index_lines.append(json.dumps({
+                        "id": patch_id,
+                        "raw_sample_id": raw_sample_id,
+                        "source_index": 0,
+                        "split": source_split,
+                        "stratum": "easy",
+                        "difficulty": "easy",
+                        "difficulty_score": 1.0,
+                        "has_intersection": False,
+                        "grid_kind": grid_kind,
+                        "image": image,
+                    }))
+                    target = {"lines": [{
+                        "category": "centerline",
+                        "lane_type": "common",
+                        "start_type": "cut",
+                        "end_type": "cut",
+                        "points": [[0, 500], [1000, 500]],
+                    }]}
+                    sft_lines.append(json.dumps({
+                        "id": patch_id,
+                        "image": image,
+                        "images": [image, pose_image],
+                        "raw_lane_image": raw_lane_image,
+                        "meta": {},
+                        "conversations": [
+                            {
+                                "from": "human",
+                                "value": "<image> <image> lane_type intersection_type",
+                            },
+                            {"from": "gpt", "value": json.dumps(target)},
+                        ],
+                    }))
+                (records_root / f"{source_split}.index.jsonl").write_text(
+                    "\n".join(index_lines) + "\n", encoding="utf-8"
+                )
+                (variant_records / f"{source_split}.jsonl").write_text(
+                    "\n".join(sft_lines) + "\n", encoding="utf-8"
+                )
+            (stage_root / "stage_complete.json").write_text(json.dumps({
+                "source_index": 0,
+                "variants": ["local256"],
+                "stage_version": STAGE_VERSION,
+                "semantic_schema_version": dataset_common.SEMANTIC_SCHEMA_VERSION,
+                "semantic_validation_passed": True,
+                "target_patch_size": 256,
+                "train_stride": 128,
+                "eval_test_stride": 256,
+                "fixed_source_split": None,
+            }), encoding="utf-8")
+            manifest_path = root / "fixed.json"
+            manifest_path.write_text(json.dumps({
+                "format_version": "rc_fixed_source_split_v1",
+                "raw_sample_ids_by_split": {
+                    "eval": ["map_eval"],
+                    "test": ["map_test"],
+                },
+            }), encoding="utf-8")
+            output_root = root / "final"
+            finalize_stages(SimpleNamespace(
+                staging_root=str(staging_root),
+                output_root=str(output_root),
+                views="local",
+                train_target_samples=1,
+                difficulty_ratios="empty=0,easy=1,medium=0,hard=0,very_hard=0",
+                intersection_target_ratio=0.0,
+                difficulty_seed=7,
+                duplicate_policy="last",
+                copy_mode="copy",
+                train_candidate_jsonl="",
+                difficulty_override_jsonl="",
+                difficulty_rule_version="",
+                resume=False,
+                patch_size=256,
+                context_size=512,
+                coord_range=1000,
+                fixed_source_split_manifest=str(manifest_path),
+                allow_missing_fixed_holdouts=False,
+                repartition_existing_stages_by_fixed_manifest=True,
+            ))
+
+            phase_root = output_root / "local256" / "phase_a"
+            records_by_split = {
+                split: [
+                    json.loads(line)
+                    for line in (phase_root / f"{split}.jsonl")
+                    .read_text(encoding="utf-8")
+                    .splitlines()
+                ]
+                for split in ("train", "eval", "test")
+            }
+            self.assertEqual([item["id"] for item in records_by_split["train"]], ["map_train_base"])
+            self.assertEqual([item["id"] for item in records_by_split["eval"]], ["map_eval_base"])
+            self.assertEqual([item["id"] for item in records_by_split["test"]], ["map_test_base"])
+            for split, records in records_by_split.items():
+                self.assertTrue(records[0]["image"].startswith(f"images/{split}/"))
+                self.assertTrue((output_root / "local256" / records[0]["image"]).is_file())
+                self.assertTrue(records[0]["images"][1].startswith(f"pose_images/{split}/"))
+                self.assertTrue(
+                    records[0]["raw_lane_image"].startswith(f"raw_lane_images/{split}/")
+                )
+                for relative in [*records[0]["images"], records[0]["raw_lane_image"]]:
+                    self.assertTrue((output_root / "local256" / relative).is_file())
+            summary = json.loads((output_root / "build_summary.json").read_text(encoding="utf-8"))
+            self.assertTrue(summary["source_stage_split_repartition"]["enabled"])
+            self.assertEqual(summary["fixed_source_split_coverage"]["status"], "passed")
 
     def test_selective_archive_extraction_keeps_only_builder_inputs_and_deletes_archive(self):
         with tempfile.TemporaryDirectory() as temp_dir:

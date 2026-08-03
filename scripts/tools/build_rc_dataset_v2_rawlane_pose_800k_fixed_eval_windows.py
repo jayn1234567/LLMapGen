@@ -102,11 +102,16 @@ def create_manifest_command(args: argparse.Namespace, staging_root: Path, manife
 
 
 def final_build_command(args: argparse.Namespace, manifest_path: Path) -> list[object]:
+    bootstrap_staging_root = (
+        Path(args.bootstrap_work_root).expanduser().resolve()
+        / "staging_rawlane_pose_256_context"
+    )
     return [
         sys.executable,
         "scripts/tools/build_rc_dataset_v2_rawlane_pose_800k_windows.py",
         "--work-root", Path(args.fixed_work_root).expanduser().resolve(),
         "--fixed-source-split-manifest", manifest_path,
+        "--reuse-staging-root", bootstrap_staging_root,
         *common_obs_args(args),
     ]
 
@@ -137,6 +142,10 @@ def main(argv=None) -> None:
         "manifest_id": manifest["manifest_id"],
         "bootstrap_work_root": str(bootstrap_root),
         "fixed_work_root": str(fixed_root),
+        "reused_bootstrap_staging_root": str(
+            bootstrap_root / "staging_rawlane_pose_256_context"
+        ),
+        "second_obs_download_performed": False,
         "datasets": [
             str(fixed_root / "output_rawlane_pose_256_context" / "rawlane_pose_local256_800k"),
             str(

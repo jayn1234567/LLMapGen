@@ -14,9 +14,10 @@ silently changing the benchmark.
 ## Recommended V1 Selection
 
 The recommended path is the one-command orchestrator. It completes bootstrap
-staging, freezes the manifest, rebuilds under the fixed split, validates both
-views, saves raw lane as an inactive auxiliary PNG for future three-image
-ablations, and creates both tar packages:
+staging, freezes the manifest, repartitions that same staging in place during
+finalization, validates both views, saves raw lane as an inactive auxiliary
+PNG for future three-image ablations, and creates both tar packages. It does
+not download, extract, or decode the seven OBS sources a second time:
 
 ```powershell
 python scripts\tools\build_rc_dataset_v2_rawlane_pose_800k_fixed_eval_windows.py --obsutil-path "C:\Users\jWX1497058\Downloads\obsutil_windows_amd64\obsutil_windows_amd64_5.8.3\obsutil.exe" --resume
@@ -51,7 +52,7 @@ change as `rc_fixed_large_maps_v2.json` instead.
 Pass the same manifest to every future build:
 
 ```powershell
-python scripts\tools\build_rc_dataset_v2_rawlane_pose_800k_windows.py --work-root "D:\data\fulldata_rawlane_pose" --fixed-source-split-manifest "D:\data\fixed_splits\rc_fixed_large_maps_v1.json" --obsutil-path "C:\Users\jWX1497058\Downloads\obsutil_windows_amd64\obsutil_windows_amd64_5.8.3\obsutil.exe" --resume
+python scripts\tools\build_rc_dataset_v2_rawlane_pose_800k_windows.py --work-root "D:\data\fulldata_rawlane_pose_fixed_v1" --reuse-staging-root "D:\data\fulldata_rawlane_pose\staging_rawlane_pose_256_context" --fixed-source-split-manifest "D:\data\fixed_splits\rc_fixed_large_maps_v1.json" --resume
 ```
 
 The generic streaming builder and direct Dataset V2 builder expose the same
@@ -80,16 +81,24 @@ not use it for benchmark datasets.
 
 ## Existing Staging
 
-Old stages were cut with the hash-ratio policy. When a fixed manifest is first
-enabled, those stages cannot be reused because some large maps must move
-between train/eval/test and train uses a different crop stride. The streaming
-builder detects the manifest mismatch, rebuilds the affected stages, and then
-resumes normally. Later datasets using the same manifest can reuse compatible
-stages.
+Bootstrap stages cut with the hash-ratio policy are reusable through
+`--repartition-existing-stages-by-fixed-manifest`. Finalization assigns every
+record according to the fixed raw-map manifest and rewrites image paths to the
+new split. A fixed eval/test map keeps only canonical base-grid patches, so
+stride=128 translated training augmentation cannot leak into evaluation.
 
-Use a new work/output root for the first fixed-split release. Existing packaged
-datasets are also fingerprinted and will not be silently reused under a new
-manifest.
+When a bootstrap eval/test map becomes fixed train, only its already staged
+base-grid candidates are available; missing translated-grid candidates are
+not regenerated. This is intentional: it avoids a second raw-data download
+and still provides a leakage-free train complement. Finalization fails clearly
+if the remaining unique candidates cannot satisfy the requested sample and
+difficulty quotas.
+
+Use a new work/output root for the fixed release, but point it at the existing
+bootstrap staging root. Final output images are hard-linked where possible, so
+they do not duplicate PNG payload bytes on the same NTFS volume. Existing
+packaged datasets are fingerprinted and will not be silently reused under a
+new manifest.
 
 ## Comparability Boundary
 

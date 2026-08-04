@@ -173,11 +173,7 @@ Two full DINO image streams roughly double visual-token memory and sequence
 length. Before a formal training run, use a short NPU smoke test and verify
 that the configured model maximum length leaves enough room for target JSON.
 
-For a future three-image ablation, build a derived JSONL whose active `images`
-order is explicitly defined, for example `[BEV overlay, raw lane, pose]`, and
-add a third `<image>` token plus a matching prompt description. This preserves
-the exact same samples and crops without rerunning source extraction. Note that
-this order presents raw-lane information both in the BEV overlay and as a
-separate image. A clean modality-isolation experiment such as
-`[clean BEV, raw lane, pose]` additionally requires saving a BEV image before
-the raw-lane overlay is applied.
+The clean three-image ablation is now implemented. It joins this release's
+Raw-Lane/Pose staging with the existing non-overlay Dataset V2 staging, so its
+active order is `[clean BEV, raw lane, pose]` without downloading or extracting
+the raw sources again. See `docs/DATASET_V2_RAWLANE_POSE_THREE_IMAGE_800K.md`.

@@ -117,6 +117,17 @@ This entry has no OBS arguments by design. It performs fixed-manifest
 repartitioning, context-only finalization, two-image validation, and tar
 packaging without downloading or restaging the seven sources.
 
+The clean three-image local/context 800k release also reuses existing staging:
+
+```powershell
+python scripts\tools\build_rc_dataset_v2_rawlane_pose_three_image_800k_from_staging_windows.py --resume
+```
+
+It gets clean BEV images from `D:\data\fulldata\staging` and gets Raw-Lane,
+Pose, labels, and candidate metadata from the Raw-Lane/Pose bootstrap staging.
+The output uses `[clean BEV, raw lane, pose]` and the same frozen large-map
+manifest. See `docs/DATASET_V2_RAWLANE_POSE_THREE_IMAGE_800K.md`.
+
 ## Comparability Boundary
 
 The manifest fixes source geography and prevents leakage. Strict metric

@@ -76,6 +76,12 @@ from scripts.tools.build_rc_dataset_v2_rawlane_pose_context512_roi256_550k_from_
     finalize_command as context_550k_finalize_command,
     parse_args as parse_context_550k_args,
 )
+from scripts.tools.build_rc_dataset_v2_rawlane_pose_three_image_800k_from_staging_windows import (
+    IMAGE_ROLES as THREE_IMAGE_ROLES,
+    finalization_command as three_image_finalization_command,
+    parse_args as parse_three_image_args,
+    transform_record as transform_three_image_record,
+)
 
 
 class DatasetV2ContextTest(unittest.TestCase):
@@ -144,6 +150,98 @@ class DatasetV2ContextTest(unittest.TestCase):
             ["bev_road_structure", "historical_vehicle_trajectory"],
         )
 
+    def test_three_image_record_uses_clean_bev_rawlane_then_pose(self):
+        row = {
+            "id": "sample_x00000_y00000",
+            "image": "images/train/sample/sample_x00000_y00000.png",
+            "raw_lane_image": "raw_lane_images/train/sample/sample_x00000_y00000.png",
+            "pose_image": "pose_images/train/sample/sample_x00000_y00000.png",
+            "incoming_traces": [],
+            "incoming_intersections": [],
+            "target_lines": [],
+            "meta": {"x0": 0, "y0": 0},
+        }
+        record = build_sft_record(
+            row,
+            256,
+            True,
+            "a",
+            raw_lane_overlay=False,
+            raw_lane_separate_image=True,
+            pose_second_image=True,
+            save_raw_lane_image=True,
+        )
+        self.assertEqual(
+            record["images"],
+            [row["image"], row["raw_lane_image"], row["pose_image"]],
+        )
+        self.assertEqual(record["meta"]["input_image_roles"], THREE_IMAGE_ROLES)
+        self.assertTrue(record["meta"]["raw_lane_active_model_input"])
+        self.assertNotIn("raw_lane_overlay", record["meta"])
+        prompt = record["conversations"][0]["value"]
+        self.assertEqual(prompt.count("<image>"), 3)
+        self.assertIn("first image is the clean BEV road-structure image", prompt)
+        self.assertIn("second image is a lane image predicted by a PV camera model", prompt)
+        self.assertIn("third image is a historical vehicle-trajectory image", prompt)
+        self.assertNotIn("white lane overlay", prompt)
+
+    def test_three_image_postprocess_rewrites_overlay_pose_record(self):
+        record = {
+            "id": "sample_x00000_y00000",
+            "image": "images/train/sample/sample_x00000_y00000.png",
+            "images": [
+                "images/train/sample/sample_x00000_y00000.png",
+                "pose_images/train/sample/sample_x00000_y00000.png",
+            ],
+            "raw_lane_image": "raw_lane_images/train/sample/sample_x00000_y00000.png",
+            "meta": {
+                "source_index": 0,
+                "coord_mode": "norm1000",
+                "coord_range": 1000,
+                "pixel_patch_size": 256,
+                "context_image_size": 256,
+                "raw_lane_overlay": True,
+                "raw_lane_overlay_source": "patch_tif/0_lane.tif",
+            },
+            "conversations": [
+                {"from": "human", "value": "<image>\n<image>\nold prompt"},
+                {"from": "gpt", "value": '{"lines":[]}'},
+            ],
+        }
+        transformed = transform_three_image_record(record, "train")
+        self.assertEqual(
+            transformed["images"],
+            [
+                record["image"],
+                record["raw_lane_image"],
+                record["images"][1],
+            ],
+        )
+        self.assertEqual(transformed["pose_image"], record["images"][1])
+        self.assertFalse(transformed["meta"]["raw_lane_overlay"])
+        self.assertNotIn("raw_lane_overlay_source", transformed["meta"])
+        self.assertEqual(transformed["meta"]["input_image_roles"], THREE_IMAGE_ROLES)
+        prompt = transformed["conversations"][0]["value"]
+        self.assertEqual(prompt.count("<image>"), 3)
+        self.assertNotIn("white lane overlay", prompt)
+
+    def test_three_image_recipe_only_finalizes_existing_staging(self):
+        args = parse_three_image_args([
+            "--aux-staging-root", r"D:\aux\staging",
+            "--fixed-source-split-manifest", r"D:\splits\fixed.json",
+            "--resume",
+        ])
+        command = [str(item) for item in three_image_finalization_command(
+            args,
+            Path(r"D:\three_image\output"),
+        )]
+        self.assertIn("data_process/build_dataset_v2_staged.py", command)
+        self.assertIn("--repartition-existing-stages-by-fixed-manifest", command)
+        self.assertEqual(command[command.index("--views") + 1], "both")
+        self.assertNotIn("--source-obs-root", command)
+        self.assertNotIn("--raw-lane-overlay", command)
+        self.assertIn("--resume", command)
+
     def test_streaming_stage_command_enables_pose_second_image(self):
         args = parse_streaming_args([
             "--work-root", "work",
@@ -172,6 +270,34 @@ class DatasetV2ContextTest(unittest.TestCase):
         self.assertEqual(command[command.index("--pose-threshold") + 1], "3.0")
         self.assertIn("--raw-lane-overlay", command)
         self.assertIn("--save-raw-lane-image", command)
+
+    def test_streaming_stage_command_enables_separate_rawlane_image(self):
+        args = parse_streaming_args([
+            "--work-root", "work",
+            "--require-raw-lane",
+            "--save-raw-lane-image",
+            "--raw-lane-separate-image",
+            "--pose-second-image",
+        ])
+        command = [str(item) for item in build_stage_command(
+            args,
+            Path("raw/source"),
+            Path("stage/source"),
+            Path("raw"),
+            0,
+            "obs://bucket/source/",
+            256,
+            512,
+            256,
+            128,
+            None,
+            False,
+            "both",
+        )]
+        self.assertIn("--raw-lane-separate-image", command)
+        self.assertIn("--save-raw-lane-image", command)
+        self.assertIn("--pose-second-image", command)
+        self.assertNotIn("--raw-lane-overlay", command)
 
     def test_dual_resolution_streaming_stage_command(self):
         args = parse_streaming_args([

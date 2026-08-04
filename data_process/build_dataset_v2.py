@@ -739,6 +739,9 @@ def materialize_split(samples, split_name, selected_counts, variant_specs, sourc
                         raw_lane_overlay=bool(getattr(args, "raw_lane_overlay", False)),
                         pose_second_image=bool(getattr(args, "pose_second_image", False)),
                         save_raw_lane_image=bool(getattr(args, "save_raw_lane_image", False)),
+                        raw_lane_separate_image=bool(
+                            getattr(args, "raw_lane_separate_image", False)
+                        ),
                     )
                     record_semantic_counts = semantic_sft_record_counts(
                         sft, strict=True, require_prompt=True
@@ -822,6 +825,11 @@ def parse_args(argv=None):
         help="Save patch_tif/0_lane.tif as a separate black/white auxiliary PNG.",
     )
     parser.add_argument(
+        "--raw-lane-separate-image",
+        action="store_true",
+        help="Activate the saved raw-lane PNG as a separate model input after the clean BEV.",
+    )
+    parser.add_argument(
         "--pose-second-image",
         action="store_true",
         help="Add patch_tif/0_pose.tif as a separate second image for every sample.",
@@ -866,6 +874,10 @@ def main(argv=None):
         raise ValueError("--intersection-target-ratio must be in [0, 1]")
     if args.train_target_samples <= 0:
         raise ValueError("--train-target-samples must be positive")
+    if args.raw_lane_overlay and args.raw_lane_separate_image:
+        raise ValueError("--raw-lane-overlay and --raw-lane-separate-image are mutually exclusive")
+    if args.raw_lane_separate_image and not args.save_raw_lane_image:
+        raise ValueError("--raw-lane-separate-image requires --save-raw-lane-image")
 
     output_root = Path(args.output_root)
     output_root.mkdir(parents=True, exist_ok=True)
@@ -1054,15 +1066,31 @@ def main(argv=None):
             "overlay_style": "white_pixels_on_rgb_channels",
             "raw_lane_auxiliary_saved": bool(args.save_raw_lane_image),
             "raw_lane_auxiliary_directory": "raw_lane_images" if args.save_raw_lane_image else "none",
+            "raw_lane_separate_image": bool(args.raw_lane_separate_image),
         },
         "auxiliary_image_assets": {
             "raw_lane": {
                 "saved": bool(args.save_raw_lane_image),
-                "active_model_input": False,
+                "active_model_input": bool(args.raw_lane_separate_image),
                 "source": "patch_tif/0_lane.tif" if args.save_raw_lane_image else "none",
                 "rendering": "white_positive_pixels_on_black_rgb",
                 "record_field": "raw_lane_image" if args.save_raw_lane_image else "none",
             }
+        },
+        "multi_image_input": {
+            "enabled": bool(args.raw_lane_separate_image or args.pose_second_image),
+            "num_images_per_sample": (
+                1 + int(bool(args.raw_lane_separate_image)) + int(bool(args.pose_second_image))
+            ),
+            "image_roles": [
+                "bev_road_structure",
+                *(["pv_camera_raw_lane"] if args.raw_lane_separate_image else []),
+                *(["historical_vehicle_trajectory"] if args.pose_second_image else []),
+            ],
+            "raw_lane_image_source": (
+                "patch_tif/0_lane.tif" if args.raw_lane_separate_image else "none"
+            ),
+            "pose_image_source": "patch_tif/0_pose.tif" if args.pose_second_image else "none",
         },
         "task": "lane_intersection",
         "phase": "phase_a",

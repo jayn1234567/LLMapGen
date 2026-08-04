@@ -110,6 +110,22 @@ VARIANT_SPECS = {
         "view_mode": "context512_roi256",
         "task_mode": "lane_intersection",
     },
+    "rawlane_pose_three_image_local256_800k": {
+        "image_size": (256, 256),
+        "target_size": 256,
+        "context_image_size": 256,
+        "target_roi_in_image": [0, 0, 256, 256],
+        "view_mode": "local256",
+        "task_mode": "lane_intersection",
+    },
+    "rawlane_pose_three_image_context512_roi256_800k": {
+        "image_size": (512, 512),
+        "target_size": 256,
+        "context_image_size": 512,
+        "target_roi_in_image": [128, 128, 384, 384],
+        "view_mode": "context512_roi256",
+        "task_mode": "lane_intersection",
+    },
     "context512_roi256v3": {
         "image_size": (512, 512),
         "target_size": 256,

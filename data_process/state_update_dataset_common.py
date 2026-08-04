@@ -1501,12 +1501,37 @@ def make_prompt(include_intersections: bool, incoming_traces, incoming_intersect
                 coord_mode: str = COORD_MODE_NORM1000, coord_range: int = DEFAULT_COORD_RANGE,
                 patch_size: int = 256, context_size=None, incoming_trace_point_spacing_px=None,
                 incoming_intersections_full_polygon: bool = False, raw_lane_overlay: bool = False,
-                pose_second_image: bool = False):
+                raw_lane_separate_image: bool = False, pose_second_image: bool = False):
     context_size = patch_size if context_size is None else int(context_size)
     target_roi = centered_target_roi(patch_size, context_size)
     trace_json = json.dumps(incoming_traces, ensure_ascii=False, separators=(",", ":"))
     parts = ["<image>"]
-    if pose_second_image:
+    if raw_lane_separate_image and pose_second_image:
+        parts.extend([
+            "<image>",
+            "<image>",
+            "The first image is the clean BEV road-structure image.",
+            (
+                "The second image is a lane image predicted by a PV camera model: white lines "
+                "are predicted lanes on a black background. Do not copy it blindly when it "
+                "conflicts with the visible BEV evidence."
+            ),
+            (
+                "The third image is a historical vehicle-trajectory image: white lines are "
+                "historical vehicle trajectories on a black background."
+            ),
+        ])
+    elif raw_lane_separate_image:
+        parts.extend([
+            "<image>",
+            "The first image is the clean BEV road-structure image.",
+            (
+                "The second image is a lane image predicted by a PV camera model: white lines "
+                "are predicted lanes on a black background. Do not copy it blindly when it "
+                "conflicts with the visible BEV evidence."
+            ),
+        ])
+    elif pose_second_image:
         parts.extend([
             "<image>",
             "The first image is the BEV road-structure image.",
@@ -1517,6 +1542,7 @@ def make_prompt(include_intersections: bool, incoming_traces, incoming_intersect
         ])
     parts.append(TASK_TEXT)
     if context_size > patch_size:
+        image_count = 1 + int(raw_lane_separate_image) + int(pose_second_image)
         if normalize_coord_mode(coord_mode) == COORD_MODE_NORM1000:
             context_coord_description = (
                 f"Coordinates use a normalized 0-{coord_range} grid over the {patch_size}x{patch_size} target ROI."
@@ -1526,7 +1552,12 @@ def make_prompt(include_intersections: bool, incoming_traces, incoming_intersect
                 f"Coordinates use target-ROI pixel coordinates in [0,{patch_size - 1}]."
             )
         parts.extend([
-            f"The input is a {context_size}x{context_size} context image centered on the target region.",
+            (
+                f"Each input image is a {context_size}x{context_size} aligned context image "
+                "centered on the target region."
+                if image_count > 1 else
+                f"The input is a {context_size}x{context_size} context image centered on the target region."
+            ),
             (
                 f"Predict only map elements clipped to the central {patch_size}x{patch_size} target ROI "
                 f"[{target_roi[0]},{target_roi[1]},{target_roi[2]},{target_roi[3]})."
@@ -1597,7 +1628,12 @@ def build_sft_record(row, patch_size, include_intersections, phase, coord_mode=C
                      coord_range=DEFAULT_COORD_RANGE, context_size=None, view_mode=None,
                      incoming_trace_point_spacing_px=None, incoming_intersections_full_polygon: bool = False,
                      raw_lane_overlay: bool = False, pose_second_image: bool = False,
-                     save_raw_lane_image: bool = False):
+                     save_raw_lane_image: bool = False,
+                     raw_lane_separate_image: bool = False):
+    if raw_lane_overlay and raw_lane_separate_image:
+        raise ValueError("raw lane cannot be both overlaid and a separate active image")
+    if raw_lane_separate_image and not save_raw_lane_image:
+        raise ValueError("raw_lane_separate_image requires save_raw_lane_image")
     coord_mode = normalize_coord_mode(coord_mode)
     context_size = patch_size if context_size is None else int(context_size)
     target_roi = centered_target_roi(patch_size, context_size)
@@ -1627,6 +1663,7 @@ def build_sft_record(row, patch_size, include_intersections, phase, coord_mode=C
         incoming_trace_point_spacing_px=incoming_trace_point_spacing_px,
         incoming_intersections_full_polygon=incoming_intersections_full_polygon,
         raw_lane_overlay=raw_lane_overlay,
+        raw_lane_separate_image=raw_lane_separate_image,
         pose_second_image=pose_second_image,
     )
     meta = dict(row["meta"])
@@ -1663,12 +1700,21 @@ def build_sft_record(row, patch_size, include_intersections, phase, coord_mode=C
         meta["raw_lane_auxiliary_image"] = True
         meta["raw_lane_image_source"] = "patch_tif/0_lane.tif"
         meta["raw_lane_image_role"] = "pv_camera_raw_lane"
+        meta["raw_lane_active_model_input"] = bool(raw_lane_separate_image)
+    input_images = [row["image"]]
+    input_roles = ["bev_road_structure"]
+    if raw_lane_separate_image:
+        input_images.append(row["raw_lane_image"])
+        input_roles.append("pv_camera_raw_lane")
+        meta["raw_lane_separate_image"] = True
     if pose_second_image:
         pose_image = str(row.get("pose_image") or "")
         if not pose_image:
             raise ValueError(f"sample {row.get('id')} is missing pose_image")
-        meta["input_image_roles"] = ["bev_road_structure", "historical_vehicle_trajectory"]
+        input_images.append(row["pose_image"])
+        input_roles.append("historical_vehicle_trajectory")
         meta["pose_image_source"] = "patch_tif/0_pose.tif"
+    meta["input_image_roles"] = input_roles
     if include_intersections:
         meta["intersection_hint_source_train"] = "gt_left_top_neighbors" if phase == "b" else "none"
     target_text = json.dumps({"lines": target_lines}, ensure_ascii=False, separators=(",", ":"))
@@ -1681,8 +1727,8 @@ def build_sft_record(row, patch_size, include_intersections, phase, coord_mode=C
             {"from": "gpt", "value": target_text},
         ],
     }
-    if pose_second_image:
-        record["images"] = [row["image"], row["pose_image"]]
+    if len(input_images) > 1:
+        record["images"] = input_images
     if save_raw_lane_image:
         record["raw_lane_image"] = row["raw_lane_image"]
     return record

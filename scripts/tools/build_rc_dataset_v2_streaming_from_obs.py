@@ -65,6 +65,11 @@ def parse_args(argv=None):
         help="Save raw lane as an inactive black/white auxiliary image.",
     )
     parser.add_argument(
+        "--raw-lane-separate-image",
+        action="store_true",
+        help="Activate the saved raw-lane PNG as a separate input after the clean BEV.",
+    )
+    parser.add_argument(
         "--pose-second-image",
         action="store_true",
         help="Add patch_tif/0_pose.tif as a separate second image for every sample.",
@@ -142,6 +147,7 @@ def completed_stage(
     expected_pose_threshold: float | None = None,
     expected_fixed_split_sha256: str | None = None,
     expected_save_raw_lane_image: bool | None = None,
+    expected_raw_lane_separate_image: bool | None = None,
 ) -> bool:
     marker = stage_root / "stage_complete.json"
     if not marker.is_file():
@@ -187,6 +193,10 @@ def completed_stage(
     if complete and expected_save_raw_lane_image is not None:
         complete = bool(payload.get("save_raw_lane_image", False)) == bool(
             expected_save_raw_lane_image
+        )
+    if complete and expected_raw_lane_separate_image is not None:
+        complete = bool(payload.get("raw_lane_separate_image", False)) == bool(
+            expected_raw_lane_separate_image
         )
     return complete
 
@@ -254,6 +264,8 @@ def build_stage_command(
         command.append("--raw-lane-overlay")
     if args.save_raw_lane_image:
         command.append("--save-raw-lane-image")
+    if args.raw_lane_separate_image:
+        command.append("--raw-lane-separate-image")
     if args.require_raw_lane:
         command.append("--require-raw-lane")
     command.extend(["--raw-lane-threshold", args.raw_lane_threshold])
@@ -281,6 +293,10 @@ def build_stage_command(
 
 def main(argv=None):
     args = parse_args(argv)
+    if args.raw_lane_overlay and args.raw_lane_separate_image:
+        raise ValueError("--raw-lane-overlay and --raw-lane-separate-image are mutually exclusive")
+    if args.raw_lane_separate_image and not args.save_raw_lane_image:
+        raise ValueError("--raw-lane-separate-image requires --save-raw-lane-image")
     sources = args.source_obs_root or list(DEFAULT_SOURCE_OBS_ROOTS)
     if not args.work_root:
         if os.name == "nt":
@@ -330,7 +346,8 @@ def main(argv=None):
         flush=True,
     )
     print(
-        f"[dataset-v2-stream] raw lane asset: save={args.save_raw_lane_image}",
+        f"[dataset-v2-stream] raw lane asset: save={args.save_raw_lane_image} "
+        f"active_separate={args.raw_lane_separate_image}",
         flush=True,
     )
     print(
@@ -381,6 +398,7 @@ def main(argv=None):
             args.pose_threshold,
             fixed_split_sha256,
             args.save_raw_lane_image,
+            args.raw_lane_separate_image,
         ):
             print(
                 f"[dataset-v2-stream] stale stage lacks {STAGE_VERSION}; it must be rebuilt: {stage_root}",
@@ -405,6 +423,7 @@ def main(argv=None):
                 args.pose_threshold,
                 fixed_split_sha256,
                 args.save_raw_lane_image,
+                args.raw_lane_separate_image,
             )
         ):
             print(
@@ -428,6 +447,7 @@ def main(argv=None):
             args.pose_threshold,
             fixed_split_sha256,
             args.save_raw_lane_image,
+            args.raw_lane_separate_image,
         )
         secondary_complete = secondary_stage_root is None or (
             args.resume
@@ -445,6 +465,7 @@ def main(argv=None):
                 args.pose_threshold,
                 fixed_split_sha256,
                 args.save_raw_lane_image,
+                args.raw_lane_separate_image,
             )
         )
         if primary_complete and secondary_complete:
@@ -509,6 +530,7 @@ def main(argv=None):
                 args.pose_threshold,
                 fixed_split_sha256,
                 args.save_raw_lane_image,
+                args.raw_lane_separate_image,
             )
             if not primary_complete:
                 raise RuntimeError(f"source stage validation failed: {stage_root}")
@@ -547,6 +569,7 @@ def main(argv=None):
                 args.pose_threshold,
                 fixed_split_sha256,
                 args.save_raw_lane_image,
+                args.raw_lane_separate_image,
             )
             if not secondary_complete:
                 raise RuntimeError(

@@ -105,6 +105,11 @@ def add_geometry_args(parser: argparse.ArgumentParser) -> None:
         help="Save raw lane as a separate black/white auxiliary PNG without activating it as input.",
     )
     parser.add_argument(
+        "--raw-lane-separate-image",
+        action="store_true",
+        help="Activate the saved raw-lane PNG as a separate model input after the clean BEV.",
+    )
+    parser.add_argument(
         "--pose-second-image",
         action="store_true",
         help="Add patch_tif/0_pose.tif as a separate second image for every sample.",
@@ -229,6 +234,10 @@ def validate_geometry_args(args) -> None:
         raise ValueError("--train-stride must be a positive divisor of --patch-size")
     if args.coord_range != DEFAULT_COORD_RANGE:
         raise ValueError(f"--coord-range must be {DEFAULT_COORD_RANGE}")
+    if args.raw_lane_overlay and args.raw_lane_separate_image:
+        raise ValueError("--raw-lane-overlay and --raw-lane-separate-image are mutually exclusive")
+    if args.raw_lane_separate_image and not args.save_raw_lane_image:
+        raise ValueError("--raw-lane-separate-image requires --save-raw-lane-image")
 
 
 def stage_variant_specs(stage_root: Path, views: str, patch_size: int, context_size: int) -> dict:
@@ -334,6 +343,13 @@ def stage_source(args) -> None:
             raise ValueError(
                 f"completed stage save_raw_lane_image={marker.get('save_raw_lane_image')}, "
                 f"expected {args.save_raw_lane_image}"
+            )
+        if bool(marker.get("raw_lane_separate_image", False)) != bool(
+            args.raw_lane_separate_image
+        ):
+            raise ValueError(
+                "completed stage raw_lane_separate_image="
+                f"{marker.get('raw_lane_separate_image')}, expected {args.raw_lane_separate_image}"
             )
         if bool(marker.get("pose_second_image", False)) != bool(args.pose_second_image):
             raise ValueError(
@@ -458,6 +474,9 @@ def stage_source(args) -> None:
                         raw_lane_overlay=bool(getattr(args, "raw_lane_overlay", False)),
                         pose_second_image=bool(getattr(args, "pose_second_image", False)),
                         save_raw_lane_image=bool(getattr(args, "save_raw_lane_image", False)),
+                        raw_lane_separate_image=bool(
+                            getattr(args, "raw_lane_separate_image", False)
+                        ),
                     )
                     semantic_sft_record_counts(sft, strict=True, require_prompt=True)
                     write_jsonl_item(sft_writers[variant][split], sft)
@@ -492,6 +511,7 @@ def stage_source(args) -> None:
         "raw_lane_threshold": args.raw_lane_threshold,
         "require_raw_lane": bool(args.require_raw_lane),
         "save_raw_lane_image": bool(args.save_raw_lane_image),
+        "raw_lane_separate_image": bool(args.raw_lane_separate_image),
         "raw_lane_auxiliary_directory": "raw_lane_images" if args.save_raw_lane_image else "none",
         "pose_second_image": bool(args.pose_second_image),
         "pose_image_source": "patch_tif/0_pose.tif" if args.pose_second_image else "none",
@@ -924,6 +944,7 @@ def finalize_stages(args) -> None:
     require_raw_lane_values = set()
     raw_lane_threshold_values = set()
     save_raw_lane_image_values = set()
+    raw_lane_separate_image_values = set()
     pose_second_image_values = set()
     pose_threshold_values = set()
     for stage_root in stage_roots:
@@ -956,6 +977,9 @@ def finalize_stages(args) -> None:
         require_raw_lane_values.add(bool(summary.get("require_raw_lane", False)))
         raw_lane_threshold_values.add(float(summary.get("raw_lane_threshold", 0.0)))
         save_raw_lane_image_values.add(bool(summary.get("save_raw_lane_image", False)))
+        raw_lane_separate_image_values.add(
+            bool(summary.get("raw_lane_separate_image", False))
+        )
         pose_second_image_values.add(bool(summary.get("pose_second_image", False)))
         pose_threshold_values.add(float(summary.get("pose_threshold", 0.0)))
     if (
@@ -963,6 +987,7 @@ def finalize_stages(args) -> None:
         or len(require_raw_lane_values) > 1
         or len(raw_lane_threshold_values) > 1
         or len(save_raw_lane_image_values) > 1
+        or len(raw_lane_separate_image_values) > 1
         or len(pose_second_image_values) > 1
         or len(pose_threshold_values) > 1
     ):
@@ -971,6 +996,7 @@ def finalize_stages(args) -> None:
     require_raw_lane = next(iter(require_raw_lane_values), False)
     raw_lane_threshold = next(iter(raw_lane_threshold_values), 0.0)
     save_raw_lane_image = next(iter(save_raw_lane_image_values), False)
+    raw_lane_separate_image = next(iter(raw_lane_separate_image_values), False)
     pose_second_image = next(iter(pose_second_image_values), False)
     pose_threshold = next(iter(pose_threshold_values), 0.0)
 
@@ -1099,22 +1125,29 @@ def finalize_stages(args) -> None:
             "overlay_style": "white_pixels_on_rgb_channels",
             "raw_lane_auxiliary_saved": save_raw_lane_image,
             "raw_lane_auxiliary_directory": "raw_lane_images" if save_raw_lane_image else "none",
+            "raw_lane_separate_image": raw_lane_separate_image,
         },
         "auxiliary_image_assets": {
             "raw_lane": {
                 "saved": save_raw_lane_image,
-                "active_model_input": False,
+                "active_model_input": raw_lane_separate_image,
                 "source": "patch_tif/0_lane.tif" if save_raw_lane_image else "none",
                 "rendering": "white_positive_pixels_on_black_rgb",
                 "record_field": "raw_lane_image" if save_raw_lane_image else "none",
             }
         },
         "multi_image_input": {
-            "enabled": pose_second_image,
-            "num_images_per_sample": 2 if pose_second_image else 1,
-            "image_roles": (
-                ["bev_road_structure", "historical_vehicle_trajectory"]
-                if pose_second_image else ["bev_road_structure"]
+            "enabled": raw_lane_separate_image or pose_second_image,
+            "num_images_per_sample": (
+                1 + int(raw_lane_separate_image) + int(pose_second_image)
+            ),
+            "image_roles": [
+                "bev_road_structure",
+                *(["pv_camera_raw_lane"] if raw_lane_separate_image else []),
+                *(["historical_vehicle_trajectory"] if pose_second_image else []),
+            ],
+            "raw_lane_image_source": (
+                "patch_tif/0_lane.tif" if raw_lane_separate_image else "none"
             ),
             "pose_image_source": "patch_tif/0_pose.tif" if pose_second_image else "none",
             "pose_threshold": pose_threshold,

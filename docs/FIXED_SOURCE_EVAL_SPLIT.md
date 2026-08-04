@@ -23,6 +23,12 @@ not download, extract, or decode the seven OBS sources a second time:
 python scripts\tools\build_rc_dataset_v2_rawlane_pose_800k_fixed_eval_windows.py --obsutil-path "C:\Users\jWX1497058\Downloads\obsutil_windows_amd64\obsutil_windows_amd64_5.8.3\obsutil.exe" --resume
 ```
 
+The fixed 800k entry uses an exact 28% intersection target. The reusable
+staging can reach at most 28.188875% after the frozen holdouts and difficulty
+quotas are applied, so the former exact 30% request cannot be satisfied with
+800k unique records. Use `--intersection-target-ratio` only when intentionally
+building a differently specified release.
+
 The individual commands below remain useful for auditing or recovery.
 
 First complete all seven source stages without finalizing a random split:
@@ -52,7 +58,7 @@ change as `rc_fixed_large_maps_v2.json` instead.
 Pass the same manifest to every future build:
 
 ```powershell
-python scripts\tools\build_rc_dataset_v2_rawlane_pose_800k_windows.py --work-root "D:\data\fulldata_rawlane_pose_fixed_v1" --reuse-staging-root "D:\data\fulldata_rawlane_pose\staging_rawlane_pose_256_context" --fixed-source-split-manifest "D:\data\fixed_splits\rc_fixed_large_maps_v1.json" --resume
+python scripts\tools\build_rc_dataset_v2_rawlane_pose_800k_windows.py --work-root "D:\data\fulldata_rawlane_pose_fixed_v1" --reuse-staging-root "D:\data\fulldata_rawlane_pose\staging_rawlane_pose_256_context" --fixed-source-split-manifest "D:\data\fixed_splits\rc_fixed_large_maps_v1.json" --intersection-target-ratio 0.28 --resume
 ```
 
 The generic streaming builder and direct Dataset V2 builder expose the same

@@ -68,6 +68,12 @@ def parse_args(argv=None) -> argparse.Namespace:
     )
     parser.add_argument("--allow-missing-fixed-holdouts", action="store_true")
     parser.add_argument("--difficulty-seed", type=int, default=20260713)
+    parser.add_argument(
+        "--intersection-target-ratio",
+        type=float,
+        default=INTERSECTION_RATIO,
+        help="Exact global train intersection ratio required during balancing.",
+    )
     parser.add_argument("--raw-lane-threshold", type=float, default=0.0)
     parser.add_argument("--pose-threshold", type=float, default=0.0)
     parser.add_argument("--copy-mode", choices=["hardlink", "copy"], default="hardlink")
@@ -140,7 +146,7 @@ def run_streaming_builder(paths: dict[str, Path], args: argparse.Namespace) -> N
             "--context-size", 512,
             "--train-target-samples", TARGET_SAMPLES,
             "--difficulty-ratios", DIFFICULTY_RATIOS,
-            "--intersection-target-ratio", INTERSECTION_RATIO,
+            "--intersection-target-ratio", args.intersection_target_ratio,
             "--difficulty-seed", args.difficulty_seed,
             "--duplicate-policy", "last",
             "--copy-mode", args.copy_mode,
@@ -174,7 +180,7 @@ def run_streaming_builder(paths: dict[str, Path], args: argparse.Namespace) -> N
         "--train-target-samples", TARGET_SAMPLES,
         "--train-stride", args.train_stride,
         "--difficulty-ratios", DIFFICULTY_RATIOS,
-        "--intersection-target-ratio", INTERSECTION_RATIO,
+        "--intersection-target-ratio", args.intersection_target_ratio,
         "--split-seed", args.split_seed,
         "--difficulty-seed", args.difficulty_seed,
         "--archive-workers", args.archive_workers,
@@ -398,7 +404,7 @@ def validate_variant(root: Path, variant: str, args: argparse.Namespace) -> None
         "--variant", variant,
         "--expected-train-samples", TARGET_SAMPLES,
         "--difficulty-ratios", DIFFICULTY_RATIOS,
-        "--expected-intersection-ratio", INTERSECTION_RATIO,
+        "--expected-intersection-ratio", args.intersection_target_ratio,
         "--output-dir", root.parent / f"{variant}_validation",
         "--visualize-per-difficulty", args.visualize_per_difficulty,
         "--image-decode-mode", args.image_decode_mode,
@@ -421,6 +427,10 @@ def main(argv=None) -> None:
         print(f"[rawlane-pose-dataset] {key}: {value}", flush=True)
     print(f"[rawlane-pose-dataset] target samples: {TARGET_SAMPLES}", flush=True)
     print(f"[rawlane-pose-dataset] difficulty: {DIFFICULTY_RATIOS}", flush=True)
+    print(
+        f"[rawlane-pose-dataset] intersection ratio: {args.intersection_target_ratio}",
+        flush=True,
+    )
     print("[rawlane-pose-dataset] image 1: BEV + patch_tif/0_lane.tif", flush=True)
     print("[rawlane-pose-dataset] image 2: patch_tif/0_pose.tif", flush=True)
     print("[rawlane-pose-dataset] saved auxiliary: patch_tif/0_lane.tif", flush=True)
@@ -434,7 +444,13 @@ def main(argv=None) -> None:
         for target in VARIANT_NAMES.values()
     }
     reuse_completed_outputs = bool(args.resume) and all(
-        root.is_dir() and not completion_errors(root, fixed_split_sha256)
+        root.is_dir() and not completion_errors(
+            root,
+            fixed_split_sha256,
+            TARGET_SAMPLES,
+            DIFFICULTY_RATIOS,
+            args.intersection_target_ratio,
+        )
         for root in existing_variant_roots.values()
     )
     if reuse_completed_outputs:
@@ -455,7 +471,12 @@ def main(argv=None) -> None:
     if not reuse_completed_outputs:
         variant_roots = {
             target: rename_variant(
-                paths["output_root"], source, target, args.resume, fixed_split_sha256
+                paths["output_root"],
+                source,
+                target,
+                args.resume,
+                fixed_split_sha256,
+                intersection_ratio=args.intersection_target_ratio,
             )
             for source, target in VARIANT_NAMES.items()
         }
@@ -477,7 +498,7 @@ def main(argv=None) -> None:
         "packages": packages,
         "target_samples": TARGET_SAMPLES,
         "difficulty_ratios": DIFFICULTY_RATIOS,
-        "intersection_ratio": INTERSECTION_RATIO,
+        "intersection_ratio": args.intersection_target_ratio,
         "images_per_sample": 2,
         "image_roles": ["bev_road_structure", "historical_vehicle_trajectory"],
         "raw_lane_source": "patch_tif/0_lane.tif",

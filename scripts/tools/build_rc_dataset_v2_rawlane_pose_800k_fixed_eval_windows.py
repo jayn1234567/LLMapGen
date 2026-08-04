@@ -19,6 +19,9 @@ from data_process.fixed_source_splits import load_fixed_source_split_manifest
 from scripts.tools.build_rc_dataset_v2_from_obs import DEFAULT_SOURCE_OBS_ROOTS
 
 
+FIXED_REUSE_INTERSECTION_RATIO = 0.28
+
+
 def parse_args(argv=None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -44,6 +47,15 @@ def parse_args(argv=None) -> argparse.Namespace:
     parser.add_argument("--obsutil-config", default="")
     parser.add_argument("--obsutil-jobs", type=int, default=8)
     parser.add_argument("--archive-workers", type=int, default=16)
+    parser.add_argument(
+        "--intersection-target-ratio",
+        type=float,
+        default=FIXED_REUSE_INTERSECTION_RATIO,
+        help=(
+            "Exact train intersection ratio. The fixed-manifest bootstrap staging "
+            "supports ratio 0.28 at 800k without duplicate records."
+        ),
+    )
     parser.add_argument("--resume", action="store_true")
     parser.add_argument(
         "--overwrite-manifest",
@@ -112,6 +124,7 @@ def final_build_command(args: argparse.Namespace, manifest_path: Path) -> list[o
         "--work-root", Path(args.fixed_work_root).expanduser().resolve(),
         "--fixed-source-split-manifest", manifest_path,
         "--reuse-staging-root", bootstrap_staging_root,
+        "--intersection-target-ratio", args.intersection_target_ratio,
         *common_obs_args(args),
     ]
 
@@ -146,6 +159,7 @@ def main(argv=None) -> None:
             bootstrap_root / "staging_rawlane_pose_256_context"
         ),
         "second_obs_download_performed": False,
+        "intersection_target_ratio": args.intersection_target_ratio,
         "datasets": [
             str(fixed_root / "output_rawlane_pose_256_context" / "rawlane_pose_local256_800k"),
             str(

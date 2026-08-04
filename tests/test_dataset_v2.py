@@ -60,6 +60,7 @@ from scripts.tools.create_fixed_source_split_manifest import (
     target_profile,
 )
 from scripts.tools.build_rc_dataset_v2_rawlane_pose_800k_fixed_eval_windows import (
+    FIXED_REUSE_INTERSECTION_RATIO,
     bootstrap_command as fixed_eval_bootstrap_command,
     final_build_command as fixed_eval_final_build_command,
     parse_args as parse_fixed_eval_build_args,
@@ -442,6 +443,10 @@ class DatasetV2ContextTest(unittest.TestCase):
         self.assertEqual(
             final[final.index("--reuse-staging-root") + 1],
             str(Path(r"D:\bootstrap").resolve() / "staging_rawlane_pose_256_context"),
+        )
+        self.assertEqual(
+            float(final[final.index("--intersection-target-ratio") + 1]),
+            FIXED_REUSE_INTERSECTION_RATIO,
         )
         self.assertNotIn("--stage-only", final)
 

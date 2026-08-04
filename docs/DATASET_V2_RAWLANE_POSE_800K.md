@@ -117,13 +117,18 @@ D:\data\fulldata_rawlane_pose\packages_rawlane_pose\rawlane_pose_context512_roi2
 For comparable evaluation, pass the canonical large-map split manifest:
 
 ```powershell
-python scripts\tools\build_rc_dataset_v2_rawlane_pose_800k_windows.py --work-root "D:\data\fulldata_rawlane_pose_fixed_v1" --reuse-staging-root "D:\data\fulldata_rawlane_pose\staging_rawlane_pose_256_context" --fixed-source-split-manifest "D:\data\fixed_splits\rc_fixed_large_maps_v1.json" --resume
+python scripts\tools\build_rc_dataset_v2_rawlane_pose_800k_windows.py --work-root "D:\data\fulldata_rawlane_pose_fixed_v1" --reuse-staging-root "D:\data\fulldata_rawlane_pose\staging_rawlane_pose_256_context" --fixed-source-split-manifest "D:\data\fixed_splits\rc_fixed_large_maps_v1.json" --intersection-target-ratio 0.28 --resume
 ```
 
 See `docs/FIXED_SOURCE_EVAL_SPLIT.md` for manifest creation and leakage checks.
 
 The fixed-eval one-command wrapper adds `--reuse-staging-root` automatically.
 It never performs a second OBS download after bootstrap staging completes.
+It defaults to an exact 28% intersection ratio for the 800k release. With the
+fixed large-map holdouts, fixed difficulty quotas, and unique-record policy,
+the reusable staging can supply at most 28.188875% intersection records at
+800k, so an exact 30% target is infeasible without repeats or new augmentation.
+The non-fixed build retains its original 30% default.
 
 ### Additional context512/ROI256 550k release
 

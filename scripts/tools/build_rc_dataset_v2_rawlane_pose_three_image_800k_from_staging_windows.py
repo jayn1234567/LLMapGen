@@ -23,6 +23,8 @@ from collections import Counter
 from itertools import zip_longest
 from pathlib import Path, PurePosixPath
 
+from PIL import Image
+
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
@@ -56,7 +58,15 @@ def parse_args(argv=None) -> argparse.Namespace:
     parser.add_argument(
         "--clean-staging-root",
         default=r"D:\data\fulldata\staging",
-        help="Existing staging whose primary BEV images were generated without raw-lane overlay.",
+        help="Existing local256 staging whose primary BEV images have no raw-lane overlay.",
+    )
+    parser.add_argument(
+        "--clean-context-staging-root",
+        default="",
+        help=(
+            "Optional existing context512_roi256 staging with clean primary BEV images. "
+            "If omitted or incomplete, context images are reconstructed from clean local256 tiles."
+        ),
     )
     parser.add_argument(
         "--aux-staging-root",
@@ -120,8 +130,17 @@ def stage_map(staging_root: Path, role: str) -> dict[int, Path]:
     return result
 
 
-def validate_stage_compatibility(clean_root: Path, aux_root: Path) -> dict[int, Path]:
-    clean = stage_map(clean_root, "clean")
+def validate_stage_compatibility(
+    clean_root: Path,
+    aux_root: Path,
+    clean_context_root: Path | None = None,
+) -> dict[int, dict[str, Path]]:
+    clean = stage_map(clean_root, "clean-local")
+    clean_context = (
+        stage_map(clean_context_root, "clean-context")
+        if clean_context_root is not None
+        else {}
+    )
     auxiliary = stage_map(aux_root, "auxiliary")
     missing = sorted(set(auxiliary) - set(clean))
     if missing:
@@ -129,21 +148,32 @@ def validate_stage_compatibility(clean_root: Path, aux_root: Path) -> dict[int, 
             "clean staging does not cover all auxiliary source indexes; "
             f"missing={missing}. Keep the old task stopped and supply a clean staging that covers them."
         )
+    resolved = {}
     for source_index, aux_stage in auxiliary.items():
         clean_stage = clean[source_index]
         clean_marker = read_json(clean_stage / STAGE_MARKER)
         aux_marker = read_json(aux_stage / STAGE_MARKER)
         if bool(clean_marker.get("raw_lane_overlay", False)):
             raise ValueError(f"clean staging is itself overlaid: {clean_stage}")
-        missing_variants = [
-            variant
-            for variant in SOURCE_VARIANTS
-            if variant not in clean_marker.get("variants", [])
-        ]
-        if missing_variants:
+        clean_variants = set(clean_marker.get("variants", []))
+        if "local256" not in clean_variants:
             raise ValueError(
-                f"clean staging source {source_index} lacks {missing_variants}: {clean_stage}"
+                "clean staging must contain local256 so it can supply the local view and, "
+                "when necessary, reconstruct clean context512_roi256 images: "
+                f"{clean_stage}"
             )
+        context_stage = clean_context.get(source_index, clean_stage)
+        context_marker = read_json(context_stage / STAGE_MARKER)
+        if bool(context_marker.get("raw_lane_overlay", False)):
+            raise ValueError(f"clean context staging is itself overlaid: {context_stage}")
+        context_mode = "direct" if "context512_roi256" in context_marker.get("variants", []) else "mosaic_from_local256"
+        if context_mode == "mosaic_from_local256" and context_stage != clean_stage:
+            context_stage = clean_stage
+        print(
+            f"[three-image-dataset] clean source {source_index}: "
+            f"local256=direct, context512_roi256={context_mode}",
+            flush=True,
+        )
         if not bool(aux_marker.get("raw_lane_overlay", False)):
             raise ValueError(f"auxiliary staging does not contain the expected overlay data: {aux_stage}")
         if not bool(aux_marker.get("save_raw_lane_image", False)):
@@ -163,12 +193,30 @@ def validate_stage_compatibility(clean_root: Path, aux_root: Path) -> dict[int, 
                     f"staging geometry mismatch at source {source_index}: "
                     f"{field} clean={clean_value}, auxiliary={aux_value}"
                 )
+        if context_mode == "direct":
+            for field in (
+                "target_patch_size",
+                "context_size",
+                "train_stride",
+                "eval_test_stride",
+            ):
+                context_value = context_marker.get(field)
+                aux_value = aux_marker.get(field)
+                if context_value is not None and aux_value is not None and context_value != aux_value:
+                    raise ValueError(
+                        f"context staging geometry mismatch at source {source_index}: "
+                        f"{field} clean_context={context_value}, auxiliary={aux_value}"
+                    )
+        resolved[source_index] = {
+            "local256": clean_stage,
+            "context512_roi256": context_stage,
+        }
     print(
         f"[three-image-dataset] compatible staging sources: {len(auxiliary)}; "
         "OBS download and TIFF extraction are not required",
         flush=True,
     )
-    return clean
+    return resolved
 
 
 def finalization_command(args: argparse.Namespace, output_root: Path) -> list[object]:
@@ -225,6 +273,178 @@ def find_clean_source(
             f"{clean_stage / 'variants' / variant}; found={matches}"
         )
     return matches[0]
+
+
+def _base_patch_path(clean_stage: Path, tile_id: str, x0: int, y0: int) -> Path | None:
+    patch_id = f"{tile_id}_x{x0:05d}_y{y0:05d}"
+    relative = Path("images")
+    matches = []
+    for split in ("train", "eval", "test"):
+        candidate = (
+            clean_stage
+            / "variants"
+            / "local256"
+            / relative
+            / split
+            / tile_id
+            / f"{patch_id}.png"
+        )
+        if candidate.is_file():
+            matches.append(candidate)
+    if len(matches) > 1:
+        raise ValueError(
+            f"duplicate clean local256 patch for tile={tile_id}, x0={x0}, y0={y0}: "
+            f"{matches}"
+        )
+    return matches[0] if matches else None
+
+
+def _source_hw(meta: dict) -> tuple[int, int] | None:
+    value = meta.get("source_image_size")
+    if not isinstance(value, (list, tuple)) or len(value) != 2:
+        return None
+    height, width = int(value[0]), int(value[1])
+    if height <= 0 or width <= 0:
+        return None
+    return height, width
+
+
+def synthesize_clean_context_from_local256(
+    clean_stage: Path,
+    record: dict,
+    destination: Path,
+    patch_size: int = 256,
+) -> str:
+    """Reconstruct a clean centered context from clean base-grid local patches."""
+
+    meta = record.get("meta") or {}
+    tile_id = str(meta.get("tile_id") or "").strip()
+    if not tile_id:
+        raise ValueError(f"sample {record.get('id')} has no tile_id for context reconstruction")
+    context_size = int(meta.get("context_image_size", 0))
+    if context_size <= patch_size:
+        raise ValueError(
+            f"sample {record.get('id')} is not a context sample: context_size={context_size}"
+        )
+    context_box = meta.get("context_box_full")
+    if isinstance(context_box, (list, tuple)) and len(context_box) == 4:
+        context_x0, context_y0, context_x1, context_y1 = map(int, context_box)
+    else:
+        roi = meta.get("target_roi_in_image") or [
+            (context_size - patch_size) // 2,
+            (context_size - patch_size) // 2,
+            (context_size + patch_size) // 2,
+            (context_size + patch_size) // 2,
+        ]
+        context_x0 = int(meta["x0"]) - int(roi[0])
+        context_y0 = int(meta["y0"]) - int(roi[1])
+        context_x1 = context_x0 + context_size
+        context_y1 = context_y0 + context_size
+    if context_x1 - context_x0 != context_size or context_y1 - context_y0 != context_size:
+        raise ValueError(
+            f"sample {record.get('id')} has inconsistent context box {context_box!r}"
+        )
+
+    canvas = Image.new("RGB", (context_size, context_size), (0, 0, 0))
+    coverage = Image.new("L", (context_size, context_size), 0)
+    first_tile_x = (context_x0 // patch_size) * patch_size
+    first_tile_y = (context_y0 // patch_size) * patch_size
+    used_tiles = 0
+    for tile_y0 in range(first_tile_y, context_y1, patch_size):
+        if tile_y0 < 0:
+            continue
+        for tile_x0 in range(first_tile_x, context_x1, patch_size):
+            if tile_x0 < 0:
+                continue
+            source = _base_patch_path(clean_stage, tile_id, tile_x0, tile_y0)
+            if source is None:
+                continue
+            left = max(context_x0, tile_x0)
+            top = max(context_y0, tile_y0)
+            right = min(context_x1, tile_x0 + patch_size)
+            bottom = min(context_y1, tile_y0 + patch_size)
+            if left >= right or top >= bottom:
+                continue
+            with Image.open(source) as image:
+                image = image.convert("RGB")
+                if image.size != (patch_size, patch_size):
+                    raise ValueError(
+                        f"clean local patch must be {patch_size}x{patch_size}, got "
+                        f"{image.size}: {source}"
+                    )
+                crop = image.crop((
+                    left - tile_x0,
+                    top - tile_y0,
+                    right - tile_x0,
+                    bottom - tile_y0,
+                ))
+            destination_box = (left - context_x0, top - context_y0)
+            canvas.paste(crop, destination_box)
+            coverage.paste(
+                255,
+                (
+                    destination_box[0],
+                    destination_box[1],
+                    destination_box[0] + crop.width,
+                    destination_box[1] + crop.height,
+                ),
+            )
+            used_tiles += 1
+    if used_tiles == 0:
+        raise FileNotFoundError(
+            f"no clean local256 tiles found for sample={record.get('id')} tile={tile_id} "
+            f"context_box={[context_x0, context_y0, context_x1, context_y1]}"
+        )
+
+    source_hw = _source_hw(meta)
+    if source_hw is not None:
+        source_height, source_width = source_hw
+        valid_left = max(0, context_x0) - context_x0
+        valid_top = max(0, context_y0) - context_y0
+        valid_right = min(source_width, context_x1) - context_x0
+        valid_bottom = min(source_height, context_y1) - context_y0
+        if valid_left < valid_right and valid_top < valid_bottom:
+            extrema = coverage.crop(
+                (valid_left, valid_top, valid_right, valid_bottom)
+            ).getextrema()
+            if extrema != (255, 255):
+                raise FileNotFoundError(
+                    "clean local256 staging does not fully cover the valid context region for "
+                    f"sample={record.get('id')} tile={tile_id}; coverage_extrema={extrema}"
+                )
+
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    temporary = destination.with_name(destination.name + ".clean_context.partial")
+    temporary.unlink(missing_ok=True)
+    try:
+        canvas.save(temporary, format="PNG", compress_level=3)
+        temporary.replace(destination)
+    finally:
+        temporary.unlink(missing_ok=True)
+    return "mosaic_from_local256"
+
+
+def materialize_clean_primary(
+    clean_stage: Path,
+    source_variant: str,
+    record: dict,
+    destination: Path,
+    copy_mode: str,
+) -> str:
+    marker = read_json(clean_stage / STAGE_MARKER)
+    if source_variant in marker.get("variants", []):
+        clean_source = find_clean_source(
+            clean_stage,
+            source_variant,
+            str(record["image"]),
+        )
+        return replace_file(clean_source, destination, copy_mode)
+    if source_variant == "context512_roi256" and "local256" in marker.get("variants", []):
+        return synthesize_clean_context_from_local256(clean_stage, record, destination)
+    raise ValueError(
+        f"clean stage cannot supply {source_variant}: {clean_stage}; "
+        f"variants={marker.get('variants', [])}"
+    )
 
 
 def replace_file(source: Path, destination: Path, mode: str) -> str:
@@ -352,13 +572,15 @@ def convert_variant_to_three_images(
                     raise ValueError(
                         f"sample {record.get('id')} has unavailable clean source_index={source_index}"
                     )
-                clean_source = find_clean_source(
-                    clean_stages[source_index],
-                    source_variant,
-                    str(record["image"]),
-                )
                 destination = variant_root / str(record["image"])
-                link_modes[replace_file(clean_source, destination, copy_mode)] += 1
+                used_mode = materialize_clean_primary(
+                    clean_stages[source_index][source_variant],
+                    source_variant,
+                    record,
+                    destination,
+                    copy_mode,
+                )
+                link_modes[used_mode] += 1
                 transformed = transform_record(record, split)
                 phase_output.write(json.dumps(transformed, ensure_ascii=False) + "\n")
                 meta_output.write(
@@ -521,6 +743,15 @@ def validate_variant_pairing(roots: dict[str, Path]) -> None:
 def dataset_is_complete(root: Path, target_samples: int) -> bool:
     if not (root / "three_image_validation.json").is_file():
         return False
+    try:
+        report = read_json(root / "three_image_validation.json")
+        return (
+            report.get("status") == "passed"
+            and int(report.get("actual_train_count", -1)) == target_samples
+            and dataset_has_three_image_contract(root, target_samples)
+        )
+    except (OSError, ValueError, json.JSONDecodeError):
+        return False
 
 
 def dataset_has_three_image_contract(root: Path, target_samples: int) -> bool:
@@ -544,16 +775,6 @@ def finalized_overlay_source_is_ready(root: Path, target_samples: int) -> bool:
             (root / "dataset_info.json").is_file()
             and count_jsonl(root / "phase_a" / "train.jsonl") == target_samples
         )
-    except OSError:
-        return False
-    try:
-        info = read_json(root / "dataset_info.json")
-        multi = info.get("multi_image_input") or {}
-        return (
-            count_jsonl(root / "phase_a" / "train.jsonl") == target_samples
-            and int(multi.get("num_images_per_sample", 0)) == 3
-            and (info.get("input_overlay") or {}).get("raw_lane_overlay") is False
-        )
     except (OSError, ValueError, json.JSONDecodeError):
         return False
 
@@ -561,6 +782,12 @@ def finalized_overlay_source_is_ready(root: Path, target_samples: int) -> bool:
 def main(argv=None) -> None:
     args = parse_args(argv)
     clean_root = Path(args.clean_staging_root).expanduser().resolve()
+    clean_context_text = str(args.clean_context_staging_root or "").strip()
+    clean_context_root = (
+        Path(clean_context_text).expanduser().resolve()
+        if clean_context_text
+        else None
+    )
     aux_root = Path(args.aux_staging_root).expanduser().resolve()
     work_root = Path(args.work_root).expanduser().resolve()
     output_root = work_root / "output_rawlane_pose_three_image_800k"
@@ -575,7 +802,11 @@ def main(argv=None) -> None:
         args.target_samples,
         parse_ratio_spec(args.difficulty_ratios),
     )
-    clean_stages = validate_stage_compatibility(clean_root, aux_root)
+    clean_stages = validate_stage_compatibility(
+        clean_root,
+        aux_root,
+        clean_context_root,
+    )
     output_root.mkdir(parents=True, exist_ok=True)
     package_root.mkdir(parents=True, exist_ok=True)
     final_roots = {
@@ -697,6 +928,7 @@ def main(argv=None) -> None:
     summary = {
         "status": "passed",
         "clean_staging_root": str(clean_root),
+        "clean_context_staging_root": str(clean_context_root) if clean_context_root else "",
         "aux_staging_root": str(aux_root),
         "obs_download_performed": False,
         "fixed_source_split_manifest": args.fixed_source_split_manifest,

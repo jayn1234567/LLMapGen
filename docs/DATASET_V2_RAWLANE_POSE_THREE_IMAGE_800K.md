@@ -76,12 +76,18 @@ First stop the old two-image 800k build with `Ctrl+C`. Then run from the
 repository root:
 
 ```powershell
-python scripts\tools\build_rc_dataset_v2_rawlane_pose_three_image_800k_from_staging_windows.py --clean-staging-root "D:\data\fulldata\staging" --aux-staging-root "D:\data\fulldata_rawlane_pose\staging_rawlane_pose_256_context" --fixed-source-split-manifest "D:\data\fixed_splits\rc_fixed_large_maps_v1.json" --resume
+python scripts\tools\build_rc_dataset_v2_rawlane_pose_three_image_800k_from_staging_windows.py --clean-staging-root "D:\data\fulldata\staging" --clean-context-staging-root "D:\data\fulldata_context512\staging_context512" --aux-staging-root "D:\data\fulldata_rawlane_pose\staging_rawlane_pose_256_context" --fixed-source-split-manifest "D:\data\fixed_splits\rc_fixed_large_maps_v1.json" --resume
 ```
 
+`--clean-staging-root` supplies clean local256 images. `--clean-context-staging-root`
+supplies clean context512_roi256 images directly. If the latter is omitted or lacks
+a source shard, the builder reconstructs that clean 512 context from neighboring
+clean local256 base-grid tiles without downloading raw TIFF archives.
+
 The preflight blocks the build unless every auxiliary source has a matching
-clean source, both views exist, geometry/stride settings match, the clean
-marker says `raw_lane_overlay=false`, and the auxiliary marker confirms saved
+clean local source, a direct or reconstructable clean context view exists,
+geometry/stride settings match, the clean marker says `raw_lane_overlay=false`,
+and the auxiliary marker confirms saved
 Raw-Lane and Pose assets. It never substitutes an overlaid BEV when a clean
 image is missing.
 

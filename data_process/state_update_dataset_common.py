@@ -1511,15 +1511,8 @@ def make_prompt(include_intersections: bool, incoming_traces, incoming_intersect
             "<image>",
             "<image>",
             "The first image is the clean BEV road-structure image.",
-            (
-                "The second image is a lane image predicted by a PV camera model: white lines "
-                "are predicted lanes on a black background. Do not copy it blindly when it "
-                "conflicts with the visible BEV evidence."
-            ),
-            (
-                "The third image is a historical vehicle-trajectory image: white lines are "
-                "historical vehicle trajectories on a black background."
-            ),
+            "The second image is a lane image predicted by a PV camera model.",
+            "The third image is a historical vehicle-trajectory image.",
         ])
     elif raw_lane_separate_image:
         parts.extend([

@@ -51,6 +51,12 @@ IMAGE_ROLES = [
     "pv_camera_raw_lane",
     "historical_vehicle_trajectory",
 ]
+PROMPT_CONTRACT_VERSION = "three_image_roles_concise_v2"
+OBSOLETE_PROMPT_FRAGMENTS = (
+    "white lines are predicted lanes on a black background",
+    "do not copy it blindly when it conflicts with the visible bev evidence",
+    "white lines are historical vehicle trajectories on a black background",
+)
 
 
 def parse_args(argv=None) -> argparse.Namespace:
@@ -632,10 +638,54 @@ def update_dataset_metadata(variant_root: Path, source_variant: str, counts: Cou
             "pose_image_source": "patch_tif/0_pose.tif",
         },
         "three_image_input": True,
+        "three_image_prompt_contract_version": PROMPT_CONTRACT_VERSION,
         "clean_bev_source": "existing_non_overlay_staging",
         "record_counts_after_three_image_conversion": dict(counts),
     })
     write_json(info_path, info)
+
+
+def refresh_existing_three_image_prompts(root: Path) -> bool:
+    """Rewrite only user prompts when resuming a dataset built with an older contract."""
+    info_path = root / "dataset_info.json"
+    if not info_path.is_file():
+        return False
+    info = read_json(info_path)
+    if info.get("three_image_prompt_contract_version") == PROMPT_CONTRACT_VERSION:
+        return False
+
+    rewritten = 0
+    for split in ("train", "eval", "test"):
+        path = root / "phase_a" / f"{split}.jsonl"
+        if not path.is_file():
+            raise FileNotFoundError(f"Cannot refresh prompt; split is missing: {path}")
+        temporary = path.with_name(path.name + ".prompt_refresh.partial")
+        with (
+            path.open("r", encoding="utf-8-sig") as source,
+            temporary.open("w", encoding="utf-8") as output,
+        ):
+            for line_number, line in enumerate(source, start=1):
+                if not line.strip():
+                    continue
+                record = json.loads(line)
+                conversations = list(record.get("conversations") or [])
+                if not conversations:
+                    raise ValueError(f"{path}:{line_number} has no conversations")
+                conversations[0] = dict(conversations[0])
+                conversations[0]["value"] = three_image_prompt(record)
+                record["conversations"] = conversations
+                output.write(json.dumps(record, ensure_ascii=False) + "\n")
+                rewritten += 1
+        temporary.replace(path)
+
+    info["three_image_prompt_contract_version"] = PROMPT_CONTRACT_VERSION
+    write_json(info_path, info)
+    (root / "three_image_validation.json").unlink(missing_ok=True)
+    print(
+        f"[three-image-dataset] refreshed concise prompts: root={root} records={rewritten}",
+        flush=True,
+    )
+    return True
 
 
 def validate_three_image_variant(
@@ -657,6 +707,11 @@ def validate_three_image_variant(
         raise ValueError(f"expected three images in dataset_info: {multi!r}")
     if list(multi.get("image_order") or []) != IMAGE_ROLES:
         raise ValueError(f"invalid image order: {multi!r}")
+    if info.get("three_image_prompt_contract_version") != PROMPT_CONTRACT_VERSION:
+        raise ValueError(
+            "invalid three-image prompt contract: "
+            f"{info.get('three_image_prompt_contract_version')!r}"
+        )
     counts = Counter()
     for split in ("train", "eval", "test"):
         path = root / "phase_a" / f"{split}.jsonl"
@@ -696,6 +751,14 @@ def validate_three_image_variant(
                 ):
                     if text not in prompt:
                         raise ValueError(f"{path}:{line_number} prompt lacks {text!r}")
+                prompt_lower = prompt.lower()
+                obsolete = [
+                    text for text in OBSOLETE_PROMPT_FRAGMENTS if text in prompt_lower
+                ]
+                if obsolete:
+                    raise ValueError(
+                        f"{path}:{line_number} contains obsolete prompt text: {obsolete!r}"
+                    )
                 if "white lane overlay" in prompt:
                     raise ValueError(f"{path}:{line_number} still describes an overlaid raw lane")
                 counts[split] += 1
@@ -713,6 +776,7 @@ def validate_three_image_variant(
         "validated_records": dict(counts),
         "validation_sample_limit_per_split": sample_limit,
         "image_order": list(IMAGE_ROLES),
+        "prompt_contract_version": PROMPT_CONTRACT_VERSION,
     }
     write_json(root / "three_image_validation.json", result)
     print(json.dumps(result, ensure_ascii=False, indent=2), flush=True)
@@ -748,6 +812,7 @@ def dataset_is_complete(root: Path, target_samples: int) -> bool:
         return (
             report.get("status") == "passed"
             and int(report.get("actual_train_count", -1)) == target_samples
+            and report.get("prompt_contract_version") == PROMPT_CONTRACT_VERSION
             and dataset_has_three_image_contract(root, target_samples)
         )
     except (OSError, ValueError, json.JSONDecodeError):
@@ -764,6 +829,7 @@ def dataset_has_three_image_contract(root: Path, target_samples: int) -> bool:
             count_jsonl(root / "phase_a" / "train.jsonl") == target_samples
             and int(multi.get("num_images_per_sample", 0)) == 3
             and (info.get("input_overlay") or {}).get("raw_lane_overlay") is False
+            and info.get("three_image_prompt_contract_version") == PROMPT_CONTRACT_VERSION
         )
     except (OSError, ValueError, json.JSONDecodeError):
         return False
@@ -813,6 +879,10 @@ def main(argv=None) -> None:
         target: output_root / target
         for target in VARIANT_NAMES.values()
     }
+    if args.resume:
+        for root in final_roots.values():
+            if root.exists():
+                refresh_existing_three_image_prompts(root)
     reuse_complete = args.resume and all(
         dataset_is_complete(root, args.target_samples)
         for root in final_roots.values()
@@ -937,6 +1007,7 @@ def main(argv=None) -> None:
         "difficulty_ratios": args.difficulty_ratios,
         "intersection_target_ratio": args.intersection_target_ratio,
         "image_order": list(IMAGE_ROLES),
+        "prompt_contract_version": PROMPT_CONTRACT_VERSION,
         "variants": {name: str(root) for name, root in final_roots.items()},
         "packages": packages,
         "conversion_reports": conversion_reports,

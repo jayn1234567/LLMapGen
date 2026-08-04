@@ -26,6 +26,11 @@ THREE_IMAGE_PROMPT_TEXT = [
     "second image is a lane image predicted by a pv camera model",
     "third image is a historical vehicle-trajectory image",
 ]
+THREE_IMAGE_FORBIDDEN_PROMPT_TEXT = [
+    "white lines are predicted lanes on a black background",
+    "do not copy it blindly when it conflicts with the visible bev evidence",
+    "white lines are historical vehicle trajectories on a black background",
+]
 
 
 def parse_args() -> argparse.Namespace:
@@ -447,6 +452,11 @@ def inspect_split(
             ]
             if missing_prompt_roles:
                 errors.append(f"prompt role text missing={missing_prompt_roles!r}")
+            forbidden_prompt_text = [
+                text for text in THREE_IMAGE_FORBIDDEN_PROMPT_TEXT if text in prompt_lower
+            ]
+            if forbidden_prompt_text:
+                errors.append(f"obsolete prompt text present={forbidden_prompt_text!r}")
             if "white lane overlay" in prompt_lower:
                 errors.append("prompt still describes a Raw-Lane overlay")
             if meta.get("raw_lane_overlay") is not False:

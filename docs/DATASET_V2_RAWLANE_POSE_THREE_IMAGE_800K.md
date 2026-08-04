@@ -18,6 +18,13 @@ The `context512_roi256` inputs are three aligned 512x512 images. Only the
 central 256x256 ROI is supervised, and norm1000 coordinates remain relative
 to that ROI.
 
+The current prompt contract is `three_image_roles_concise_v2`. It identifies
+the second image as the PV-model lane image and the third image as the
+historical vehicle-trajectory image without describing their rendering or
+adding copy/conflict instructions. Re-running the Windows builder with
+`--resume` rewrites prompts in existing finalized JSONL files, revalidates the
+datasets, and refreshes stale TAR packages without regenerating image assets.
+
 ## Record Contract
 
 ```json
@@ -115,8 +122,8 @@ At DINOv2 input size 518, each image contributes 1369 patch tokens. The three
 streams therefore contribute 4107 visual tokens before user and assistant
 text. The formal recipes use `MODEL_MAX_LENGTH=8192` and reject values below
 6144 so the post-expansion multimodal truncation cannot silently remove the
-third stream or JSON supervision. They start at per-device batch 1 and derive
-gradient accumulation from the actual DI world size.
+third stream or JSON supervision. The current experiment uses per-device
+batch 4 and derives gradient accumulation from the actual DI world size.
 
 The first production experiment uses LLM-only LoRA on the CapRL text model
 (`r=8`, `alpha=16`, dropout `0.05`). The projector and DINOv2 tower remain

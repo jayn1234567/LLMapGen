@@ -84,8 +84,10 @@ from scripts.tools.build_rc_dataset_v2_rawlane_pose_context512_roi256_550k_from_
 )
 from scripts.tools.build_rc_dataset_v2_rawlane_pose_three_image_800k_from_staging_windows import (
     IMAGE_ROLES as THREE_IMAGE_ROLES,
+    PROMPT_CONTRACT_VERSION as THREE_IMAGE_PROMPT_CONTRACT_VERSION,
     finalization_command as three_image_finalization_command,
     parse_args as parse_three_image_args,
+    refresh_existing_three_image_prompts,
     synthesize_clean_context_from_local256,
     transform_record as transform_three_image_record,
     validate_stage_compatibility as validate_three_image_staging,
@@ -93,6 +95,73 @@ from scripts.tools.build_rc_dataset_v2_rawlane_pose_three_image_800k_from_stagin
 
 
 class DatasetV2ContextTest(unittest.TestCase):
+    def test_three_image_prompt_refresh_migrates_existing_outputs(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            (root / "phase_a").mkdir(parents=True)
+            (root / "dataset_info.json").write_text("{}", encoding="utf-8")
+            (root / "three_image_validation.json").write_text(
+                '{"status":"passed"}', encoding="utf-8"
+            )
+            record = {
+                "id": "sample",
+                "image": "images/train/sample.png",
+                "images": [
+                    "images/train/sample.png",
+                    "raw_lane_images/train/sample.png",
+                    "pose_images/train/sample.png",
+                ],
+                "meta": {
+                    "coord_mode": "norm1000",
+                    "coord_range": 1000,
+                    "pixel_patch_size": 256,
+                    "context_image_size": 256,
+                },
+                "conversations": [
+                    {
+                        "from": "human",
+                        "value": (
+                            "<image>\n<image>\n<image>\n"
+                            "The second image is a lane image predicted by a PV camera model: "
+                            "white lines are predicted lanes on a black background."
+                        ),
+                    },
+                    {"from": "gpt", "value": '{"lines":[]}'},
+                ],
+            }
+            for split in ("train", "eval", "test"):
+                split_record = json.loads(json.dumps(record))
+                split_record["images"] = [
+                    value.replace("/train/", f"/{split}/")
+                    for value in split_record["images"]
+                ]
+                split_record["image"] = split_record["images"][0]
+                (root / "phase_a" / f"{split}.jsonl").write_text(
+                    json.dumps(split_record) + "\n", encoding="utf-8"
+                )
+
+            self.assertTrue(refresh_existing_three_image_prompts(root))
+            refreshed = json.loads(
+                (root / "phase_a" / "train.jsonl").read_text(encoding="utf-8")
+            )
+            prompt = refreshed["conversations"][0]["value"]
+            self.assertIn(
+                "The second image is a lane image predicted by a PV camera model.", prompt
+            )
+            self.assertIn(
+                "The third image is a historical vehicle-trajectory image.", prompt
+            )
+            self.assertNotIn("white lines are predicted lanes", prompt)
+            self.assertNotIn("Do not copy it blindly", prompt)
+            self.assertNotIn("white lines are historical vehicle trajectories", prompt)
+            info = json.loads((root / "dataset_info.json").read_text(encoding="utf-8"))
+            self.assertEqual(
+                info["three_image_prompt_contract_version"],
+                THREE_IMAGE_PROMPT_CONTRACT_VERSION,
+            )
+            self.assertFalse((root / "three_image_validation.json").exists())
+            self.assertFalse(refresh_existing_three_image_prompts(root))
+
     def test_context_550k_wrapper_reuses_staging_without_obs(self):
         args = parse_context_550k_args([
             "--staging-root", r"D:\bootstrap\staging",
@@ -191,6 +260,9 @@ class DatasetV2ContextTest(unittest.TestCase):
         self.assertIn("first image is the clean BEV road-structure image", prompt)
         self.assertIn("second image is a lane image predicted by a PV camera model", prompt)
         self.assertIn("third image is a historical vehicle-trajectory image", prompt)
+        self.assertNotIn("white lines are predicted lanes on a black background", prompt)
+        self.assertNotIn("Do not copy it blindly", prompt)
+        self.assertNotIn("white lines are historical vehicle trajectories", prompt)
         self.assertNotIn("white lane overlay", prompt)
 
     def test_three_image_postprocess_rewrites_overlay_pose_record(self):

@@ -124,8 +124,8 @@ DATASET_OBS_PATH=${DATASET_OBS_PATH:?DATASET_OBS_PATH is required}
 <image>
 <image>
 The first image is the clean BEV road-structure image.
-The second image is a lane image predicted by a PV camera model: white lines are predicted lanes on a black background. Do not copy it blindly when it conflicts with the visible BEV evidence.
-The third image is a historical vehicle-trajectory image: white lines are historical vehicle trajectories on a black background.
+The second image is a lane image predicted by a PV camera model.
+The third image is a historical vehicle-trajectory image.
 ```
 
 随后仍使用 Dataset V2 的道路中心线、路口、norm1000、类型字段和纯 JSON

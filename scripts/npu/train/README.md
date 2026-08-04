@@ -73,7 +73,7 @@ opens all three image roles from each split, and blocks training if the order,
 aliases, metadata, or three prompt placeholders disagree.
 
 The recipes default to 8 epochs, LR `2e-4` for Qwen LoRA/projector and `2e-5`
-for DINOv2, global batch 128, per-device batch 1, BF16, gradient checkpointing,
+for DINOv2, global batch 128, per-device batch 4, BF16, gradient checkpointing,
 HCCL DDP without DeepSpeed, and ordinary rank0 LoRA checkpoints. Training-time
 eval loss is disabled. `MODEL_MAX_LENGTH=8192` is intentional: three
 DINOv2 streams contribute 4107 visual tokens before prompt and target tokens.

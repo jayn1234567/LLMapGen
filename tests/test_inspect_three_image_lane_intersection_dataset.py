@@ -10,13 +10,23 @@ ROLE_TEXT = """<image>
 <image>
 <image>
 The first image is the clean BEV road-structure image.
-The second image is a lane image predicted by a PV camera model: white lines are predicted lanes on a black background. Do not copy it blindly when it conflicts with the visible BEV evidence.
-The third image is a historical vehicle-trajectory image: white lines are historical vehicle trajectories on a black background.
+The second image is a lane image predicted by a PV camera model.
+The third image is a historical vehicle-trajectory image.
 Return only valid JSON in the form {"lines":[...]} with no extra explanation.
 """
 
+OBSOLETE_ROLE_TEXT = ROLE_TEXT.replace(
+    "The second image is a lane image predicted by a PV camera model.",
+    "The second image is a lane image predicted by a PV camera model: white lines are predicted lanes on a black background. Do not copy it blindly when it conflicts with the visible BEV evidence.",
+)
 
-def write_dataset(root: Path, *, swap_auxiliary_images: bool = False) -> None:
+
+def write_dataset(
+    root: Path,
+    *,
+    swap_auxiliary_images: bool = False,
+    obsolete_prompt: bool = False,
+) -> None:
     for split in ("train", "eval", "test"):
         paths = [
             f"images/{split}/sample.png",
@@ -46,7 +56,10 @@ def write_dataset(root: Path, *, swap_auxiliary_images: bool = False) -> None:
                 ],
             },
             "conversations": [
-                {"from": "human", "value": ROLE_TEXT},
+                {
+                    "from": "human",
+                    "value": OBSOLETE_ROLE_TEXT if obsolete_prompt else ROLE_TEXT,
+                },
                 {
                     "from": "gpt",
                     "value": json.dumps(
@@ -116,3 +129,16 @@ def test_three_image_contract_rejects_swapped_auxiliary_images(tmp_path: Path) -
     payload = json.loads(report.read_text(encoding="utf-8"))
     assert payload["status"] == "failed"
     assert "image order/prefix" in json.dumps(payload["failures"])
+
+
+def test_three_image_contract_rejects_obsolete_prompt_text(tmp_path: Path) -> None:
+    dataset = tmp_path / "dataset"
+    report = tmp_path / "report.json"
+    write_dataset(dataset, obsolete_prompt=True)
+
+    result = run_inspector(dataset, report)
+
+    assert result.returncode != 0
+    payload = json.loads(report.read_text(encoding="utf-8"))
+    assert payload["status"] == "failed"
+    assert "obsolete prompt text present" in json.dumps(payload["failures"])

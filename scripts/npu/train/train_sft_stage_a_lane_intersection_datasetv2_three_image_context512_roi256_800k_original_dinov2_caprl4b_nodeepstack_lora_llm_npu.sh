@@ -83,7 +83,7 @@ POSE_PROMPT_TEXT=${POSE_PROMPT_TEXT:-"third image is a historical vehicle-trajec
 # BEST_* options remain disabled; this recipe only writes regular step checkpoints.
 # Main runtime parameters and hyperparameters.
 TARGET_GLOBAL_BATCH_SIZE=${TARGET_GLOBAL_BATCH_SIZE:-128}                         # Desired global batch size used to derive gradient accumulation.
-PER_DEVICE_TRAIN_BATCH_SIZE=${PER_DEVICE_TRAIN_BATCH_SIZE:-1}                     # Three 1369-token visual streams require a conservative per-NPU micro batch.
+PER_DEVICE_TRAIN_BATCH_SIZE=${PER_DEVICE_TRAIN_BATCH_SIZE:-4}                     # Requested per-NPU micro batch for the three-image LoRA experiment.
 NUM_EPOCHS=${NUM_EPOCHS:-8}                                                       # Match Jiangjihua v9 best CapRL recipe.
 MAX_STEPS=${MAX_STEPS:--1}                                                        # -1 runs NUM_EPOCHS; a positive value enables short NPU memory smoke tests.
 LR=${LR:-2e-4}                                                                    # Requested Qwen LoRA learning rate.
@@ -312,16 +312,25 @@ if overlay.get("raw_lane_overlay") is not False:
 if overlay.get("raw_lane_separate_image") is not True:
     raise SystemExit("dataset_info.json does not enable the separate Raw-Lane input")
 expected_roles = ["bev_road_structure", "pv_camera_raw_lane", "historical_vehicle_trajectory"]
+expected_prompt_contract = "three_image_roles_concise_v2"
 if int(multi.get("num_images_per_sample", 0)) != 3:
     raise SystemExit(f"Expected three images per sample, found metadata={multi!r}")
 if list(multi.get("image_order") or []) != expected_roles:
     raise SystemExit(f"Unexpected three-image role order: {multi!r}")
+if payload.get("three_image_prompt_contract_version") != expected_prompt_contract:
+    raise SystemExit(
+        "Unexpected three-image prompt contract: "
+        f"{payload.get('three_image_prompt_contract_version')!r}; "
+        f"expected {expected_prompt_contract!r}"
+    )
 validation_path = root / "three_image_validation.json"
 if not validation_path.is_file():
     raise SystemExit(f"Builder validation marker is missing: {validation_path}")
 validation = json.loads(validation_path.read_text(encoding="utf-8"))
 if validation.get("status") != "passed":
     raise SystemExit(f"Builder validation did not pass: {validation!r}")
+if validation.get("prompt_contract_version") != expected_prompt_contract:
+    raise SystemExit(f"Builder validation uses a stale prompt contract: {validation!r}")
 print(f"[three-image-preflight] metadata passed: variant={actual_variant} roles={expected_roles}")
 PY
 

@@ -104,3 +104,7 @@ split metadata before packaging.
 arbitrary number of aligned images and map one visual feature sequence to each
 `<image>` token. Three inputs increase visual-token memory relative to the
 two-image recipe, so use a short NPU smoke test before formal DI training.
+
+For model configuration, DI script requirements, memory-sensitive defaults,
+and the exact handoff checklist for another Agent, see
+`docs/RAWLANE_POSE_THREE_IMAGE_800K_TRAINING_HANDOFF.md`.

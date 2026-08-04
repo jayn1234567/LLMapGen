@@ -14,6 +14,7 @@
 
 
 from abc import ABC, abstractmethod
+import os
 
 import torch
 import torch.nn as nn
@@ -243,6 +244,19 @@ class LlavaMetaForCausalLM(ABC):
             if type(images) is list:
                 images = [x.unsqueeze(0) if x.ndim == 3 else x for x in images]
             concat_images = torch.cat([image for image in images], dim=0)
+            if (
+                is_multi_image_batch
+                and os.environ.get("MLLM_LOG_MULTI_IMAGE_SHAPE", "").lower()
+                in {"1", "true", "yes"}
+                and not getattr(self, "_mllm_logged_multi_image_shape", False)
+            ):
+                print(
+                    "[multimodal-input] "
+                    f"batch={images.shape[0]} images_per_sample={images.shape[1]} "
+                    f"vision_batch={concat_images.shape[0]} image_shape={tuple(images.shape[2:])}",
+                    flush=True,
+                )
+                self._mllm_logged_multi_image_shape = True
             encoded = self.encode_images(concat_images)
             if isinstance(encoded, tuple) and len(encoded) == 2:
                 image_features, all_deepstack_features = encoded

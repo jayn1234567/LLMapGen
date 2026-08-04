@@ -53,6 +53,37 @@ vision tower assets. Stage-B train scripts do not download the base model;
 they download or use the Stage-A checkpoint through `STAGE_A_CHECKPOINT_*` and
 continue from that checkpoint.
 
+## Raw-Lane + Pose Three-Image 800k
+
+The paired three-image datasets have two independent formal Stage-A recipes:
+
+```text
+train_sft_stage_a_lane_intersection_datasetv2_three_image_local256_800k_original_dinov2_caprl4b_nodeepstack_lora_llm_npu.sh
+train_sft_stage_a_lane_intersection_datasetv2_three_image_context512_roi256_800k_original_dinov2_caprl4b_nodeepstack_lora_llm_npu.sh
+```
+
+Both preserve the main Jiangjihua model baseline: original DINOv2-Large at
+518, penultimate-layer patch tokens, `mlp2x_gelu`, CapRL-Qwen3VL-4B-derived
+text LLM, and no DeepStack. Qwen uses LLM-only LoRA (`r=8`, `alpha=16`,
+dropout `0.05`); the projector and DINOv2 remain ordinary trainable modules.
+Each sample provides
+three independent inputs in the fixed order clean BEV, Raw-Lane, and Pose.
+The strict preflight scans every JSON target and record contract, uniformly
+opens all three image roles from each split, and blocks training if the order,
+aliases, metadata, or three prompt placeholders disagree.
+
+The recipes default to 8 epochs, LR `2e-4` for Qwen LoRA/projector and `2e-5`
+for DINOv2, global batch 128, per-device batch 1, BF16, gradient checkpointing,
+HCCL DDP without DeepSpeed, and ordinary rank0 LoRA checkpoints. Training-time
+eval loss is disabled. `MODEL_MAX_LENGTH=8192` is intentional: three
+DINOv2 streams contribute 4107 visual tokens before prompt and target tokens.
+Values below 6144 are rejected instead of silently truncating supervision.
+
+The final OBS TAR locations were not part of the dataset handoff, so each
+launcher requires an explicit `DATASET_OBS_PATH`. Do not mix the two datasets
+in one run. See `docs/DATASET_V2_RAWLANE_POSE_THREE_IMAGE_800K.md` for the
+record and coordinate contracts.
+
 ## Native Qwen3-VL Baseline
 
 Native Qwen3-VL baseline launchers now live under

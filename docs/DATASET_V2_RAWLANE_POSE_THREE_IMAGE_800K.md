@@ -111,6 +111,18 @@ arbitrary number of aligned images and map one visual feature sequence to each
 `<image>` token. Three inputs increase visual-token memory relative to the
 two-image recipe, so use a short NPU smoke test before formal DI training.
 
+At DINOv2 input size 518, each image contributes 1369 patch tokens. The three
+streams therefore contribute 4107 visual tokens before user and assistant
+text. The formal recipes use `MODEL_MAX_LENGTH=8192` and reject values below
+6144 so the post-expansion multimodal truncation cannot silently remove the
+third stream or JSON supervision. They start at per-device batch 1 and derive
+gradient accumulation from the actual DI world size.
+
+The first production experiment uses LLM-only LoRA on the CapRL text model
+(`r=8`, `alpha=16`, dropout `0.05`). The projector and DINOv2 tower remain
+fully trainable at `2e-4` and `2e-5`, respectively. It uses HCCL DDP without
+DeepSpeed and does not calculate eval loss during training.
+
 For model configuration, DI script requirements, memory-sensitive defaults,
 and the exact handoff checklist for another Agent, see
 `docs/RAWLANE_POSE_THREE_IMAGE_800K_TRAINING_HANDOFF.md`.

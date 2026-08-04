@@ -16,6 +16,16 @@ from typing import Any, Iterator
 
 ASSISTANT_ROLES = {"assistant", "gpt"}
 HUMAN_ROLES = {"human", "user"}
+THREE_IMAGE_ROLES = [
+    "bev_road_structure",
+    "pv_camera_raw_lane",
+    "historical_vehicle_trajectory",
+]
+THREE_IMAGE_PROMPT_TEXT = [
+    "first image is the clean bev road-structure image",
+    "second image is a lane image predicted by a pv camera model",
+    "third image is a historical vehicle-trajectory image",
+]
 
 
 def parse_args() -> argparse.Namespace:
@@ -31,6 +41,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-samples-per-split", type=int, default=0)
     parser.add_argument("--image-checks-per-split", type=int, default=64)
     parser.add_argument("--expected-image-size", type=int, default=0)
+    parser.add_argument(
+        "--require-three-image-rawlane-pose",
+        action="store_true",
+        help=(
+            "Require exactly three ordered model inputs: clean BEV, separate Raw-Lane, "
+            "and historical Pose/trajectory. Also validates aliases, prompt tokens, and metadata."
+        ),
+    )
     parser.add_argument("--coord-min", type=float, default=0.0)
     parser.add_argument("--coord-max", type=float, default=1000.0)
     parser.add_argument("--forbid-lane-type", action="append", default=[])
@@ -234,8 +252,24 @@ def image_relpath(record: dict[str, Any]) -> tuple[str, str]:
     return "", "missing"
 
 
+def image_relpaths(record: dict[str, Any]) -> list[str]:
+    values = record.get("images")
+    if isinstance(values, str) and values.strip():
+        return [values.replace("\\", "/").lstrip("/")]
+    if isinstance(values, list):
+        return [
+            value.replace("\\", "/").lstrip("/")
+            for value in values
+            if isinstance(value, str) and value.strip()
+        ]
+    value = record.get("image")
+    if isinstance(value, str) and value.strip():
+        return [value.replace("\\", "/").lstrip("/")]
+    return []
+
+
 def update_reservoir(
-    reservoir: list[str], value: str, seen: int, limit: int, rng: random.Random
+    reservoir: list[Any], value: Any, seen: int, limit: int, rng: random.Random
 ) -> None:
     if not value or limit <= 0:
         return
@@ -348,6 +382,9 @@ def inspect_split(
         "invalid_points": 0,
         "lines_without_points": 0,
         "sample_image_paths": [],
+        "sample_image_groups": [],
+        "three_image_contract_errors": 0,
+        "three_image_contract_error_examples": [],
         "sample_ids_with_errors": [],
         "representative_samples": {},
     }
@@ -369,6 +406,63 @@ def inspect_split(
             args.image_checks_per_split,
             rng,
         )
+
+        if args.require_three_image_rawlane_pose:
+            image_paths = image_relpaths(record)
+            update_reservoir(
+                stats["sample_image_groups"],
+                image_paths,
+                stats["samples"],
+                args.image_checks_per_split,
+                rng,
+            )
+            split_name = path.stem
+            expected_prefixes = [
+                f"images/{split_name}/",
+                f"raw_lane_images/{split_name}/",
+                f"pose_images/{split_name}/",
+            ]
+            prompt = conversation_text(record, HUMAN_ROLES)
+            meta = record.get("meta") if isinstance(record.get("meta"), dict) else {}
+            errors = []
+            if len(image_paths) != 3:
+                errors.append(f"images={image_paths!r}")
+            elif any(
+                not image_path.startswith(prefix)
+                for image_path, prefix in zip(image_paths, expected_prefixes)
+            ):
+                errors.append(f"image order/prefix={image_paths!r}")
+            if len(image_paths) == 3:
+                if record.get("image") != image_paths[0]:
+                    errors.append("image alias does not match images[0]")
+                if record.get("raw_lane_image") != image_paths[1]:
+                    errors.append("raw_lane_image alias does not match images[1]")
+                if record.get("pose_image") != image_paths[2]:
+                    errors.append("pose_image alias does not match images[2]")
+            if prompt.count("<image>") != 3:
+                errors.append(f"prompt image token count={prompt.count('<image>')}")
+            prompt_lower = prompt.lower()
+            missing_prompt_roles = [
+                text for text in THREE_IMAGE_PROMPT_TEXT if text not in prompt_lower
+            ]
+            if missing_prompt_roles:
+                errors.append(f"prompt role text missing={missing_prompt_roles!r}")
+            if "white lane overlay" in prompt_lower:
+                errors.append("prompt still describes a Raw-Lane overlay")
+            if meta.get("raw_lane_overlay") is not False:
+                errors.append("meta.raw_lane_overlay is not false")
+            if meta.get("raw_lane_separate_image") is not True:
+                errors.append("meta.raw_lane_separate_image is not true")
+            if list(meta.get("input_image_roles") or []) != THREE_IMAGE_ROLES:
+                errors.append(
+                    f"meta.input_image_roles={meta.get('input_image_roles')!r}"
+                )
+            if errors:
+                stats["three_image_contract_errors"] += 1
+                if len(stats["three_image_contract_error_examples"]) < 20:
+                    stats["three_image_contract_error_examples"].append(
+                        {"id": sample_id, "errors": errors}
+                    )
 
         conversations = record.get("conversations")
         if not isinstance(conversations, list):
@@ -504,12 +598,19 @@ def inspect_split(
     checked_sizes: Counter[str] = Counter()
     missing_images = []
     image_errors = []
-    if stats["sample_image_paths"]:
+    sampled_paths = stats["sample_image_paths"]
+    if args.require_three_image_rawlane_pose:
+        sampled_paths = [
+            image_path
+            for image_group in stats["sample_image_groups"]
+            for image_path in image_group
+        ]
+    if sampled_paths:
         try:
             from PIL import Image
         except ImportError as exc:
             raise RuntimeError("Pillow is required for image-size inspection") from exc
-        for rel_path in stats["sample_image_paths"]:
+        for rel_path in sampled_paths:
             full_path = image_root / rel_path
             if not full_path.is_file():
                 missing_images.append(rel_path)
@@ -528,6 +629,7 @@ def inspect_split(
     stats["coordinate_min"] = None if math.isinf(stats["coordinate_min"]) else stats["coordinate_min"]
     stats["coordinate_max"] = None if math.isinf(stats["coordinate_max"]) else stats["coordinate_max"]
     del stats["sample_image_paths"]
+    del stats["sample_image_groups"]
 
     for key, value in list(stats.items()):
         if isinstance(value, Counter):
@@ -550,6 +652,12 @@ def build_failures(report: dict[str, Any], args: argparse.Namespace) -> list[str
             failures.append(f"{split}: {stats['missing_assistant']} samples have no assistant target")
         if stats["invalid_assistant_json"]:
             failures.append(f"{split}: {stats['invalid_assistant_json']} assistant targets are invalid JSON")
+        if args.require_three_image_rawlane_pose and stats["three_image_contract_errors"]:
+            failures.append(
+                f"{split}: {stats['three_image_contract_errors']} samples violate the ordered "
+                "BEV/Raw-Lane/Pose three-image contract; examples="
+                f"{stats['three_image_contract_error_examples'][:3]!r}"
+            )
         incompatible_images = sum(
             value for key, value in stats["image_field"].items() if key != "image"
         )
@@ -705,6 +813,7 @@ def main() -> None:
         "phase": args.phase,
         "constraints": {
             "expected_image_size": args.expected_image_size,
+            "require_three_image_rawlane_pose": args.require_three_image_rawlane_pose,
             "coordinate_range": [args.coord_min, args.coord_max],
             "forbidden_lane_types": args.forbid_lane_type,
             "require_intersection_type_fields": args.require_intersection_type_fields,

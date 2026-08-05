@@ -27,6 +27,12 @@ triplets such as 256x512 or 512x256 and records them in
 converter retains explicit `--non-512-policy pad` and `error` modes for audits,
 but its default is `skip`.
 
+The production OBS wrapper also uses `--missing-triplet-policy skip`. A GT
+record whose BEV, Raw-Lane, or Pose file is absent is written to
+`skipped_samples.jsonl` with `reason=missing_image_triplet` and does not stop
+the remaining conversion. The lower-level converter keeps the default
+`--missing-triplet-policy error` for strict source audits.
+
 ## Source Contract
 
 The converter discovers GT JSON files recursively. A GT file contains a JSON

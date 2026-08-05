@@ -188,6 +188,42 @@ class Context512RoiTripletGtConverterTest(unittest.TestCase):
             self.assertEqual(mode, "replaced_copy")
             self.assertEqual(destination.read_bytes(), b"clean")
 
+    def test_skip_policy_records_missing_triplet_and_continues(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir) / "source"
+            output = Path(temp_dir) / "converted"
+            annotation_path, valid_id = self._write_triplet(root, 512)
+            records = json.loads(annotation_path.read_text(encoding="utf-8"))
+            missing = json.loads(json.dumps(records[0]))
+            missing["id"] = "A0_missing_r0_c0_p00"
+            missing["image"] = [
+                "A0_missing/r0_c0_p00.png",
+                "A0_missing/r0_c0_p00_pose.png",
+                "A0_missing/r0_c0_p00_raw_lane.png",
+            ]
+            records.append(missing)
+            annotation_path.write_text(json.dumps(records), encoding="utf-8")
+
+            main([
+                "--input-root", str(root),
+                "--annotation-root", str(annotation_path.parents[1]),
+                "--output-root", str(output),
+                "--copy-mode", "copy",
+                "--missing-triplet-policy", "skip",
+            ])
+
+            converted = json.loads(
+                (output / "phase_a" / "train.jsonl").read_text(encoding="utf-8")
+            )
+            self.assertEqual(converted["id"], valid_id)
+            skipped = json.loads(
+                (output / "skipped_samples.jsonl").read_text(encoding="utf-8")
+            )
+            self.assertEqual(skipped["id"], "A0_missing_r0_c0_p00")
+            self.assertEqual(skipped["reason"], "missing_image_triplet")
+            summary = json.loads((output / "build_summary.json").read_text(encoding="utf-8"))
+            self.assertEqual(summary["skipped_missing_triplet_records"], 1)
+
 
 if __name__ == "__main__":
     unittest.main()

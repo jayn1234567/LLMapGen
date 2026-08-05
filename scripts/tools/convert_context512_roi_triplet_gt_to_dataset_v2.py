@@ -107,6 +107,12 @@ def parse_args(argv=None) -> argparse.Namespace:
         default="skip",
         help="How to handle boundary-clipped triplets. Production default: skip.",
     )
+    parser.add_argument(
+        "--missing-triplet-policy",
+        choices=("skip", "error"),
+        default="error",
+        help="Skip GT records whose BEV/Raw-Lane/Pose files are missing, or fail strictly.",
+    )
     parser.add_argument("--progress-every", type=int, default=10_000)
     parser.add_argument("--max-samples", type=int, default=0)
     parser.add_argument("--package", action="store_true")
@@ -521,6 +527,16 @@ def resolve_triplet(
         )
         if indexed is not None:
             return indexed
+        indexed_groups = [
+            source_group_from_relative(relative)
+            for relative in source_triplet_relatives(record)
+        ]
+        if all(item is not None for item in indexed_groups):
+            group = indexed_groups[0][0]
+            raise FileNotFoundError(
+                f"sample={record.get('id')} has no complete indexed image triplet for "
+                f"group={group}; indexed_group_directories={group_index.get(group, [])}"
+            )
     primary_rel, raw_lane_rel, pose_rel = source_triplet_relatives(record)
     record_split = normalize_split(record.get("split"))
     preferred = []
@@ -824,15 +840,37 @@ def convert_dataset(args: argparse.Namespace) -> dict:
                         f"sample={sample_id} GT patch_size={gt_info['patch_size']}, "
                         f"expected={args.target_patch_size}"
                     )
-                split, source_paths = resolve_triplet(
-                    source_record,
-                    annotation_path,
-                    image_roots,
-                    input_root,
-                    annotation_split,
-                    args.default_split,
-                    group_index,
-                )
+                try:
+                    split, source_paths = resolve_triplet(
+                        source_record,
+                        annotation_path,
+                        image_roots,
+                        input_root,
+                        annotation_split,
+                        args.default_split,
+                        group_index,
+                    )
+                except FileNotFoundError as exc:
+                    if args.missing_triplet_policy == "error":
+                        raise
+                    conversion_counts["skipped_missing_triplet_sample"] += 1
+                    write_jsonl_item(skipped_writer, {
+                        "id": sample_id,
+                        "reason": "missing_image_triplet",
+                        "source_image_relatives": list(source_triplet_relatives(source_record)),
+                        "annotation": str(annotation_path),
+                        "error": str(exc),
+                    })
+                    skipped = conversion_counts["skipped_missing_triplet_sample"]
+                    if skipped <= 20 or (
+                        args.progress_every > 0 and skipped % args.progress_every == 0
+                    ):
+                        print(
+                            f"[triplet-gt-convert] skip missing triplet sample={sample_id} "
+                            f"skipped={skipped}",
+                            flush=True,
+                        )
+                    continue
                 should_check = args.image_check_mode == "all" or (
                     args.image_check_mode == "sampled"
                     and image_checks < args.image_check_limit
@@ -1021,6 +1059,9 @@ def convert_dataset(args: argparse.Namespace) -> dict:
         "total_records": counts["total"],
         "processed_source_records": counts["processed"],
         "skipped_non_512_records": conversion_counts["skipped_non_512_sample"],
+        "skipped_missing_triplet_records": conversion_counts[
+            "skipped_missing_triplet_sample"
+        ],
         "difficulty_counts": {
             key.split(":", 1)[1]: value
             for key, value in counts.items()

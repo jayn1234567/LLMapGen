@@ -402,6 +402,7 @@ def run_converter(args: argparse.Namespace, source_root: Path, gt_root: Path, ou
         "--image-check-mode", args.image_check_mode,
         "--image-check-limit", str(args.image_check_limit),
         "--non-512-policy", "skip",
+        "--missing-triplet-policy", "skip",
         "--progress-every", str(args.progress_every),
     ]
     if args.max_samples > 0:

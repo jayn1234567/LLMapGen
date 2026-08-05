@@ -89,6 +89,20 @@ fi
 safe_source "${SOURCE_ACTIVATE_SCRIPT}"
 cd "${REPO_ROOT}"
 
+python - "${PREDICTION_COORD_SCALE}" <<'PY'
+import math
+import sys
+
+scale = float(sys.argv[1])
+if not math.isclose(scale, 0.256, rel_tol=0.0, abs_tol=1e-12):
+    raise SystemExit(
+        "ERROR: the untouched original RC E2E LaneNNParser is fixed to a 256x256 grid "
+        f"(STEP=256), so PREDICTION_COORD_SCALE must be 0.256, got {scale}. "
+        "Full-local512 predictions must first be adapted with "
+        "scripts/tools/adapt_local512_predictions_to_original_e2e_grid.py."
+    )
+PY
+
 python - <<'PY'
 import moxing as mox
 print(f"[original-e2e] moxing={mox.__file__}")

@@ -20,6 +20,9 @@ FRESH_E2E_ROOT=${FRESH_E2E_ROOT:-${FRESH_RUN_ROOT}/e2e_data}
 INFERENCE_DATASET_ROOT=${INFERENCE_DATASET_ROOT:-${FRESH_RUN_ROOT}/local512_dataset}
 OUTPUT_ROOT=${OUTPUT_ROOT:-/cache/jn/outputs/${RUN_ID}}
 RAW_RESULT_DIR=${RAW_RESULT_DIR:-${OUTPUT_ROOT}/inference/json}
+LOCAL512_PATCH_ROOT=${LOCAL512_PATCH_ROOT:-${OUTPUT_ROOT}/local512_patch_metrics}
+ORIGINAL_GRID_PREDICTION_DIR=${ORIGINAL_GRID_PREDICTION_DIR:-${OUTPUT_ROOT}/original_e2e_256_grid_predictions}
+ORIGINAL_GRID_ADAPTER_REPORT=${ORIGINAL_GRID_ADAPTER_REPORT:-${OUTPUT_ROOT}/original_e2e_256_grid_adapter_report.json}
 
 RULE_WORKERS=${RULE_WORKERS:-16}
 EVAL_VIS_FLAG=${EVAL_VIS_FLAG:-False}
@@ -56,7 +59,7 @@ echo "Output:           ${OUTPUT_ROOT}"
 echo "Evaluations:      all + low + high"
 echo "============================================================"
 
-echo "[local512-550k-fresh-e2e] stage 1/3: force-download and extract clean E2E data"
+echo "[local512-550k-fresh-e2e] stage 1/4: force-download and extract clean E2E data"
 rm -f "${FRESH_ARCHIVE}"
 python - "${E2E_DATA_OBS_PATH}" "${FRESH_ARCHIVE}" <<'PY'
 import sys
@@ -72,7 +75,7 @@ python scripts/tools/prepare_rc_e2e_original_run_data.py \
   --allowed-root /cache/jn/e2e_eval/fresh_obs_runs \
   --reset
 
-echo "[local512-550k-fresh-e2e] stage 2/3: rebuild full local512 inputs and run fresh inference"
+echo "[local512-550k-fresh-e2e] stage 2/4: rebuild full local512 inputs and run fresh inference"
 E2E_DATA_OBS_PATH="${E2E_DATA_OBS_PATH}" \
 E2E_WORK_ROOT="${FRESH_RUN_ROOT}" \
 E2E_ARCHIVE_PATH="${FRESH_ARCHIVE}" \
@@ -96,13 +99,36 @@ RAW_RESULT_DIR="${RAW_RESULT_DIR}" \
 INFER_RESULT_OBS_PATH="" \
 bash "${SCRIPT_DIR}/run_rc_e2e_context512_roi256_checkpoint12504_npu.sh"
 
-echo "[local512-550k-fresh-e2e] stage 3/3: count/suppress GT-empty patches and run original all/low/high E2E"
-SOURCE_PREDICTION_DIR="${RAW_RESULT_DIR}" \
+echo "[local512-550k-fresh-e2e] stage 3/4: preserve native local512 patch metrics"
+E2E_DATA_SOURCE=raw_direct \
+E2E_RAW_ROOT="${FRESH_E2E_ROOT}" \
+EVAL_RUN_ID="${RUN_ID}_local512_patch" \
+EVAL_ROOT="${LOCAL512_PATCH_ROOT}" \
+PREDICTION_DIR="${RAW_RESULT_DIR}" \
+METRICS_JSON="${LOCAL512_PATCH_ROOT}/metrics.json" \
+EVAL_JSONL="${LOCAL512_PATCH_ROOT}/eval_records.jsonl" \
+METRICS_OBS_PATH="" \
+PATCH_SIZE=512 \
+REQUIRE_ALL=True \
+bash "${SCRIPT_DIR}/eval_rc_e2e_context512_roi256_checkpoint12504_patch_metrics.sh"
+
+echo "[local512-550k-fresh-e2e] stage 4/4: adapt to the original 256 grid, suppress GT-empty cells, and run all/low/high"
+python scripts/tools/adapt_local512_predictions_to_original_e2e_grid.py \
+  --input-dir "${RAW_RESULT_DIR}" \
+  --output-dir "${ORIGINAL_GRID_PREDICTION_DIR}" \
+  --report-json "${ORIGINAL_GRID_ADAPTER_REPORT}" \
+  --source-patch-size 512 \
+  --engine-patch-size 256 \
+  --coord-range 1000 \
+  --reset \
+  --strict
+
+SOURCE_PREDICTION_DIR="${ORIGINAL_GRID_PREDICTION_DIR}" \
 RAW_E2E_ROOT="${FRESH_E2E_ROOT}" \
 RUN_ID="${RUN_ID}" \
 OUTPUT_ROOT="${OUTPUT_ROOT}" \
-PATCH_SIZE=512 \
-PREDICTION_COORD_SCALE=0.512 \
+PATCH_SIZE=256 \
+PREDICTION_COORD_SCALE=0.256 \
 RUN_ORIGINAL_E2E=True \
 ORIGINAL_E2E_DATA_SOURCE=raw_direct \
 RUN_ALL_EVAL=True \
@@ -119,6 +145,9 @@ echo "============================================================"
 echo "LOCAL512-550K FRESH-OBS GT-EMPTY E2E COMPLETE"
 echo "Fresh E2E data: ${FRESH_E2E_ROOT}"
 echo "Fresh inference:${RAW_RESULT_DIR}"
+echo "Local512 patch: ${LOCAL512_PATCH_ROOT}/metrics.json"
+echo "256-grid input: ${ORIGINAL_GRID_PREDICTION_DIR}"
+echo "Adapter report: ${ORIGINAL_GRID_ADAPTER_REPORT}"
 echo "Suppression:    ${OUTPUT_ROOT}/gt_oracle_suppression_report.json"
 echo "Patch compare:  ${OUTPUT_ROOT}/patch_metric_comparison.json"
 echo "Scene audit:    ${OUTPUT_ROOT}/original_pipeline_metrics/scene_output_completeness.json"

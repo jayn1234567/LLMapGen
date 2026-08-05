@@ -212,17 +212,15 @@ test recipe matrix and evaluate checkpoints trained by
 | `layer_fusion` | Direct multi-layer ViT feature fusion before the projector. |
 | `deepstack` | Per-layer visual residual injection into Qwen decoder layers. |
 | `lora_llm` | Inference entry intended for checkpoints trained with LLM LoRA. |
-# Full-local512 output on the original 256-grid E2E engine
+# Full-local512 output on a run-local 512-grid E2E engine
 
 `eval_local512_550k_checkpoint34376_gt_empty_fresh_obs_original_e2e_npu.sh`
 keeps model inference and native patch evaluation at full `512x512`. Before
-calling the untouched original road-rule engine, it uses
-`adapt_local512_predictions_to_original_e2e_grid.py` to clip every prediction
-into four `256x256` child cells, shift geometry into each child-local frame,
-renormalize coordinates to `0..1000`, and rename row/column indices to the
-engine's fixed `STEP=256` grid. The original formatter must use scale `0.256`;
-passing local512 rows with scale `0.512` gives valid patch metrics but invalid
-whole-map placement.
+calling the original road-rule engine, it creates a run-local engine copy and
+sets only `LaneNNParser.CROP_SIZE` and `STEP` to `512`. The formatter then uses
+scale `0.512`, matching the local512 row/column grid exactly. The shared
+original-engine cache remains unchanged. The 256-grid adapter remains available
+as a diagnostic utility, but is not part of the local512 formal recipe.
 
 # RawLane local256 full E2E evaluation
 

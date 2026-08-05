@@ -157,7 +157,7 @@ def test_parse_failure_becomes_four_empty_engine_cells(tmp_path: Path) -> None:
     assert all(record["parse_ok"] is False for record in records.values())
 
 
-def test_local512_recipe_adapts_before_original_engine() -> None:
+def test_local512_recipe_uses_run_local_512_engine_grid() -> None:
     root = Path(__file__).resolve().parents[1]
     recipe = (
         root
@@ -168,9 +168,10 @@ def test_local512_recipe_adapts_before_original_engine() -> None:
         / "scripts/npu/test/eval_rc_e2e_context512_roi256_checkpoint12504_original_pipeline_npu.sh"
     ).read_text(encoding="utf-8")
 
-    assert "adapt_local512_predictions_to_original_e2e_grid.py" in recipe
-    assert 'SOURCE_PREDICTION_DIR="${ORIGINAL_GRID_PREDICTION_DIR}"' in recipe
-    assert "PATCH_SIZE=256" in recipe
-    assert "PREDICTION_COORD_SCALE=0.256" in recipe
-    assert "PREDICTION_COORD_SCALE=0.512" not in recipe
-    assert "LaneNNParser is fixed to a 256x256 grid" in original_entry
+    assert 'SOURCE_PREDICTION_DIR="${RAW_RESULT_DIR}"' in recipe
+    assert "PATCH_SIZE=512" in recipe
+    assert "PREDICTION_COORD_SCALE=0.512" in recipe
+    assert "ORIGINAL_E2E_LANE_GRID_SIZE=512" in recipe
+    assert "ENGINE_EXTRACT_ROOT=\"${ORIGINAL_ENGINE_512_ROOT}\"" in recipe
+    assert "adapt_local512_predictions_to_original_e2e_grid.py" not in recipe
+    assert "configure_original_e2e_lane_grid.py" in original_entry

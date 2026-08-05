@@ -21,8 +21,8 @@ INFERENCE_DATASET_ROOT=${INFERENCE_DATASET_ROOT:-${FRESH_RUN_ROOT}/local512_data
 OUTPUT_ROOT=${OUTPUT_ROOT:-/cache/jn/outputs/${RUN_ID}}
 RAW_RESULT_DIR=${RAW_RESULT_DIR:-${OUTPUT_ROOT}/inference/json}
 LOCAL512_PATCH_ROOT=${LOCAL512_PATCH_ROOT:-${OUTPUT_ROOT}/local512_patch_metrics}
-ORIGINAL_GRID_PREDICTION_DIR=${ORIGINAL_GRID_PREDICTION_DIR:-${OUTPUT_ROOT}/original_e2e_256_grid_predictions}
-ORIGINAL_GRID_ADAPTER_REPORT=${ORIGINAL_GRID_ADAPTER_REPORT:-${OUTPUT_ROOT}/original_e2e_256_grid_adapter_report.json}
+ORIGINAL_PIPELINE_WORK_ROOT=${ORIGINAL_PIPELINE_WORK_ROOT:-${FRESH_RUN_ROOT}/original_pipeline}
+ORIGINAL_ENGINE_512_ROOT=${ORIGINAL_ENGINE_512_ROOT:-${ORIGINAL_PIPELINE_WORK_ROOT}/engine_lane_grid512}
 
 RULE_WORKERS=${RULE_WORKERS:-16}
 EVAL_VIS_FLAG=${EVAL_VIS_FLAG:-False}
@@ -112,23 +112,16 @@ PATCH_SIZE=512 \
 REQUIRE_ALL=True \
 bash "${SCRIPT_DIR}/eval_rc_e2e_context512_roi256_checkpoint12504_patch_metrics.sh"
 
-echo "[local512-550k-fresh-e2e] stage 4/4: adapt to the original 256 grid, suppress GT-empty cells, and run all/low/high"
-python scripts/tools/adapt_local512_predictions_to_original_e2e_grid.py \
-  --input-dir "${RAW_RESULT_DIR}" \
-  --output-dir "${ORIGINAL_GRID_PREDICTION_DIR}" \
-  --report-json "${ORIGINAL_GRID_ADAPTER_REPORT}" \
-  --source-patch-size 512 \
-  --engine-patch-size 256 \
-  --coord-range 1000 \
-  --reset \
-  --strict
-
-SOURCE_PREDICTION_DIR="${ORIGINAL_GRID_PREDICTION_DIR}" \
+echo "[local512-550k-fresh-e2e] stage 4/4: suppress GT-empty local512 patches and run all/low/high on a run-local 512-grid engine"
+SOURCE_PREDICTION_DIR="${RAW_RESULT_DIR}" \
 RAW_E2E_ROOT="${FRESH_E2E_ROOT}" \
 RUN_ID="${RUN_ID}" \
 OUTPUT_ROOT="${OUTPUT_ROOT}" \
-PATCH_SIZE=256 \
-PREDICTION_COORD_SCALE=0.256 \
+RUN_WORK_ROOT="${ORIGINAL_PIPELINE_WORK_ROOT}" \
+PATCH_SIZE=512 \
+PREDICTION_COORD_SCALE=0.512 \
+ORIGINAL_E2E_LANE_GRID_SIZE=512 \
+ENGINE_EXTRACT_ROOT="${ORIGINAL_ENGINE_512_ROOT}" \
 RUN_ORIGINAL_E2E=True \
 ORIGINAL_E2E_DATA_SOURCE=raw_direct \
 RUN_ALL_EVAL=True \
@@ -146,8 +139,8 @@ echo "LOCAL512-550K FRESH-OBS GT-EMPTY E2E COMPLETE"
 echo "Fresh E2E data: ${FRESH_E2E_ROOT}"
 echo "Fresh inference:${RAW_RESULT_DIR}"
 echo "Local512 patch: ${LOCAL512_PATCH_ROOT}/metrics.json"
-echo "256-grid input: ${ORIGINAL_GRID_PREDICTION_DIR}"
-echo "Adapter report: ${ORIGINAL_GRID_ADAPTER_REPORT}"
+echo "512-grid engine: ${ORIGINAL_ENGINE_512_ROOT}"
+echo "Engine report:   ${OUTPUT_ROOT}/original_pipeline_metrics/original_engine_lane_grid_report.json"
 echo "Suppression:    ${OUTPUT_ROOT}/gt_oracle_suppression_report.json"
 echo "Patch compare:  ${OUTPUT_ROOT}/patch_metric_comparison.json"
 echo "Scene audit:    ${OUTPUT_ROOT}/original_pipeline_metrics/scene_output_completeness.json"

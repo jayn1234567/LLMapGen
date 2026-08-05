@@ -43,6 +43,7 @@ E2E_USE_RAW_ROOT_DIRECTLY=${E2E_USE_RAW_ROOT_DIRECTLY:-False}
 E2E_DATA_SOURCE=${E2E_DATA_SOURCE:-local_archive}
 UPLOAD_RESULTS=${UPLOAD_RESULTS:-True}
 PREDICTION_COORD_SCALE=${PREDICTION_COORD_SCALE:-0.256}
+ORIGINAL_E2E_LANE_GRID_SIZE=${ORIGINAL_E2E_LANE_GRID_SIZE:-256}
 RUN_FORMAT_STEP=${RUN_FORMAT_STEP:-True}
 RUN_RULE_STEP=${RUN_RULE_STEP:-True}
 RUN_ALL_EVAL=${RUN_ALL_EVAL:-True}
@@ -89,17 +90,21 @@ fi
 safe_source "${SOURCE_ACTIVATE_SCRIPT}"
 cd "${REPO_ROOT}"
 
-python - "${PREDICTION_COORD_SCALE}" <<'PY'
+python - "${PREDICTION_COORD_SCALE}" "${ORIGINAL_E2E_LANE_GRID_SIZE}" <<'PY'
 import math
 import sys
 
 scale = float(sys.argv[1])
-if not math.isclose(scale, 0.256, rel_tol=0.0, abs_tol=1e-12):
+grid_size = int(sys.argv[2])
+if grid_size not in (256, 512):
     raise SystemExit(
-        "ERROR: the untouched original RC E2E LaneNNParser is fixed to a 256x256 grid "
-        f"(STEP=256), so PREDICTION_COORD_SCALE must be 0.256, got {scale}. "
-        "Full-local512 predictions must first be adapted with "
-        "scripts/tools/adapt_local512_predictions_to_original_e2e_grid.py."
+        f"ERROR: unsupported ORIGINAL_E2E_LANE_GRID_SIZE={grid_size}; expected 256 or 512."
+    )
+expected = grid_size / 1000.0
+if not math.isclose(scale, expected, rel_tol=0.0, abs_tol=1e-12):
+    raise SystemExit(
+        f"ERROR: PREDICTION_COORD_SCALE={scale} conflicts with lane grid {grid_size}; "
+        f"expected {expected}."
     )
 PY
 
@@ -183,6 +188,22 @@ require_file "${EVAL_CONFIG}"
 
 echo "[original-e2e] resolved project root: ${ORIGINAL_ROOT}"
 echo "[original-e2e] original requirements: ${RULE_REQUIREMENTS}"
+
+if [ "${ORIGINAL_E2E_LANE_GRID_SIZE}" != "256" ]; then
+  case "${ENGINE_EXTRACT_ROOT}" in
+    "${RUN_WORK_ROOT}"/*) ;;
+    *)
+      echo "ERROR: a non-256 E2E grid requires a run-local ENGINE_EXTRACT_ROOT below ${RUN_WORK_ROOT}; got ${ENGINE_EXTRACT_ROOT}" >&2
+      exit 2
+      ;;
+  esac
+  GRID_REPORT=${RESULT_ROOT}/original_engine_lane_grid_report.json
+  echo "[original-e2e] configuring run-local LaneNNParser grid=${ORIGINAL_E2E_LANE_GRID_SIZE}"
+  python scripts/tools/configure_original_e2e_lane_grid.py \
+    --engine-root "${ORIGINAL_ROOT}" \
+    --patch-size "${ORIGINAL_E2E_LANE_GRID_SIZE}" \
+    --report-json "${GRID_REPORT}"
+fi
 
 if is_true "${RECREATE_E2E_ENV}" && [ -d "${E2E_ENV_DIR}" ]; then
   python - "${E2E_ENV_DIR}" <<'PY'
@@ -448,6 +469,8 @@ prediction_obs=${PREDICTION_OBS_PATH}
 prediction_count=${PREDICTION_COUNT}
 valid_prediction_count=${VALID_PREDICTION_COUNT}
 invalid_prediction_count=${INVALID_PREDICTION_COUNT}
+original_e2e_lane_grid_size=${ORIGINAL_E2E_LANE_GRID_SIZE}
+prediction_coordinate_scale=${PREDICTION_COORD_SCALE}
 e2e_environment=${E2E_ENV_DIR}
 EOF
 
@@ -456,6 +479,7 @@ echo "ORIGINAL RC E2E PIPELINE"
 echo "Original project: ${ORIGINAL_ROOT}"
 echo "E2E data:         ${E2E_DATA_ROOT}"
 echo "Predictions:      ${PREDICTION_INPUT_DIR} (${VALID_PREDICTION_COUNT} valid, ${INVALID_PREDICTION_COUNT} invalid)"
+echo "Lane grid:        ${ORIGINAL_E2E_LANE_GRID_SIZE}x${ORIGINAL_E2E_LANE_GRID_SIZE} (scale=${PREDICTION_COORD_SCALE})"
 echo "Results:          ${RESULT_ROOT}"
 echo "Result OBS:       ${RESULT_OBS_PATH}"
 echo "============================================================"

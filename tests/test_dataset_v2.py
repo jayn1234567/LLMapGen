@@ -324,6 +324,19 @@ class DatasetV2ContextTest(unittest.TestCase):
         self.assertNotIn("--raw-lane-overlay", command)
         self.assertIn("--resume", command)
 
+    def test_three_image_context_only_recipe_does_not_finalize_local_view(self):
+        args = parse_three_image_args([
+            "--aux-staging-root", r"D:\aux\staging",
+            "--fixed-source-split-manifest", r"D:\splits\fixed.json",
+            "--views", "context",
+            "--resume",
+        ])
+        command = [str(item) for item in three_image_finalization_command(
+            args,
+            Path(r"D:\three_image\output"),
+        )]
+        self.assertEqual(command[command.index("--views") + 1], "context")
+
     def test_three_image_clean_context_can_be_reconstructed_from_local_tiles(self):
         colors = {
             (0, 0): (255, 0, 0),
@@ -468,6 +481,46 @@ class DatasetV2ContextTest(unittest.TestCase):
                 root / "clean_context",
             )
             self.assertEqual(resolved[0]["local256"], local_stage)
+            self.assertEqual(resolved[0]["context512_roi256"], context_stage)
+
+    def test_three_image_context_only_preflight_accepts_context_staging_without_local(self):
+        geometry = {
+            "source_index": 0,
+            "target_patch_size": 256,
+            "context_size": 512,
+            "train_stride": 128,
+            "eval_test_stride": 256,
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            context_stage = root / "clean_context" / "source_00"
+            auxiliary_stage = root / "auxiliary" / "source_00"
+            for stage in (context_stage, auxiliary_stage):
+                stage.mkdir(parents=True)
+            (context_stage / STAGE_MARKER).write_text(
+                json.dumps({
+                    **geometry,
+                    "variants": ["context512_roi256"],
+                    "raw_lane_overlay": False,
+                }),
+                encoding="utf-8",
+            )
+            (auxiliary_stage / STAGE_MARKER).write_text(
+                json.dumps({
+                    **geometry,
+                    "variants": ["context512_roi256"],
+                    "raw_lane_overlay": True,
+                    "save_raw_lane_image": True,
+                    "pose_second_image": True,
+                }),
+                encoding="utf-8",
+            )
+            resolved = validate_three_image_staging(
+                root / "clean_context",
+                root / "auxiliary",
+                selected_variants=("context512_roi256",),
+            )
+            self.assertEqual(resolved[0]["local256"], context_stage)
             self.assertEqual(resolved[0]["context512_roi256"], context_stage)
 
     def test_streaming_stage_command_enables_pose_second_image(self):

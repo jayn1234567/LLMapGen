@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build paired 800k three-image Stage A datasets without redownloading OBS data.
+"""Build 800k three-image Stage A datasets without redownloading OBS data.
 
 The clean staging supplies image 1. An existing raw-lane-overlay + pose staging
 supplies the selected records, raw-lane mask, pose mask, labels, and metadata.
@@ -65,7 +65,10 @@ def parse_args(argv=None) -> argparse.Namespace:
     parser.add_argument(
         "--clean-staging-root",
         default=r"D:\data\fulldata\staging",
-        help="Existing local256 staging whose primary BEV images have no raw-lane overlay.",
+        help=(
+            "Existing staging whose primary BEV images have no raw-lane overlay. It may "
+            "contain local256, context512_roi256, or both, according to --views."
+        ),
     )
     parser.add_argument(
         "--clean-context-staging-root",
@@ -79,6 +82,15 @@ def parse_args(argv=None) -> argparse.Namespace:
         "--aux-staging-root",
         default=r"D:\data\fulldata_rawlane_pose\staging_rawlane_pose_256_context",
         help="Existing staging containing overlay BEV, saved raw-lane masks, and pose images.",
+    )
+    parser.add_argument(
+        "--views",
+        choices=["local", "context", "both"],
+        default="both",
+        help=(
+            "Generate local256, context512_roi256, or both. Context-only mode can use a "
+            "clean context staging directly and does not require clean local256 tiles."
+        ),
     )
     parser.add_argument(
         "--work-root",
@@ -100,6 +112,16 @@ def parse_args(argv=None) -> argparse.Namespace:
     parser.add_argument("--skip-package", action="store_true")
     parser.add_argument("--resume", action="store_true")
     return parser.parse_args(argv)
+
+
+def source_variants_for_views(views: str) -> tuple[str, ...]:
+    if views == "local":
+        return ("local256",)
+    if views == "context":
+        return ("context512_roi256",)
+    if views == "both":
+        return SOURCE_VARIANTS
+    raise ValueError(f"unsupported views: {views!r}")
 
 
 def run(command: list[object]) -> None:
@@ -141,44 +163,63 @@ def validate_stage_compatibility(
     clean_root: Path,
     aux_root: Path,
     clean_context_root: Path | None = None,
+    selected_variants: tuple[str, ...] = SOURCE_VARIANTS,
 ) -> dict[int, dict[str, Path]]:
-    clean = stage_map(clean_root, "clean-local")
+    clean = stage_map(clean_root, "clean")
     clean_context = (
         stage_map(clean_context_root, "clean-context")
         if clean_context_root is not None
         else {}
     )
     auxiliary = stage_map(aux_root, "auxiliary")
-    missing = sorted(set(auxiliary) - set(clean))
-    if missing:
-        raise ValueError(
-            "clean staging does not cover all auxiliary source indexes; "
-            f"missing={missing}. Keep the old task stopped and supply a clean staging that covers them."
-        )
     resolved = {}
     for source_index, aux_stage in auxiliary.items():
-        clean_stage = clean[source_index]
-        clean_marker = read_json(clean_stage / STAGE_MARKER)
         aux_marker = read_json(aux_stage / STAGE_MARKER)
-        if bool(clean_marker.get("raw_lane_overlay", False)):
-            raise ValueError(f"clean staging is itself overlaid: {clean_stage}")
-        clean_variants = set(clean_marker.get("variants", []))
-        if "local256" not in clean_variants:
+        candidates = []
+        for stage in (clean.get(source_index), clean_context.get(source_index)):
+            if stage is not None and stage not in candidates:
+                candidates.append(stage)
+        if not candidates:
             raise ValueError(
-                "clean staging must contain local256 so it can supply the local view and, "
-                "when necessary, reconstruct clean context512_roi256 images: "
-                f"{clean_stage}"
+                "clean staging does not cover auxiliary source_index="
+                f"{source_index}; clean_root={clean_root}, clean_context_root={clean_context_root}"
             )
-        context_stage = clean_context.get(source_index, clean_stage)
-        context_marker = read_json(context_stage / STAGE_MARKER)
-        if bool(context_marker.get("raw_lane_overlay", False)):
-            raise ValueError(f"clean context staging is itself overlaid: {context_stage}")
-        context_mode = "direct" if "context512_roi256" in context_marker.get("variants", []) else "mosaic_from_local256"
-        if context_mode == "mosaic_from_local256" and context_stage != clean_stage:
-            context_stage = clean_stage
+        candidate_markers = {}
+        for stage in candidates:
+            marker = read_json(stage / STAGE_MARKER)
+            if bool(marker.get("raw_lane_overlay", False)):
+                raise ValueError(f"clean staging is itself overlaid: {stage}")
+            candidate_markers[stage] = marker
+
+        local_stage = next(
+            (stage for stage in candidates if "local256" in candidate_markers[stage].get("variants", [])),
+            None,
+        )
+        context_stage = next(
+            (
+                stage
+                for stage in candidates
+                if "context512_roi256" in candidate_markers[stage].get("variants", [])
+            ),
+            None,
+        )
+        if "local256" in selected_variants and local_stage is None and context_stage is None:
+            raise ValueError(
+                f"source_index={source_index} has neither clean local256 nor clean context images"
+            )
+        if (
+            "context512_roi256" in selected_variants
+            and context_stage is None
+            and local_stage is None
+        ):
+            raise ValueError(
+                f"source_index={source_index} has neither clean context nor clean local256 images"
+            )
+        local_mode = "direct" if local_stage is not None else "crop_from_context"
+        context_mode = "direct" if context_stage is not None else "mosaic_from_local256"
         print(
             f"[three-image-dataset] clean source {source_index}: "
-            f"local256=direct, context512_roi256={context_mode}",
+            f"local256={local_mode}, context512_roi256={context_mode}",
             flush=True,
         )
         if not bool(aux_marker.get("raw_lane_overlay", False)):
@@ -187,36 +228,32 @@ def validate_stage_compatibility(
             raise ValueError(f"auxiliary staging did not save raw-lane masks: {aux_stage}")
         if not bool(aux_marker.get("pose_second_image", False)):
             raise ValueError(f"auxiliary staging did not save pose inputs: {aux_stage}")
-        for field in (
-            "target_patch_size",
-            "context_size",
-            "train_stride",
-            "eval_test_stride",
-        ):
-            clean_value = clean_marker.get(field)
-            aux_value = aux_marker.get(field)
-            if clean_value is not None and aux_value is not None and clean_value != aux_value:
-                raise ValueError(
-                    f"staging geometry mismatch at source {source_index}: "
-                    f"{field} clean={clean_value}, auxiliary={aux_value}"
-                )
-        if context_mode == "direct":
+        selected_clean_stages = {
+            stage
+            for variant, stage in (
+                ("local256", local_stage),
+                ("context512_roi256", context_stage),
+            )
+            if variant in selected_variants and stage is not None
+        }
+        for selected_stage in selected_clean_stages:
+            selected_marker = candidate_markers[selected_stage]
             for field in (
                 "target_patch_size",
                 "context_size",
                 "train_stride",
                 "eval_test_stride",
             ):
-                context_value = context_marker.get(field)
+                context_value = selected_marker.get(field)
                 aux_value = aux_marker.get(field)
                 if context_value is not None and aux_value is not None and context_value != aux_value:
                     raise ValueError(
-                        f"context staging geometry mismatch at source {source_index}: "
-                        f"{field} clean_context={context_value}, auxiliary={aux_value}"
+                        f"clean/aux staging geometry mismatch at source {source_index}: "
+                        f"{field} clean={context_value}, auxiliary={aux_value}"
                     )
         resolved[source_index] = {
-            "local256": clean_stage,
-            "context512_roi256": context_stage,
+            "local256": local_stage or context_stage,
+            "context512_roi256": context_stage or local_stage,
         }
     print(
         f"[three-image-dataset] compatible staging sources: {len(auxiliary)}; "
@@ -233,7 +270,7 @@ def finalization_command(args: argparse.Namespace, output_root: Path) -> list[ob
         "finalize",
         "--staging-root", Path(args.aux_staging_root).expanduser().resolve(),
         "--output-root", output_root,
-        "--views", "both",
+        "--views", args.views,
         "--patch-size", 256,
         "--context-size", 512,
         "--train-target-samples", args.target_samples,
@@ -966,16 +1003,18 @@ def main(argv=None) -> None:
         args.target_samples,
         parse_ratio_spec(args.difficulty_ratios),
     )
+    selected_source_variants = source_variants_for_views(args.views)
     clean_stages = validate_stage_compatibility(
         clean_root,
         aux_root,
         clean_context_root,
+        selected_source_variants,
     )
     output_root.mkdir(parents=True, exist_ok=True)
     package_root.mkdir(parents=True, exist_ok=True)
     final_roots = {
-        target: output_root / target
-        for target in VARIANT_NAMES.values()
+        VARIANT_NAMES[source]: output_root / VARIANT_NAMES[source]
+        for source in selected_source_variants
     }
     if args.resume:
         for root in final_roots.values():
@@ -989,11 +1028,11 @@ def main(argv=None) -> None:
     if not reuse_complete:
         source_roots = {
             source: output_root / source
-            for source in SOURCE_VARIANTS
+            for source in selected_source_variants
         }
         target_roots = {
             source: output_root / VARIANT_NAMES[source]
-            for source in SOURCE_VARIANTS
+            for source in selected_source_variants
         }
         incompatible_targets = [
             target
@@ -1016,7 +1055,7 @@ def main(argv=None) -> None:
         ]
         if missing_overlay_sources:
             run(finalization_command(args, output_root))
-        for source_variant in SOURCE_VARIANTS:
+        for source_variant in selected_source_variants:
             source_root = source_roots[source_variant]
             target_root = target_roots[source_variant]
             if target_root.exists():
@@ -1051,10 +1090,11 @@ def main(argv=None) -> None:
                 VARIANT_NAMES[source_variant],
             )
         final_roots = {
-            target: output_root / target
-            for target in VARIANT_NAMES.values()
+            VARIANT_NAMES[source]: output_root / VARIANT_NAMES[source]
+            for source in selected_source_variants
         }
-        for source_variant, target_variant in VARIANT_NAMES.items():
+        for source_variant in selected_source_variants:
+            target_variant = VARIANT_NAMES[source_variant]
             relabel_metadata(
                 output_root / "build_summary.json",
                 source_variant,
@@ -1098,7 +1138,8 @@ def main(argv=None) -> None:
                 "--image-decode-mode", args.image_decode_mode,
                 "--skip-distribution-check",
             ])
-    validate_variant_pairing(final_roots)
+    if len(selected_source_variants) == 2:
+        validate_variant_pairing(final_roots)
 
     packages = []
     if not args.skip_package:
@@ -1115,6 +1156,7 @@ def main(argv=None) -> None:
         "fixed_source_split_manifest": args.fixed_source_split_manifest,
         "fixed_source_split_sha256": fixed_manifest["file_sha256"],
         "target_samples": args.target_samples,
+        "views": args.views,
         "difficulty_ratios": args.difficulty_ratios,
         "intersection_target_ratio": args.intersection_target_ratio,
         "image_order": list(IMAGE_ROLES),

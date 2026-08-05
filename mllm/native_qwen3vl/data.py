@@ -10,10 +10,20 @@ from PIL import Image
 import torch
 from torch.utils.data import Dataset
 
+from mllm.data_sampling import deterministic_sample_indices
+
 
 IGNORE_INDEX = -100
 IMAGE_TOKEN = "<image>"
 SEQUENCE_EXTRA_KEYS = {"token_type_ids", "mm_token_type_ids", "position_ids"}
+ROAD_MAP_SYSTEM_PROMPT = (
+    "You are a road-map reconstruction assistant designed to process BEV (Bird's Eye View) "
+    "images generated from LiDAR data.\n"
+    "Predict the complete road map from the current patch in the BEV image.\n"
+    "Return only valid JSON in the required schema.\n"
+    "Do not output markdown fences or extra explanation.\n"
+    "Keep all coordinates in the patch-local coordinate system."
+)
 
 
 def load_json_or_jsonl(file_path: str | os.PathLike) -> list[dict[str, Any]]:
@@ -60,15 +70,33 @@ def resolve_image_path(image_value: str, image_folder: str | os.PathLike) -> Pat
     return (Path(image_folder) / path).resolve()
 
 
-def build_qwen3vl_messages(prompt: str, image_path: str | os.PathLike, answer: str | None = None) -> list[dict[str, Any]]:
+def normalize_image_paths(image_paths: str | os.PathLike | Sequence[str | os.PathLike]) -> list[Path]:
+    if isinstance(image_paths, (str, os.PathLike)):
+        image_paths = [image_paths]
+    normalized = [Path(path) for path in image_paths]
+    if not normalized:
+        raise ValueError("At least one image is required for native Qwen3-VL input")
+    return normalized
+
+
+def build_qwen3vl_messages(
+    prompt: str,
+    image_paths: str | os.PathLike | Sequence[str | os.PathLike],
+    answer: str | None = None,
+    system_prompt: str | None = None,
+) -> list[dict[str, Any]]:
+    normalized_paths = normalize_image_paths(image_paths)
     user_message = {
         "role": "user",
         "content": [
-            {"type": "image", "image": str(image_path)},
+            *({"type": "image", "image": str(image_path)} for image_path in normalized_paths),
             {"type": "text", "text": strip_image_token(prompt)},
         ],
     }
-    messages = [user_message]
+    messages = []
+    if system_prompt:
+        messages.append({"role": "system", "content": str(system_prompt)})
+    messages.append(user_message)
     if answer is not None:
         messages.append({"role": "assistant", "content": str(answer)})
     return messages
@@ -95,10 +123,10 @@ def _apply_chat_template(processor: Any, messages: list[dict[str, Any]], *, add_
     )
 
 
-def _processor_call(processor: Any, text: str, image: Image.Image, max_length: int | None):
+def _processor_call(processor: Any, text: str, images: Sequence[Image.Image], max_length: int | None):
     kwargs = {
         "text": [text],
-        "images": [image],
+        "images": list(images),
         "return_tensors": "pt",
     }
     if max_length and max_length > 0:
@@ -141,10 +169,7 @@ class NativeQwen3VLDataset(Dataset):
                 records.append(copied)
 
         if sample_limit and sample_limit > 0 and len(records) > sample_limit:
-            import random
-
-            rng = random.Random(sample_seed)
-            indices = sorted(rng.sample(range(len(records)), sample_limit))
+            indices = deterministic_sample_indices(len(records), sample_limit, sample_seed)
             records = [records[idx] for idx in indices]
 
         self.records = records
@@ -161,10 +186,20 @@ class NativeQwen3VLDataset(Dataset):
         prompt = conversations[0].get("value", "")
         answer = conversations[1].get("value", "") if len(conversations) > 1 else ""
         image_folder = self.image_folders[int(record.get("_native_data_idx", 0))]
-        image_path = resolve_image_path(record["image"], image_folder)
+        image_values = record.get("images")
+        if image_values is None:
+            image_values = record.get("image")
+        if isinstance(image_values, str):
+            image_values = [image_values]
+        if not isinstance(image_values, list) or not image_values:
+            raise ValueError(f"record has no image/images: {record.get('id', index)}")
+        if not all(isinstance(value, str) and value.strip() for value in image_values):
+            raise ValueError(f"record contains invalid image paths: {record.get('id', index)}")
+        image_paths = [resolve_image_path(value, image_folder) for value in image_values]
         return {
             "record": copy.deepcopy(record),
-            "image_path": image_path,
+            "image_path": image_paths[0],
+            "image_paths": image_paths,
             "prompt": prompt,
             "answer": answer,
         }
@@ -173,21 +208,33 @@ class NativeQwen3VLDataset(Dataset):
 class NativeQwen3VLDataCollator:
     """Collates native Qwen3-VL multimodal examples and masks user tokens."""
 
-    def __init__(self, processor: Any, model_max_length: int = 4096):
+    def __init__(
+        self,
+        processor: Any,
+        model_max_length: int = 4096,
+        system_prompt: str | None = None,
+    ):
         self.processor = processor
         self.model_max_length = model_max_length
+        self.system_prompt = system_prompt
         self.pad_token_id = _pad_token_id(processor)
+        self._logged_multi_image_shape = False
 
     def _encode_one(self, feature: dict[str, Any]) -> dict[str, Any]:
-        image = Image.open(feature["image_path"]).convert("RGB")
-        full_messages = build_qwen3vl_messages(feature["prompt"], feature["image_path"], feature["answer"])
-        prompt_messages = build_qwen3vl_messages(feature["prompt"], feature["image_path"], None)
+        image_paths = normalize_image_paths(feature.get("image_paths") or feature["image_path"])
+        images = [Image.open(path).convert("RGB") for path in image_paths]
+        full_messages = build_qwen3vl_messages(
+            feature["prompt"], image_paths, feature["answer"], self.system_prompt
+        )
+        prompt_messages = build_qwen3vl_messages(
+            feature["prompt"], image_paths, None, self.system_prompt
+        )
 
         full_text = _apply_chat_template(self.processor, full_messages, add_generation_prompt=False)
         prompt_text = _apply_chat_template(self.processor, prompt_messages, add_generation_prompt=True)
 
-        full_inputs = _processor_call(self.processor, full_text, image, self.model_max_length)
-        prompt_inputs = _processor_call(self.processor, prompt_text, image, self.model_max_length)
+        full_inputs = _processor_call(self.processor, full_text, images, self.model_max_length)
+        prompt_inputs = _processor_call(self.processor, prompt_text, images, self.model_max_length)
         input_ids = _as_1d(full_inputs["input_ids"])
         labels = input_ids.clone()
         prompt_len = min(int(_as_1d(prompt_inputs["input_ids"]).numel()), int(labels.numel()))
@@ -251,4 +298,20 @@ class NativeQwen3VLDataCollator:
                 batch[key] = torch.stack(values, dim=0)
             else:
                 batch[key] = values
+        if (
+            not self._logged_multi_image_shape
+            and os.environ.get("MLLM_LOG_NATIVE_MULTI_IMAGE_SHAPE", "").lower()
+            in {"1", "true", "yes"}
+        ):
+            image_counts = [
+                len(normalize_image_paths(feature.get("image_paths") or feature["image_path"]))
+                for feature in features
+            ]
+            print(
+                "[native-multimodal-input] "
+                f"batch_size={len(features)} images_per_sample={image_counts} "
+                f"total_images={sum(image_counts)}",
+                flush=True,
+            )
+            self._logged_multi_image_shape = True
         return batch

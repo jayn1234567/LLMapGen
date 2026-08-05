@@ -1,14 +1,15 @@
 from __future__ import annotations
 
 import inspect
+import json
 from pathlib import Path
-from typing import Any
+from typing import Any, Sequence
 
 from PIL import Image
 import torch
 from transformers import AutoProcessor
 
-from .data import build_qwen3vl_messages
+from .data import build_qwen3vl_messages, normalize_image_paths
 
 
 def resolve_native_model_class():
@@ -46,6 +47,21 @@ def _from_pretrained_kwargs(model_args: Any, dtype):
 
 def load_native_model(model_args: Any, training_args: Any | None = None, device_map: str | dict | None = None):
     model_cls = resolve_native_model_class()
+    model_path = Path(str(model_args.model_name_or_path))
+    adapter_config_path = model_path / "adapter_config.json"
+    adapter_path = model_path if adapter_config_path.is_file() else None
+    base_model_path = str(model_path)
+    if adapter_path is not None:
+        adapter_config = json.loads(adapter_config_path.read_text(encoding="utf-8"))
+        base_model_path = str(
+            getattr(model_args, "model_base", None)
+            or adapter_config.get("base_model_name_or_path")
+            or ""
+        )
+        if not base_model_path:
+            raise ValueError(
+                f"Native Qwen3-VL adapter requires model_base: {adapter_config_path}"
+            )
     dtype = None
     if training_args is not None:
         if getattr(training_args, "bf16", False):
@@ -59,12 +75,19 @@ def load_native_model(model_args: Any, training_args: Any | None = None, device_
     if device_map is not None:
         kwargs["device_map"] = device_map
     try:
-        model = model_cls.from_pretrained(str(model_args.model_name_or_path), **kwargs)
+        model = model_cls.from_pretrained(base_model_path, **kwargs)
     except TypeError as exc:
         if "dtype" not in kwargs:
             raise
         kwargs["torch_dtype"] = kwargs.pop("dtype")
-        model = model_cls.from_pretrained(str(model_args.model_name_or_path), **kwargs)
+        model = model_cls.from_pretrained(base_model_path, **kwargs)
+
+    if adapter_path is not None:
+        try:
+            from peft import PeftModel
+        except ImportError as exc:
+            raise ImportError("Loading a native Qwen3-VL LoRA checkpoint requires peft") from exc
+        model = PeftModel.from_pretrained(model, str(adapter_path), is_trainable=False)
 
     return model
 
@@ -86,15 +109,21 @@ def move_inputs_to_device(inputs: dict[str, Any], device: torch.device) -> dict[
     return moved
 
 
-def processor_text_inputs(processor: Any, prompt: str, image_path: str | Path):
-    messages = build_qwen3vl_messages(prompt, image_path, None)
+def processor_text_inputs(
+    processor: Any,
+    prompt: str,
+    image_paths: str | Path | Sequence[str | Path],
+    system_prompt: str | None = None,
+):
+    normalized_paths = normalize_image_paths(image_paths)
+    messages = build_qwen3vl_messages(prompt, normalized_paths, None, system_prompt)
     text = processor.apply_chat_template(
         messages,
         tokenize=False,
         add_generation_prompt=True,
     )
-    image = Image.open(image_path).convert("RGB")
-    return processor(text=[text], images=[image], return_tensors="pt"), text
+    images = [Image.open(image_path).convert("RGB") for image_path in normalized_paths]
+    return processor(text=[text], images=images, return_tensors="pt"), text
 
 
 def decode_generated_tokens(processor: Any, output_ids: torch.Tensor, input_len: int) -> tuple[str, int]:
@@ -110,14 +139,17 @@ def decode_generated_tokens(processor: Any, output_ids: torch.Tensor, input_len:
 def generate_one(
     model: Any,
     processor: Any,
-    image_path: str | Path,
+    image_path: str | Path | Sequence[str | Path],
     prompt: str,
     *,
     device: torch.device,
     max_new_tokens: int = 2048,
     temperature: float = 0.0,
+    system_prompt: str | None = None,
 ) -> dict[str, Any]:
-    inputs, rendered_prompt = processor_text_inputs(processor, prompt, image_path)
+    inputs, rendered_prompt = processor_text_inputs(
+        processor, prompt, image_path, system_prompt=system_prompt
+    )
     input_ids = inputs["input_ids"]
     input_token_len = int(input_ids.shape[1])
     inputs = move_inputs_to_device(inputs, device)

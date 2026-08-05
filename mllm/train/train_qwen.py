@@ -18,7 +18,6 @@ from packaging import version
 import os
 import sys
 import copy
-import random
 import subprocess
 import time 
 from datetime import datetime
@@ -74,6 +73,7 @@ from mllm.model import *
 from mllm.mm_utils import tokenizer_image_token, process_anyres_image
 from mllm.model.builder import _load_multimodal_weights_if_present, _load_tokenizer_with_fast_fallback
 from mllm.model.qwen3vl_extractor import is_qwen3vl_checkpoint, is_llava_checkpoint, ensure_extracted_llm_from_qwen3vl
+from mllm.data_sampling import deterministic_sample_indices
 from mllm.model.qwen_token_utils import qwen_tokenizer_kwargs, sync_qwen_token_config
 from mllm.model.language_model.qwen_family import (
     as_qwen_multimodal_config,
@@ -2205,8 +2205,9 @@ class LazySupervisedDataset(Dataset):
             list_data_dict += data
 
         if sample_limit is not None and sample_limit > 0 and len(list_data_dict) > sample_limit:
-            rng = random.Random(data_args.sample_seed)
-            sampled_indices = sorted(rng.sample(range(len(list_data_dict)), sample_limit))
+            sampled_indices = deterministic_sample_indices(
+                len(list_data_dict), sample_limit, data_args.sample_seed
+            )
             list_data_dict = [list_data_dict[idx] for idx in sampled_indices]
 
         self.tokenizer = tokenizer

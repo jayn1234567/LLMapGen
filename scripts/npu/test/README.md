@@ -1,5 +1,15 @@
 # NPU Test Scripts
 
+## Three-Image 200k Architecture Comparison Smokes
+
+```text
+smoke_sft_stage_a_lane_intersection_datasetv2_three_image_context512_roi256_200k_original_dinov2_qwen3vl8b_derived_nodeepstack_lora_llm_npu.sh
+smoke_sft_stage_a_lane_intersection_datasetv2_three_image_context512_roi256_200k_native_qwen3vl8b_lora_npu.sh
+```
+
+Both smokes select the same 200k source IDs with seed 42. The native smoke
+requires a Qwen3-VL-capable Transformers 5.7+ environment.
+
 All scripts in this folder are Ascend/NPU inference and evaluation entrypoints.
 They mirror the train recipe matrix, download checkpoints/datasets when needed,
 run patch or state-update inference, write visualizations and metrics, and

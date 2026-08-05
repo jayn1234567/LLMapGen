@@ -21,6 +21,10 @@ CLUSTER_SAVE=${OUTPUT_URL}                                                      
 OSB_SHARE_PATH="${CLUSTER_SAVE}"                                                  # Alias used by existing scripts.
 RUN_ID=${RUN_ID:-$(date -u +%Y%m%d_%H%M%S)}                                       # Unique run id.
 OBS_CACHE=${OBS_CACHE:-/cache}                                                    # Local cache root.
+MODEL_OBS_PATH=${MODEL_OBS_PATH:-obs://yw-ads-training-gy1/data/external/personal/h58801830/whu/jjh/checkpoints}  # OBS model root.
+QWEN3VL_MODEL_NAME=${QWEN3VL_MODEL_NAME:-Qwen3-VL-8B-Instruct}                   # Native base checkpoint name.
+QWEN3VL_OBS_PATH=${QWEN3VL_OBS_PATH:-${MODEL_OBS_PATH}/${QWEN3VL_MODEL_NAME}}     # Native base checkpoint OBS path.
+QWEN3VL_PATH=${QWEN3VL_PATH:-${OBS_CACHE}/checkpoints/${QWEN3VL_MODEL_NAME}}      # Local native base checkpoint.
 DATASET_OBS_PATH=${DATASET_OBS_PATH:-obs://yw-ads-training-gy1/data/external/personal/h58801830/whu/jjh/data/data_lane_intersection_samples_norm_33w_empty_patch.zip}  # Dataset zip.
 DATASET_DIR_NAME=${DATASET_DIR_NAME:-data_lane_intersection_samples_norm_33w_empty_patch}  # Extracted dataset directory.
 CHECKPOINT_OBS_LIST=${CHECKPOINT_OBS_LIST:-}                                      # OBS checkpoint roots, separated by comma/semicolon/newline.
@@ -45,6 +49,7 @@ EVAL_BUFFER_SIZE=${EVAL_BUFFER_SIZE:-1.0}                                       
 EVAL_MATCH_THRESHOLD=${EVAL_MATCH_THRESHOLD:-0.33}                                # Matching threshold.
 SKIP_VISUALIZE=${SKIP_VISUALIZE:-False}                                           # Disable per-sample visualization when True.
 SKIP_WHOLE_MAP_VIZ=${SKIP_WHOLE_MAP_VIZ:-False}                                   # Disable stitched whole-map visualization when True.
+SYSTEM_PROMPT=${SYSTEM_PROMPT:-}                                                  # Optional system prompt; set it to the training value for matched comparisons.
 
 export ASCEND_CUSTOM_PATH=${ASCEND_CUSTOM_PATH:-/usr/local/Ascend/ascend-toolkit/latest}  # Ascend toolkit root.
 export ASCEND_CUSTOM_OPP_PATH=${ASCEND_CUSTOM_OPP_PATH:-/usr/local/Ascend/ascend-toolkit/latest}  # Ascend custom OPP root.
@@ -85,6 +90,7 @@ if [[ "${INSTALL_DEPS}" =~ ^(1|true|True|TRUE|yes|YES)$ ]]; then
   pip install "sentencepiece>=0.1.99" "tiktoken>=0.7.0" "${TRANSFORMERS_SPEC}" "${TOKENIZERS_SPEC}" "qwen-vl-utils>=0.0.10"
   pip install accelerate==1.6.0 deepspeed==0.14.4 "safetensors>=0.4.3" packaging "Pillow>=10.0.0" torchvision==0.22.1
   pip install 'numpy>=1.26' 'scipy>=1.10' 'scikit-learn>=1.2' 'shapely>=2.0.0' 'opencv-python-headless>=4.8.0' loguru
+  pip install "peft>=0.10.0"
 fi
 
 read_list() {
@@ -115,7 +121,7 @@ import sys
 root = Path(sys.argv[1])
 if not root.exists():
     raise SystemExit(f"checkpoint path does not exist: {root}")
-if any((root / name).is_file() for name in ("model.safetensors", "pytorch_model.bin", "model.safetensors.index.json")):
+if any((root / name).is_file() for name in ("model.safetensors", "pytorch_model.bin", "model.safetensors.index.json", "adapter_config.json")):
     print(root)
     raise SystemExit(0)
 cmd = [sys.executable, "scripts/tools/resolve_best_checkpoint.py", "--output-dir", str(root), "--best-name", "infer_best", "--best-name", "eval_best", "--best-name", "best", "--allow-direct"]
@@ -139,6 +145,13 @@ PY
 }
 
 mkdir -p "${DATASET_EXTRACT_ROOT}" "${CHECKPOINT_DOWNLOAD_ROOT}" "${LOCAL_OUTPUT_ROOT}"
+if [ ! -f "${QWEN3VL_PATH}/config.json" ]; then
+  python -c "import moxing as mox; mox.file.copy_parallel('${QWEN3VL_OBS_PATH}', '${QWEN3VL_PATH}')"
+fi
+if [ ! -f "${QWEN3VL_PATH}/config.json" ]; then
+  echo "ERROR: native Qwen3-VL base model is incomplete: ${QWEN3VL_PATH}"
+  exit 1
+fi
 python -c "import moxing as mox; mox.file.copy('${DATASET_OBS_PATH}', '${DATASET_ZIP_PATH}')"
 unzip -q "${DATASET_ZIP_PATH}" -d "${DATASET_EXTRACT_ROOT}"
 for path in "${TEST_JSON}" "${IMAGE_FOLDER}"; do
@@ -172,12 +185,14 @@ for idx in "${!CHECKPOINT_ITEMS[@]}"; do
   extra_args=()
   if [[ "${SKIP_VISUALIZE}" =~ ^(1|true|True|TRUE|yes|YES)$ ]]; then extra_args+=(--skip-visualize); fi
   if [[ "${SKIP_WHOLE_MAP_VIZ}" =~ ^(1|true|True|TRUE|yes|YES)$ ]]; then extra_args+=(--skip-whole-map-viz); fi
+  if [ -n "${SYSTEM_PROMPT}" ]; then extra_args+=(--system-prompt "${SYSTEM_PROMPT}"); fi
   echo "============================================================"
   echo "Native Qwen3-VL checkpoint: ${ckpt}"
   echo "Output: ${out_dir}"
   echo "============================================================"
   python -m mllm.native_qwen3vl.infer \
     --model-name-or-path "${ckpt}" \
+    --model-base "${QWEN3VL_PATH}" \
     --test-json "${TEST_JSON}" \
     --image-folder "${IMAGE_FOLDER}" \
     --output-dir "${out_dir}" \

@@ -43,8 +43,17 @@ def rank0_print(*args, **kwargs) -> None:
 @dataclass
 class NativeModelArguments:
     model_name_or_path: str = field(default="Qwen/Qwen3-VL-8B-Instruct")
+    model_base: Optional[str] = field(default=None)
     trust_remote_code: bool = field(default=True)
     attn_implementation: Optional[str] = field(default=None)
+    lora_enable: bool = field(default=False)
+    lora_r: int = field(default=8)
+    lora_alpha: int = field(default=16)
+    lora_dropout: float = field(default=0.05)
+    lora_bias: str = field(default="none")
+    lora_target_modules: str = field(
+        default="q_proj,k_proj,v_proj,o_proj,gate_proj,up_proj,down_proj"
+    )
 
 
 @dataclass
@@ -56,6 +65,7 @@ class NativeDataArguments:
     train_sample_limit: int = field(default=0)
     eval_sample_limit: int = field(default=0)
     sample_seed: int = field(default=42)
+    system_prompt: Optional[str] = field(default=None)
 
 
 @dataclass
@@ -98,6 +108,10 @@ class JsonlMetricLoggerCallback(TrainerCallback):
         if not logs:
             return
         payload = {"time": time.time(), "global_step": state.global_step, "epoch": state.epoch, **logs}
+        if rank0():
+            world_size = max(int(getattr(args, "world_size", 1) or 1), 1)
+            throughput = float(logs.get("train_samples_per_second", 0.0) or 0.0) / world_size
+            print(f"DI_throughput: {throughput:.2f} samples/s/npu", flush=True)
         if "eval_loss" in logs or any(str(key).startswith("eval_") for key in logs):
             self._append(self.eval_log_path, payload)
         else:
@@ -167,8 +181,67 @@ def make_data_module(processor, data_args: NativeDataArguments, training_args: N
             sample_limit=data_args.eval_sample_limit,
             sample_seed=data_args.sample_seed,
         )
-    data_collator = NativeQwen3VLDataCollator(processor, model_max_length=training_args.model_max_length)
+    data_collator = NativeQwen3VLDataCollator(
+        processor,
+        model_max_length=training_args.model_max_length,
+        system_prompt=data_args.system_prompt,
+    )
     return {"train_dataset": train_dataset, "eval_dataset": eval_dataset, "data_collator": data_collator}
+
+
+def resolve_language_lora_targets(model, requested_names: list[str]) -> list[str]:
+    requested = set(requested_names)
+    targets = [
+        name
+        for name, module in model.named_modules()
+        if isinstance(module, torch.nn.Linear)
+        and ".language_model." in f".{name}."
+        and name.rsplit(".", 1)[-1] in requested
+    ]
+    if not targets:
+        raise ValueError(
+            "Unable to find native Qwen3-VL language-model LoRA targets for "
+            f"{sorted(requested)!r}. The model layout may not match Qwen3-VL."
+        )
+    return targets
+
+
+def apply_lora(model, model_args: NativeModelArguments):
+    if not model_args.lora_enable:
+        return model
+
+    try:
+        from peft import LoraConfig, TaskType, get_peft_model
+    except ImportError as exc:
+        raise ImportError("Native Qwen3-VL LoRA training requires the peft package") from exc
+
+    target_modules = [
+        item.strip()
+        for item in str(model_args.lora_target_modules).split(",")
+        if item.strip()
+    ]
+    if not target_modules:
+        raise ValueError("lora_target_modules must contain at least one module name")
+    resolved_targets = resolve_language_lora_targets(model, target_modules)
+    config = LoraConfig(
+        task_type=TaskType.CAUSAL_LM,
+        inference_mode=False,
+        r=int(model_args.lora_r),
+        lora_alpha=int(model_args.lora_alpha),
+        lora_dropout=float(model_args.lora_dropout),
+        bias=str(model_args.lora_bias),
+        target_modules=resolved_targets,
+    )
+    model = get_peft_model(model, config)
+    if hasattr(model, "enable_input_require_grads"):
+        model.enable_input_require_grads()
+    if rank0() and hasattr(model, "print_trainable_parameters"):
+        rank0_print(
+            f"Native Qwen3-VL LoRA targets: {len(resolved_targets)} language linear modules; "
+            "native visual parameters remain frozen"
+        )
+        model.print_trainable_parameters()
+    return model
 
 
 def train():
@@ -181,6 +254,7 @@ def train():
 
     processor = load_processor(model_args.model_name_or_path, trust_remote_code=model_args.trust_remote_code)
     model = load_native_model(model_args, training_args)
+    model = apply_lora(model, model_args)
     if hasattr(model, "config"):
         model.config.use_cache = False
     if training_args.gradient_checkpointing and hasattr(model, "gradient_checkpointing_enable"):
@@ -209,7 +283,13 @@ def train():
 
     rank0_print("Native Qwen3-VL SFT")
     rank0_print(f"model={model_args.model_name_or_path}")
+    rank0_print(
+        "lora="
+        f"{model_args.lora_enable} r={model_args.lora_r} alpha={model_args.lora_alpha} "
+        f"dropout={model_args.lora_dropout} targets={model_args.lora_target_modules}"
+    )
     rank0_print(f"train={data_args.data_path}")
+    rank0_print(f"system_prompt={data_args.system_prompt!r}")
     rank0_print(f"output={training_args.output_dir}")
     trainer.train(resume_from_checkpoint=training_args.resume_from_checkpoint)
     trainer.save_model(training_args.output_dir)
@@ -221,6 +301,12 @@ def train():
             "data_path": data_args.data_path,
             "image_folder": data_args.image_folder,
             "model_max_length": training_args.model_max_length,
+            "system_prompt": data_args.system_prompt,
+            "lora_enable": model_args.lora_enable,
+            "lora_r": model_args.lora_r,
+            "lora_alpha": model_args.lora_alpha,
+            "lora_dropout": model_args.lora_dropout,
+            "lora_target_modules": model_args.lora_target_modules,
             "global_step": trainer.state.global_step,
         }
         Path(training_args.output_dir, "native_qwen3vl_checkpoint.json").write_text(

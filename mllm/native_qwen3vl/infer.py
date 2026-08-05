@@ -294,6 +294,7 @@ def build_result(
     record: dict[str, Any],
     idx: int,
     image_path: Path,
+    image_paths: list[Path] | None = None,
     prompt: str,
     rendered_prompt: str,
     raw_prediction: str,
@@ -322,6 +323,7 @@ def build_result(
         "checkpoint_dir": checkpoint_dir,
         "record_id": record.get("id", f"sample_{idx}"),
         "image": str(image_path),
+        "images": [str(path) for path in (image_paths or [image_path])],
         "tile_id": meta.get("tile_id", record.get("tile_id", "tile")),
         "row": row,
         "col": col,
@@ -374,17 +376,25 @@ def build_result(
 
 
 def run_one(model, processor, record, idx, prompt, args, device):
-    image_path = resolve_image_path(record["image"], args.image_folder)
+    image_values = record.get("images")
+    if image_values is None:
+        image_values = record.get("image")
+    if isinstance(image_values, str):
+        image_values = [image_values]
+    if not isinstance(image_values, list) or not image_values:
+        raise ValueError(f"record has no image/images: {record.get('id', idx)}")
+    image_paths = [resolve_image_path(value, args.image_folder) for value in image_values]
     generated = generate_one(
         model,
         processor,
-        image_path,
+        image_paths,
         prompt,
         device=device,
         max_new_tokens=args.max_new_tokens,
         temperature=args.temperature,
+        system_prompt=args.system_prompt,
     )
-    return image_path, generated
+    return image_paths, generated
 
 
 def run_phase_a(model, processor, records, args, device):
@@ -392,11 +402,12 @@ def run_phase_a(model, processor, records, args, device):
     for idx, record in records:
         coord_cfg = resolve_coord(record, args)
         prompt = record["conversations"][0]["value"] if record.get("conversations") else args.prompt
-        image_path, generated = run_one(model, processor, record, idx, prompt, args, device)
+        image_paths, generated = run_one(model, processor, record, idx, prompt, args, device)
         results.append(build_result(
             record=record,
             idx=idx,
-            image_path=image_path,
+            image_path=image_paths[0],
+            image_paths=image_paths,
             prompt=prompt,
             rendered_prompt=generated["rendered_prompt"],
             raw_prediction=generated["raw_prediction"],
@@ -472,11 +483,12 @@ def run_phase_b(model, processor, records, args, device):
             coord_cfg,
             include_intersections=args.include_intersections,
         )
-        image_path, generated = run_one(model, processor, record, idx, prompt, args, device)
+        image_paths, generated = run_one(model, processor, record, idx, prompt, args, device)
         result = build_result(
             record=record,
             idx=idx,
-            image_path=image_path,
+            image_path=image_paths[0],
+            image_paths=image_paths,
             prompt=prompt,
             rendered_prompt=generated["rendered_prompt"],
             raw_prediction=generated["raw_prediction"],
@@ -566,12 +578,14 @@ def write_outputs(results: list[dict[str, Any]], args):
 def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--model-name-or-path", required=True)
+    parser.add_argument("--model-base", default=None)
     parser.add_argument("--test-json", required=True)
     parser.add_argument("--image-folder", required=True)
     parser.add_argument("--output-dir", required=True)
     parser.add_argument("--phase", choices=["phase_a", "phase_b"], default="phase_a")
     parser.add_argument("--map-task", choices=["lane", "lane_intersection"], default="lane_intersection")
     parser.add_argument("--prompt", default="<image>\nPlease construct the complete road map in the current BEV image patch.")
+    parser.add_argument("--system-prompt", default=None)
     parser.add_argument("--num-samples", type=int, default=0)
     parser.add_argument("--max-new-tokens", type=int, default=2048)
     parser.add_argument("--temperature", type=float, default=0.0)
@@ -598,6 +612,7 @@ def parse_args():
 class _InferenceModelArgs:
     def __init__(self, args):
         self.model_name_or_path = args.model_name_or_path
+        self.model_base = args.model_base
         self.trust_remote_code = args.trust_remote_code
         self.attn_implementation = None
 
@@ -615,7 +630,10 @@ def main():
         records = records[:args.num_samples]
     indexed_records = sort_records(records, args) if args.phase == "phase_b" else list(enumerate(records))
 
-    processor = load_processor(args.model_name_or_path, trust_remote_code=args.trust_remote_code)
+    processor_path = args.model_name_or_path
+    if not Path(processor_path, "preprocessor_config.json").is_file() and args.model_base:
+        processor_path = args.model_base
+    processor = load_processor(processor_path, trust_remote_code=args.trust_remote_code)
     device = select_device(args.device)
     model = load_native_model(_InferenceModelArgs(args), _InferenceTrainingArgs(args), device_map=None)
     model.to(device)

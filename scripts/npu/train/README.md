@@ -1,5 +1,16 @@
 # NPU Train Scripts
 
+## Three-Image 200k DINO vs Native Qwen3-VL-8B
+
+The controlled comparison is documented in
+`docs/THREE_IMAGE_CONTEXT512_200K_DINO_VS_NATIVE_QWEN3VL8B.md`. Experiment A
+uses original DINOv2-Large with the text LLM extracted from the same
+Qwen3-VL-8B checkpoint used by native experiment B:
+
+```text
+train_sft_stage_a_lane_intersection_datasetv2_three_image_context512_roi256_200k_original_dinov2_qwen3vl8b_derived_nodeepstack_lora_llm_npu.sh
+```
+
 All scripts in this folder are Ascend/NPU training entrypoints. Formal recipe
 files are self-contained: each one includes its own editable parameter block,
 environment setup, dependency install, OBS download, training launch,

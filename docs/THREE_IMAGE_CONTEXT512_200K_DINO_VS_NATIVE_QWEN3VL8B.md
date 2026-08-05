@@ -34,7 +34,7 @@ passes its plain-text equivalent through the Qwen3-VL chat template.
 | Visual tokens | 3 x 1369 = 4107 | 3 x 256 = 768 for exact 512x512 inputs |
 | Alignment | Trainable `mlp2x_gelu` | Native multimodal merger LoRA |
 | Language tuning | LoRA, r=8, alpha=16, dropout=0.05 | Same LoRA settings |
-| Vision tuning | Full DINOv2, LR 2e-5 | Visual-attention and merger LoRA, LR 2e-5 |
+| Vision tuning | Full DINOv2, LR 2e-5 | Visual-attention and merger LoRA, LR 2e-4 |
 | Epochs | 8 | 8 |
 | Max length | 7168 | 4096 |
 | Per-device batch | 4 | 4 |
@@ -43,7 +43,8 @@ passes its plain-text equivalent through the Qwen3-VL chat template.
 
 Experiment A adapts DINOv2 and its newly attached projector. Experiment B uses
 the same LoRA rank, alpha, and dropout on the language model, native visual
-attention, and native merger. This is intentionally a practical
+attention, and native merger; all three LoRA groups default to LR 2e-4. This is
+intentionally a practical
 system comparison, not an architecture-only ablation: the text-base size and
 sequence limits differ. Report trainable parameter counts with final metrics.
 

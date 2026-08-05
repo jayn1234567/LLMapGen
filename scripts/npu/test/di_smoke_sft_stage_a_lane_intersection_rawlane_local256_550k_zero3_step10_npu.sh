@@ -29,6 +29,7 @@ export SAVE_BEST_EVAL_LOSS=False
 export SAVE_BEST_INFER_INDEX=False
 export SWANLAB_ENABLE=False
 export CHECKPOINT_SAVE_MODE=sharded
+export ORDINARY_CHECKPOINTS_ONLY=False
 export DEEPSPEED_CONFIG=scripts/deepspeed_zero3_no_merge.json
 export ENABLE_EVAL=False
 export MLLM_NPU_EMPTY_CACHE_BEFORE_CHECKPOINT=True

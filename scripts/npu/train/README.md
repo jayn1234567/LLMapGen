@@ -58,6 +58,25 @@ not declare or download DINOv3 or SigLIP. `dinov2_siglip_concat_*` downloads
 DINOv2 and SigLIP, `dinov3_siglip_concat_*` downloads DINOv3 and SigLIP, and
 `multi_moe_*` downloads DINOv2 and DINOv3.
 
+## Raw-Lane local256 550k Ordinary Checkpoints
+
+The formal full-parameter Raw-Lane 550k DI entry is:
+
+```bash
+bash scripts/npu/train/train_sft_stage_a_lane_intersection_datasetv2_rawlane_local256_550k_original_dinov2_caprl4b_nodeepstack_npu.sh
+```
+
+It defaults to `CHECKPOINT_SAVE_MODE=original`, `scripts/deepspeed_zero3.json`,
+`gather_16bit_weights_on_model_save=true`, and rank0-only publication. The
+Trainer synchronizes the NPU and releases unused cache immediately before each
+save. Checkpoints therefore appear directly as `checkpoint-*` below the run
+root and do not require a later CPU merge from `zero_shards/node_*`.
+
+`ORDINARY_CHECKPOINTS_ONLY=True` is the formal-run guard. It rejects an
+inherited `CHECKPOINT_SAVE_MODE=sharded` before training starts. Historical
+sharded-checkpoint smoke scripts explicitly set this guard to `False`; they
+are compatibility tests and are not the formal DI recipe.
+
 Stage-A train scripts download the base Qwen/Qwen3-VL model plus the recipe's
 vision tower assets. Stage-B train scripts do not download the base model;
 they download or use the Stage-A checkpoint through `STAGE_A_CHECKPOINT_*` and

@@ -98,6 +98,12 @@ EVAL_STEPS=${EVAL_STEPS:-2000}                                                  
 EVAL_SAMPLE_LIMIT=${EVAL_SAMPLE_LIMIT:-10000}                                     # Deterministic eval-loss subset size; 0 uses the full eval split.
 PER_DEVICE_EVAL_BATCH_SIZE=${PER_DEVICE_EVAL_BATCH_SIZE:-1}                       # Keep eval memory below the training micro-batch peak.
 CHECKPOINT_SAVE_MODE=${CHECKPOINT_SAVE_MODE:-original}                            # Proven formal path: rank0 writes ordinary gathered checkpoints after NPU cache cleanup.
+ORDINARY_CHECKPOINTS_ONLY=${ORDINARY_CHECKPOINTS_ONLY:-True}                      # Formal DI guard: reject inherited sharded-save settings unless a historical smoke explicitly opts out.
+if [[ "${ORDINARY_CHECKPOINTS_ONLY}" =~ ^(1|true|True|TRUE|yes|YES)$ ]] && [[ "${CHECKPOINT_SAVE_MODE}" != "original" ]]; then
+  echo "ERROR: this formal Raw-Lane 550k run requires ordinary rank0 checkpoints, but CHECKPOINT_SAVE_MODE=${CHECKPOINT_SAVE_MODE}."
+  echo "Unset CHECKPOINT_SAVE_MODE or set it to original. Historical shard tests must set ORDINARY_CHECKPOINTS_ONLY=False explicitly."
+  exit 2
+fi
 case "${CHECKPOINT_SAVE_MODE}" in
   sharded)
     DEEPSPEED_CONFIG=${DEEPSPEED_CONFIG:-scripts/deepspeed_zero3_no_merge.json}
@@ -543,7 +549,7 @@ enabled = bool(config.get("zero_optimization", {}).get("gather_16bit_weights_on_
 print("True" if enabled else "False")
 PY
 )
-echo "Checkpoint:   mode=${CHECKPOINT_SAVE_MODE}, ZeRO-3 config=${DEEPSPEED_CONFIG}, gather16=${ZERO3_GATHER_16BIT}, empty_cache=${MLLM_NPU_EMPTY_CACHE_BEFORE_CHECKPOINT}, skip_distributed_flos=${MLLM_SKIP_DISTRIBUTED_FLOS_ON_SAVE}"
+echo "Checkpoint:   mode=${CHECKPOINT_SAVE_MODE}, ordinary_only=${ORDINARY_CHECKPOINTS_ONLY}, ZeRO-3 config=${DEEPSPEED_CONFIG}, gather16=${ZERO3_GATHER_16BIT}, empty_cache=${MLLM_NPU_EMPTY_CACHE_BEFORE_CHECKPOINT}, skip_distributed_flos=${MLLM_SKIP_DISTRIBUTED_FLOS_ON_SAVE}"
 if [[ "${CHECKPOINT_SAVE_MODE}" == "sharded" ]]; then
   echo "Shard upload: every node publishes its local rank shards under ${CLOUD_OUTPUT_PATH}/zero_shards/node_<rank>"
 else

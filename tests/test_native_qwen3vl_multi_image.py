@@ -3,6 +3,7 @@ from pathlib import Path
 
 from PIL import Image
 import torch
+from torch import nn
 
 from mllm.native_qwen3vl.data import (
     IGNORE_INDEX,
@@ -12,6 +13,11 @@ from mllm.native_qwen3vl.data import (
     build_qwen3vl_messages,
 )
 from mllm.data_sampling import deterministic_sample_indices
+from mllm.native_qwen3vl.train_sft import (
+    resolve_language_lora_targets,
+    resolve_vision_lora_targets,
+    unfreeze_native_merger,
+)
 
 
 class _Tokenizer:
@@ -125,3 +131,36 @@ def test_matched_subset_indices_are_stable_and_source_ordered():
     assert first == second
     assert first == sorted(first)
     assert len(first) == 7
+
+
+class _FakeNativeQwen3VL(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.visual = nn.Module()
+        self.visual.attn = nn.Module()
+        self.visual.attn.qkv = nn.Linear(4, 12)
+        self.visual.attn.proj = nn.Linear(4, 4)
+        self.visual.merger = nn.Module()
+        self.visual.merger.proj = nn.Linear(4, 4)
+        self.language_model = nn.Module()
+        self.language_model.attn = nn.Module()
+        self.language_model.attn.q_proj = nn.Linear(4, 4)
+        self.language_model.mlp = nn.Module()
+        self.language_model.mlp.gate_proj = nn.Linear(4, 8)
+
+
+def test_native_lora_targets_exclude_merger_and_unfreeze_it_separately():
+    model = _FakeNativeQwen3VL()
+    model.requires_grad_(False)
+
+    language_targets = resolve_language_lora_targets(model, ["q_proj", "gate_proj"])
+    vision_targets = resolve_vision_lora_targets(model, ["qkv", "proj"])
+
+    assert language_targets == ["language_model.attn.q_proj", "language_model.mlp.gate_proj"]
+    assert vision_targets == ["visual.attn.qkv", "visual.attn.proj"]
+    assert all("merger" not in name for name in vision_targets)
+
+    merger_names = unfreeze_native_merger(model)
+    assert merger_names == ["visual.merger.proj.weight", "visual.merger.proj.bias"]
+    assert model.visual.merger.proj.weight.requires_grad
+    assert not model.visual.attn.qkv.weight.requires_grad

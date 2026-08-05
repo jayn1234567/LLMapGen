@@ -7,7 +7,7 @@ set -euo pipefail
 SCRIPT_PATH=$(readlink -f "$0")
 SCRIPT_DIR=$(dirname "${SCRIPT_PATH}")
 REPO_ROOT=$(readlink -f "${SCRIPT_DIR}/../../..")
-FORMAL_SCRIPT="${REPO_ROOT}/scripts/npu/train/train_sft_stage_a_lane_intersection_datasetv2_three_image_context512_roi256_200k_original_dinov2_qwen3vl8b_derived_nodeepstack_lora_llm_npu.sh"
+FORMAL_SCRIPT="${REPO_ROOT}/scripts/npu/train/train_sft_stage_a_lane_intersection_datasetv2_three_image_context512_roi256_200k_original_dinov2_caprl4b_nodeepstack_lora_llm_npu.sh"
 cd "${REPO_ROOT}"
 
 if [ -f /usr/local/Ascend/ascend-toolkit/set_env.sh ]; then
@@ -37,8 +37,8 @@ SAVE_TOTAL_LIMIT=${SAVE_TOTAL_LIMIT:-1}
 LOGGING_STEPS=${LOGGING_STEPS:-1}
 
 OBS_CACHE=${OBS_CACHE:-/cache/jn}
-RUN_ID=${RUN_ID:-datasetv2_three_image_context512_roi256_200k_dinov2_qwen3vl8b_derived_smoke_$(date -u +%Y%m%d_%H%M%S)}
-SMOKE_ROOT=${SMOKE_ROOT:-${OBS_CACHE}/outputs/datasetv2_three_image_context512_roi256_200k_dinov2_qwen3vl8b_derived_smoke}
+RUN_ID=${RUN_ID:-datasetv2_three_image_context512_roi256_200k_dinov2_caprl4b_smoke_$(date -u +%Y%m%d_%H%M%S)}
+SMOKE_ROOT=${SMOKE_ROOT:-${OBS_CACHE}/outputs/datasetv2_three_image_context512_roi256_200k_dinov2_caprl4b_smoke}
 OUTPUT_URL=${OUTPUT_URL:-${SMOKE_ROOT}/completed}
 LOCAL_MODEL_SAVE_ROOT=${LOCAL_MODEL_SAVE_ROOT:-${SMOKE_ROOT}/work}
 LOG_ROOT=${LOG_ROOT:-${SMOKE_ROOT}/logs/${RUN_ID}}
@@ -64,7 +64,7 @@ mkdir -p "${OUTPUT_URL}" "${LOCAL_MODEL_SAVE_ROOT}" "${LOG_ROOT}" \
   "$(dirname "${DATASET_ARCHIVE_PATH}")" "${DATASET_EXTRACT_ROOT}"
 
 echo "============================================================"
-echo "Experiment A: matched-200k three-image context512/ROI256 DINOv2 + Qwen3-VL-8B-derived LLM LoRA smoke"
+echo "Experiment A: matched-200k three-image context512/ROI256 DINOv2 + CapRL-Qwen3VL-4B-derived LLM LoRA smoke"
 echo "Repo:             ${REPO_ROOT}"
 echo "Python:           ${PYTHON}"
 echo "Visible NPUs:     ${ASCEND_RT_VISIBLE_DEVICES}"

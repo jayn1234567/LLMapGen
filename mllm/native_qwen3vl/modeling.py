@@ -88,6 +88,15 @@ def load_native_model(model_args: Any, training_args: Any | None = None, device_
         except ImportError as exc:
             raise ImportError("Loading a native Qwen3-VL LoRA checkpoint requires peft") from exc
         model = PeftModel.from_pretrained(model, str(adapter_path), is_trainable=False)
+        non_lora_path = adapter_path / "native_non_lora_trainables.bin"
+        if non_lora_path.is_file():
+            non_lora_state = torch.load(non_lora_path, map_location="cpu")
+            incompatible = model.load_state_dict(non_lora_state, strict=False)
+            if incompatible.unexpected_keys:
+                raise ValueError(
+                    "Unexpected native non-LoRA checkpoint keys: "
+                    f"{incompatible.unexpected_keys[:20]}"
+                )
 
     return model
 

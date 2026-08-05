@@ -74,7 +74,7 @@ echo "Global target:    ${TARGET_GLOBAL_BATCH_SIZE}"
 echo "Max steps:        ${MAX_STEPS}"
 echo "Checkpoint step:  ${SAVE_STEPS}"
 echo "Native vision:    Qwen3-VL dynamic 512 input, three images"
-echo "Distributed:      HCCL DDP (native LLM LoRA; frozen native vision; no DeepSpeed)"
+echo "Distributed:      HCCL DDP (LLM+vision LoRA; full native merger; no DeepSpeed)"
 echo "Output root:      ${OUTPUT_URL}/${RUN_ID}"
 echo "Training log:     ${TRAIN_LOG}"
 echo "NPU memory log:   ${NPU_MEMORY_LOG}"
@@ -225,6 +225,10 @@ if [ ! -f "${CHECKPOINT_DIR}/adapter_config.json" ]; then
 fi
 if ! find "${CHECKPOINT_DIR}" -maxdepth 1 -type f \( -name 'adapter_model.safetensors' -o -name 'adapter_model.bin' \) -print -quit | grep -q .; then
   echo "ERROR: LoRA adapter weights are missing below ${CHECKPOINT_DIR}" >&2
+  exit 1
+fi
+if [ ! -f "${CHECKPOINT_DIR}/native_non_lora_trainables.bin" ]; then
+  echo "ERROR: full-parameter native merger weights are missing: ${CHECKPOINT_DIR}/native_non_lora_trainables.bin" >&2
   exit 1
 fi
 

@@ -4,11 +4,10 @@
 
 The controlled comparison is documented in
 `docs/THREE_IMAGE_CONTEXT512_200K_DINO_VS_NATIVE_QWEN3VL8B.md`. Experiment A
-uses original DINOv2-Large with the text LLM extracted from the same
-Qwen3-VL-8B checkpoint used by native experiment B:
+uses original DINOv2-Large with the existing CapRL-Qwen3VL-4B-derived text LLM:
 
 ```text
-train_sft_stage_a_lane_intersection_datasetv2_three_image_context512_roi256_200k_original_dinov2_qwen3vl8b_derived_nodeepstack_lora_llm_npu.sh
+train_sft_stage_a_lane_intersection_datasetv2_three_image_context512_roi256_200k_original_dinov2_caprl4b_nodeepstack_lora_llm_npu.sh
 ```
 
 All scripts in this folder are Ascend/NPU training entrypoints. Formal recipe

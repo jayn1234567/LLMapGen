@@ -2,11 +2,11 @@
 
 # ============================================================
 # NPU SFT training
-# Fixed recipe: matched 200k three-image context512/ROI256 | original DINOv2 + Qwen3-VL-8B-derived text LLM LoRA
+# Fixed recipe: matched 200k three-image context512/ROI256 | original DINOv2 + CapRL-Qwen3VL-4B-derived text LLM LoRA
 # This file is self-contained and does not call another project .sh file.
 # ============================================================
 
-echo "[di-entry] reached matched-200k three-image context512-ROI256 original-DINOv2 Qwen3VL-8B-derived LLM-LoRA launcher"
+echo "[di-entry] reached matched-200k three-image context512-ROI256 original-DINOv2 CapRL-Qwen3VL-4B LLM-LoRA launcher"
 echo "[di-entry] utc=$(date -u +%Y-%m-%dT%H:%M:%SZ) host=$(hostname) pid=$$"
 echo "DI_throughput: 0.00 samples/s/npu"
 
@@ -41,7 +41,7 @@ echo "System defined obs share path: ${OSB_SHARE_PATH}"
 if [ -n "${MA_VJ_NAME:-}" ]; then
   DEFAULT_RUN_ID=$(printf '%s' "${MA_VJ_NAME}" | tr -c 'A-Za-z0-9_.-' '_')        # Stable across every node in one DI job.
 else
-  DEFAULT_RUN_ID=datasetv2_three_image_context512_roi256_200k_original_dinov2_qwen3vl8b_derived_lora_$(date -u +%Y%m%d_%H%M%S)
+  DEFAULT_RUN_ID=datasetv2_three_image_context512_roi256_200k_original_dinov2_caprl4b_lora_$(date -u +%Y%m%d_%H%M%S)
 fi
 RUN_ID=${RUN_ID:-${DEFAULT_RUN_ID}}                                               # Unique run id for local cache and cloud output folders.
 OBS_CACHE=${OBS_CACHE:-/cache}                                                    # Local worker cache root for models, datasets, checkpoints, and outputs.
@@ -63,8 +63,8 @@ CLOUD_OUTPUT_PATH=${OSB_SHARE_PATH%/}/${RUN_ID}                                 
 LOCAL_MODEL_SAVE_ROOT=${LOCAL_MODEL_SAVE_ROOT:-/cache/local_model_save_path}      # Local root for training outputs before cloud upload.
 LOCAL_MODEL_SAVE_PATH=${LOCAL_MODEL_SAVE_PATH:-${LOCAL_MODEL_SAVE_ROOT}/${RUN_ID}}  # Per-run local training output directory.
 # Base LLM assets. Stage-A starts here; Stage-B normally starts from Stage-A checkpoints.
-QWEN_MODEL_NAME=${QWEN_MODEL_NAME:-Qwen3-VL-8B-Instruct}                         # Same base checkpoint used by native experiment B.
-QWEN_PATH=${QWEN_PATH:-${OBS_CACHE}/checkpoints/${QWEN_MODEL_NAME}}               # train_qwen extracts and caches its text LLM automatically.
+QWEN_MODEL_NAME=${QWEN_MODEL_NAME:-CapRL-Qwen3VL-4B}                             # Jiangjihua v9 CapRL base checkpoint.
+QWEN_PATH=${QWEN_PATH:-${OBS_CACHE}/checkpoints/${QWEN_MODEL_NAME}}               # train_qwen extracts and caches the CapRL text LLM automatically.
 
 # Dataset preflight. Full semantic scanning is cheap relative to SFT and catches stale labels early.
 INSPECT_ONLY=${INSPECT_ONLY:-False}                                               # Download, extract, inspect, and exit without downloading models or training.
@@ -100,7 +100,7 @@ LORA_BIAS=${LORA_BIAS:-none}                                                    
 DDP_FIND_UNUSED_PARAMETERS=${DDP_FIND_UNUSED_PARAMETERS:-True}                    # Required because penultimate-layer/no-DeepStack leaves registered visual parameters outside the loss graph.
 WEIGHT_DECAY=${WEIGHT_DECAY:-0.0}                                                 # Weight decay used by the trainer.
 WARMUP_RATIO=${WARMUP_RATIO:-0.03}                                                # Warmup ratio for the cosine learning-rate schedule.
-MODEL_MAX_LENGTH=${MODEL_MAX_LENGTH:-6144}                                        # User-selected bound for 3x1369 DINO tokens plus prompt and target JSON.
+MODEL_MAX_LENGTH=${MODEL_MAX_LENGTH:-7168}                                        # 3x1369 DINO tokens plus prompt and a longer JSON target budget.
 if [ "${MODEL_MAX_LENGTH}" -lt 6144 ]; then
   echo "ERROR: MODEL_MAX_LENGTH=${MODEL_MAX_LENGTH} is too short for three DINOv2 streams (3x1369 visual tokens) plus the JSON target."
   exit 2
@@ -128,8 +128,8 @@ SWANLAB_ENABLE=${SWANLAB_ENABLE:-True}                                          
 export SWANLAB_API_KEY=${SWANLAB_API_KEY:-}                                      # Optional SwanLab key; keep secrets in the DI environment.
 SWANLAB_PROJECT=${SWANLAB_PROJECT:-unimapgen_v9}                                  # SwanLab project.
 SWANLAB_GROUP=${SWANLAB_GROUP:-sft_phase_a_lane_intersection_datasetv2_three_image_context512_roi256_200k_ab}  # Shared A/B comparison group.
-SWANLAB_EXPERIMENT_NAME=${SWANLAB_EXPERIMENT_NAME:-a_dinov2_qwen3vl8b_derived_lora_three_image_200k}  # Experiment A display name.
-SWANLAB_TAGS=${SWANLAB_TAGS:-sft,lora,llm_lora,ab_test,phase_a,lane_intersection,datasetv2,three_image,context512_roi256,200k,dinov2,qwen3vl8b_derived}  # Comma-separated SwanLab tags.
+SWANLAB_EXPERIMENT_NAME=${SWANLAB_EXPERIMENT_NAME:-a_dinov2_caprl4b_lora_three_image_200k}  # Experiment A display name.
+SWANLAB_TAGS=${SWANLAB_TAGS:-sft,lora,llm_lora,practical_comparison,phase_a,lane_intersection,datasetv2,three_image,context512_roi256,200k,dinov2,caprl4b}  # Comma-separated SwanLab tags.
 SWANLAB_MODE=${SWANLAB_MODE:-offline}                                             # SwanLab mode, for example offline on restricted cloud networks.
 SWANLAB_API_HOST=${SWANLAB_API_HOST:-}                                            # Optional SwanLab private API host.
 SWANLAB_WEB_HOST=${SWANLAB_WEB_HOST:-}                                            # Optional SwanLab private web host.

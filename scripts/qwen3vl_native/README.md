@@ -7,8 +7,9 @@ train/train_sft_stage_a_lane_intersection_datasetv2_three_image_context512_roi25
 ```
 
 This recipe uses native Qwen3-VL-8B with three ordered images per sample,
-language-projection LoRA, frozen native vision, 6144 maximum sequence length,
-per-device batch 4, global batch 128, eight epochs, and no eval-loss pass. Its
+language LoRA, visual-attention LoRA, a full-parameter native merger, 4096
+maximum sequence length, per-device batch 4, global batch 128, eight epochs,
+and no eval-loss pass. Its
 matched DINOv2 comparison is documented in
 `docs/THREE_IMAGE_CONTEXT512_200K_DINO_VS_NATIVE_QWEN3VL8B.md`.
 

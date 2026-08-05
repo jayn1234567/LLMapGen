@@ -51,6 +51,7 @@ IMAGE_ROLES = [
     "pv_camera_raw_lane",
     "historical_vehicle_trajectory",
 ]
+INCOMPLETE_MARKER = "_THREE_IMAGE_CONVERSION_INCOMPLETE_DO_NOT_USE.txt"
 PROMPT_CONTRACT_VERSION = "three_image_roles_concise_v2"
 OBSOLETE_PROMPT_FRAGMENTS = (
     "white lines are predicted lanes on a black background",
@@ -281,7 +282,7 @@ def find_clean_source(
     return matches[0]
 
 
-def _base_patch_path(clean_stage: Path, tile_id: str, x0: int, y0: int) -> Path | None:
+def _clean_local_patch_path(clean_stage: Path, tile_id: str, x0: int, y0: int) -> Path | None:
     patch_id = f"{tile_id}_x{x0:05d}_y{y0:05d}"
     relative = Path("images")
     matches = []
@@ -315,60 +316,45 @@ def _source_hw(meta: dict) -> tuple[int, int] | None:
     return height, width
 
 
-def synthesize_clean_context_from_local256(
+def _synthesize_clean_crop_from_local256(
     clean_stage: Path,
     record: dict,
     destination: Path,
+    crop_box: tuple[int, int, int, int],
+    output_size: int,
     patch_size: int = 256,
 ) -> str:
-    """Reconstruct a clean centered context from clean base-grid local patches."""
+    """Reconstruct a clean crop from any overlapping clean local256 patches."""
 
     meta = record.get("meta") or {}
     tile_id = str(meta.get("tile_id") or "").strip()
     if not tile_id:
-        raise ValueError(f"sample {record.get('id')} has no tile_id for context reconstruction")
-    context_size = int(meta.get("context_image_size", 0))
-    if context_size <= patch_size:
+        raise ValueError(f"sample {record.get('id')} has no tile_id for clean-image reconstruction")
+    crop_x0, crop_y0, crop_x1, crop_y1 = map(int, crop_box)
+    if crop_x1 - crop_x0 != output_size or crop_y1 - crop_y0 != output_size:
         raise ValueError(
-            f"sample {record.get('id')} is not a context sample: context_size={context_size}"
-        )
-    context_box = meta.get("context_box_full")
-    if isinstance(context_box, (list, tuple)) and len(context_box) == 4:
-        context_x0, context_y0, context_x1, context_y1 = map(int, context_box)
-    else:
-        roi = meta.get("target_roi_in_image") or [
-            (context_size - patch_size) // 2,
-            (context_size - patch_size) // 2,
-            (context_size + patch_size) // 2,
-            (context_size + patch_size) // 2,
-        ]
-        context_x0 = int(meta["x0"]) - int(roi[0])
-        context_y0 = int(meta["y0"]) - int(roi[1])
-        context_x1 = context_x0 + context_size
-        context_y1 = context_y0 + context_size
-    if context_x1 - context_x0 != context_size or context_y1 - context_y0 != context_size:
-        raise ValueError(
-            f"sample {record.get('id')} has inconsistent context box {context_box!r}"
+            f"sample {record.get('id')} has inconsistent clean crop box {crop_box!r}"
         )
 
-    canvas = Image.new("RGB", (context_size, context_size), (0, 0, 0))
-    coverage = Image.new("L", (context_size, context_size), 0)
-    first_tile_x = (context_x0 // patch_size) * patch_size
-    first_tile_y = (context_y0 // patch_size) * patch_size
+    canvas = Image.new("RGB", (output_size, output_size), (0, 0, 0))
+    coverage = Image.new("L", (output_size, output_size), 0)
+    candidate_step = patch_size // 2
+    first_tile_x = ((crop_x0 - patch_size + 1) // candidate_step) * candidate_step
+    first_tile_y = ((crop_y0 - patch_size + 1) // candidate_step) * candidate_step
     used_tiles = 0
-    for tile_y0 in range(first_tile_y, context_y1, patch_size):
+    for tile_y0 in range(first_tile_y, crop_y1, candidate_step):
         if tile_y0 < 0:
             continue
-        for tile_x0 in range(first_tile_x, context_x1, patch_size):
+        for tile_x0 in range(first_tile_x, crop_x1, candidate_step):
             if tile_x0 < 0:
                 continue
-            source = _base_patch_path(clean_stage, tile_id, tile_x0, tile_y0)
+            source = _clean_local_patch_path(clean_stage, tile_id, tile_x0, tile_y0)
             if source is None:
                 continue
-            left = max(context_x0, tile_x0)
-            top = max(context_y0, tile_y0)
-            right = min(context_x1, tile_x0 + patch_size)
-            bottom = min(context_y1, tile_y0 + patch_size)
+            left = max(crop_x0, tile_x0)
+            top = max(crop_y0, tile_y0)
+            right = min(crop_x1, tile_x0 + patch_size)
+            bottom = min(crop_y1, tile_y0 + patch_size)
             if left >= right or top >= bottom:
                 continue
             with Image.open(source) as image:
@@ -384,7 +370,7 @@ def synthesize_clean_context_from_local256(
                     right - tile_x0,
                     bottom - tile_y0,
                 ))
-            destination_box = (left - context_x0, top - context_y0)
+            destination_box = (left - crop_x0, top - crop_y0)
             canvas.paste(crop, destination_box)
             coverage.paste(
                 255,
@@ -399,23 +385,23 @@ def synthesize_clean_context_from_local256(
     if used_tiles == 0:
         raise FileNotFoundError(
             f"no clean local256 tiles found for sample={record.get('id')} tile={tile_id} "
-            f"context_box={[context_x0, context_y0, context_x1, context_y1]}"
+            f"crop_box={[crop_x0, crop_y0, crop_x1, crop_y1]}"
         )
 
     source_hw = _source_hw(meta)
     if source_hw is not None:
         source_height, source_width = source_hw
-        valid_left = max(0, context_x0) - context_x0
-        valid_top = max(0, context_y0) - context_y0
-        valid_right = min(source_width, context_x1) - context_x0
-        valid_bottom = min(source_height, context_y1) - context_y0
+        valid_left = max(0, crop_x0) - crop_x0
+        valid_top = max(0, crop_y0) - crop_y0
+        valid_right = min(source_width, crop_x1) - crop_x0
+        valid_bottom = min(source_height, crop_y1) - crop_y0
         if valid_left < valid_right and valid_top < valid_bottom:
             extrema = coverage.crop(
                 (valid_left, valid_top, valid_right, valid_bottom)
             ).getextrema()
             if extrema != (255, 255):
                 raise FileNotFoundError(
-                    "clean local256 staging does not fully cover the valid context region for "
+                    "clean local256 staging does not fully cover the valid crop region for "
                     f"sample={record.get('id')} tile={tile_id}; coverage_extrema={extrema}"
                 )
 
@@ -427,30 +413,142 @@ def synthesize_clean_context_from_local256(
         temporary.replace(destination)
     finally:
         temporary.unlink(missing_ok=True)
-    return "mosaic_from_local256"
+    return "mosaic_from_overlapping_local256"
+
+
+def synthesize_clean_context_from_local256(
+    clean_stage: Path,
+    record: dict,
+    destination: Path,
+    patch_size: int = 256,
+) -> str:
+    meta = record.get("meta") or {}
+    context_size = int(meta.get("context_image_size", 0))
+    if context_size <= patch_size:
+        raise ValueError(
+            f"sample {record.get('id')} is not a context sample: context_size={context_size}"
+        )
+    context_box = meta.get("context_box_full")
+    if isinstance(context_box, (list, tuple)) and len(context_box) == 4:
+        crop_box = tuple(map(int, context_box))
+    else:
+        roi = meta.get("target_roi_in_image") or [
+            (context_size - patch_size) // 2,
+            (context_size - patch_size) // 2,
+            (context_size + patch_size) // 2,
+            (context_size + patch_size) // 2,
+        ]
+        crop_x0 = int(meta["x0"]) - int(roi[0])
+        crop_y0 = int(meta["y0"]) - int(roi[1])
+        crop_box = (crop_x0, crop_y0, crop_x0 + context_size, crop_y0 + context_size)
+    _synthesize_clean_crop_from_local256(
+        clean_stage,
+        record,
+        destination,
+        crop_box,
+        context_size,
+        patch_size,
+    )
+    return "mosaic_context_from_local256"
+
+
+def synthesize_clean_local_from_local256(
+    clean_stage: Path,
+    record: dict,
+    destination: Path,
+    patch_size: int = 256,
+) -> str:
+    meta = record.get("meta") or {}
+    target_box = meta.get("target_box_full")
+    if isinstance(target_box, (list, tuple)) and len(target_box) == 4:
+        crop_box = tuple(map(int, target_box))
+    else:
+        x0, y0 = int(meta["x0"]), int(meta["y0"])
+        crop_box = (x0, y0, x0 + patch_size, y0 + patch_size)
+    _synthesize_clean_crop_from_local256(
+        clean_stage,
+        record,
+        destination,
+        crop_box,
+        patch_size,
+        patch_size,
+    )
+    return "mosaic_local_from_overlapping_local256"
+
+
+def crop_clean_local_from_context(
+    context_stage: Path,
+    record: dict,
+    destination: Path,
+    patch_size: int = 256,
+) -> str:
+    source = find_clean_source(
+        context_stage,
+        "context512_roi256",
+        str(record["image"]),
+    )
+    context_marker = read_json(context_stage / STAGE_MARKER)
+    context_size = int(context_marker.get("context_size", 512))
+    roi = [
+        (context_size - patch_size) // 2,
+        (context_size - patch_size) // 2,
+        (context_size + patch_size) // 2,
+        (context_size + patch_size) // 2,
+    ]
+    roi = tuple(map(int, roi))
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    temporary = destination.with_name(destination.name + ".clean_local.partial")
+    temporary.unlink(missing_ok=True)
+    try:
+        with Image.open(source) as image:
+            image = image.convert("RGB")
+            if image.size != (context_size, context_size):
+                raise ValueError(
+                    f"clean context image must be {context_size}x{context_size}, got "
+                    f"{image.size}: {source}"
+                )
+            crop = image.crop(roi)
+        if crop.size != (patch_size, patch_size):
+            raise ValueError(f"clean context ROI has size={crop.size}, expected {patch_size}x{patch_size}")
+        crop.save(temporary, format="PNG", compress_level=3)
+        temporary.replace(destination)
+    finally:
+        temporary.unlink(missing_ok=True)
+    return "crop_local256_from_context512_roi256"
 
 
 def materialize_clean_primary(
-    clean_stage: Path,
+    clean_sources: dict[str, Path],
     source_variant: str,
     record: dict,
     destination: Path,
     copy_mode: str,
 ) -> str:
-    marker = read_json(clean_stage / STAGE_MARKER)
+    local_stage = clean_sources["local256"]
+    context_stage = clean_sources["context512_roi256"]
+    direct_stage = clean_sources[source_variant]
+    marker = read_json(direct_stage / STAGE_MARKER)
     if source_variant in marker.get("variants", []):
-        clean_source = find_clean_source(
-            clean_stage,
-            source_variant,
-            str(record["image"]),
-        )
-        return replace_file(clean_source, destination, copy_mode)
-    if source_variant == "context512_roi256" and "local256" in marker.get("variants", []):
-        return synthesize_clean_context_from_local256(clean_stage, record, destination)
-    raise ValueError(
-        f"clean stage cannot supply {source_variant}: {clean_stage}; "
-        f"variants={marker.get('variants', [])}"
-    )
+        try:
+            clean_source = find_clean_source(
+                direct_stage,
+                source_variant,
+                str(record["image"]),
+            )
+            return replace_file(clean_source, destination, copy_mode)
+        except FileNotFoundError:
+            pass
+    if source_variant == "local256":
+        context_marker = read_json(context_stage / STAGE_MARKER)
+        if "context512_roi256" in context_marker.get("variants", []):
+            try:
+                return crop_clean_local_from_context(context_stage, record, destination)
+            except FileNotFoundError:
+                pass
+        return synthesize_clean_local_from_local256(local_stage, record, destination)
+    if source_variant == "context512_roi256":
+        return synthesize_clean_context_from_local256(local_stage, record, destination)
+    raise ValueError(f"unsupported clean source variant: {source_variant}")
 
 
 def replace_file(source: Path, destination: Path, mode: str) -> str:
@@ -580,7 +678,7 @@ def convert_variant_to_three_images(
                     )
                 destination = variant_root / str(record["image"])
                 used_mode = materialize_clean_primary(
-                    clean_stages[source_index][source_variant],
+                    clean_stages[source_index],
                     source_variant,
                     record,
                     destination,
@@ -927,6 +1025,18 @@ def main(argv=None) -> None:
                     flush=True,
                 )
                 continue
+            marker_path = source_root / INCOMPLETE_MARKER
+            marker_path.write_text(
+                "This is an intermediate overlay dataset. Do not train from or package this "
+                "directory. Wait until conversion finishes and the directory is renamed to "
+                f"{target_root.name}.\n",
+                encoding="utf-8",
+            )
+            print(
+                f"[three-image-dataset] WARNING: {source_root} is an incomplete overlay "
+                f"intermediate; final target={target_root}",
+                flush=True,
+            )
             conversion_reports[source_variant] = convert_variant_to_three_images(
                 source_root,
                 source_variant,
@@ -934,6 +1044,7 @@ def main(argv=None) -> None:
                 args.copy_mode,
             )
             source_root.rename(target_root)
+            (target_root / INCOMPLETE_MARKER).unlink(missing_ok=True)
             relabel_metadata(
                 target_root / "dataset_info.json",
                 source_variant,

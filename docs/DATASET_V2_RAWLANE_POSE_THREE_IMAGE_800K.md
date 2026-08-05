@@ -89,7 +89,11 @@ python scripts\tools\build_rc_dataset_v2_rawlane_pose_three_image_800k_from_stag
 `--clean-staging-root` supplies clean local256 images. `--clean-context-staging-root`
 supplies clean context512_roi256 images directly. If the latter is omitted or lacks
 a source shard, the builder reconstructs that clean 512 context from neighboring
-clean local256 base-grid tiles without downloading raw TIFF archives.
+clean local256 tiles without downloading raw TIFF archives. If an individual
+local256 candidate is absent from the clean local staging, the builder first crops
+the center ROI from the matching clean context image, then falls back to overlapping
+clean local256 tiles. This allows older filtered clean stagings to cover a larger
+auxiliary candidate set when their spatial image coverage is sufficient.
 
 The preflight blocks the build unless every auxiliary source has a matching
 clean local source, a direct or reconstructable clean context view exists,

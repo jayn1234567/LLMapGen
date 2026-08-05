@@ -85,10 +85,12 @@ from scripts.tools.build_rc_dataset_v2_rawlane_pose_context512_roi256_550k_from_
 from scripts.tools.build_rc_dataset_v2_rawlane_pose_three_image_800k_from_staging_windows import (
     IMAGE_ROLES as THREE_IMAGE_ROLES,
     PROMPT_CONTRACT_VERSION as THREE_IMAGE_PROMPT_CONTRACT_VERSION,
+    crop_clean_local_from_context,
     finalization_command as three_image_finalization_command,
     parse_args as parse_three_image_args,
     refresh_existing_three_image_prompts,
     synthesize_clean_context_from_local256,
+    synthesize_clean_local_from_local256,
     transform_record as transform_three_image_record,
     validate_stage_compatibility as validate_three_image_staging,
 )
@@ -350,12 +352,78 @@ class DatasetV2ContextTest(unittest.TestCase):
             }
             output = root / "context.png"
             mode = synthesize_clean_context_from_local256(stage, record, output)
-            self.assertEqual(mode, "mosaic_from_local256")
+            self.assertEqual(mode, "mosaic_context_from_local256")
             with Image.open(output) as image:
                 self.assertEqual(image.getpixel((64, 64)), colors[(0, 0)])
                 self.assertEqual(image.getpixel((320, 64)), colors[(256, 0)])
                 self.assertEqual(image.getpixel((64, 320)), colors[(0, 256)])
                 self.assertEqual(image.getpixel((320, 320)), colors[(256, 256)])
+
+    def test_three_image_missing_local_patch_can_use_overlapping_clean_tiles(self):
+        colors = {
+            (128, 128): (255, 0, 0),
+            (384, 128): (0, 255, 0),
+            (128, 384): (0, 0, 255),
+            (384, 384): (255, 255, 0),
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            stage = root / "stage"
+            image_root = stage / "variants" / "local256" / "images" / "train" / "tile"
+            image_root.mkdir(parents=True)
+            for (x0, y0), color in colors.items():
+                patch_id = f"tile_x{x0:05d}_y{y0:05d}"
+                Image.new("RGB", (256, 256), color).save(image_root / f"{patch_id}.png")
+            record = {
+                "id": "tile_x00256_y00256",
+                "meta": {
+                    "tile_id": "tile",
+                    "x0": 256,
+                    "y0": 256,
+                    "target_box_full": [256, 256, 512, 512],
+                    "source_image_size": [768, 768],
+                },
+            }
+            output = root / "local.png"
+            mode = synthesize_clean_local_from_local256(stage, record, output)
+            self.assertEqual(mode, "mosaic_local_from_overlapping_local256")
+            with Image.open(output) as image:
+                self.assertEqual(image.getpixel((32, 32)), colors[(128, 128)])
+                self.assertEqual(image.getpixel((224, 32)), colors[(384, 128)])
+                self.assertEqual(image.getpixel((32, 224)), colors[(128, 384)])
+                self.assertEqual(image.getpixel((224, 224)), colors[(384, 384)])
+
+    def test_three_image_local_can_be_center_cropped_from_clean_context(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            stage = root / "context_stage"
+            image_root = (
+                stage
+                / "variants"
+                / "context512_roi256"
+                / "images"
+                / "eval"
+                / "tile"
+            )
+            image_root.mkdir(parents=True)
+            (stage / STAGE_MARKER).write_text(
+                json.dumps({"context_size": 512, "variants": ["context512_roi256"]}),
+                encoding="utf-8",
+            )
+            source = Image.new("RGB", (512, 512), (0, 0, 0))
+            source.paste((12, 34, 56), (128, 128, 384, 384))
+            relative = "images/train/tile/tile_x00256_y00256.png"
+            source.save(image_root / "tile_x00256_y00256.png")
+            output = root / "local.png"
+            mode = crop_clean_local_from_context(
+                stage,
+                {"id": "tile_x00256_y00256", "image": relative},
+                output,
+            )
+            self.assertEqual(mode, "crop_local256_from_context512_roi256")
+            with Image.open(output) as image:
+                self.assertEqual(image.size, (256, 256))
+                self.assertEqual(image.getpixel((64, 64)), (12, 34, 56))
 
     def test_three_image_preflight_prefers_separate_clean_context_staging(self):
         geometry = {

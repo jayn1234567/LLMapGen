@@ -25,7 +25,7 @@ import sys
 from collections import Counter, deque
 from pathlib import Path, PurePosixPath
 
-from PIL import Image
+from PIL import Image, ImageChops
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -100,6 +100,12 @@ def parse_args(argv=None) -> argparse.Namespace:
         default="sampled",
     )
     parser.add_argument("--image-check-limit", type=int, default=10_000)
+    parser.add_argument(
+        "--non-512-policy",
+        choices=("skip", "pad", "error"),
+        default="skip",
+        help="How to handle boundary-clipped triplets. Production default: skip.",
+    )
     parser.add_argument("--progress-every", type=int, default=10_000)
     parser.add_argument("--max-samples", type=int, default=0)
     parser.add_argument("--package", action="store_true")
@@ -521,18 +527,112 @@ def materialize_file(source: Path, destination: Path, mode: str, resume: bool) -
     return f"replaced_{used_mode}" if replacement else used_mode
 
 
-def inspect_triplet_sizes(paths: tuple[Path, Path, Path], expected_size: int, sample_id: str) -> None:
+def inspect_triplet_sizes(paths: tuple[Path, Path, Path], sample_id: str) -> tuple[int, int]:
     sizes = []
     for path in paths:
         with Image.open(path) as image:
             sizes.append(image.size)
     if len(set(sizes)) != 1:
         raise ValueError(f"sample={sample_id} triplet image sizes differ: {sizes}")
-    if sizes[0] != (expected_size, expected_size):
+    return sizes[0]
+
+
+def validate_source_image_size(
+    size: tuple[int, int],
+    target_size: int,
+    context_size: int,
+    sample_id: str,
+) -> None:
+    width, height = size
+    if (
+        width < target_size
+        or height < target_size
+        or width > context_size
+        or height > context_size
+    ):
         raise ValueError(
-            f"sample={sample_id} source images are {sizes[0]}, expected "
-            f"{expected_size}x{expected_size} context images"
+            f"sample={sample_id} source images are {size}; each dimension must be "
+            f"within [{target_size},{context_size}] before context padding"
         )
+
+
+def context_padding(
+    sample_id: str,
+    source_size: tuple[int, int],
+    target_size: int,
+    context_size: int,
+) -> tuple[int, int, int, int]:
+    width, height = source_size
+    if source_size == (context_size, context_size):
+        return 0, 0, 0, 0
+    match = ID_GRID_RE.search(sample_id)
+    if not match:
+        raise ValueError(
+            f"sample={sample_id} needs context padding from {source_size}, but its id "
+            "does not contain _rN_cN_pN grid coordinates"
+        )
+    row = int(match.group("row"))
+    col = int(match.group("col"))
+    margin = (context_size - target_size) // 2
+    if width == context_size:
+        left = right = 0
+    else:
+        target_x_in_source = 0 if col == 0 else min(margin, width - target_size)
+        left = margin - target_x_in_source
+        right = context_size - width - left
+    if height == context_size:
+        top = bottom = 0
+    else:
+        target_y_in_source = 0 if row == 0 else min(margin, height - target_size)
+        top = margin - target_y_in_source
+        bottom = context_size - height - top
+    if min(left, top, right, bottom) < 0:
+        raise ValueError(
+            f"sample={sample_id} cannot align source_size={source_size} to centered "
+            f"ROI using padding={(left, top, right, bottom)}"
+        )
+    return left, top, right, bottom
+
+
+def materialize_padded_image(
+    source: Path,
+    destination: Path,
+    padding: tuple[int, int, int, int],
+    context_size: int,
+    resume: bool,
+) -> str:
+    left, top, _, _ = padding
+    with Image.open(source) as opened:
+        image = opened.copy()
+    canvas = Image.new(image.mode, (context_size, context_size), 0)
+    canvas.paste(image, (left, top))
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    if destination.is_file():
+        if not resume:
+            raise FileExistsError(f"destination already exists: {destination}")
+        try:
+            with Image.open(destination) as existing:
+                identical = (
+                    existing.size == canvas.size
+                    and existing.mode == canvas.mode
+                    and ImageChops.difference(existing, canvas).getbbox() is None
+                )
+        except (OSError, ValueError):
+            identical = False
+        if identical:
+            return "reused_padded"
+        destination.unlink()
+        status = "replaced_padded"
+    else:
+        status = "padded"
+    temporary = destination.with_name(destination.name + ".partial")
+    temporary.unlink(missing_ok=True)
+    try:
+        canvas.save(temporary, format="PNG")
+        temporary.replace(destination)
+    finally:
+        temporary.unlink(missing_ok=True)
+    return status
 
 
 def grid_metadata(sample_id: str, patch_size: int) -> dict:
@@ -607,6 +707,7 @@ def convert_dataset(args: argparse.Namespace) -> dict:
     )
     image_roots = list(dict.fromkeys((image_root, input_root / "images", input_root)))
     record_writers, meta_writers = open_writers(output_root)
+    skipped_writer = (output_root / "skipped_samples.jsonl").open("w", encoding="utf-8")
     counts = Counter()
     semantic_counts = Counter()
     conversion_counts = Counter()
@@ -628,6 +729,7 @@ def convert_dataset(args: argparse.Namespace) -> dict:
                 if sample_id in seen_ids:
                     raise ValueError(f"duplicate sample id={sample_id}")
                 seen_ids.add(sample_id)
+                counts["processed"] += 1
                 target_lines, gt_info = convert_gt(source_record, args.boundary_tolerance)
                 if gt_info["patch_size"] != args.target_patch_size:
                     raise ValueError(
@@ -646,9 +748,57 @@ def convert_dataset(args: argparse.Namespace) -> dict:
                     args.image_check_mode == "sampled"
                     and image_checks < args.image_check_limit
                 )
-                if should_check:
-                    inspect_triplet_sizes(source_paths, args.context_size, sample_id)
+                with Image.open(source_paths[0]) as primary_image:
+                    source_size = primary_image.size
+                if source_size != (args.context_size, args.context_size) and args.non_512_policy == "skip":
+                    conversion_counts["skipped_non_512_sample"] += 1
+                    conversion_counts[f"skipped_source_size:{source_size[0]}x{source_size[1]}"] += 1
+                    write_jsonl_item(skipped_writer, {
+                        "id": sample_id,
+                        "reason": "non_512_context_image",
+                        "source_image_size": list(source_size),
+                        "expected_image_size": [args.context_size, args.context_size],
+                        "source_image_paths": [str(path) for path in source_paths],
+                        "annotation": str(annotation_path),
+                    })
+                    skipped = conversion_counts["skipped_non_512_sample"]
+                    if skipped <= 20 or (
+                        args.progress_every > 0 and skipped % args.progress_every == 0
+                    ):
+                        print(
+                            f"[triplet-gt-convert] skip non-512 sample={sample_id} "
+                            f"size={source_size} skipped={skipped}",
+                            flush=True,
+                        )
+                    continue
+                validate_source_image_size(
+                    source_size,
+                    args.target_patch_size,
+                    args.context_size,
+                    sample_id,
+                )
+                needs_padding = source_size != (args.context_size, args.context_size)
+                if needs_padding and args.non_512_policy == "error":
+                    raise ValueError(
+                        f"sample={sample_id} source images are {source_size}, expected "
+                        f"{args.context_size}x{args.context_size}; use "
+                        "--non-512-policy skip or pad"
+                    )
+                if should_check or needs_padding:
+                    source_size = inspect_triplet_sizes(source_paths, sample_id)
+                    validate_source_image_size(
+                        source_size,
+                        args.target_patch_size,
+                        args.context_size,
+                        sample_id,
+                    )
                     image_checks += 1
+                padding = context_padding(
+                    sample_id,
+                    source_size,
+                    args.target_patch_size,
+                    args.context_size,
+                )
                 primary_rel, raw_lane_rel, pose_rel = output_relatives(
                     sample_id,
                     split,
@@ -660,12 +810,24 @@ def convert_dataset(args: argparse.Namespace) -> dict:
                     output_root / pose_rel,
                 )
                 for source, destination in zip(source_paths, output_paths):
-                    conversion_counts[materialize_file(
-                        source,
-                        destination,
-                        args.copy_mode,
-                        args.resume,
-                    )] += 1
+                    if needs_padding:
+                        status = materialize_padded_image(
+                            source,
+                            destination,
+                            padding,
+                            args.context_size,
+                            args.resume,
+                        )
+                    else:
+                        status = materialize_file(
+                            source,
+                            destination,
+                            args.copy_mode,
+                            args.resume,
+                        )
+                    conversion_counts[status] += 1
+                if needs_padding:
+                    conversion_counts["padded_sample"] += 1
                 tile_id = sample_id.rsplit("_r", 1)[0] if "_r" in sample_id else source_paths[0].parent.name
                 margin = (args.context_size - args.target_patch_size) // 2
                 meta = {
@@ -675,9 +837,11 @@ def convert_dataset(args: argparse.Namespace) -> dict:
                     "utm_zone": source_record.get("utm_zone"),
                     "source_annotation": str(annotation_path),
                     "source_image_paths": [str(path) for path in source_paths],
+                    "source_image_size": list(source_size),
                     "source_schema": FORMAT_VERSION,
                     "context_box_semantics": "centered_target_roi",
                     "context_image_size": args.context_size,
+                    "context_padding_ltrb": list(padding),
                     "target_roi_in_image": [
                         margin,
                         margin,
@@ -755,6 +919,7 @@ def convert_dataset(args: argparse.Namespace) -> dict:
                 break
     finally:
         close_writers(record_writers, meta_writers)
+        skipped_writer.close()
     if counts["total"] <= 0:
         raise ValueError("conversion produced no records")
     return {
@@ -765,6 +930,8 @@ def convert_dataset(args: argparse.Namespace) -> dict:
         "annotation_file_count": len(annotation_files),
         "record_counts": {split: counts[split] for split in SPLITS},
         "total_records": counts["total"],
+        "processed_source_records": counts["processed"],
+        "skipped_non_512_records": conversion_counts["skipped_non_512_sample"],
         "difficulty_counts": {
             key.split(":", 1)[1]: value
             for key, value in counts.items()
@@ -811,6 +978,19 @@ def write_dataset_metadata(args: argparse.Namespace, summary: dict) -> None:
             (args.context_size + args.target_patch_size) // 2,
         ],
         "source_gt_coordinate_system": f"pixel_0_{args.target_patch_size - 1}_relative_to_target_roi",
+        "non_512_policy": args.non_512_policy,
+        "context_padding_policy": {
+            "enabled": args.non_512_policy == "pad",
+            "canvas_size": [args.context_size, args.context_size],
+            "fill": "black",
+            "alignment": "target_roi_centered_using_sample_row_col",
+            "target_roi": [
+                (args.context_size - args.target_patch_size) // 2,
+                (args.context_size - args.target_patch_size) // 2,
+                (args.context_size + args.target_patch_size) // 2,
+                (args.context_size + args.target_patch_size) // 2,
+            ],
+        },
         "multi_image_input": {
             "enabled": True,
             "num_images_per_sample": 3,

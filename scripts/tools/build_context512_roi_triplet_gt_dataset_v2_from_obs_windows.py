@@ -378,6 +378,7 @@ def run_converter(args: argparse.Namespace, source_root: Path, gt_root: Path, ou
         "--copy-mode", args.copy_mode,
         "--image-check-mode", args.image_check_mode,
         "--image-check-limit", str(args.image_check_limit),
+        "--non-512-policy", "skip",
         "--progress-every", str(args.progress_every),
         "--package",
         "--package-path", str(package),

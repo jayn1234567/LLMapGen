@@ -12,7 +12,7 @@ class Context512RoiTripletGtConverterTest(unittest.TestCase):
     def _write_triplet(
         self,
         root: Path,
-        size: int,
+        size: int | tuple[int, int],
         image_prefix: Path = Path("images"),
     ) -> tuple[Path, str]:
         sample_id = "A0_demo_r0_c0_p00"
@@ -25,8 +25,9 @@ class Context512RoiTripletGtConverterTest(unittest.TestCase):
             "r0_c0_p00_raw_lane.png",
         ]
         colors = [(10, 20, 30), (255, 255, 255), (200, 200, 200)]
+        image_size = (size, size) if isinstance(size, int) else size
         for name, color in zip(names, colors):
-            Image.new("RGB", (size, size), color).save(image_root / name)
+            Image.new("RGB", image_size, color).save(image_root / name)
 
         annotation = [{
             "id": sample_id,
@@ -95,20 +96,63 @@ class Context512RoiTripletGtConverterTest(unittest.TestCase):
             validation = json.loads((output / "conversion_validation.json").read_text(encoding="utf-8"))
             self.assertEqual(validation["status"], "passed")
 
-    def test_rejects_non_context_images(self):
+    def test_rejects_images_smaller_than_supervised_roi(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir) / "source"
             output = Path(temp_dir) / "converted"
-            annotation_path, _ = self._write_triplet(root, 256)
+            annotation_path, _ = self._write_triplet(root, (128, 512))
 
-            with self.assertRaisesRegex(ValueError, "expected 512x512 context images"):
+            with self.assertRaisesRegex(ValueError, r"within \[256,512\]"):
                 main([
                     "--input-root", str(root),
                     "--annotation-root", str(annotation_path.parents[1]),
                     "--output-root", str(output),
                     "--copy-mode", "copy",
                     "--image-check-mode", "all",
+                    "--non-512-policy", "error",
                 ])
+
+    def test_pads_clipped_boundary_context_to_512(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir) / "source"
+            output = Path(temp_dir) / "converted"
+            annotation_path, _ = self._write_triplet(root, (256, 512))
+
+            main([
+                "--input-root", str(root),
+                "--annotation-root", str(annotation_path.parents[1]),
+                "--output-root", str(output),
+                "--copy-mode", "copy",
+                "--image-check-mode", "all",
+                "--non-512-policy", "pad",
+            ])
+
+            record = json.loads((output / "phase_a" / "train.jsonl").read_text(encoding="utf-8"))
+            primary = output / record["images"][0]
+            with Image.open(primary) as image:
+                self.assertEqual(image.size, (512, 512))
+                self.assertEqual(image.getpixel((0, 200)), (0, 0, 0))
+                self.assertEqual(image.getpixel((128, 200)), (10, 20, 30))
+            self.assertEqual(record["meta"]["source_image_size"], [256, 512])
+            self.assertEqual(record["meta"]["context_padding_ltrb"], [128, 0, 128, 0])
+
+    def test_default_policy_skips_clipped_context(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir) / "source"
+            output = Path(temp_dir) / "converted"
+            annotation_path, sample_id = self._write_triplet(root, (256, 512))
+
+            with self.assertRaisesRegex(ValueError, "conversion produced no records"):
+                main([
+                    "--input-root", str(root),
+                    "--annotation-root", str(annotation_path.parents[1]),
+                    "--output-root", str(output),
+                    "--copy-mode", "copy",
+                ])
+
+            skipped = json.loads((output / "skipped_samples.jsonl").read_text(encoding="utf-8"))
+            self.assertEqual(skipped["id"], sample_id)
+            self.assertEqual(skipped["source_image_size"], [256, 512])
 
     def test_discovers_obs_download_prefix_before_images(self):
         with tempfile.TemporaryDirectory() as temp_dir:

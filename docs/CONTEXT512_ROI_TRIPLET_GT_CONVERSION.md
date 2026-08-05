@@ -17,8 +17,12 @@ model order is deliberately changed to:
 
 The converter copies or hard-links the three existing images. It does not try
 to remove a Raw-Lane overlay from an image. A sampled image-header preflight
-requires the source triplets to be 512x512, so a local256 directory with actual
-256x256 assets cannot be silently mislabeled as context512.
+requires every triplet to have matching dimensions. Full 512x512 triplets are
+hard-linked unchanged. The production OBS pipeline skips boundary-clipped
+triplets such as 256x512 or 512x256 and records them in
+`skipped_samples.jsonl`; it does not pad or resize them. The lower-level
+converter retains explicit `--non-512-policy pad` and `error` modes for audits,
+but its default is `skip`.
 
 ## Source Contract
 

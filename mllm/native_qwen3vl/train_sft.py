@@ -58,7 +58,7 @@ class NativeModelArguments:
     vision_lora_target_modules: str = field(
         default="q_proj,k_proj,v_proj,o_proj,qkv,proj"
     )
-    unfreeze_multimodal_merger: bool = field(default=False)
+    merger_lora_enable: bool = field(default=False)
 
 
 @dataclass
@@ -77,7 +77,7 @@ class NativeDataArguments:
 class NativeTrainingArguments(transformers.TrainingArguments):
     model_max_length: int = field(default=4096)
     vision_lora_learning_rate: Optional[float] = field(default=None)
-    merger_learning_rate: Optional[float] = field(default=None)
+    merger_lora_learning_rate: Optional[float] = field(default=None)
     save_best_train_loss: bool = field(default=False)
     best_train_loss_start_step: int = field(default=0)
     best_train_loss_dir: str = field(default="best")
@@ -178,7 +178,7 @@ def _is_native_merger_name(name: str) -> bool:
 
 
 class NativeMultimodalTrainer(transformers.Trainer):
-    """Trainer with separate LoRA/merger LRs and complete PEFT checkpoints."""
+    """Trainer with separate language, visual, and merger LoRA learning rates."""
 
     def create_optimizer(self):
         if self.optimizer is not None:
@@ -187,7 +187,7 @@ class NativeMultimodalTrainer(transformers.Trainer):
         grouped: dict[tuple[float, float], list[torch.nn.Parameter]] = {}
         default_lr = float(self.args.learning_rate)
         vision_lr = float(self.args.vision_lora_learning_rate or default_lr)
-        merger_lr = float(self.args.merger_learning_rate or default_lr)
+        merger_lr = float(self.args.merger_lora_learning_rate or vision_lr)
         for name, parameter in self.model.named_parameters():
             if not parameter.requires_grad:
                 continue
@@ -214,23 +214,9 @@ class NativeMultimodalTrainer(transformers.Trainer):
         self.optimizer = optimizer_cls(optimizer_groups, **optimizer_kwargs)
         rank0_print(
             "Native optimizer LRs: "
-            f"language_lora={default_lr}, vision_lora={vision_lr}, merger={merger_lr}"
+            f"language_lora={default_lr}, vision_lora={vision_lr}, merger_lora={merger_lr}"
         )
         return self.optimizer
-
-    def _save(self, output_dir: Optional[str] = None, state_dict=None):
-        super()._save(output_dir=output_dir, state_dict=state_dict)
-        output_path = Path(output_dir or self.args.output_dir)
-        merger_state = {
-            name: parameter.detach().cpu()
-            for name, parameter in self.model.named_parameters()
-            if parameter.requires_grad and _is_native_merger_name(name)
-        }
-        if merger_state:
-            torch.save(merger_state, output_path / "native_non_lora_trainables.bin")
-            rank0_print(
-                f"Saved {len(merger_state)} trainable native merger tensors to {output_path}"
-            )
 
 
 def _dataset_paths(values: Optional[list[str] | str]) -> list[str]:
@@ -295,19 +281,26 @@ def resolve_vision_lora_targets(model, requested_names: list[str]) -> list[str]:
     return targets
 
 
-def unfreeze_native_merger(model) -> list[str]:
-    trainable_names = []
-    for name, parameter in model.named_parameters():
-        if _is_native_merger_name(name):
-            parameter.requires_grad_(True)
-            trainable_names.append(name)
-    if not trainable_names:
-        raise ValueError("Requested native merger training, but no merger parameters were found")
-    return trainable_names
+def resolve_merger_lora_targets(model) -> list[str]:
+    targets = [
+        name
+        for name, module in model.named_modules()
+        if isinstance(module, torch.nn.Linear) and _is_native_merger_name(name)
+    ]
+    if not targets:
+        raise ValueError(
+            "Unable to find native Qwen3-VL merger Linear modules for LoRA. "
+            "The model layout may not match Qwen3-VL."
+        )
+    return targets
 
 
 def apply_lora(model, model_args: NativeModelArguments):
-    if not model_args.lora_enable and not model_args.vision_lora_enable:
+    if not (
+        model_args.lora_enable
+        or model_args.vision_lora_enable
+        or model_args.merger_lora_enable
+    ):
         return model
 
     try:
@@ -315,7 +308,9 @@ def apply_lora(model, model_args: NativeModelArguments):
     except ImportError as exc:
         raise ImportError("Native Qwen3-VL LoRA training requires the peft package") from exc
 
-    resolved_targets = []
+    language_targets = []
+    vision_targets = []
+    merger_targets = []
     if model_args.lora_enable:
         target_modules = [
             item.strip()
@@ -324,7 +319,7 @@ def apply_lora(model, model_args: NativeModelArguments):
         ]
         if not target_modules:
             raise ValueError("lora_target_modules must contain at least one module name")
-        resolved_targets.extend(resolve_language_lora_targets(model, target_modules))
+        language_targets = resolve_language_lora_targets(model, target_modules)
     if model_args.vision_lora_enable:
         vision_target_modules = [
             item.strip()
@@ -333,8 +328,10 @@ def apply_lora(model, model_args: NativeModelArguments):
         ]
         if not vision_target_modules:
             raise ValueError("vision_lora_target_modules must contain at least one module name")
-        resolved_targets.extend(resolve_vision_lora_targets(model, vision_target_modules))
-    resolved_targets = sorted(set(resolved_targets))
+        vision_targets = resolve_vision_lora_targets(model, vision_target_modules)
+    if model_args.merger_lora_enable:
+        merger_targets = resolve_merger_lora_targets(model)
+    resolved_targets = sorted(set(language_targets + vision_targets + merger_targets))
     config = LoraConfig(
         task_type=TaskType.CAUSAL_LM,
         inference_mode=False,
@@ -345,15 +342,13 @@ def apply_lora(model, model_args: NativeModelArguments):
         target_modules=resolved_targets,
     )
     model = get_peft_model(model, config)
-    merger_parameter_names = []
-    if model_args.unfreeze_multimodal_merger:
-        merger_parameter_names = unfreeze_native_merger(model)
     if hasattr(model, "enable_input_require_grads"):
         model.enable_input_require_grads()
     if rank0() and hasattr(model, "print_trainable_parameters"):
         rank0_print(
-            f"Native Qwen3-VL LoRA targets: {len(resolved_targets)} language/visual linear modules; "
-            f"full-train merger tensors={len(merger_parameter_names)}"
+            "Native Qwen3-VL LoRA targets: "
+            f"language={len(language_targets)}, visual_attention={len(vision_targets)}, "
+            f"merger={len(merger_targets)}, total={len(resolved_targets)}"
         )
         model.print_trainable_parameters()
     return model
@@ -406,7 +401,7 @@ def train():
     rank0_print(
         f"vision_lora={model_args.vision_lora_enable} "
         f"targets={model_args.vision_lora_target_modules} "
-        f"full_train_merger={model_args.unfreeze_multimodal_merger}"
+        f"merger_lora={model_args.merger_lora_enable}"
     )
     rank0_print(f"train={data_args.data_path}")
     rank0_print(f"system_prompt={data_args.system_prompt!r}")
@@ -429,9 +424,9 @@ def train():
             "lora_target_modules": model_args.lora_target_modules,
             "vision_lora_enable": model_args.vision_lora_enable,
             "vision_lora_target_modules": model_args.vision_lora_target_modules,
-            "unfreeze_multimodal_merger": model_args.unfreeze_multimodal_merger,
+            "merger_lora_enable": model_args.merger_lora_enable,
             "vision_lora_learning_rate": training_args.vision_lora_learning_rate,
-            "merger_learning_rate": training_args.merger_learning_rate,
+            "merger_lora_learning_rate": training_args.merger_lora_learning_rate,
             "global_step": trainer.state.global_step,
         }
         Path(training_args.output_dir, "native_qwen3vl_checkpoint.json").write_text(

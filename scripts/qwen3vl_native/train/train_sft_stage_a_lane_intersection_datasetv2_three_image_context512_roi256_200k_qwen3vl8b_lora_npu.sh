@@ -20,7 +20,7 @@ echo "DI_throughput: 0.00 samples/s/npu"
 DATASET_PHASE=phase_a                                                             # Dataset stage: phase_a patch construction.
 MAP_TASK=lane_intersection                                                        # Task type: lane or lane_intersection.
 MODEL_RECIPE=qwen3vl_native                                                       # Native Qwen3-VL visual+LLM architecture.
-TRAIN_VARIANT=lora                                                               # PEFT LoRA on language/visual attention; full native merger.
+TRAIN_VARIANT=lora                                                               # PEFT LoRA on language, visual attention, and native merger.
 
 CLUSTER_SAVE=${OUTPUT_URL}                                                        # Cloud output root injected by the platform.
 OSB_SHARE_PATH="${CLUSTER_SAVE}"                                                  # Alias used by existing project scripts.
@@ -53,7 +53,7 @@ NUM_EPOCHS=${NUM_EPOCHS:-8}                                                     
 MAX_STEPS=${MAX_STEPS:--1}                                                        # Positive values are reserved for smoke runs.
 LR=${LR:-2e-4}                                                                    # Native Qwen3-VL language LoRA learning rate.
 VISION_LORA_LR=${VISION_LORA_LR:-2e-5}                                            # Lower LR for visual attention LoRA adaptation.
-MERGER_LR=${MERGER_LR:-2e-4}                                                      # Full-parameter native merger alignment LR.
+MERGER_LORA_LR=${MERGER_LORA_LR:-${VISION_LORA_LR}}                              # Keep merger LoRA at the visual-side LoRA LR.
 WEIGHT_DECAY=${WEIGHT_DECAY:-0.0}                                                 # Weight decay.
 WARMUP_RATIO=${WARMUP_RATIO:-0.03}                                                # Warmup ratio.
 MODEL_MAX_LENGTH=${MODEL_MAX_LENGTH:-4096}                                        # Native Qwen3-VL uses fewer visual tokens than DINOv2 A.
@@ -75,7 +75,7 @@ LORA_BIAS=${LORA_BIAS:-none}
 LORA_TARGET_MODULES=${LORA_TARGET_MODULES:-q_proj,k_proj,v_proj,o_proj,gate_proj,up_proj,down_proj}
 VISION_LORA_ENABLE=True                                                           # Adapt native visual attention without full-tower optimizer states.
 VISION_LORA_TARGET_MODULES=${VISION_LORA_TARGET_MODULES:-q_proj,k_proj,v_proj,o_proj,qkv,proj}
-UNFREEZE_MULTIMODAL_MERGER=True                                                   # The compact native visual-language merger is trained in full.
+MERGER_LORA_ENABLE=True                                                           # Adapt every Linear layer in the native multimodal merger with LoRA.
 REUSE_LOCAL_ASSETS=${REUSE_LOCAL_ASSETS:-True}
 DATASET_INSPECT_STRICT=${DATASET_INSPECT_STRICT:-True}
 DATASET_INSPECT_MAX_SAMPLES=${DATASET_INSPECT_MAX_SAMPLES:-0}
@@ -289,14 +289,14 @@ echo "============================================================"
 echo "Recipe:       ${DATASET_PHASE} | ${MAP_TASK} | ${MODEL_RECIPE}"
 echo "Init model:   ${QWEN3VL_PATH}"
 echo "Architecture: native Qwen3-VL-8B vision tower + native multimodal merger + text LLM"
-echo "Train mode:   LLM LoRA + vision-attention LoRA r=${LORA_R}, alpha=${LORA_ALPHA}; native merger full-parameter"
+echo "Train mode:   LLM + vision-attention + native-merger LoRA r=${LORA_R}, alpha=${LORA_ALPHA}, dropout=${LORA_DROPOUT}"
 echo "Train:        ${TRAIN_PATH}"
 echo "Train subset: ${TRAIN_SAMPLE_LIMIT}/${EXPECTED_DATASET_VARIANT}, seed=${SAMPLE_SEED}"
 echo "System prompt: matched to conv_qwen_3_Dinov2_huawei"
 echo "Images:       3 x 512 input; context512 with center ROI256 supervision"
 echo "Sequence:     max_length=${MODEL_MAX_LENGTH}"
 echo "Batch:        per_device=${PER_DEVICE_TRAIN_BATCH_SIZE}, accumulation=${GRADIENT_ACCUMULATION_STEPS}, effective=$((MICRO_BATCH * GRADIENT_ACCUMULATION_STEPS))"
-echo "LRs:          language_lora=${LR}, vision_lora=${VISION_LORA_LR}, merger=${MERGER_LR}"
+echo "LRs:          language_lora=${LR}, vision_lora=${VISION_LORA_LR}, merger_lora=${MERGER_LORA_LR}"
 echo "Eval loss:    disabled"
 echo "Output:       ${OUTPUT_PATH}"
 echo "Cloud output: ${CLOUD_OUTPUT_PATH}"
@@ -323,7 +323,7 @@ torchrun \
   --lora_target_modules "${LORA_TARGET_MODULES}" \
   --vision_lora_enable "${VISION_LORA_ENABLE}" \
   --vision_lora_target_modules "${VISION_LORA_TARGET_MODULES}" \
-  --unfreeze_multimodal_merger "${UNFREEZE_MULTIMODAL_MERGER}" \
+  --merger_lora_enable "${MERGER_LORA_ENABLE}" \
   --bf16 True \
   --output_dir "${OUTPUT_PATH}" \
   --num_train_epochs "${NUM_EPOCHS}" \
@@ -332,7 +332,7 @@ torchrun \
   --gradient_accumulation_steps "${GRADIENT_ACCUMULATION_STEPS}" \
   --learning_rate "${LR}" \
   --vision_lora_learning_rate "${VISION_LORA_LR}" \
-  --merger_learning_rate "${MERGER_LR}" \
+  --merger_lora_learning_rate "${MERGER_LORA_LR}" \
   --weight_decay "${WEIGHT_DECAY}" \
   --warmup_ratio "${WARMUP_RATIO}" \
   --lr_scheduler_type cosine \

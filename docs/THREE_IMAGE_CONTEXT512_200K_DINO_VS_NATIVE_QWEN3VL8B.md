@@ -32,9 +32,9 @@ passes its plain-text equivalent through the Qwen3-VL chat template.
 | Text base | CapRL-Qwen3VL-4B-derived text LLM | Native Qwen3-VL-8B text LLM |
 | Vision | Original DINOv2-Large, 518 input, layer -2 | Native Qwen3-VL vision tower |
 | Visual tokens | 3 x 1369 = 4107 | 3 x 256 = 768 for exact 512x512 inputs |
-| Alignment | Trainable `mlp2x_gelu` | Full-parameter native multimodal merger |
+| Alignment | Trainable `mlp2x_gelu` | Native multimodal merger LoRA |
 | Language tuning | LoRA, r=8, alpha=16, dropout=0.05 | Same LoRA settings |
-| Vision tuning | Full DINOv2, LR 2e-5 | Visual-attention LoRA, LR 2e-5 |
+| Vision tuning | Full DINOv2, LR 2e-5 | Visual-attention and merger LoRA, LR 2e-5 |
 | Epochs | 8 | 8 |
 | Max length | 7168 | 4096 |
 | Per-device batch | 4 | 4 |
@@ -42,8 +42,8 @@ passes its plain-text equivalent through the Qwen3-VL chat template.
 | Eval loss | Disabled | Disabled |
 
 Experiment A adapts DINOv2 and its newly attached projector. Experiment B uses
-LoRA on both the language model and native visual-attention projections while
-training the compact native merger in full. This is intentionally a practical
+the same LoRA rank, alpha, and dropout on the language model, native visual
+attention, and native merger. This is intentionally a practical
 system comparison, not an architecture-only ablation: the text-base size and
 sequence limits differ. Report trainable parameter counts with final metrics.
 

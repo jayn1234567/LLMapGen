@@ -1104,6 +1104,8 @@ def dataset_has_three_image_contract(root: Path, target_samples: int) -> bool:
 def finalized_overlay_source_is_ready(
     root: Path,
     target_samples: int,
+    expected_difficulty: dict[str, int],
+    expected_intersection_ratio: float,
     require_direct_overlap: bool = False,
 ) -> bool:
     try:
@@ -1111,12 +1113,26 @@ def finalized_overlay_source_is_ready(
             (root / "dataset_info.json").is_file()
             and count_jsonl(root / "phase_a" / "train.jsonl") == target_samples
         )
-        if not ready or not require_direct_overlap:
-            return ready
+        if not ready:
+            return False
         info = read_json(root / "dataset_info.json")
-        return bool(info.get("train_candidate_filter")) and bool(
-            (info.get("balance") or {}).get("strict_difficulty_quotas", False)
-        )
+        balance = info.get("balance") or {}
+        if not bool(balance.get("strict_difficulty_quotas", False)):
+            return False
+        actual_difficulty = balance.get("final_bucket_counts") or {}
+        if any(
+            int(actual_difficulty.get(name, -1)) != int(expected)
+            for name, expected in expected_difficulty.items()
+        ):
+            return False
+        if abs(
+            float(balance.get("actual_intersection_ratio", -1.0))
+            - float(expected_intersection_ratio)
+        ) > 1e-8:
+            return False
+        if require_direct_overlap and not bool(info.get("train_candidate_filter")):
+            return False
+        return True
     except (OSError, ValueError, json.JSONDecodeError):
         return False
 
@@ -1215,6 +1231,8 @@ def main(argv=None) -> None:
             and not finalized_overlay_source_is_ready(
                 source_root,
                 args.target_samples,
+                expected_difficulty,
+                args.intersection_target_ratio,
                 require_direct_overlap=args.direct_context_overlap_only,
             )
         ]

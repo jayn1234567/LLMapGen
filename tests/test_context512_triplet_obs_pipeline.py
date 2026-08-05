@@ -1,3 +1,4 @@
+import json
 import tempfile
 import tarfile
 import unittest
@@ -86,6 +87,29 @@ class Context512TripletObsPipelineTest(unittest.TestCase):
             self.assertEqual(first["archives"][0]["status"], "empty")
             self.assertEqual(second["empty_count"], 1)
             self.assertEqual(second["archives"][0]["status"], "reused_empty")
+
+    def test_legacy_success_marker_is_reused(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            source = root / "source"
+            source.mkdir()
+            payload = root / "payload.txt"
+            payload.write_text("ready", encoding="utf-8")
+            archive = source / "legacy.tar"
+            with tarfile.open(archive, "w") as handle:
+                handle.add(payload, arcname="payload.txt")
+            extracted = root / "extracted"
+            first = extract_archives(source, extracted, workers=1, resume=True)
+            target = Path(first["archives"][0]["target"])
+            marker = target / ".archive_extract_complete.json"
+            legacy = json.loads(marker.read_text(encoding="utf-8"))
+            legacy.pop("extraction_status")
+            marker.write_text(json.dumps(legacy), encoding="utf-8")
+
+            second = extract_archives(source, extracted, workers=1, resume=True)
+
+            self.assertEqual(second["reused_count"], 1)
+            self.assertEqual(second["archives"][0]["status"], "reused")
 
 
 if __name__ == "__main__":

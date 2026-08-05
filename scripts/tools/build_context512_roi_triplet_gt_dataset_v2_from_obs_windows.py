@@ -205,20 +205,32 @@ def remove_generated_tree(path: Path, extract_root: Path) -> None:
         shutil.rmtree(path)
 
 
-def extracted_marker_matches(marker: Path, archive: Path) -> bool:
+def marker_extraction_status(payload: dict) -> str | None:
+    status = payload.get("extraction_status")
+    if status in {"extracted", "empty"}:
+        return status
+    # Backward compatibility with markers written before empty archives were
+    # explicitly represented. A true file-presence flag meant success.
+    if payload.get("extracted_files_present") is True:
+        return "extracted"
+    return None
+
+
+def read_matching_extracted_marker(marker: Path, archive: Path) -> dict | None:
     if not marker.is_file():
-        return False
+        return None
     try:
         payload = json.loads(marker.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
-        return False
+        return None
     stat = archive.stat()
-    return (
+    matches = (
         payload.get("pipeline_version") == PIPELINE_VERSION
         and int(payload.get("archive_size", -1)) == stat.st_size
         and int(payload.get("archive_mtime_ns", -1)) == stat.st_mtime_ns
-        and payload.get("extraction_status") in {"extracted", "empty"}
+        and marker_extraction_status(payload) is not None
     )
+    return payload if matches else None
 
 
 def safe_extract_zip(archive: Path, destination: Path) -> None:
@@ -241,11 +253,11 @@ def extract_one_archive(
 ) -> dict:
     target = archive_target(archive, source_root, extract_root)
     marker = target / ".archive_extract_complete.json"
-    if resume and extracted_marker_matches(marker, archive):
-        marker_payload = json.loads(marker.read_text(encoding="utf-8"))
+    marker_payload = read_matching_extracted_marker(marker, archive) if resume else None
+    if marker_payload is not None:
         reused_status = (
             "reused_empty"
-            if marker_payload.get("extraction_status") == "empty"
+            if marker_extraction_status(marker_payload) == "empty"
             else "reused"
         )
         return {"archive": str(archive), "target": str(target), "status": reused_status}

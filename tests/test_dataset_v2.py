@@ -95,9 +95,43 @@ from scripts.tools.build_rc_dataset_v2_rawlane_pose_three_image_800k_from_stagin
     transform_record as transform_three_image_record,
     validate_stage_compatibility as validate_three_image_staging,
 )
+from scripts.tools.build_rc_dataset_v2_three_image_800k_from_obs_windows import (
+    VARIANT_NAMES as OBS_THREE_IMAGE_VARIANT_NAMES,
+    parse_args as parse_obs_three_image_args,
+    streaming_command as obs_three_image_streaming_command,
+)
 
 
 class DatasetV2ContextTest(unittest.TestCase):
+    def test_obs_three_image_800k_recipe_stages_clean_three_image_inputs(self):
+        args = parse_obs_three_image_args([
+            "--work-root", r"D:\three_image",
+            "--obsutil-path", r"C:\tools\obsutil.exe",
+            "--fixed-source-split-manifest", r"D:\splits\fixed.json",
+            "--resume",
+        ])
+        paths = {
+            "work_root": Path(r"D:\three_image"),
+            "raw_root": Path(r"D:\three_image\raw"),
+            "staging_root": Path(r"D:\three_image\staging"),
+            "output_root": Path(r"D:\three_image\output"),
+        }
+        command = [str(item) for item in obs_three_image_streaming_command(args, paths)]
+        self.assertEqual(command[command.index("--views") + 1], "both")
+        self.assertIn("--save-raw-lane-image", command)
+        self.assertIn("--raw-lane-separate-image", command)
+        self.assertIn("--pose-second-image", command)
+        self.assertIn("--strict-difficulty-quotas", command)
+        self.assertIn("--skip-upload", command)
+        self.assertNotIn("--raw-lane-overlay", command)
+        self.assertEqual(
+            OBS_THREE_IMAGE_VARIANT_NAMES,
+            {
+                "local256": "local256_rawlane_pose_800k",
+                "context512_roi256": "context512_roi256_rawlane_pose_800k",
+            },
+        )
+
     def test_three_image_prompt_refresh_migrates_existing_outputs(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)

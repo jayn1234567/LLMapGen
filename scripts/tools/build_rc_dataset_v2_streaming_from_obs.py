@@ -80,6 +80,11 @@ def parse_args(argv=None):
         default="empty=0,easy=0.30,medium=0.33,hard=0.27,very_hard=0.10",
     )
     parser.add_argument("--intersection-target-ratio", type=float, default=0.30)
+    parser.add_argument(
+        "--strict-difficulty-quotas",
+        action="store_true",
+        help="Preserve exact requested difficulty counts, using translated grids for shortages.",
+    )
     parser.add_argument("--split-seed", type=int, default=42)
     parser.add_argument(
         "--fixed-source-split-manifest",
@@ -598,6 +603,8 @@ def main(argv=None):
             "--duplicate-policy", args.duplicate_policy,
             "--copy-mode", args.copy_mode,
         ]
+        if args.strict_difficulty_quotas:
+            finalize_command.append("--strict-difficulty-quotas")
         if args.resume:
             finalize_command.append("--resume")
         if fixed_manifest is not None:

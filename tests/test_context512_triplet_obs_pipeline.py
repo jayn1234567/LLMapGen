@@ -68,6 +68,25 @@ class Context512TripletObsPipelineTest(unittest.TestCase):
             target = Path(second["archives"][0]["target"])
             self.assertTrue((target / "A0_demo" / "sample.png").is_file())
 
+    def test_empty_tar_is_recorded_without_stopping_pipeline(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            source = root / "source"
+            source.mkdir()
+            archive = source / "empty.tar.gz"
+            with tarfile.open(archive, "w:gz"):
+                pass
+            extracted = root / "extracted"
+
+            first = extract_archives(source, extracted, workers=1, resume=True)
+            second = extract_archives(source, extracted, workers=1, resume=True)
+
+            self.assertEqual(first["status"], "passed")
+            self.assertEqual(first["empty_count"], 1)
+            self.assertEqual(first["archives"][0]["status"], "empty")
+            self.assertEqual(second["empty_count"], 1)
+            self.assertEqual(second["archives"][0]["status"], "reused_empty")
+
 
 if __name__ == "__main__":
     unittest.main()

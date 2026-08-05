@@ -217,7 +217,7 @@ def extracted_marker_matches(marker: Path, archive: Path) -> bool:
         payload.get("pipeline_version") == PIPELINE_VERSION
         and int(payload.get("archive_size", -1)) == stat.st_size
         and int(payload.get("archive_mtime_ns", -1)) == stat.st_mtime_ns
-        and bool(payload.get("extracted_files_present"))
+        and payload.get("extraction_status") in {"extracted", "empty"}
     )
 
 
@@ -242,7 +242,13 @@ def extract_one_archive(
     target = archive_target(archive, source_root, extract_root)
     marker = target / ".archive_extract_complete.json"
     if resume and extracted_marker_matches(marker, archive):
-        return {"archive": str(archive), "target": str(target), "status": "reused"}
+        marker_payload = json.loads(marker.read_text(encoding="utf-8"))
+        reused_status = (
+            "reused_empty"
+            if marker_payload.get("extraction_status") == "empty"
+            else "reused"
+        )
+        return {"archive": str(archive), "target": str(target), "status": reused_status}
     partial = target.with_name(target.name + ".partial")
     remove_generated_tree(partial, extract_root)
     remove_generated_tree(target, extract_root)
@@ -254,22 +260,28 @@ def extract_one_archive(
         else:
             with tarfile.open(archive, "r:*") as handle:
                 handle.extractall(partial, filter="data")
-        if not contains_local_files(partial):
-            raise FileNotFoundError(f"archive extraction produced no files: {archive}")
+        extracted_files_present = contains_local_files(partial)
         partial.replace(target)
         stat = archive.stat()
+        extraction_status = "extracted" if extracted_files_present else "empty"
         write_json(target / ".archive_extract_complete.json", {
             "pipeline_version": PIPELINE_VERSION,
             "archive": str(archive),
             "archive_size": stat.st_size,
             "archive_mtime_ns": stat.st_mtime_ns,
             "target": str(target),
-            "extracted_files_present": True,
+            "extracted_files_present": extracted_files_present,
+            "extraction_status": extraction_status,
         })
+        if not extracted_files_present:
+            print(
+                f"[context512-triplet-obs] WARNING empty archive skipped: {archive}",
+                flush=True,
+            )
     except Exception:
         remove_generated_tree(partial, extract_root)
         raise
-    return {"archive": str(archive), "target": str(target), "status": "extracted"}
+    return {"archive": str(archive), "target": str(target), "status": extraction_status}
 
 
 def read_extraction_summary(extract_root: Path) -> dict | None:
@@ -333,7 +345,8 @@ def extract_archives(
         "status": "passed",
         "archive_count": len(archives),
         "extracted_count": sum(item["status"] == "extracted" for item in results),
-        "reused_count": sum(item["status"] == "reused" for item in results),
+        "reused_count": sum(item["status"].startswith("reused") for item in results),
+        "empty_count": sum(item["status"] in {"empty", "reused_empty"} for item in results),
         "extract_root": str(extract_root),
         "archives": sorted(results, key=lambda item: item["archive"]),
     }

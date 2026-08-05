@@ -102,7 +102,10 @@ has an independent completion marker. The download completion markers are
 written only after `obsutil` exits successfully. With `--resume`, completed
 downloads and archive extractions are reused, already correct hard-linked
 images are reused, stale generated images are replaced by source content, and
-a current TAR package is not rebuilt.
+a current TAR package is not rebuilt. Archives containing no files are reported
+as `empty` and skipped. Dataset conversion still requires every GT record to
+resolve all three images, so a genuinely missing sample remains a hard error
+with its exact sample ID.
 
 ### Local-Only Conversion
 

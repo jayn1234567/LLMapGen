@@ -39,6 +39,13 @@ DEFAULT_SOURCE_OBS_ROOT = (
 DEFAULT_GT_OBS_ROOT = DEFAULT_SOURCE_OBS_ROOT + "GT_json/"
 DEFAULT_WINDOWS_WORK_ROOT = r"D:\data\sjn_context512_roi256_three_image_dataset_v2"
 PIPELINE_VERSION = "sjn_context512_roi256_triplet_obs_pipeline_v1"
+DEFAULT_DIFFICULTY_RATIOS = (
+    "empty=0.05,easy=0.25,medium=0.33,hard=0.27,very_hard=0.10"
+)
+DEFAULT_EMPTY_DONOR_CLEAN_STAGING = r"D:\data\fulldata_context512\staging_context512"
+DEFAULT_EMPTY_DONOR_AUX_STAGING = (
+    r"D:\data\fulldata_rawlane_pose\staging_rawlane_pose_256_context"
+)
 
 
 def parse_args(argv=None) -> argparse.Namespace:
@@ -54,6 +61,11 @@ def parse_args(argv=None) -> argparse.Namespace:
     parser.add_argument("--source-local-root", default="")
     parser.add_argument("--gt-local-root", default="")
     parser.add_argument("--output-root", default="")
+    parser.add_argument(
+        "--balanced-output-root",
+        default="",
+        help="Final exact-ratio Dataset V2 root; the converted full pool remains reusable.",
+    )
     parser.add_argument("--package-path", default="")
     parser.add_argument("--obs-backend", choices=("auto", "obsutil", "moxing"), default="auto")
     parser.add_argument("--obsutil-path", default="")
@@ -74,6 +86,17 @@ def parse_args(argv=None) -> argparse.Namespace:
     parser.add_argument("--image-check-limit", type=int, default=10_000)
     parser.add_argument("--progress-every", type=int, default=10_000)
     parser.add_argument("--max-samples", type=int, default=0)
+    parser.add_argument("--train-target-samples", type=int, default=800_000)
+    parser.add_argument("--difficulty-ratios", default=DEFAULT_DIFFICULTY_RATIOS)
+    parser.add_argument("--balance-seed", type=int, default=20260713)
+    parser.add_argument(
+        "--empty-donor-clean-staging-root",
+        default=DEFAULT_EMPTY_DONOR_CLEAN_STAGING if os.name == "nt" else "",
+    )
+    parser.add_argument(
+        "--empty-donor-aux-staging-root",
+        default=DEFAULT_EMPTY_DONOR_AUX_STAGING if os.name == "nt" else "",
+    )
     parser.add_argument("--default-split", choices=("train", "eval", "test"), default="train")
     parser.add_argument("--skip-download", action="store_true")
     parser.add_argument("--skip-build", action="store_true")
@@ -366,7 +389,7 @@ def extract_archives(
     return summary
 
 
-def run_converter(args: argparse.Namespace, source_root: Path, gt_root: Path, output_root: Path, package: Path) -> None:
+def run_converter(args: argparse.Namespace, source_root: Path, gt_root: Path, output_root: Path) -> None:
     converter = REPO_ROOT / "scripts" / "tools" / "convert_context512_roi_triplet_gt_to_dataset_v2.py"
     command = [
         sys.executable,
@@ -380,8 +403,6 @@ def run_converter(args: argparse.Namespace, source_root: Path, gt_root: Path, ou
         "--image-check-limit", str(args.image_check_limit),
         "--non-512-policy", "skip",
         "--progress-every", str(args.progress_every),
-        "--package",
-        "--package-path", str(package),
     ]
     if args.max_samples > 0:
         command.extend(("--max-samples", str(args.max_samples)))
@@ -395,12 +416,51 @@ def run_converter(args: argparse.Namespace, source_root: Path, gt_root: Path, ou
     subprocess.run(command, cwd=REPO_ROOT, check=True)
 
 
+def run_balancer(
+    args: argparse.Namespace,
+    pool_root: Path,
+    balanced_root: Path,
+    package: Path,
+) -> None:
+    balancer = REPO_ROOT / "scripts" / "tools" / "build_balanced_three_image_dataset_v2.py"
+    command = [
+        sys.executable,
+        str(balancer),
+        "--input-root", str(pool_root),
+        "--output-root", str(balanced_root),
+        "--train-target-samples", str(args.train_target_samples),
+        "--difficulty-ratios", str(args.difficulty_ratios),
+        "--seed", str(args.balance_seed),
+        "--copy-mode", args.copy_mode,
+        "--progress-every", str(args.progress_every),
+        "--package",
+        "--package-path", str(package),
+    ]
+    donor_clean = str(args.empty_donor_clean_staging_root or "").strip()
+    donor_aux = str(args.empty_donor_aux_staging_root or "").strip()
+    if donor_clean or donor_aux:
+        command.extend((
+            "--empty-donor-clean-staging-root", donor_clean,
+            "--empty-donor-aux-staging-root", donor_aux,
+        ))
+    if args.resume:
+        command.append("--resume")
+    print(
+        "[context512-triplet-obs] balancer command:",
+        shlex.join([str(item) for item in command]),
+        flush=True,
+    )
+    subprocess.run(command, cwd=REPO_ROOT, check=True)
+
+
 def validate_completed_build(output_root: Path, package: Path) -> dict:
     required = (
         output_root / "dataset_info.json",
         output_root / "split_manifest.json",
         output_root / "build_summary.json",
         output_root / "conversion_validation.json",
+        output_root / "balance_preflight.json",
+        output_root / "balance_report.json",
         output_root / "phase_a" / "train.jsonl",
         output_root / "phase_a" / "eval.jsonl",
         output_root / "phase_a" / "test.jsonl",
@@ -413,6 +473,9 @@ def validate_completed_build(output_root: Path, package: Path) -> dict:
     )
     if validation.get("status") != "passed":
         raise ValueError(f"conversion validation did not pass: {validation}")
+    balance = json.loads((output_root / "balance_report.json").read_text(encoding="utf-8"))
+    if balance.get("status") != "passed":
+        raise ValueError(f"difficulty balance did not pass: {balance}")
     if not package.is_file() or package.stat().st_size <= 0:
         raise FileNotFoundError(f"TAR package was not created: {package}")
     return validation
@@ -443,17 +506,24 @@ def main(argv=None) -> None:
         if args.gt_local_root
         else download_root / "GT_json"
     )
-    output_root = (
+    pool_root = (
         Path(args.output_root).expanduser().resolve()
         if args.output_root
         else work_root / "output" / "context512_roi256_three_image_full"
     )
+    balanced_root = (
+        Path(args.balanced_output_root).expanduser().resolve()
+        if args.balanced_output_root
+        else work_root / "output" / (
+            f"context512_roi256_three_image_balanced_{args.train_target_samples // 1000}k"
+        )
+    )
     package = (
         Path(args.package_path).expanduser().resolve()
         if args.package_path
-        else work_root / "packages" / f"{output_root.name}.tar"
+        else work_root / "packages" / f"{balanced_root.name}.tar"
     )
-    if output_root == source_root or output_root == gt_root:
+    if pool_root in {source_root, gt_root} or balanced_root in {source_root, gt_root, pool_root}:
         raise ValueError("output root must differ from the downloaded source and GT roots")
     work_root.mkdir(parents=True, exist_ok=True)
 
@@ -490,8 +560,9 @@ def main(argv=None) -> None:
         extract_root if int(extraction.get("archive_count", 0)) > 0 else source_root
     )
     if not args.skip_build:
-        run_converter(args, converter_source_root, gt_root, output_root, package)
-    validation = validate_completed_build(output_root, package)
+        run_converter(args, converter_source_root, gt_root, pool_root)
+        run_balancer(args, pool_root, balanced_root, package)
+    validation = validate_completed_build(balanced_root, package)
     summary = {
         "status": "passed",
         "pipeline_version": PIPELINE_VERSION,
@@ -501,7 +572,8 @@ def main(argv=None) -> None:
         "converter_source_root": str(converter_source_root),
         "gt_local_root": str(gt_root),
         "gt_json_count": gt_json_count,
-        "output_root": str(output_root),
+        "converted_pool_root": str(pool_root),
+        "output_root": str(balanced_root),
         "package": str(package),
         "download_reports": download_reports,
         "extraction": extraction,

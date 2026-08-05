@@ -3,9 +3,9 @@
 ## Purpose
 
 `scripts/tools/convert_context512_roi_triplet_gt_to_dataset_v2.py` converts an
-already cropped context512 dataset into the repository's Stage A Dataset V2
-contract. It is a schema conversion and does not resample or rebalance the
-source records.
+already cropped context512 dataset into a complete reusable Dataset V2 sample
+pool. `scripts/tools/build_balanced_three_image_dataset_v2.py` then creates the
+strictly balanced Stage A training dataset used for packaging.
 
 Each source record must contain one clean BEV image, one Pose image, and one
 Raw-Lane image. The source JSON lists them as BEV, Pose, Raw-Lane; the output
@@ -15,7 +15,10 @@ model order is deliberately changed to:
 2. Raw-Lane image predicted by the PV-camera model;
 3. historical vehicle-trajectory Pose image.
 
-The converter copies or hard-links the three existing images. It does not try
+The converter builds one group-directory index at startup, then resolves each
+sample from that index instead of recursively searching the extracted tree for
+every new group. GT JSON files are parsed once. The converter copies or
+hard-links the three existing images. It does not try
 to remove a Raw-Lane overlay from an image. A sampled image-header preflight
 requires every triplet to have matching dimensions. Full 512x512 triplets are
 hard-linked unchanged. The production OBS pipeline skips boundary-clipped
@@ -95,9 +98,39 @@ D:\data\sjn_context512_roi256_three_image_dataset_v2\download\source
 D:\data\sjn_context512_roi256_three_image_dataset_v2\download\GT_json
 D:\data\sjn_context512_roi256_three_image_dataset_v2\extracted_images
 D:\data\sjn_context512_roi256_three_image_dataset_v2\output\context512_roi256_three_image_full
-D:\data\sjn_context512_roi256_three_image_dataset_v2\packages\context512_roi256_three_image_full.tar
+D:\data\sjn_context512_roi256_three_image_dataset_v2\output\context512_roi256_three_image_balanced_800k
+D:\data\sjn_context512_roi256_three_image_dataset_v2\packages\context512_roi256_three_image_balanced_800k.tar
 D:\data\sjn_context512_roi256_three_image_dataset_v2\pipeline_summary.json
 ```
+
+The full output is an intermediate sample pool and is retained for reproducible
+rebalancing. The packaged 800k training split is sampled without replacement
+using exact quotas:
+
+| Stratum | Ratio | 800k count |
+|---|---:|---:|
+| empty | 5% | 40,000 |
+| easy | 25% | 200,000 |
+| medium | 33% | 264,000 |
+| hard | 27% | 216,000 |
+| very_hard | 10% | 80,000 |
+
+Eval and test records are preserved unchanged. The selector never silently
+redistributes a shortage. It writes `balance_preflight.json` and fails with the
+exact per-bucket deficit.
+
+If only the empty bucket is short, the Windows entrypoint automatically tries
+these paired staging roots:
+
+```text
+D:\data\fulldata_context512\staging_context512
+D:\data\fulldata_rawlane_pose\staging_rawlane_pose_256_context
+```
+
+The first supplies clean context512 images; the second supplies matching
+Raw-Lane, Pose, target JSON, and difficulty metadata. Donor samples are matched
+by `source_index`, must contain all three valid images, and are excluded when
+their ID is already present in the selected train/eval/test records.
 
 The source OBS directory contains `GT_json` plus TAR packages. TAR, TAR.GZ,
 TGZ, and ZIP files are extracted in parallel into isolated subdirectories
@@ -129,6 +162,13 @@ If the image tree is outside `--input-root`, add:
 
 ```cmd
 --image-root "D:\path\to\images"
+```
+
+The lower-level converter command creates the complete pool only. Run the
+strict selector separately when using local-only conversion:
+
+```cmd
+python scripts\tools\build_balanced_three_image_dataset_v2.py --input-root "D:\data\context512_roi256_three_image_dataset_v2_full" --output-root "D:\data\context512_roi256_three_image_balanced_800k" --train-target-samples 800000 --difficulty-ratios "empty=0.05,easy=0.25,medium=0.33,hard=0.27,very_hard=0.10" --empty-donor-clean-staging-root "D:\data\fulldata_context512\staging_context512" --empty-donor-aux-staging-root "D:\data\fulldata_rawlane_pose\staging_rawlane_pose_256_context" --copy-mode hardlink --resume --package
 ```
 
 `--copy-mode hardlink` avoids duplicating image bytes when source and output

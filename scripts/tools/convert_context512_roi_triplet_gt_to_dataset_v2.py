@@ -22,6 +22,7 @@ import os
 import re
 import shutil
 import sys
+import time
 from collections import Counter, deque
 from pathlib import Path, PurePosixPath
 
@@ -185,12 +186,10 @@ def discover_annotation_files(annotation_root: Path, pattern: str, output_root: 
             continue
         except ValueError:
             pass
-        records = load_annotation_records(path)
-        if records is not None:
-            files.append(path)
+        files.append(path)
     if not files:
         raise FileNotFoundError(
-            f"no GT JSON files matching {pattern!r} found under {annotation_root}"
+            f"no JSON files matching {pattern!r} found under {annotation_root}"
         )
     return files
 
@@ -370,11 +369,87 @@ def candidate_source_paths(
     unique = []
     seen = set()
     for candidate in candidates:
-        key = str(candidate.resolve())
+        key = os.path.normcase(os.path.abspath(candidate))
         if key not in seen:
             unique.append(candidate)
             seen.add(key)
     return unique
+
+
+def source_group_from_relative(relative: str) -> tuple[str, tuple[str, ...]] | None:
+    parts = PurePosixPath(relative).parts
+    for index, part in enumerate(parts):
+        if SOURCE_GROUP_DIR_RE.match(part):
+            return part, tuple(parts[index + 1:])
+    return None
+
+
+def build_group_directory_index(search_root: Path) -> dict[str, list[Path]]:
+    """Index extracted per-group directories once instead of recursively per record."""
+    started = time.perf_counter()
+    index: dict[str, list[Path]] = {}
+    scanned_directories = 0
+    for directory, child_names, _file_names in os.walk(search_root):
+        scanned_directories += 1
+        base = Path(directory)
+        kept_children = []
+        for child_name in child_names:
+            child = base / child_name
+            if SOURCE_GROUP_DIR_RE.match(child_name):
+                index.setdefault(child_name, []).append(child)
+            else:
+                kept_children.append(child_name)
+        child_names[:] = kept_children
+    for directories in index.values():
+        directories.sort(key=lambda path: os.path.normcase(str(path)))
+    print(
+        f"[triplet-gt-convert] indexed image groups={len(index)} "
+        f"scanned_directories={scanned_directories} elapsed={time.perf_counter() - started:.1f}s",
+        flush=True,
+    )
+    return index
+
+
+def resolve_triplet_from_group_index(
+    record: dict,
+    group_index: dict[str, list[Path]],
+    split_hint: str | None,
+    default_split: str,
+) -> tuple[str, tuple[Path, Path, Path]] | None:
+    relatives = source_triplet_relatives(record)
+    parsed = [source_group_from_relative(relative) for relative in relatives]
+    if any(item is None for item in parsed):
+        return None
+    groups = {item[0] for item in parsed if item is not None}
+    if len(groups) != 1:
+        raise ValueError(
+            f"sample={record.get('id')} triplet paths use different source groups: {relatives!r}"
+        )
+    group = next(iter(groups))
+    matches = []
+    for group_dir in group_index.get(group, []):
+        paths = tuple(
+            group_dir.joinpath(*item[1])
+            for item in parsed
+            if item is not None
+        )
+        if len(paths) == 3 and all(path.is_file() for path in paths):
+            split = (
+                normalize_split(record.get("split"))
+                or split_hint_from_path(group_dir)
+                or split_hint
+                or default_split
+            )
+            matches.append((split, paths))
+    if not matches:
+        return None
+    if len(matches) > 1:
+        print(
+            f"[triplet-gt-convert] WARNING duplicate extracted group={group}; "
+            f"using first of {len(matches)} complete copies",
+            flush=True,
+        )
+    return matches[0]
 
 
 def path_ends_with(path: Path, relative: str) -> bool:
@@ -435,7 +510,17 @@ def resolve_triplet(
     recursive_search_root: Path,
     split_hint: str | None,
     default_split: str,
+    group_index: dict[str, list[Path]] | None = None,
 ) -> tuple[str, tuple[Path, Path, Path]]:
+    if group_index is not None:
+        indexed = resolve_triplet_from_group_index(
+            record,
+            group_index,
+            split_hint,
+            default_split,
+        )
+        if indexed is not None:
+            return indexed
     primary_rel, raw_lane_rel, pose_rel = source_triplet_relatives(record)
     record_split = normalize_split(record.get("split"))
     preferred = []
@@ -706,6 +791,7 @@ def convert_dataset(args: argparse.Namespace) -> dict:
         output_root,
     )
     image_roots = list(dict.fromkeys((image_root, input_root / "images", input_root)))
+    group_index = build_group_directory_index(input_root)
     record_writers, meta_writers = open_writers(output_root)
     skipped_writer = (output_root / "skipped_samples.jsonl").open("w", encoding="utf-8")
     counts = Counter()
@@ -717,7 +803,9 @@ def convert_dataset(args: argparse.Namespace) -> dict:
     try:
         for annotation_path in annotation_files:
             records = load_annotation_records(annotation_path)
-            assert records is not None
+            if records is None:
+                conversion_counts["ignored_non_gt_json_file"] += 1
+                continue
             annotation_split = split_hint_from_path(annotation_path)
             for source_record in records:
                 if args.max_samples > 0 and counts["total"] >= args.max_samples:
@@ -743,6 +831,7 @@ def convert_dataset(args: argparse.Namespace) -> dict:
                     input_root,
                     annotation_split,
                     args.default_split,
+                    group_index,
                 )
                 should_check = args.image_check_mode == "all" or (
                     args.image_check_mode == "sampled"

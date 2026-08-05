@@ -105,7 +105,7 @@ EVAL_STEPS=${EVAL_STEPS:-2000}                                                  
 EVAL_SAMPLE_LIMIT=${EVAL_SAMPLE_LIMIT:-10000}                                     # Deterministic eval-loss subset size; 0 uses the full eval split.
 PER_DEVICE_EVAL_BATCH_SIZE=${PER_DEVICE_EVAL_BATCH_SIZE:-1}                       # Keep eval memory below the training micro-batch peak.
 SAVE_ON_EACH_NODE=False                                                           # Rank0 publishes the ordinary LoRA adapter/non-LoRA trainables checkpoint tree.
-ENABLE_EVAL=${ENABLE_EVAL:-True}                                                  # Formal run reports deterministic eval loss every EVAL_STEPS.
+ENABLE_EVAL=${ENABLE_EVAL:-False}                                                 # This 550k LoRA recipe skips training-time eval loss.
 SAVE_BEST_EVAL_LOSS=${SAVE_BEST_EVAL_LOSS:-False}                                 # Keep false when eval is only used to annotate regular checkpoints.
 SAVE_BEST_TRAIN_LOSS=False                                                        # Use regular checkpoints only; avoid extra save-time model copies.
 BEST_TRAIN_LOSS_START_STEP=${BEST_TRAIN_LOSS_START_STEP:-5000}                    # Step threshold before best-train-loss checkpointing starts.
@@ -535,7 +535,7 @@ echo "Output:       ${OUTPUT_PATH}"
 echo "Topology:     nnodes=${NNODES}, node_rank=${NODE_RANK}, nproc_per_node=${NPROC_PER_NODE}"
 echo "Batch:        per_device=${PER_DEVICE_TRAIN_BATCH_SIZE}, accumulation=${GRADIENT_ACCUMULATION_STEPS}, effective=$((MICRO_BATCH * GRADIENT_ACCUMULATION_STEPS))"
 echo "Schedule/LR:  epochs=${NUM_EPOCHS}, max_steps=${MAX_STEPS}, llm_lora=${LR}, projector=${MM_PROJECTOR_LR}, vision=${MM_VISION_TOWER_LR}"
-echo "Eval loss:    enabled=${ENABLE_EVAL}, steps=${EVAL_STEPS}, samples=${EVAL_SAMPLE_LIMIT}, per_device_batch=${PER_DEVICE_EVAL_BATCH_SIZE}, prediction_loss_only=True"
+echo "Eval loss:    enabled=${ENABLE_EVAL} (formal 550k LoRA recipe disables training-time eval)"
 echo "Checkpoint:   ordinary LoRA adapter + non-LoRA trainables, steps=${SAVE_STEPS}, keep=${SAVE_TOTAL_LIMIT}, empty_cache=${MLLM_NPU_EMPTY_CACHE_BEFORE_CHECKPOINT}, skip_distributed_flos=${MLLM_SKIP_DISTRIBUTED_FLOS_ON_SAVE}"
 echo "Checkpoint upload: rank0 output -> ${CLOUD_OUTPUT_PATH}"
 echo "============================================================"

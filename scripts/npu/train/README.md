@@ -77,6 +77,17 @@ inherited `CHECKPOINT_SAVE_MODE=sharded` before training starts. Historical
 sharded-checkpoint smoke scripts explicitly set this guard to `False`; they
 are compatibility tests and are not the formal DI recipe.
 
+The matching 550k LLM-LoRA entry is:
+
+```bash
+bash scripts/npu/train/train_sft_stage_a_lane_intersection_datasetv2_rawlane_local256_550k_original_dinov2_caprl4b_nodeepstack_lora_llm_npu.sh
+```
+
+It applies LoRA only to the CapRL-derived text LLM while training the projector
+and DINOv2 with ordinary parameters. It uses HCCL DDP without DeepSpeed, writes
+ordinary rank0 adapter/non-LoRA checkpoints, and disables training-time eval
+loss by default (`ENABLE_EVAL=False`).
+
 Stage-A train scripts download the base Qwen/Qwen3-VL model plus the recipe's
 vision tower assets. Stage-B train scripts do not download the base model;
 they download or use the Stage-A checkpoint through `STAGE_A_CHECKPOINT_*` and

@@ -69,9 +69,9 @@ same BEV, Raw-Lane, Pose order as the `images` array.
 
 ## Windows Command
 
-For the production OBS source, use the all-in-one downloader, converter,
-validator, and packager. The two OBS defaults are already embedded in this
-entrypoint:
+For the production OBS source, use the all-in-one downloader, archive
+extractor, converter, validator, and packager. The two OBS defaults are already
+embedded in this entrypoint:
 
 ```text
 obs://yw-ncasd-result-gy1/data/RCDataset/BaseModelTrain/sjn_context_512_roi_256/
@@ -81,7 +81,7 @@ obs://yw-ncasd-result-gy1/data/RCDataset/BaseModelTrain/sjn_context_512_roi_256/
 Run this as one line from the repository root:
 
 ```cmd
-python scripts\tools\build_context512_roi_triplet_gt_dataset_v2_from_obs_windows.py --obsutil-path "C:\Users\jWX1497058\Downloads\obsutil_windows_amd64\obsutil_windows_amd64_5.8.3\obsutil.exe" --work-root "D:\data\sjn_context512_roi256_three_image_dataset_v2" --obsutil-jobs 16 --resume
+python scripts\tools\build_context512_roi_triplet_gt_dataset_v2_from_obs_windows.py --obsutil-path "C:\Users\jWX1497058\Downloads\obsutil_windows_amd64\obsutil_windows_amd64_5.8.3\obsutil.exe" --work-root "D:\data\sjn_context512_roi256_three_image_dataset_v2" --obsutil-jobs 16 --archive-workers 8 --resume
 ```
 
 It creates:
@@ -89,15 +89,20 @@ It creates:
 ```text
 D:\data\sjn_context512_roi256_three_image_dataset_v2\download\source
 D:\data\sjn_context512_roi256_three_image_dataset_v2\download\GT_json
+D:\data\sjn_context512_roi256_three_image_dataset_v2\extracted_images
 D:\data\sjn_context512_roi256_three_image_dataset_v2\output\context512_roi256_three_image_full
 D:\data\sjn_context512_roi256_three_image_dataset_v2\packages\context512_roi256_three_image_full.tar
 D:\data\sjn_context512_roi256_three_image_dataset_v2\pipeline_summary.json
 ```
 
-The download completion markers are written only after `obsutil` exits
-successfully. With `--resume`, completed image and GT downloads are reused,
-already correct hard-linked images are reused, stale generated images are
-replaced by source content, and a current TAR package is not rebuilt.
+The source OBS directory contains `GT_json` plus TAR packages. TAR, TAR.GZ,
+TGZ, and ZIP files are extracted in parallel into isolated subdirectories
+under `extracted_images`; packages cannot overwrite one another. Each archive
+has an independent completion marker. The download completion markers are
+written only after `obsutil` exits successfully. With `--resume`, completed
+downloads and archive extractions are reused, already correct hard-linked
+images are reused, stale generated images are replaced by source content, and
+a current TAR package is not rebuilt.
 
 ### Local-Only Conversion
 

@@ -22,7 +22,7 @@ import os
 import re
 import shutil
 import sys
-from collections import Counter
+from collections import Counter, deque
 from pathlib import Path, PurePosixPath
 
 from PIL import Image
@@ -66,6 +66,7 @@ SPLIT_ALIASES = {
     "testing": "test",
 }
 ID_GRID_RE = re.compile(r"_r(?P<row>\d+)_c(?P<col>\d+)_p(?P<patch>\d+)$", re.IGNORECASE)
+SOURCE_GROUP_DIR_RE = re.compile(r"^A\d+_", re.IGNORECASE)
 
 
 def parse_args(argv=None) -> argparse.Namespace:
@@ -370,10 +371,62 @@ def candidate_source_paths(
     return unique
 
 
+def path_ends_with(path: Path, relative: str) -> bool:
+    relative_parts = tuple(part.lower() for part in PurePosixPath(relative).parts)
+    path_parts = tuple(part.lower() for part in path.parts)
+    return len(path_parts) >= len(relative_parts) and path_parts[-len(relative_parts):] == relative_parts
+
+
+def discover_triplet_root(
+    record: dict,
+    search_root: Path,
+    split_hint: str | None,
+    default_split: str,
+) -> tuple[str, tuple[Path, Path, Path], Path] | None:
+    relatives = source_triplet_relatives(record)
+    print(
+        f"[triplet-gt-convert] locate nested image root for sample={record.get('id')} "
+        f"under {search_root}",
+        flush=True,
+    )
+    queue = deque([(search_root, 0)])
+    visited = set()
+    while queue:
+        base, depth = queue.popleft()
+        resolved = str(base.resolve())
+        if resolved in visited:
+            continue
+        visited.add(resolved)
+        candidate_roots = [(base, split_hint_from_path(base))]
+        candidate_roots.extend((base / split, split) for split in SPLITS)
+        for root, inferred_split in candidate_roots:
+            paths = tuple(root / Path(*PurePosixPath(relative).parts) for relative in relatives)
+            if all(path.is_file() for path in paths):
+                inferred_split = inferred_split or split_hint or default_split
+                print(
+                    f"[triplet-gt-convert] discovered image root={root} split={inferred_split}",
+                    flush=True,
+                )
+                return inferred_split, paths, root
+        if depth >= 12 or normalize_split(base.name):
+            continue
+        try:
+            children = [child for child in base.iterdir() if child.is_dir()]
+        except OSError:
+            continue
+        for child in children:
+            lowered = child.name.lower()
+            if lowered == "gt_json" or SOURCE_GROUP_DIR_RE.match(child.name):
+                continue
+            queue.append((child, depth + 1))
+    return None
+
+
 def resolve_triplet(
     record: dict,
     annotation_path: Path,
     image_roots: list[Path],
+    recursive_search_root: Path,
     split_hint: str | None,
     default_split: str,
 ) -> tuple[str, tuple[Path, Path, Path]]:
@@ -401,9 +454,21 @@ def resolve_triplet(
             if split in {record_split, split_hint}:
                 break
     if not matches:
+        discovered = discover_triplet_root(
+            record,
+            recursive_search_root,
+            split_hint,
+            default_split,
+        )
+        if discovered is not None:
+            split, paths, discovered_root = discovered
+            if discovered_root not in image_roots:
+                image_roots.append(discovered_root)
+            return split, paths
         raise FileNotFoundError(
             f"sample={record.get('id')} cannot resolve image triplet from "
-            f"{source_triplet_relatives(record)!r}; roots={image_roots}"
+            f"{source_triplet_relatives(record)!r}; roots={image_roots}; "
+            f"recursive_search_root={recursive_search_root}"
         )
     return matches[0]
 
@@ -573,6 +638,7 @@ def convert_dataset(args: argparse.Namespace) -> dict:
                     source_record,
                     annotation_path,
                     image_roots,
+                    input_root,
                     annotation_split,
                     args.default_split,
                 )

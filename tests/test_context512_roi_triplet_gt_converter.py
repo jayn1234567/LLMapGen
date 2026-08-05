@@ -9,10 +9,15 @@ from scripts.tools.convert_context512_roi_triplet_gt_to_dataset_v2 import main, 
 
 
 class Context512RoiTripletGtConverterTest(unittest.TestCase):
-    def _write_triplet(self, root: Path, size: int) -> tuple[Path, str]:
+    def _write_triplet(
+        self,
+        root: Path,
+        size: int,
+        image_prefix: Path = Path("images"),
+    ) -> tuple[Path, str]:
         sample_id = "A0_demo_r0_c0_p00"
         group = "A0_demo"
-        image_root = root / "images" / "train" / group
+        image_root = root / image_prefix / "train" / group
         image_root.mkdir(parents=True)
         names = [
             "r0_c0_p00.png",
@@ -104,6 +109,27 @@ class Context512RoiTripletGtConverterTest(unittest.TestCase):
                     "--copy-mode", "copy",
                     "--image-check-mode", "all",
                 ])
+
+    def test_discovers_obs_download_prefix_before_images(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir) / "source"
+            output = Path(temp_dir) / "converted"
+            annotation_path, _ = self._write_triplet(
+                root,
+                512,
+                Path("sjn_context_512_roi_256") / "payload" / "images",
+            )
+
+            main([
+                "--input-root", str(root),
+                "--annotation-root", str(annotation_path.parents[1]),
+                "--output-root", str(output),
+                "--copy-mode", "copy",
+                "--image-check-mode", "all",
+            ])
+
+            record = json.loads((output / "phase_a" / "train.jsonl").read_text(encoding="utf-8"))
+            self.assertEqual(len(record["images"]), 3)
 
     def test_resume_replaces_stale_same_size_output(self):
         with tempfile.TemporaryDirectory() as temp_dir:

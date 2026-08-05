@@ -1,9 +1,11 @@
 import tempfile
+import tarfile
 import unittest
 from pathlib import Path
 
 from scripts.tools.build_context512_roi_triplet_gt_dataset_v2_from_obs_windows import (
     download_tree,
+    extract_archives,
     normalized_obs_uri,
     read_download_marker,
 )
@@ -43,6 +45,28 @@ class Context512TripletObsPipelineTest(unittest.TestCase):
             marker = Path(temp_dir) / ".complete.json"
             marker.write_text("{}", encoding="utf-8")
             self.assertFalse(read_download_marker(marker, "obs://bucket/path/"))
+
+    def test_tar_archives_are_extracted_and_reused(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            source = root / "source"
+            source.mkdir()
+            payload = root / "payload"
+            (payload / "A0_demo").mkdir(parents=True)
+            (payload / "A0_demo" / "sample.png").write_bytes(b"png")
+            archive = source / "images_000.tar"
+            with tarfile.open(archive, "w") as handle:
+                handle.add(payload / "A0_demo", arcname="A0_demo")
+            extracted = root / "extracted"
+
+            first = extract_archives(source, extracted, workers=2, resume=True)
+            second = extract_archives(source, extracted, workers=2, resume=True)
+
+            self.assertEqual(first["archive_count"], 1)
+            self.assertEqual(first["extracted_count"], 1)
+            self.assertEqual(second["reused_count"], 1)
+            target = Path(second["archives"][0]["target"])
+            self.assertTrue((target / "A0_demo" / "sample.png").is_file())
 
 
 if __name__ == "__main__":

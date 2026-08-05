@@ -12,11 +12,16 @@ This Windows-oriented entrypoint performs one resumable pipeline:
 from __future__ import annotations
 
 import argparse
+import concurrent.futures
+import hashlib
 import json
 import os
 import shlex
+import shutil
 import subprocess
 import sys
+import tarfile
+import zipfile
 from pathlib import Path
 
 
@@ -45,6 +50,7 @@ def parse_args(argv=None) -> argparse.Namespace:
         default=DEFAULT_WINDOWS_WORK_ROOT if os.name == "nt" else "/cache/sjn_context512_roi256_v2",
     )
     parser.add_argument("--download-root", default="")
+    parser.add_argument("--extract-root", default="")
     parser.add_argument("--source-local-root", default="")
     parser.add_argument("--gt-local-root", default="")
     parser.add_argument("--output-root", default="")
@@ -53,6 +59,12 @@ def parse_args(argv=None) -> argparse.Namespace:
     parser.add_argument("--obsutil-path", default="")
     parser.add_argument("--obsutil-config", default="")
     parser.add_argument("--obsutil-jobs", type=int, default=16)
+    parser.add_argument(
+        "--archive-workers",
+        type=int,
+        default=8,
+        help="Number of downloaded TAR/ZIP packages extracted concurrently.",
+    )
     parser.add_argument("--copy-mode", choices=("hardlink", "copy"), default="hardlink")
     parser.add_argument(
         "--image-check-mode",
@@ -151,6 +163,184 @@ def find_gt_json_count(root: Path) -> int:
     return count
 
 
+def archive_kind(path: Path) -> str | None:
+    name = path.name.lower()
+    if name.endswith((".tar.gz", ".tgz", ".tar")):
+        return "tar"
+    if name.endswith(".zip"):
+        return "zip"
+    return None
+
+
+def discover_archives(root: Path) -> list[Path]:
+    return sorted(
+        path
+        for path in root.rglob("*")
+        if path.is_file() and archive_kind(path) is not None
+    )
+
+
+def archive_target(archive: Path, source_root: Path, extract_root: Path) -> Path:
+    relative = archive.relative_to(source_root).as_posix()
+    digest = hashlib.sha256(relative.encode("utf-8")).hexdigest()[:12]
+    label = archive.name
+    for suffix in (".tar.gz", ".tgz", ".tar", ".zip"):
+        if label.lower().endswith(suffix):
+            label = label[:-len(suffix)]
+            break
+    safe_label = "".join(char if char.isalnum() or char in "-_" else "_" for char in label)
+    return extract_root / f"{digest}_{safe_label or 'archive'}"
+
+
+def remove_generated_tree(path: Path, extract_root: Path) -> None:
+    resolved = path.resolve()
+    root_resolved = extract_root.resolve()
+    if resolved == root_resolved:
+        raise ValueError(f"refusing to remove extraction root: {resolved}")
+    try:
+        resolved.relative_to(root_resolved)
+    except ValueError as exc:
+        raise ValueError(f"generated extraction path is outside extraction root: {resolved}") from exc
+    if path.exists():
+        shutil.rmtree(path)
+
+
+def extracted_marker_matches(marker: Path, archive: Path) -> bool:
+    if not marker.is_file():
+        return False
+    try:
+        payload = json.loads(marker.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return False
+    stat = archive.stat()
+    return (
+        payload.get("pipeline_version") == PIPELINE_VERSION
+        and int(payload.get("archive_size", -1)) == stat.st_size
+        and int(payload.get("archive_mtime_ns", -1)) == stat.st_mtime_ns
+        and bool(payload.get("extracted_files_present"))
+    )
+
+
+def safe_extract_zip(archive: Path, destination: Path) -> None:
+    root = destination.resolve()
+    with zipfile.ZipFile(archive) as handle:
+        for member in handle.infolist():
+            target = (destination / member.filename).resolve()
+            try:
+                target.relative_to(root)
+            except ValueError as exc:
+                raise ValueError(f"unsafe ZIP member path in {archive}: {member.filename}") from exc
+        handle.extractall(destination)
+
+
+def extract_one_archive(
+    archive: Path,
+    source_root: Path,
+    extract_root: Path,
+    resume: bool,
+) -> dict:
+    target = archive_target(archive, source_root, extract_root)
+    marker = target / ".archive_extract_complete.json"
+    if resume and extracted_marker_matches(marker, archive):
+        return {"archive": str(archive), "target": str(target), "status": "reused"}
+    partial = target.with_name(target.name + ".partial")
+    remove_generated_tree(partial, extract_root)
+    remove_generated_tree(target, extract_root)
+    partial.mkdir(parents=True, exist_ok=True)
+    print(f"[context512-triplet-obs] extract {archive} -> {target}", flush=True)
+    try:
+        if archive_kind(archive) == "zip":
+            safe_extract_zip(archive, partial)
+        else:
+            with tarfile.open(archive, "r:*") as handle:
+                handle.extractall(partial, filter="data")
+        if not contains_local_files(partial):
+            raise FileNotFoundError(f"archive extraction produced no files: {archive}")
+        partial.replace(target)
+        stat = archive.stat()
+        write_json(target / ".archive_extract_complete.json", {
+            "pipeline_version": PIPELINE_VERSION,
+            "archive": str(archive),
+            "archive_size": stat.st_size,
+            "archive_mtime_ns": stat.st_mtime_ns,
+            "target": str(target),
+            "extracted_files_present": True,
+        })
+    except Exception:
+        remove_generated_tree(partial, extract_root)
+        raise
+    return {"archive": str(archive), "target": str(target), "status": "extracted"}
+
+
+def read_extraction_summary(extract_root: Path) -> dict | None:
+    path = extract_root / "extraction_summary.json"
+    if not path.is_file():
+        return None
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if payload.get("status") != "passed" or int(payload.get("archive_count", 0)) <= 0:
+        return None
+    return payload
+
+
+def extract_archives(
+    source_root: Path,
+    extract_root: Path,
+    workers: int,
+    resume: bool,
+) -> dict:
+    archives = discover_archives(source_root)
+    if not archives:
+        previous = read_extraction_summary(extract_root)
+        if previous is not None:
+            print(f"[context512-triplet-obs] reuse extraction summary: {extract_root}", flush=True)
+            return previous
+        print(f"[context512-triplet-obs] no archives found under {source_root}", flush=True)
+        return {
+            "status": "not_required",
+            "archive_count": 0,
+            "extract_root": str(source_root),
+        }
+    extract_root.mkdir(parents=True, exist_ok=True)
+    worker_count = max(1, min(int(workers), len(archives)))
+    print(
+        f"[context512-triplet-obs] extract archives={len(archives)} workers={worker_count}",
+        flush=True,
+    )
+    results = []
+    with concurrent.futures.ThreadPoolExecutor(max_workers=worker_count) as executor:
+        futures = {
+            executor.submit(
+                extract_one_archive,
+                archive,
+                source_root,
+                extract_root,
+                resume,
+            ): archive
+            for archive in archives
+        }
+        for future in concurrent.futures.as_completed(futures):
+            results.append(future.result())
+            done = len(results)
+            if done % 10 == 0 or done == len(archives):
+                print(
+                    f"[context512-triplet-obs] extracted/reused archives={done}/{len(archives)}",
+                    flush=True,
+                )
+    summary = {
+        "status": "passed",
+        "archive_count": len(archives),
+        "extracted_count": sum(item["status"] == "extracted" for item in results),
+        "reused_count": sum(item["status"] == "reused" for item in results),
+        "extract_root": str(extract_root),
+        "archives": sorted(results, key=lambda item: item["archive"]),
+    }
+    write_json(extract_root / "extraction_summary.json", summary)
+    return summary
+
+
 def run_converter(args: argparse.Namespace, source_root: Path, gt_root: Path, output_root: Path, package: Path) -> None:
     converter = REPO_ROOT / "scripts" / "tools" / "convert_context512_roi_triplet_gt_to_dataset_v2.py"
     command = [
@@ -212,6 +402,11 @@ def main(argv=None) -> None:
         if args.download_root
         else work_root / "download"
     )
+    extract_root = (
+        Path(args.extract_root).expanduser().resolve()
+        if args.extract_root
+        else work_root / "extracted_images"
+    )
     source_root = (
         Path(args.source_local_root).expanduser().resolve()
         if args.source_local_root
@@ -259,8 +454,17 @@ def main(argv=None) -> None:
     if gt_json_count <= 0:
         raise FileNotFoundError(f"downloaded GT root contains no JSON files: {gt_root}")
 
+    extraction = extract_archives(
+        source_root,
+        extract_root,
+        args.archive_workers,
+        args.resume,
+    )
+    converter_source_root = (
+        extract_root if int(extraction.get("archive_count", 0)) > 0 else source_root
+    )
     if not args.skip_build:
-        run_converter(args, source_root, gt_root, output_root, package)
+        run_converter(args, converter_source_root, gt_root, output_root, package)
     validation = validate_completed_build(output_root, package)
     summary = {
         "status": "passed",
@@ -268,11 +472,13 @@ def main(argv=None) -> None:
         "source_obs_root": args.source_obs_root,
         "gt_obs_root": args.gt_obs_root,
         "source_local_root": str(source_root),
+        "converter_source_root": str(converter_source_root),
         "gt_local_root": str(gt_root),
         "gt_json_count": gt_json_count,
         "output_root": str(output_root),
         "package": str(package),
         "download_reports": download_reports,
+        "extraction": extraction,
         "conversion_validation": validation,
     }
     write_json(work_root / "pipeline_summary.json", summary)

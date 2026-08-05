@@ -31,7 +31,11 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from data_process.build_dataset_v2 import allocate_quotas, parse_ratio_spec
-from data_process.build_dataset_v2_staged import STAGE_MARKER, discover_stage_roots
+from data_process.build_dataset_v2_staged import (
+    STAGE_MARKER,
+    build_sample_owners,
+    discover_stage_roots,
+)
 from data_process.fixed_source_splits import load_fixed_source_split_manifest
 from data_process.state_update_dataset_common import make_prompt
 from scripts.tools.build_rc_dataset_v2_from_obs import create_variant_tar
@@ -90,6 +94,15 @@ def parse_args(argv=None) -> argparse.Namespace:
         help=(
             "Generate local256, context512_roi256, or both. Context-only mode can use a "
             "clean context staging directly and does not require clean local256 tiles."
+        ),
+    )
+    parser.add_argument(
+        "--direct-context-overlap-only",
+        action="store_true",
+        help=(
+            "For context output, constrain train selection to sample ids that have a direct "
+            "clean context image and a matching raw-lane/pose staged record. This disables "
+            "clean-image reconstruction for selected train samples."
         ),
     )
     parser.add_argument(
@@ -157,6 +170,120 @@ def stage_map(staging_root: Path, role: str) -> dict[int, Path]:
             raise ValueError(f"duplicate {role} source_index={source_index}: {stage_root}")
         result[source_index] = stage_root
     return result
+
+
+def build_direct_context_overlap_filter(
+    clean_stages: dict[int, dict[str, Path]],
+    aux_root: Path,
+    destination: Path,
+) -> dict:
+    """Write ids whose direct context image exists in both staged datasets."""
+
+    auxiliary = stage_map(aux_root, "auxiliary-overlap")
+    sample_owner, collisions = build_sample_owners(
+        list(auxiliary.values()),
+        "last",
+    )
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    temporary = destination.with_name(destination.name + ".partial")
+    temporary.unlink(missing_ok=True)
+    selected_ids = set()
+    source_reports = []
+    with temporary.open("w", encoding="utf-8", newline="\n") as output:
+        for source_index, aux_stage in sorted(auxiliary.items()):
+            clean_stage = clean_stages[source_index]["context512_roi256"]
+            clean_ids = set()
+            missing_clean_files = 0
+            for split in ("train", "eval", "test"):
+                clean_records = (
+                    clean_stage
+                    / "records"
+                    / "context512_roi256"
+                    / f"{split}.jsonl"
+                )
+                if not clean_records.is_file():
+                    raise FileNotFoundError(
+                        f"clean context staged records not found: {clean_records}"
+                    )
+                with clean_records.open("r", encoding="utf-8-sig") as handle:
+                    for line_number, line in enumerate(handle, start=1):
+                        if not line.strip():
+                            continue
+                        record = json.loads(line)
+                        sample_id = str(record.get("id") or "").strip()
+                        relative = str(record.get("image") or "").strip()
+                        if not sample_id or not relative:
+                            raise ValueError(
+                                f"invalid clean context record at {clean_records}:{line_number}"
+                            )
+                        image_path = (
+                            clean_stage
+                            / "variants"
+                            / "context512_roi256"
+                            / Path(relative)
+                        )
+                        if not image_path.is_file():
+                            missing_clean_files += 1
+                            continue
+                        if sample_id in clean_ids:
+                            raise ValueError(
+                                f"duplicate clean context sample id={sample_id}: {clean_stage}"
+                            )
+                        clean_ids.add(sample_id)
+
+            aux_records = 0
+            common_records = 0
+            for split in ("train", "eval", "test"):
+                aux_index = aux_stage / "records" / f"{split}.index.jsonl"
+                if not aux_index.is_file():
+                    raise FileNotFoundError(f"auxiliary staged index not found: {aux_index}")
+                with aux_index.open("r", encoding="utf-8-sig") as handle:
+                    for line_number, line in enumerate(handle, start=1):
+                        if not line.strip():
+                            continue
+                        index_row = json.loads(line)
+                        sample_id = str(index_row.get("id") or "").strip()
+                        if not sample_id:
+                            raise ValueError(
+                                f"invalid auxiliary index at {aux_index}:{line_number}"
+                            )
+                        aux_records += 1
+                        raw_sample_id = str(index_row.get("raw_sample_id") or "")
+                        if raw_sample_id and sample_owner.get(raw_sample_id) != source_index:
+                            continue
+                        if sample_id not in clean_ids or sample_id in selected_ids:
+                            continue
+                        selected_ids.add(sample_id)
+                        output.write(
+                            json.dumps({"id": sample_id}, ensure_ascii=False, separators=(",", ":"))
+                            + "\n"
+                        )
+                        common_records += 1
+            source_reports.append({
+                "source_index": source_index,
+                "clean_stage": str(clean_stage),
+                "aux_stage": str(aux_stage),
+                "clean_context_ids_with_files": len(clean_ids),
+                "missing_clean_context_files": missing_clean_files,
+                "aux_candidate_records": aux_records,
+                "common_candidate_records": common_records,
+            })
+            print(
+                f"[three-image-dataset] direct context overlap source={source_index}: "
+                f"clean={len(clean_ids)} aux={aux_records} common={common_records}",
+                flush=True,
+            )
+    temporary.replace(destination)
+    report = {
+        "status": "passed",
+        "filter_path": str(destination),
+        "unique_common_candidate_ids": len(selected_ids),
+        "duplicate_raw_sample_events": len(collisions),
+        "sources": source_reports,
+    }
+    write_json(destination.with_suffix(destination.suffix + ".report.json"), report)
+    print(json.dumps(report, ensure_ascii=False, indent=2), flush=True)
+    return report
 
 
 def validate_stage_compatibility(
@@ -276,12 +403,16 @@ def finalization_command(args: argparse.Namespace, output_root: Path) -> list[ob
         "--train-target-samples", args.target_samples,
         "--difficulty-ratios", args.difficulty_ratios,
         "--intersection-target-ratio", args.intersection_target_ratio,
+        "--strict-difficulty-quotas",
         "--difficulty-seed", args.difficulty_seed,
         "--duplicate-policy", "last",
         "--copy-mode", args.copy_mode,
         "--fixed-source-split-manifest", args.fixed_source_split_manifest,
         "--repartition-existing-stages-by-fixed-manifest",
     ]
+    candidate_filter = str(getattr(args, "train_candidate_jsonl", "") or "").strip()
+    if candidate_filter:
+        command.extend(["--train-candidate-jsonl", candidate_filter])
     if args.resume:
         command.append("--resume")
     return command
@@ -970,11 +1101,21 @@ def dataset_has_three_image_contract(root: Path, target_samples: int) -> bool:
         return False
 
 
-def finalized_overlay_source_is_ready(root: Path, target_samples: int) -> bool:
+def finalized_overlay_source_is_ready(
+    root: Path,
+    target_samples: int,
+    require_direct_overlap: bool = False,
+) -> bool:
     try:
-        return (
+        ready = (
             (root / "dataset_info.json").is_file()
             and count_jsonl(root / "phase_a" / "train.jsonl") == target_samples
+        )
+        if not ready or not require_direct_overlap:
+            return ready
+        info = read_json(root / "dataset_info.json")
+        return bool(info.get("train_candidate_filter")) and bool(
+            (info.get("balance") or {}).get("strict_difficulty_quotas", False)
         )
     except (OSError, ValueError, json.JSONDecodeError):
         return False
@@ -1010,6 +1151,26 @@ def main(argv=None) -> None:
         clean_context_root,
         selected_source_variants,
     )
+    overlap_report = None
+    args.train_candidate_jsonl = ""
+    if args.direct_context_overlap_only:
+        if selected_source_variants != ("context512_roi256",):
+            raise ValueError(
+                "--direct-context-overlap-only currently requires --views context"
+            )
+        overlap_filter = work_root / "manifests" / "direct_context_overlap_ids.jsonl"
+        overlap_report = build_direct_context_overlap_filter(
+            clean_stages,
+            aux_root,
+            overlap_filter,
+        )
+        if int(overlap_report["unique_common_candidate_ids"]) < args.target_samples:
+            raise ValueError(
+                "the direct clean-context/raw-lane/pose staging intersection is too small: "
+                f"common={overlap_report['unique_common_candidate_ids']}, "
+                f"target={args.target_samples}."
+            )
+        args.train_candidate_jsonl = str(overlap_filter)
     output_root.mkdir(parents=True, exist_ok=True)
     package_root.mkdir(parents=True, exist_ok=True)
     final_roots = {
@@ -1051,7 +1212,11 @@ def main(argv=None) -> None:
             source
             for source, source_root in source_roots.items()
             if not target_roots[source].exists()
-            and not finalized_overlay_source_is_ready(source_root, args.target_samples)
+            and not finalized_overlay_source_is_ready(
+                source_root,
+                args.target_samples,
+                require_direct_overlap=args.direct_context_overlap_only,
+            )
         ]
         if missing_overlay_sources:
             run(finalization_command(args, output_root))
@@ -1157,6 +1322,8 @@ def main(argv=None) -> None:
         "fixed_source_split_sha256": fixed_manifest["file_sha256"],
         "target_samples": args.target_samples,
         "views": args.views,
+        "direct_context_overlap_only": args.direct_context_overlap_only,
+        "direct_context_overlap_report": overlap_report,
         "difficulty_ratios": args.difficulty_ratios,
         "intersection_target_ratio": args.intersection_target_ratio,
         "image_order": list(IMAGE_ROLES),

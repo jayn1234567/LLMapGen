@@ -85,6 +85,7 @@ from scripts.tools.build_rc_dataset_v2_rawlane_pose_context512_roi256_550k_from_
 from scripts.tools.build_rc_dataset_v2_rawlane_pose_three_image_800k_from_staging_windows import (
     IMAGE_ROLES as THREE_IMAGE_ROLES,
     PROMPT_CONTRACT_VERSION as THREE_IMAGE_PROMPT_CONTRACT_VERSION,
+    build_direct_context_overlap_filter,
     crop_clean_local_from_context,
     finalization_command as three_image_finalization_command,
     parse_args as parse_three_image_args,
@@ -522,6 +523,64 @@ class DatasetV2ContextTest(unittest.TestCase):
             )
             self.assertEqual(resolved[0]["local256"], context_stage)
             self.assertEqual(resolved[0]["context512_roi256"], context_stage)
+
+    def test_three_image_direct_context_overlap_filter_keeps_only_common_files(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            clean_stage = root / "clean" / "source_00"
+            aux_stage = root / "aux" / "source_00"
+            clean_record_root = clean_stage / "records" / "context512_roi256"
+            clean_image_root = (
+                clean_stage
+                / "variants"
+                / "context512_roi256"
+                / "images"
+                / "train"
+                / "tile"
+            )
+            aux_record_root = aux_stage / "records"
+            clean_record_root.mkdir(parents=True)
+            clean_image_root.mkdir(parents=True)
+            aux_record_root.mkdir(parents=True)
+            for stage, marker in (
+                (clean_stage, {"source_index": 0, "variants": ["context512_roi256"]}),
+                (aux_stage, {"source_index": 0, "variants": ["context512_roi256"]}),
+            ):
+                (stage / STAGE_MARKER).write_text(json.dumps(marker), encoding="utf-8")
+            Image.new("RGB", (512, 512)).save(clean_image_root / "common.png")
+            clean_rows = [
+                {"id": "common", "image": "images/train/tile/common.png"},
+                {"id": "missing_file", "image": "images/train/tile/missing.png"},
+            ]
+            for split in ("train", "eval", "test"):
+                rows = clean_rows if split == "train" else []
+                (clean_record_root / f"{split}.jsonl").write_text(
+                    "".join(json.dumps(row) + "\n" for row in rows),
+                    encoding="utf-8",
+                )
+                aux_rows = (
+                    [
+                        {"id": "common", "raw_sample_id": "tile"},
+                        {"id": "aux_only", "raw_sample_id": "tile"},
+                    ]
+                    if split == "train"
+                    else []
+                )
+                (aux_record_root / f"{split}.index.jsonl").write_text(
+                    "".join(json.dumps(row) + "\n" for row in aux_rows),
+                    encoding="utf-8",
+                )
+            destination = root / "common.jsonl"
+            report = build_direct_context_overlap_filter(
+                {0: {"local256": clean_stage, "context512_roi256": clean_stage}},
+                root / "aux",
+                destination,
+            )
+            self.assertEqual(report["unique_common_candidate_ids"], 1)
+            self.assertEqual(
+                json.loads(destination.read_text(encoding="utf-8"))["id"],
+                "common",
+            )
 
     def test_streaming_stage_command_enables_pose_second_image(self):
         args = parse_streaming_args([
@@ -1607,6 +1666,37 @@ class DatasetV2BalancingTest(unittest.TestCase):
         self.assertEqual(report["translated_grid_records"], 8)
         self.assertEqual(report["exact_repeated_records"], 0)
         self.assertTrue(all(count == 1 for count in counts.values()))
+
+    def test_strict_difficulty_quotas_use_translation_only_for_bucket_shortage(self):
+        base = empty_candidate_pools()
+        translated = empty_candidate_pools()
+        ratios = {name: 0.0 for name in DIFFICULTY_ORDER}
+        ratios.update({"easy": 0.2, "medium": 0.3, "hard": 0.4, "very_hard": 0.1})
+        base["easy"]["plain"] = [f"base_easy_{index}" for index in range(2)]
+        base["medium"]["plain"] = [f"base_medium_{index}" for index in range(3)]
+        base["hard"]["plain"] = [f"base_hard_{index}" for index in range(2)]
+        base["very_hard"]["plain"] = ["base_very_hard_0"]
+        translated["hard"]["plain"] = ["shift_hard_0", "shift_hard_1"]
+        counts, report = select_balanced_candidates(
+            base,
+            translated,
+            10,
+            ratios,
+            0.0,
+            7,
+            strict_difficulty_quotas=True,
+        )
+        self.assertEqual(sum(counts.values()), 10)
+        self.assertEqual(report["final_bucket_counts"], {
+            "empty": 0,
+            "very_easy": 0,
+            "easy": 2,
+            "medium": 3,
+            "hard": 4,
+            "very_hard": 1,
+        })
+        self.assertEqual(report["translated_grid_records"], 2)
+        self.assertTrue(report["strict_difficulty_quotas"])
 
     def test_global_intersection_target_is_coordinated_across_grid_kinds(self):
         base = empty_candidate_pools()

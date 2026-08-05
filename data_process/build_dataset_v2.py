@@ -323,22 +323,72 @@ def select_balanced_candidates(
     ratios,
     intersection_target_ratio,
     seed,
+    strict_difficulty_quotas=False,
 ):
     rng = random.Random(seed)
-    base_quotas, base_difficulty_plan = resolve_unique_difficulty_quotas(
-        base_pools,
-        target_total,
-        ratios,
-        use_target_ratios=True,
-    )
+    target_quotas = allocate_quotas(target_total, ratios)
+    if strict_difficulty_quotas:
+        base_available = {
+            name: len(candidate_bucket(base_pools, name)["intersection"])
+            + len(candidate_bucket(base_pools, name)["plain"])
+            for name in DIFFICULTY_ORDER
+        }
+        translated_available = {
+            name: len(candidate_bucket(translated_pools, name)["intersection"])
+            + len(candidate_bucket(translated_pools, name)["plain"])
+            for name in DIFFICULTY_ORDER
+        }
+        base_quotas = {
+            name: min(target_quotas.get(name, 0), base_available[name])
+            for name in DIFFICULTY_ORDER
+        }
+        translated_quotas = {
+            name: target_quotas.get(name, 0) - base_quotas[name]
+            for name in DIFFICULTY_ORDER
+        }
+        shortages = {
+            name: translated_quotas[name] - translated_available[name]
+            for name in DIFFICULTY_ORDER
+            if translated_quotas[name] > translated_available[name]
+        }
+        if shortages:
+            raise ValueError(
+                "strict difficulty quotas cannot be satisfied without repeated records: "
+                f"shortages={shortages}, target_quotas={target_quotas}, "
+                f"base_available={base_available}, translated_available={translated_available}"
+            )
+        base_difficulty_plan = {
+            "requested_quotas": target_quotas,
+            "resolved_quotas": base_quotas,
+            "available_unique": base_available,
+            "shifted_in": {name: 0 for name in DIFFICULTY_ORDER},
+            "unfilled": sum(translated_quotas.values()),
+            "strict_difficulty_quotas": True,
+        }
+        translated_difficulty_plan = {
+            "requested_quotas": translated_quotas,
+            "resolved_quotas": translated_quotas,
+            "available_unique": translated_available,
+            "shifted_in": {name: 0 for name in DIFFICULTY_ORDER},
+            "unfilled": 0,
+            "strict_difficulty_quotas": True,
+        }
+    else:
+        base_quotas, base_difficulty_plan = resolve_unique_difficulty_quotas(
+            base_pools,
+            target_total,
+            ratios,
+            use_target_ratios=True,
+        )
+        base_total = sum(base_quotas.values())
+        translated_needed = target_total - base_total
+        translated_quotas, translated_difficulty_plan = resolve_unique_difficulty_quotas(
+            translated_pools,
+            translated_needed,
+            ratios,
+            use_target_ratios=False,
+        )
     base_total = sum(base_quotas.values())
-    translated_needed = target_total - base_total
-    translated_quotas, translated_difficulty_plan = resolve_unique_difficulty_quotas(
-        translated_pools,
-        translated_needed,
-        ratios,
-        use_target_ratios=False,
-    )
     final_intersection_target = int(round(target_total * intersection_target_ratio))
     base_min, base_max = intersection_feasible_range(base_pools, base_quotas)
     translated_min, translated_max = intersection_feasible_range(translated_pools, translated_quotas)
@@ -401,7 +451,7 @@ def select_balanced_candidates(
         "base_grid_records": len(base_selected),
         "translated_grid_records": len(translated_selected),
         "target_ratios": ratios,
-        "target_quotas": allocate_quotas(target_total, ratios),
+        "target_quotas": target_quotas,
         "final_bucket_counts": dict(final_bucket_counts),
         "target_intersection_ratio": intersection_target_ratio,
         "actual_intersection_ratio": selected_intersections / max(1, len(selected)),
@@ -421,7 +471,12 @@ def select_balanced_candidates(
             "intersection_plan": translated_intersection_plan,
             "buckets": translated_bucket_report,
         },
-        "selection_policy": "unique_base_then_medium_hard_then_translated_grid",
+        "selection_policy": (
+            "exact_difficulty_base_then_translated_without_replacement"
+            if strict_difficulty_quotas
+            else "unique_base_then_medium_hard_then_translated_grid"
+        ),
+        "strict_difficulty_quotas": bool(strict_difficulty_quotas),
         "seed": seed,
     }
     return counts, report

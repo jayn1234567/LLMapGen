@@ -163,6 +163,15 @@ def parse_args(argv=None):
         default="empty=0,easy=0.30,medium=0.33,hard=0.27,very_hard=0.10",
     )
     finalize.add_argument("--intersection-target-ratio", type=float, default=0.30)
+    finalize.add_argument(
+        "--strict-difficulty-quotas",
+        action="store_true",
+        help=(
+            "Keep the requested difficulty counts exact and use translated-grid candidates "
+            "only to fill per-bucket base-grid shortages. Never redistributes a shortage to "
+            "another difficulty bucket."
+        ),
+    )
     finalize.add_argument("--difficulty-seed", type=int, default=20260713)
     finalize.add_argument("--duplicate-policy", choices=["last", "first", "error"], default="last")
     finalize.add_argument("--copy-mode", choices=["hardlink", "copy"], default="hardlink")
@@ -1045,6 +1054,9 @@ def finalize_stages(args) -> None:
         ratios,
         args.intersection_target_ratio,
         args.difficulty_seed,
+        strict_difficulty_quotas=bool(
+            getattr(args, "strict_difficulty_quotas", False)
+        ),
     )
     if balance_report["selected_total"] != args.train_target_samples:
         raise ValueError(

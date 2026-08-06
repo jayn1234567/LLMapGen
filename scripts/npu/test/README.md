@@ -251,7 +251,9 @@ provided intersection processor's same-label `0.5 m` buffer/union policy and
 writes `output_llm_intersection_jn/Intersection.geojson`; an empty
 `Lane.geojson` is written only to satisfy the original evaluator's directory
 contract. The original evaluator then runs once with both high and low roads
-enabled. There are no separate low/high intersection runs.
+enabled. There are no separate low/high intersection runs. Scene discovery is
+recursive (`simplify_path: false`) so extraction marker files at the E2E root
+cannot be mistaken for scene directories by the original evaluator.
 
 ```bash
 PREDICTION_DIR=/cache/jn/outputs/<run>/inference/json \

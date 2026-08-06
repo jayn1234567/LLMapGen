@@ -17,6 +17,7 @@ def test_intersection_e2e_script_uses_native_local512_geometry_and_one_eval_pass
     assert "RUN_HIGH_EVAL=False" in text
     assert "RUN_FORMAT_STEP=False" in text
     assert "RUN_RULE_STEP=False" in text
+    assert "EVAL_SIMPLIFY_PATH=False" in text
 
 
 def test_shared_original_evaluator_accepts_a_dedicated_query_name():

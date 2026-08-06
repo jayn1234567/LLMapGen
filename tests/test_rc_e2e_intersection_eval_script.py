@@ -10,6 +10,7 @@ def test_intersection_e2e_script_uses_native_local512_geometry_and_one_eval_pass
     text = SCRIPT.read_text(encoding="utf-8")
     assert "WINDOW_SIZE=${WINDOW_SIZE:-512}" in text
     assert "INTERSECTION_STRIDE=${INTERSECTION_STRIDE:-512}" in text
+    assert "ENGINE_EXTRACT_ROOT=${ENGINE_EXTRACT_ROOT:-${RUN_WORK_ROOT}/original_engine_grid512}" in text
     assert "INTER_RESULT_SUBDIR=${INTER_RESULT_SUBDIR:-inter512/tif_512_256}" in text
     assert "QUERY_NAME=${QUERY_NAME:-output_llm_intersection_jn}" in text
     assert "RUN_ALL_EVAL=True" in text
@@ -20,6 +21,8 @@ def test_intersection_e2e_script_uses_native_local512_geometry_and_one_eval_pass
     assert "EVAL_SIMPLIFY_PATH=False" in text
     assert "COLLAPSE_INTERSECTION_TYPE_TO_ONE=${COLLAPSE_INTERSECTION_TYPE_TO_ONE:-True}" in text
     assert "--collapse-type-to-one" in text
+    assert "PREDICTION_COORD_SCALE=0.512" in text
+    assert "ORIGINAL_E2E_LANE_GRID_SIZE=512" in text
 
 
 def test_shared_original_evaluator_accepts_a_dedicated_query_name():

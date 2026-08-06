@@ -22,6 +22,7 @@ RUN_WORK_ROOT=${RUN_WORK_ROOT:-/cache/jn/e2e_eval/original_pipeline_runs/${RUN_I
 ENGINE_EXTRACT_ROOT=${ENGINE_EXTRACT_ROOT:-${RUN_WORK_ROOT}/original_engine_grid512}
 FORMAT_REPORT=${FORMAT_REPORT:-${RESULT_ROOT}/intersection_format_report.json}
 GEOJSON_REPORT=${GEOJSON_REPORT:-${RESULT_ROOT}/intersection_geojson_report.json}
+GT_ORACLE_REPORT=${GT_ORACLE_REPORT:-${RESULT_ROOT}/intersection_gt_empty_suppression_report.json}
 
 WINDOW_SIZE=${WINDOW_SIZE:-512}
 INTERSECTION_STRIDE=${INTERSECTION_STRIDE:-512}
@@ -32,7 +33,8 @@ EVAL_VIS_FLAG=${EVAL_VIS_FLAG:-True}
 INSTALL_ENGINE_DEPS=${INSTALL_ENGINE_DEPS:-False}
 UPLOAD_RESULTS=${UPLOAD_RESULTS:-False}
 RESULT_OBS_PATH=${RESULT_OBS_PATH:-}
-COLLAPSE_INTERSECTION_TYPE_TO_ONE=${COLLAPSE_INTERSECTION_TYPE_TO_ONE:-True}
+COLLAPSE_INTERSECTION_TYPE_TO_ONE=${COLLAPSE_INTERSECTION_TYPE_TO_ONE:-False}
+SUPPRESS_PREDICTIONS_WITHOUT_GT_INTERSECTION=${SUPPRESS_PREDICTIONS_WITHOUT_GT_INTERSECTION:-False}
 
 if [ ! -f "${CONDA_SH}" ]; then
   echo "ERROR: conda activation script not found: ${CONDA_SH}" >&2
@@ -65,6 +67,7 @@ echo "Query name:       ${QUERY_NAME}"
 echo "Evaluation:       one all-roads pass (high=True, low=True)"
 echo "Output:           ${RESULT_ROOT}"
 echo "Collapse type:    ${COLLAPSE_INTERSECTION_TYPE_TO_ONE}"
+echo "GT-empty oracle:  ${SUPPRESS_PREDICTIONS_WITHOUT_GT_INTERSECTION}"
 echo "============================================================"
 
 echo "[intersection-e2e] stage 1/3: format patch intersection predictions"
@@ -83,6 +86,20 @@ python scripts/tools/format_rc_e2e_intersection_predictions.py \
   --reset \
   --strict \
   "${FORMAT_TYPE_ARGS[@]}"
+
+case "${SUPPRESS_PREDICTIONS_WITHOUT_GT_INTERSECTION}" in
+  1|true|TRUE|True|yes|YES|on|ON)
+    echo "[intersection-e2e] diagnostic: suppress predictions in GT-empty intersection patches"
+    python scripts/tools/suppress_rc_e2e_intersections_without_patch_gt.py \
+      --e2e-root "${E2E_DATA_ROOT}" \
+      --report-json "${GT_ORACLE_REPORT}" \
+      --result-subdir "${INTER_RESULT_SUBDIR}" \
+      --window-size "${WINDOW_SIZE}" \
+      --stride "${INTERSECTION_STRIDE}" \
+      --gt-intersection-type 1 \
+      --expected-scenes "${EXPECTED_E2E_SCENES}"
+    ;;
+esac
 
 echo "[intersection-e2e] stage 2/3: merge patch polygons into per-scene GeoJSON"
 python scripts/tools/build_rc_e2e_intersection_geojson.py \
@@ -130,4 +147,7 @@ echo "Metrics/output:   ${RESULT_ROOT}/eval_result_all"
 echo "Evaluator log:    ${RESULT_ROOT}/logs/03_eval_all.log"
 echo "Format report:    ${FORMAT_REPORT}"
 echo "GeoJSON report:   ${GEOJSON_REPORT}"
+if [ -f "${GT_ORACLE_REPORT}" ]; then
+  echo "GT oracle report: ${GT_ORACLE_REPORT}"
+fi
 echo "============================================================"

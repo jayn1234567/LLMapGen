@@ -6,10 +6,12 @@ from pathlib import Path
 import numpy as np
 import pytest
 import rasterio
+from pyproj import Transformer
 from rasterio.transform import from_origin
 
 from scripts.tools.build_rc_e2e_intersection_geojson import build_all
 from scripts.tools.format_rc_e2e_intersection_predictions import format_predictions
+from scripts.tools.suppress_rc_e2e_intersections_without_patch_gt import suppress_all
 
 
 def write_source_tif(path: Path) -> None:
@@ -176,3 +178,75 @@ def test_geometry_only_mode_collapses_non_type1_predictions(tmp_path):
     assert result["intersection"][0]["label"] == "1_1"
     assert report["collapse_type_to_one"] is True
     assert report["counts"]["type_collapsed_to_one"] == 1
+
+
+def test_intersection_gt_oracle_suppresses_only_gt_empty_patches(tmp_path):
+    e2e_root = tmp_path / "e2e_data"
+    scene = e2e_root / "scene_001"
+    tif_path = scene / "rc_one_patch_release/center_line_v2/inter_patch_tif/0_inter.tif"
+    write_source_tif(tif_path)
+    prediction_dir = tmp_path / "predictions"
+    prediction_dir.mkdir()
+    write_prediction(prediction_dir / "positive.json")
+    negative = json.loads((prediction_dir / "positive.json").read_text(encoding="utf-8"))
+    negative.update({"record_id": "scene_001_0_1_3", "col": 3, "x0": 1536})
+    (prediction_dir / "negative.json").write_text(json.dumps(negative), encoding="utf-8")
+
+    source_transform = from_origin(500000.0, 3000000.0, 0.2, 0.2)
+    to_lla = Transformer.from_crs("EPSG:32650", "EPSG:4326", always_xy=True)
+    pixel_ring = [(1074, 562), (1124, 562), (1124, 612), (1074, 612), (1074, 562)]
+    lla_ring = []
+    for pixel in pixel_ring:
+        x, y = source_transform * pixel
+        lon, lat = to_lla.transform(x, y)
+        lla_ring.append([lon, lat, 0.0])
+    gt_dir = scene / "gt"
+    gt_dir.mkdir()
+    (gt_dir / "Intersection.geojson").write_text(
+        json.dumps(
+            {
+                "type": "FeatureCollection",
+                "features": [
+                    {
+                        "type": "Feature",
+                        "geometry": {"type": "Polygon", "coordinates": [lla_ring]},
+                        "properties": {"IntersectionType": 1, "IntersectionSubType": 1},
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result_subdir = Path("inter512/tif_512_256")
+    format_predictions(
+        prediction_dir,
+        e2e_root,
+        tmp_path / "format_report.json",
+        window_size=512,
+        stride=512,
+        coord_range=1000,
+        result_subdir=result_subdir,
+        reset=True,
+        strict=True,
+        collapse_type_to_one=True,
+    )
+    report = suppress_all(
+        e2e_root,
+        tmp_path / "oracle_report.json",
+        result_subdir=result_subdir,
+        window_size=512,
+        stride=512,
+        gt_intersection_type=1,
+        minimum_overlap_area=1e-6,
+        expected_scenes=1,
+    )
+
+    result_root = scene / "rc_one_patch_release/center_line_v2" / result_subdir / "0_tif_res"
+    positive = json.loads((result_root / "1_2.json").read_text(encoding="utf-8"))
+    negative = json.loads((result_root / "1_3.json").read_text(encoding="utf-8"))
+    assert len(positive["intersection"]) == 1
+    assert negative["intersection"] == []
+    assert report["counts"]["gt_positive_patches"] == 1
+    assert report["counts"]["gt_empty_patches"] == 1
+    assert report["counts"]["suppressed_intersections"] == 1

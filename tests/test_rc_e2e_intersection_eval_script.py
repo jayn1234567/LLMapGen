@@ -19,10 +19,12 @@ def test_intersection_e2e_script_uses_native_local512_geometry_and_one_eval_pass
     assert "RUN_FORMAT_STEP=False" in text
     assert "RUN_RULE_STEP=False" in text
     assert "EVAL_SIMPLIFY_PATH=False" in text
-    assert "COLLAPSE_INTERSECTION_TYPE_TO_ONE=${COLLAPSE_INTERSECTION_TYPE_TO_ONE:-True}" in text
+    assert "COLLAPSE_INTERSECTION_TYPE_TO_ONE=${COLLAPSE_INTERSECTION_TYPE_TO_ONE:-False}" in text
     assert "--collapse-type-to-one" in text
     assert "PREDICTION_COORD_SCALE=0.512" in text
     assert "ORIGINAL_E2E_LANE_GRID_SIZE=512" in text
+    assert "SUPPRESS_PREDICTIONS_WITHOUT_GT_INTERSECTION=${SUPPRESS_PREDICTIONS_WITHOUT_GT_INTERSECTION:-False}" in text
+    assert "suppress_rc_e2e_intersections_without_patch_gt.py" in text
 
 
 def test_shared_original_evaluator_accepts_a_dedicated_query_name():

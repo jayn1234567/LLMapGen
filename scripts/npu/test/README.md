@@ -254,11 +254,19 @@ contract. The original evaluator then runs once with both high and low roads
 enabled. There are no separate low/high intersection runs. Scene discovery is
 recursive (`simplify_path: false`) so extraction marker files at the E2E root
 cannot be mistaken for scene directories by the original evaluator.
-For geometry-only comparison, this recipe defaults
-`COLLAPSE_INTERSECTION_TYPE_TO_ONE=True`: every prediction is visible to the
-original evaluator as `IntersectionType=1`, explicit T predictions retain
-subtype `2`, and all remaining predictions use subtype `1`. Set it to `False`
-to preserve Dataset V2 semantic types.
+By default, Dataset V2 semantic types are converted to the original numeric
+schema: `common -> 1_1`, `t_intersection -> 1_2`, `small_untyped -> 3_0`,
+`t_lane_change_area -> 4_1`, and `other/unknown -> 0_0`. For a geometry-only
+diagnostic, set `COLLAPSE_INTERSECTION_TYPE_TO_ONE=True`: every prediction is
+then visible as `IntersectionType=1`, explicit T predictions retain subtype
+`2`, and all remaining predictions use subtype `1`.
+
+Set `SUPPRESS_PREDICTIONS_WITHOUT_GT_INTERSECTION=True` for a diagnostic GT
+oracle run. It removes intersection predictions from native 512 patches whose
+world-coordinate footprint has no positive-area overlap with original E2E
+`IntersectionType=1` ground truth. The suppression report is written as
+`intersection_gt_empty_suppression_report.json`. This experiment uses ground
+truth and must not be reported as production model performance.
 
 ```bash
 PREDICTION_DIR=/cache/jn/outputs/<run>/inference/json \

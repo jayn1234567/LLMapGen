@@ -10,7 +10,7 @@ def test_suppresses_predictions_only_for_gt_empty_patches(tmp_path):
     records = [
         {
             "record_id": "positive",
-            "ground_truth_pixel": '{"lines":[{"category":"centerline","points":[[0,0],[1,1]]}]}',
+            "ground_truth_centerline_count": 1,
         },
         {"record_id": "empty", "ground_truth_pixel": '{"lines":[]}'},
     ]

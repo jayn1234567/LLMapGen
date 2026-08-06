@@ -60,8 +60,17 @@ def load_gt_presence(path: Path) -> tuple[dict[str, int], list[str]]:
                 raise ValueError(f"Evaluation line {line_number} has no record ID: {path}")
             if record_id in result:
                 duplicates.append(record_id)
-            gt_value = record.get("ground_truth_pixel", record.get("ground_truth", record.get("labels")))
-            result[record_id] = centerline_count(gt_value)
+            explicit_count = record.get("ground_truth_centerline_count")
+            if explicit_count is not None:
+                count = int(explicit_count)
+                if count < 0:
+                    raise ValueError(
+                        f"Evaluation line {line_number} has a negative ground-truth count: {count}"
+                    )
+                result[record_id] = count
+            else:
+                gt_value = record.get("ground_truth_pixel", record.get("ground_truth", record.get("labels")))
+                result[record_id] = centerline_count(gt_value)
     if not result:
         raise ValueError(f"Evaluation JSONL is empty: {path}")
     return result, sorted(set(duplicates))

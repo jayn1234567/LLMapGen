@@ -214,6 +214,21 @@ test recipe matrix and evaluate checkpoints trained by
 | `lora_llm` | Inference entry intended for checkpoints trained with LLM LoRA. |
 # Full-local512 output on a run-local 512-grid E2E engine
 
+`run_and_eval_rc_e2e_local512_checkpoint_npu.sh` is the generic one-command
+entry from an arbitrary local512 checkpoint to original all/low/high E2E
+metrics. It downloads a fresh E2E archive, builds the local512 inference set,
+runs model inference, suppresses predictions in patches without lane GT, and
+then runs the original formatter and rule engine. It intentionally does not
+calculate repository patch-level metrics. Run and metric directories use the
+normal `local512_<checkpoint>_e2e_*` and `eval_result_all|low|high` names; the
+GT-assisted filtering decision is retained separately in
+`postprocess/filter_report.json` for auditability.
+
+```bash
+bash scripts/npu/test/run_and_eval_rc_e2e_local512_checkpoint_npu.sh \
+  obs://bucket/path/to/checkpoint-N/
+```
+
 `eval_local512_550k_checkpoint34376_gt_empty_fresh_obs_original_e2e_npu.sh`
 keeps model inference and native patch evaluation at full `512x512`. Before
 calling the original road-rule engine, it creates a run-local engine copy and

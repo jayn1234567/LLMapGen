@@ -304,6 +304,10 @@ def build_all(
     report_json.parent.mkdir(parents=True, exist_ok=True)
     report_json.write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     print(json.dumps({key: report[key] for key in report if key != "scenes"}, ensure_ascii=False, indent=2))
+    if report["intersection_features"] <= 0:
+        raise RuntimeError(
+            f"No Intersection.geojson features were generated; inspect {report_json}"
+        )
     return report
 
 

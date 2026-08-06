@@ -139,3 +139,40 @@ def test_formatter_rejects_stride_mismatch_in_strict_mode(tmp_path):
 
     report = json.loads((tmp_path / "format_report.json").read_text(encoding="utf-8"))
     assert "expected col*stride=1024" in report["errors"][0]["error"]
+
+
+def test_geometry_only_mode_collapses_non_type1_predictions(tmp_path):
+    e2e_root = tmp_path / "e2e_data"
+    scene = e2e_root / "scene_001"
+    (scene / "rc_one_patch_release").mkdir(parents=True)
+    prediction_dir = tmp_path / "predictions"
+    prediction_dir.mkdir()
+    write_prediction(prediction_dir / "prediction.json")
+    record = json.loads((prediction_dir / "prediction.json").read_text(encoding="utf-8"))
+    payload = json.loads(record["prediction_json"])
+    payload["lines"][0]["intersection_type"] = "small_untyped"
+    record["prediction_json"] = json.dumps(payload)
+    (prediction_dir / "prediction.json").write_text(json.dumps(record), encoding="utf-8")
+
+    report = format_predictions(
+        prediction_dir,
+        e2e_root,
+        tmp_path / "format_report.json",
+        window_size=512,
+        stride=512,
+        coord_range=1000,
+        result_subdir=Path("inter512/tif_512_256"),
+        reset=True,
+        strict=True,
+        collapse_type_to_one=True,
+    )
+
+    result = json.loads(
+        (
+            scene
+            / "rc_one_patch_release/center_line_v2/inter512/tif_512_256/0_tif_res/1_2.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert result["intersection"][0]["label"] == "1_1"
+    assert report["collapse_type_to_one"] is True
+    assert report["counts"]["type_collapsed_to_one"] == 1

@@ -36,6 +36,14 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--reset", action="store_true")
     parser.add_argument("--strict", action="store_true")
+    parser.add_argument(
+        "--collapse-type-to-one",
+        action="store_true",
+        help=(
+            "Set every predicted IntersectionType to 1 for geometry-only original-engine "
+            "evaluation. Explicit T intersections retain subtype 2; all others use subtype 1."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -132,6 +140,12 @@ def validate_relative_subdir(path: Path) -> Path:
     return path
 
 
+def evaluation_label(intersection_type: str, *, collapse_type_to_one: bool) -> str:
+    if collapse_type_to_one:
+        return "1_2" if intersection_type == "t_intersection" else "1_1"
+    return TYPE_TO_LABEL.get(intersection_type, TYPE_TO_LABEL["other"])
+
+
 def format_predictions(
     prediction_dir: Path,
     e2e_root: Path,
@@ -143,6 +157,7 @@ def format_predictions(
     result_subdir: Path,
     reset: bool,
     strict: bool,
+    collapse_type_to_one: bool = False,
 ) -> dict[str, Any]:
     prediction_dir = prediction_dir.resolve()
     e2e_root = e2e_root.resolve()
@@ -202,9 +217,14 @@ def format_predictions(
                 if points[0] != points[-1]:
                     points.append(list(points[0]))
                 intersection_type = str(item.get("intersection_type") or "other").strip().lower()
-                label = TYPE_TO_LABEL.get(intersection_type, TYPE_TO_LABEL["other"])
+                label = evaluation_label(
+                    intersection_type,
+                    collapse_type_to_one=collapse_type_to_one,
+                )
                 if intersection_type not in TYPE_TO_LABEL:
                     counters["unknown_intersection_types"] += 1
+                if collapse_type_to_one:
+                    counters["type_collapsed_to_one"] += 1
                 intersections.append({"coords": points, "score": 1.0, "label": label})
                 counters[f"label:{label}"] += 1
 
@@ -230,7 +250,13 @@ def format_predictions(
         "policy": (
             "Geometry uses original norm1000 predictions scaled by window_size/coord_range. "
             "A model parse failure becomes an empty intersection patch; identity, scene, duplicate, "
-            "and stride-offset errors remain structural failures."
+            "and stride-offset errors remain structural failures. "
+            + (
+                "All predicted IntersectionType values are collapsed to 1; explicit T intersections "
+                "retain subtype 2 and every other prediction uses subtype 1."
+                if collapse_type_to_one
+                else "Intersection types retain their Dataset V2 semantic mapping."
+            )
         ),
         "prediction_dir": str(prediction_dir),
         "e2e_root": str(e2e_root),
@@ -238,6 +264,7 @@ def format_predictions(
         "window_size": window_size,
         "stride": stride,
         "coord_range": coord_range,
+        "collapse_type_to_one": collapse_type_to_one,
         "removed_result_dirs": removed_dirs,
         "counts": dict(sorted(counters.items())),
         "errors": errors,
@@ -250,6 +277,10 @@ def format_predictions(
         raise RuntimeError(f"Failed to format {len(errors)} prediction files; inspect {report_json}")
     if counters["formatted_patches"] <= 0:
         raise RuntimeError("No intersection patch results were formatted")
+    if counters["formatted_intersections"] <= 0:
+        raise RuntimeError(
+            f"No predicted intersections were formatted; inspect raw predictions and {report_json}"
+        )
     return report
 
 
@@ -265,6 +296,7 @@ def main() -> None:
         result_subdir=Path(args.result_subdir),
         reset=args.reset,
         strict=args.strict,
+        collapse_type_to_one=args.collapse_type_to_one,
     )
 
 

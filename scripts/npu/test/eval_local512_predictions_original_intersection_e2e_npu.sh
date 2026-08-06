@@ -31,6 +31,7 @@ EVAL_VIS_FLAG=${EVAL_VIS_FLAG:-True}
 INSTALL_ENGINE_DEPS=${INSTALL_ENGINE_DEPS:-False}
 UPLOAD_RESULTS=${UPLOAD_RESULTS:-False}
 RESULT_OBS_PATH=${RESULT_OBS_PATH:-}
+COLLAPSE_INTERSECTION_TYPE_TO_ONE=${COLLAPSE_INTERSECTION_TYPE_TO_ONE:-True}
 
 if [ ! -f "${CONDA_SH}" ]; then
   echo "ERROR: conda activation script not found: ${CONDA_SH}" >&2
@@ -62,9 +63,14 @@ echo "Patch result dir: ${INTER_RESULT_SUBDIR}"
 echo "Query name:       ${QUERY_NAME}"
 echo "Evaluation:       one all-roads pass (high=True, low=True)"
 echo "Output:           ${RESULT_ROOT}"
+echo "Collapse type:    ${COLLAPSE_INTERSECTION_TYPE_TO_ONE}"
 echo "============================================================"
 
 echo "[intersection-e2e] stage 1/3: format patch intersection predictions"
+FORMAT_TYPE_ARGS=()
+case "${COLLAPSE_INTERSECTION_TYPE_TO_ONE}" in
+  1|true|TRUE|True|yes|YES|on|ON) FORMAT_TYPE_ARGS+=(--collapse-type-to-one) ;;
+esac
 python scripts/tools/format_rc_e2e_intersection_predictions.py \
   --prediction-dir "${PREDICTION_DIR}" \
   --e2e-root "${E2E_DATA_ROOT}" \
@@ -74,7 +80,8 @@ python scripts/tools/format_rc_e2e_intersection_predictions.py \
   --coord-range "${COORD_RANGE}" \
   --result-subdir "${INTER_RESULT_SUBDIR}" \
   --reset \
-  --strict
+  --strict \
+  "${FORMAT_TYPE_ARGS[@]}"
 
 echo "[intersection-e2e] stage 2/3: merge patch polygons into per-scene GeoJSON"
 python scripts/tools/build_rc_e2e_intersection_geojson.py \

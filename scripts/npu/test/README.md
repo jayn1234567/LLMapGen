@@ -254,6 +254,11 @@ contract. The original evaluator then runs once with both high and low roads
 enabled. There are no separate low/high intersection runs. Scene discovery is
 recursive (`simplify_path: false`) so extraction marker files at the E2E root
 cannot be mistaken for scene directories by the original evaluator.
+For geometry-only comparison, this recipe defaults
+`COLLAPSE_INTERSECTION_TYPE_TO_ONE=True`: every prediction is visible to the
+original evaluator as `IntersectionType=1`, explicit T predictions retain
+subtype `2`, and all remaining predictions use subtype `1`. Set it to `False`
+to preserve Dataset V2 semantic types.
 
 ```bash
 PREDICTION_DIR=/cache/jn/outputs/<run>/inference/json \

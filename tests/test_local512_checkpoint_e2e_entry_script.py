@@ -20,6 +20,7 @@ def test_generic_local512_entry_runs_only_whole_map_metrics() -> None:
     assert "RUN_ALL_EVAL=True" in text
     assert "RUN_LOW_EVAL=True" in text
     assert "RUN_HIGH_EVAL=True" in text
+    assert "EVAL_VIS_FLAG=${EVAL_VIS_FLAG:-True}" in text
     assert "eval_rc_e2e_context512_roi256_checkpoint12504_patch_metrics.sh" not in text
     assert "gt_empty" not in text.lower()
     assert "oracle" not in text.lower()

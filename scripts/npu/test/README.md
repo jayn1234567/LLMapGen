@@ -222,7 +222,10 @@ then runs the original formatter and rule engine. It intentionally does not
 calculate repository patch-level metrics. Run and metric directories use the
 normal `local512_<checkpoint>_e2e_*` and `eval_result_all|low|high` names; the
 GT-assisted filtering decision is retained separately in
-`postprocess/filter_report.json` for auditability.
+`postprocess/filter_report.json` for auditability. Original-engine difference
+visualization is enabled by default, so `LaneDiff`, problem-lane GeoJSON, and
+related TIF outputs are generated together with all/low/high metrics; set
+`EVAL_VIS_FLAG=False` only when a metrics-only run is intended.
 
 ```bash
 bash scripts/npu/test/run_and_eval_rc_e2e_local512_checkpoint_npu.sh \

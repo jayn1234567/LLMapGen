@@ -59,6 +59,13 @@ def parse_args(argv=None) -> argparse.Namespace:
         default=r"D:\data\fixed_splits\rc_fixed_large_maps_v1.json",
     )
     parser.add_argument("--archive-workers", type=int, default=16)
+    parser.add_argument(
+        "--train-stride-switch-source-index",
+        type=int,
+        default=-1,
+        help="Keep stride 128 before this source and switch from this source onward.",
+    )
+    parser.add_argument("--train-stride-after-switch", type=int, default=256)
     parser.add_argument("--validation-sample-limit", type=int, default=10_000)
     parser.add_argument("--skip-download", action="store_true")
     parser.add_argument("--skip-validation", action="store_true")
@@ -152,6 +159,13 @@ def streaming_command(args: argparse.Namespace, paths: dict[str, Path]) -> list[
         "--pose-threshold", 0,
         "--skip-upload",
     ]
+    if args.train_stride_switch_source_index >= 0:
+        command.extend([
+            "--train-stride-switch-source-index",
+            args.train_stride_switch_source_index,
+            "--train-stride-after-switch",
+            args.train_stride_after_switch,
+        ])
     if args.obsutil_path:
         command.extend(["--obsutil-path", args.obsutil_path])
     if args.obsutil_config:
@@ -367,6 +381,11 @@ def main(argv=None) -> None:
         "difficulty_ratios": DIFFICULTY_RATIOS,
         "difficulty_counts": expected_difficulty_counts(),
         "intersection_ratio": INTERSECTION_RATIO,
+        "train_stride_policy": {
+            "before_switch": 128,
+            "switch_source_index": args.train_stride_switch_source_index,
+            "after_switch": args.train_stride_after_switch,
+        },
         "image_roles": IMAGE_ROLES,
         "raw_lane_overlay": False,
         "validation": validation,

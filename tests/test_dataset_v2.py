@@ -53,6 +53,7 @@ from scripts.tools.build_rc_dataset_v2_streaming_from_obs import (
     build_stage_command,
     completed_stage,
     parse_args as parse_streaming_args,
+    train_stride_for_source,
 )
 from scripts.tools.build_rc_dataset_v2_context512_windows import (
     build_compact_id_filter,
@@ -131,6 +132,39 @@ class DatasetV2ContextTest(unittest.TestCase):
                 "context512_roi256": "context512_roi256_rawlane_pose_800k",
             },
         )
+
+    def test_obs_three_image_recipe_can_switch_stride_from_source_three(self):
+        args = parse_obs_three_image_args([
+            "--work-root", r"D:\three_image",
+            "--fixed-source-split-manifest", r"D:\splits\fixed.json",
+            "--train-stride-switch-source-index", "3",
+            "--train-stride-after-switch", "256",
+            "--resume",
+        ])
+        paths = {
+            "work_root": Path(r"D:\three_image"),
+            "raw_root": Path(r"D:\three_image\raw"),
+            "staging_root": Path(r"D:\three_image\staging"),
+            "output_root": Path(r"D:\three_image\output"),
+        }
+        command = [str(item) for item in obs_three_image_streaming_command(args, paths)]
+        self.assertEqual(
+            command[command.index("--train-stride-switch-source-index") + 1],
+            "3",
+        )
+        self.assertEqual(
+            command[command.index("--train-stride-after-switch") + 1],
+            "256",
+        )
+
+        streaming_args = parse_streaming_args([
+            "--train-stride", "128",
+            "--train-stride-switch-source-index", "3",
+            "--train-stride-after-switch", "256",
+        ])
+        self.assertEqual([train_stride_for_source(streaming_args, index) for index in range(7)], [
+            128, 128, 128, 256, 256, 256, 256,
+        ])
 
     def test_three_image_prompt_refresh_migrates_existing_outputs(self):
         with tempfile.TemporaryDirectory() as temp_dir:

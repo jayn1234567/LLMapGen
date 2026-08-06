@@ -47,6 +47,21 @@ def parse_args(argv=None):
     parser.add_argument("--eval-test-stride", type=int, default=0, help="Defaults to --patch-size.")
     parser.add_argument("--train-target-samples", type=int, default=550000)
     parser.add_argument("--train-stride", type=int, default=128)
+    parser.add_argument(
+        "--train-stride-switch-source-index",
+        type=int,
+        default=-1,
+        help=(
+            "Keep --train-stride before this zero-based source index and use "
+            "--train-stride-after-switch from this source onward. Disabled at -1."
+        ),
+    )
+    parser.add_argument(
+        "--train-stride-after-switch",
+        type=int,
+        default=0,
+        help="Training stride used from --train-stride-switch-source-index onward.",
+    )
     parser.add_argument("--secondary-local256-train-stride", type=int, default=128)
     parser.add_argument(
         "--raw-lane-overlay",
@@ -125,6 +140,19 @@ def parse_args(argv=None):
 def run(command):
     print("[dataset-v2-stream] command:", shlex.join([str(item) for item in command]), flush=True)
     subprocess.run([str(item) for item in command], cwd=REPO_ROOT, check=True)
+
+
+def train_stride_for_source(args, source_index: int) -> int:
+    switch_index = int(args.train_stride_switch_source_index)
+    if switch_index >= 0 and source_index >= switch_index:
+        stride = int(args.train_stride_after_switch)
+        if stride <= 0:
+            raise ValueError(
+                "--train-stride-after-switch must be positive when "
+                "--train-stride-switch-source-index is enabled"
+            )
+        return stride
+    return int(args.train_stride)
 
 
 def file_sha256(path: Path, chunk_size: int = 8 * 1024 * 1024) -> str:
@@ -376,6 +404,7 @@ def main(argv=None):
 
     for source_index, source in enumerate(sources):
         name = source_name(source)
+        source_train_stride = train_stride_for_source(args, source_index)
         local_root = raw_root / f"{source_index:02d}_{name}"
         stage_root = staging_root / f"{source_index:02d}_{name}"
         marker = stage_root / "stage_complete.json"
@@ -389,12 +418,24 @@ def main(argv=None):
             if secondary_stage_root is not None
             else None
         )
+        if (
+            args.resume
+            and source_index == int(args.train_stride_switch_source_index)
+            and stage_root.exists()
+            and not marker.is_file()
+        ):
+            print(
+                "[dataset-v2-stream] remove incomplete switch-source stage before "
+                f"restaging at stride {source_train_stride}: {stage_root}",
+                flush=True,
+            )
+            remove_stale_stage(stage_root, staging_root)
         if args.resume and marker.is_file() and not completed_stage(
             stage_root,
             candidate_filter_sha256,
             expected_variants,
             args.patch_size,
-            args.train_stride,
+            source_train_stride,
             eval_test_stride,
             args.raw_lane_overlay,
             args.require_raw_lane,
@@ -443,7 +484,7 @@ def main(argv=None):
             candidate_filter_sha256,
             expected_variants,
             args.patch_size,
-            args.train_stride,
+            source_train_stride,
             eval_test_stride,
             args.raw_lane_overlay,
             args.require_raw_lane,
@@ -491,7 +532,7 @@ def main(argv=None):
                     args.patch_size,
                     args.context_size,
                     eval_test_stride,
-                    args.train_stride,
+                    source_train_stride,
                     candidate_jsonl,
                     True,
                 ))
@@ -517,7 +558,7 @@ def main(argv=None):
                 args.patch_size,
                 args.context_size,
                 eval_test_stride,
-                args.train_stride,
+                source_train_stride,
                 candidate_jsonl,
                 delete_after_primary,
             ))
@@ -526,7 +567,7 @@ def main(argv=None):
                 candidate_filter_sha256,
                 expected_variants,
                 args.patch_size,
-                args.train_stride,
+                source_train_stride,
                 eval_test_stride,
                 args.raw_lane_overlay,
                 args.require_raw_lane,

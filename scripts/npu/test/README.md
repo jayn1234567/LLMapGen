@@ -240,6 +240,29 @@ scale `0.512`, matching the local512 row/column grid exactly. The shared
 original-engine cache remains unchanged. The 256-grid adapter remains available
 as a diagnostic utility, but is not part of the local512 formal recipe.
 
+### Original whole-map intersection evaluation from local512 predictions
+
+`eval_local512_predictions_original_intersection_e2e_npu.sh` reuses existing
+local512 per-patch inference JSON. It converts normalized intersection polygons
+with scale `0.512`, validates the native `512` window stride and offsets, and
+writes the dedicated RC artifacts below
+`center_line_v2/inter512/tif_512_256/<tif>_tif_res`. The merge stage follows the
+provided intersection processor's same-label `0.5 m` buffer/union policy and
+writes `output_llm_intersection_jn/Intersection.geojson`; an empty
+`Lane.geojson` is written only to satisfy the original evaluator's directory
+contract. The original evaluator then runs once with both high and low roads
+enabled. There are no separate low/high intersection runs.
+
+```bash
+PREDICTION_DIR=/cache/jn/outputs/<run>/inference/json \
+E2E_DATA_ROOT=/cache/jn/e2e_eval/<run>/e2e_data \
+bash scripts/npu/test/eval_local512_predictions_original_intersection_e2e_npu.sh
+```
+
+The `tif_512_256` directory name is retained for compatibility with the RC
+intersection project. It does not define the offset for this recipe: the
+window, stride, and row/column offset are all `512`.
+
 # RawLane local256 full E2E evaluation
 
 `run_and_eval_rc_e2e_rawlane_local256_checkpoint12504_full_npu.sh` evaluates

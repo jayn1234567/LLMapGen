@@ -312,6 +312,7 @@ Centerline geometry evaluation:
 - New data uses `coord_mode=norm1000` by default. Inference/test scripts keep `COORD_MODE=auto` and `COORD_RANGE=1000`, so JSONL metadata controls whether labels are normalized or legacy pixels.
 - Inference summaries keep raw model-coordinate JSON in `prediction_json` and write pixel-converted JSON to `prediction_json_pixel`. Visualization, state-update stitching, and line metrics use the pixel-converted fields.
 - `scripts/tools/evaluate_patch_intersection_original_coverage.py` evaluates direct patch intersection polygons with the original RC E2E asymmetric coverage formula. It reports all-intersection and T-intersection instance/area precision, recall, and F1 without replacing the existing IoU/Hungarian metrics. This formula-only patch diagnostic does not run whole-map stitching or the RC rule engine.
+- `scripts/tools/format_rc_e2e_intersection_predictions.py` converts local512 MLLM intersection polygons into `inter512/tif_512_256/<tif>_tif_res` patch files. `scripts/tools/build_rc_e2e_intersection_geojson.py` restores each polygon to the source TIF world frame, merges same-label polygons, and writes the per-scene query `Intersection.geojson` plus the empty lane file required by the original evaluator.
 
 Phase A / Phase B debug flow:
 

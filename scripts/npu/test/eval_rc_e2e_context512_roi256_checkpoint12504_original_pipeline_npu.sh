@@ -51,6 +51,7 @@ RUN_LOW_EVAL=${RUN_LOW_EVAL:-True}
 RUN_HIGH_EVAL=${RUN_HIGH_EVAL:-True}
 EVAL_SIMPLIFY_PATH=${EVAL_SIMPLIFY_PATH:-False}
 EVAL_VIS_FLAG=${EVAL_VIS_FLAG:-True}
+EVAL_QUERY_NAME=${EVAL_QUERY_NAME:-output_base}
 RESET_EXISTING_MODEL_OUTPUTS=${RESET_EXISTING_MODEL_OUTPUTS:-False}
 EXPECTED_E2E_SCENES=${EXPECTED_E2E_SCENES:-110}
 FILL_MISSING_SCENE_PREDICTIONS=${FILL_MISSING_SCENE_PREDICTIONS:-True}
@@ -299,7 +300,7 @@ elif [ "${E2E_DATA_SOURCE}" = "raw_direct" ]; then
   fi
   E2E_DATA_ROOT="${E2E_RAW_ROOT}"
   echo "[original-e2e] DIRECT mode: original pipeline will read and write ${E2E_DATA_ROOT}"
-  echo "[original-e2e] WARNING: output_base and post-processing artifacts will modify the raw E2E tree"
+  echo "[original-e2e] WARNING: ${EVAL_QUERY_NAME} and post-processing artifacts will modify the raw E2E tree"
 elif [ "${E2E_DATA_SOURCE}" = "raw_copy" ]; then
   if ! has_extracted_e2e_data; then
     echo "ERROR: raw_copy mode requires extracted data below ${E2E_RAW_ROOT}" >&2
@@ -320,7 +321,7 @@ elif [ "${E2E_DATA_SOURCE}" = "auto" ] && has_extracted_e2e_data; then
   if is_true "${E2E_USE_RAW_ROOT_DIRECTLY}"; then
     E2E_DATA_ROOT="${E2E_RAW_ROOT}"
     echo "[original-e2e] DIRECT mode: original pipeline will read and write ${E2E_DATA_ROOT}"
-    echo "[original-e2e] WARNING: output_base and post-processing artifacts will modify the raw E2E tree"
+    echo "[original-e2e] WARNING: ${EVAL_QUERY_NAME} and post-processing artifacts will modify the raw E2E tree"
   else
     PREPARE_RESET_FLAG=()
     if is_true "${RESET_PREPARED_E2E_DATA}"; then
@@ -471,6 +472,7 @@ valid_prediction_count=${VALID_PREDICTION_COUNT}
 invalid_prediction_count=${INVALID_PREDICTION_COUNT}
 original_e2e_lane_grid_size=${ORIGINAL_E2E_LANE_GRID_SIZE}
 prediction_coordinate_scale=${PREDICTION_COORD_SCALE}
+evaluation_query_name=${EVAL_QUERY_NAME}
 e2e_environment=${E2E_ENV_DIR}
 EOF
 
@@ -490,19 +492,20 @@ if is_true "${RESET_EXISTING_MODEL_OUTPUTS}"; then
     exit 2
   fi
   echo "[original-e2e] removing stale model-generated outputs below ${E2E_DATA_ROOT}"
-  python - "${E2E_DATA_ROOT}" <<'PY'
+  python - "${E2E_DATA_ROOT}" "${EVAL_QUERY_NAME}" <<'PY'
 import shutil
 import sys
 from pathlib import Path
 
 root = Path(sys.argv[1]).resolve()
+query_name = sys.argv[2]
 if root != Path("/cache/jn/e2e_eval/raw_e2e_data").resolve():
     raise ValueError(f"Refusing to clean model outputs outside raw_e2e_data: {root}")
 
 removed = []
 for scene in sorted(path for path in root.iterdir() if path.is_dir()):
     targets = [
-        scene / "output_base",
+        scene / query_name,
         scene / "debug_base",
         scene / "rc_one_patch_release" / "center_line_v2" / "lane_ins_res",
     ]
@@ -537,12 +540,12 @@ if is_true "${RUN_RULE_STEP}"; then
     python "${RULE_ENTRY}" -i "${E2E_DATA_ROOT}" -n "${RULE_WORKERS}"
   ) 2>&1 | tee "${RESULT_ROOT}/logs/02_center_lane_rule.log"
 else
-  OUTPUT_BASE_COUNT=$(find "${E2E_DATA_ROOT}" -mindepth 2 -maxdepth 2 -type d -name '*output_base' | wc -l)
+  OUTPUT_BASE_COUNT=$(find "${E2E_DATA_ROOT}" -mindepth 2 -maxdepth 2 -type d -name "*${EVAL_QUERY_NAME}" | wc -l)
   if [ "${OUTPUT_BASE_COUNT}" -le 0 ]; then
-    echo "ERROR: RUN_RULE_STEP=False but no output_base directories exist below ${E2E_DATA_ROOT}" >&2
+    echo "ERROR: RUN_RULE_STEP=False but no *${EVAL_QUERY_NAME} directories exist below ${E2E_DATA_ROOT}" >&2
     exit 2
   fi
-  echo "[original-e2e] step 2/5: SKIP center_lane_rule; reuse ${OUTPUT_BASE_COUNT} output_base directories"
+  echo "[original-e2e] step 2/5: SKIP center_lane_rule; reuse ${OUTPUT_BASE_COUNT} *${EVAL_QUERY_NAME} directories"
 fi
 
 SCENE_COMPLETENESS_ARGS=()
@@ -554,7 +557,7 @@ python scripts/tools/ensure_rc_e2e_scene_outputs.py \
   --report-json "${RESULT_ROOT}/scene_output_completeness.json" \
   --expected-scenes "${EXPECTED_E2E_SCENES}" \
   --baseline-suffix gt \
-  --query-suffix output_base \
+  --query-suffix "${EVAL_QUERY_NAME}" \
   "${SCENE_COMPLETENESS_ARGS[@]}"
 
 CONFIG_BACKUP=${RUN_WORK_ROOT}/original_eval_config.yaml
@@ -570,7 +573,7 @@ run_original_eval() {
   local low=$3
   local step=$4
   local output=${RESULT_ROOT}/eval_result_${mode}
-  python - "${EVAL_CONFIG}" "${E2E_DATA_ROOT}" "${output}" "${high}" "${low}" "${EVAL_SIMPLIFY_PATH}" "${EVAL_VIS_FLAG}" <<'PY'
+  python - "${EVAL_CONFIG}" "${E2E_DATA_ROOT}" "${output}" "${high}" "${low}" "${EVAL_SIMPLIFY_PATH}" "${EVAL_VIS_FLAG}" "${EVAL_QUERY_NAME}" <<'PY'
 import sys
 from pathlib import Path
 import yaml
@@ -579,7 +582,7 @@ config_path = Path(sys.argv[1])
 payload = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
 payload["rootpath"] = sys.argv[2]
 payload["baseline_name"] = "gt"
-payload["query_name"] = "output_base"
+payload["query_name"] = sys.argv[8]
 payload["outpath"] = sys.argv[3]
 payload["check_high_road"] = sys.argv[4].lower() == "true"
 payload["check_low_road"] = sys.argv[5].lower() == "true"

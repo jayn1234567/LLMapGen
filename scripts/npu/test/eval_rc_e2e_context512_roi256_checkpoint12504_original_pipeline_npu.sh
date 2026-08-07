@@ -52,6 +52,7 @@ RUN_HIGH_EVAL=${RUN_HIGH_EVAL:-True}
 EVAL_SIMPLIFY_PATH=${EVAL_SIMPLIFY_PATH:-False}
 EVAL_VIS_FLAG=${EVAL_VIS_FLAG:-True}
 EVAL_QUERY_NAME=${EVAL_QUERY_NAME:-output_base}
+EVAL_INTERSECTION_ONLY_TYPE1=${EVAL_INTERSECTION_ONLY_TYPE1:-True}
 RESET_EXISTING_MODEL_OUTPUTS=${RESET_EXISTING_MODEL_OUTPUTS:-False}
 EXPECTED_E2E_SCENES=${EXPECTED_E2E_SCENES:-110}
 FILL_MISSING_SCENE_PREDICTIONS=${FILL_MISSING_SCENE_PREDICTIONS:-True}
@@ -204,6 +205,22 @@ if [ "${ORIGINAL_E2E_LANE_GRID_SIZE}" != "256" ]; then
     --engine-root "${ORIGINAL_ROOT}" \
     --patch-size "${ORIGINAL_E2E_LANE_GRID_SIZE}" \
     --report-json "${GRID_REPORT}"
+fi
+
+if ! is_true "${EVAL_INTERSECTION_ONLY_TYPE1}"; then
+  case "${ENGINE_EXTRACT_ROOT}" in
+    "${RUN_WORK_ROOT}"/*) ;;
+    *)
+      echo "ERROR: all-type intersection evaluation requires a run-local ENGINE_EXTRACT_ROOT below ${RUN_WORK_ROOT}; got ${ENGINE_EXTRACT_ROOT}" >&2
+      exit 2
+      ;;
+  esac
+  INTERSECTION_FILTER_REPORT=${RESULT_ROOT}/original_engine_intersection_filter_report.json
+  echo "[original-e2e] configuring run-local intersection filter onlytype1=False for both GT and prediction"
+  python scripts/tools/configure_original_e2e_intersection_filter.py \
+    --engine-root "${ORIGINAL_ROOT}" \
+    --only-type1 false \
+    --report-json "${INTERSECTION_FILTER_REPORT}"
 fi
 
 if is_true "${RECREATE_E2E_ENV}" && [ -d "${E2E_ENV_DIR}" ]; then
@@ -473,6 +490,7 @@ invalid_prediction_count=${INVALID_PREDICTION_COUNT}
 original_e2e_lane_grid_size=${ORIGINAL_E2E_LANE_GRID_SIZE}
 prediction_coordinate_scale=${PREDICTION_COORD_SCALE}
 evaluation_query_name=${EVAL_QUERY_NAME}
+evaluation_intersection_only_type1=${EVAL_INTERSECTION_ONLY_TYPE1}
 e2e_environment=${E2E_ENV_DIR}
 EOF
 

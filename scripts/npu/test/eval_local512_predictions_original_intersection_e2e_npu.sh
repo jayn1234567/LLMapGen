@@ -36,6 +36,7 @@ RESULT_OBS_PATH=${RESULT_OBS_PATH:-}
 COLLAPSE_INTERSECTION_TYPE_TO_ONE=${COLLAPSE_INTERSECTION_TYPE_TO_ONE:-False}
 SUPPRESS_PREDICTIONS_WITHOUT_GT_INTERSECTION=${SUPPRESS_PREDICTIONS_WITHOUT_GT_INTERSECTION:-False}
 E2E_USE_RAW_ROOT_DIRECTLY=${E2E_USE_RAW_ROOT_DIRECTLY:-False}
+EVAL_INTERSECTION_ONLY_TYPE1=${EVAL_INTERSECTION_ONLY_TYPE1:-True}
 
 if [ ! -f "${CONDA_SH}" ]; then
   echo "ERROR: conda activation script not found: ${CONDA_SH}" >&2
@@ -88,18 +89,19 @@ python scripts/tools/format_rc_e2e_intersection_predictions.py \
   --strict \
   "${FORMAT_TYPE_ARGS[@]}"
 
-python - "${FORMAT_REPORT}" "${COLLAPSE_INTERSECTION_TYPE_TO_ONE}" <<'PY'
+python - "${FORMAT_REPORT}" "${COLLAPSE_INTERSECTION_TYPE_TO_ONE}" "${EVAL_INTERSECTION_ONLY_TYPE1}" <<'PY'
 import json
 import sys
 from pathlib import Path
 
 report_path = Path(sys.argv[1])
 collapse = sys.argv[2].strip().lower() in {"1", "true", "yes", "on"}
+only_type1 = sys.argv[3].strip().lower() in {"1", "true", "yes", "on"}
 report = json.loads(report_path.read_text(encoding="utf-8"))
 counts = report.get("counts") or {}
 formatted = int(counts.get("formatted_intersections", 0))
 visible = int(counts.get("label:1_1", 0)) + int(counts.get("label:1_2", 0))
-if formatted > 0 and visible == 0 and not collapse:
+if formatted > 0 and visible == 0 and not collapse and only_type1:
     raise RuntimeError(
         "All formatted intersections map to non-type-1 labels, so the original evaluator "
         "would report pred_num=0. This checkpoint has no evaluator-visible common/T labels. "
@@ -108,7 +110,7 @@ if formatted > 0 and visible == 0 and not collapse:
     )
 print(
     f"[intersection-e2e] evaluator-visible type-1 predictions={visible}/{formatted} "
-    f"collapse_type_to_one={collapse}",
+    f"collapse_type_to_one={collapse} evaluator_only_type1={only_type1}",
     flush=True,
 )
 PY
@@ -159,6 +161,7 @@ RUN_ALL_EVAL=True \
 RUN_LOW_EVAL=False \
 RUN_HIGH_EVAL=False \
 EVAL_QUERY_NAME="${QUERY_NAME}" \
+EVAL_INTERSECTION_ONLY_TYPE1="${EVAL_INTERSECTION_ONLY_TYPE1}" \
 EVAL_SIMPLIFY_PATH=False \
 EVAL_VIS_FLAG="${EVAL_VIS_FLAG}" \
 EXPECTED_E2E_SCENES="${EXPECTED_E2E_SCENES}" \

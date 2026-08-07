@@ -282,11 +282,14 @@ model inference or makes a second copy of the extracted E2E tree. Its default
 prediction directory is the local512-550k checkpoint-34376 result,
 visualization is disabled, and the GT-empty intersection-patch oracle is
 enabled. This checkpoint's saved predictions do not contain evaluator-visible
-intersection types, so this checkpoint-specific fresh-OBS entry defaults to
-`COLLAPSE_INTERSECTION_TYPE_TO_ONE=True` and reports geometry-only intersection
-metrics. T-intersection precision/recall is not meaningful when the model omits
-the type field. Override `SUPPRESS_PREDICTIONS_WITHOUT_GT_INTERSECTION=False`
-for an unassisted model metric.
+intersection types. The checkpoint-specific fresh-OBS entry therefore leaves
+the predicted labels unchanged and defaults to
+`EVAL_INTERSECTION_ONLY_TYPE1=False`: the run-local original evaluator reads
+all intersection types from both GT and prediction and reports an all-type
+geometry metric. T-intersection precision/recall is not meaningful when the
+model omits the type field. Override
+`SUPPRESS_PREDICTIONS_WITHOUT_GT_INTERSECTION=False` for an unassisted model
+metric.
 
 ```bash
 bash scripts/npu/test/eval_local512_predictions_fresh_obs_original_intersection_e2e_npu.sh

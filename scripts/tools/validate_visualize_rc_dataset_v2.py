@@ -649,7 +649,7 @@ def render_visualizations(
     manifest_path = output_dir / "visualization_samples.jsonl"
     rendered_counts = Counter()
     with manifest_path.open("w", encoding="utf-8") as manifest:
-        for difficulty in ("easy", "medium", "hard", "very_hard"):
+        for difficulty in ("empty", "easy", "medium", "hard", "very_hard"):
             paths = []
             bucket = sorted(reservoirs[difficulty], key=lambda item: item["line_number"])
             for rank, item in enumerate(bucket[:visualize_per_difficulty]):
@@ -694,7 +694,7 @@ def audit(args: argparse.Namespace) -> tuple[dict[str, Any], ErrorCollector]:
     ratios = parse_ratio_spec(args.difficulty_ratios)
     difficulty_profile = resolve_validation_difficulty_profile(build_metadata, target_size)
     rng = random.Random(args.seed)
-    reservoirs = {name: [] for name in ("easy", "medium", "hard", "very_hard")}
+    reservoirs = {name: [] for name in ("empty", "easy", "medium", "hard", "very_hard")}
     reservoir_seen = Counter()
     split_stats: dict[str, dict[str, Any]] = {}
     seen_ids: dict[str, str] = {}

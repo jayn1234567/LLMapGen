@@ -10,6 +10,21 @@ REPO_ROOT=$(readlink -f "${SCRIPT_DIR}/../../..")
 FORMAL_SCRIPT="${REPO_ROOT}/scripts/npu/train/train_sft_stage_a_lane_intersection_datasetv2_three_image_local256_800k_original_dinov2_caprl4b_nodeepstack_lora_llm_npu.sh"
 cd "${REPO_ROOT}"
 
+# Local Ascend uses the proven Torch 2.4 / torch_npu 2.4 environment. DI keeps
+# its independent Torch 2.7.1 image and installs its own pinned runtime.
+ENV_DIR=${ENV_DIR:-/home/ma-user/.conda/envs/mllm-infer-torch240-py311}
+ACTIVATE_SCRIPT=${ACTIVATE_SCRIPT:-${ENV_DIR}/activate_mllm_infer_torch240.sh}
+SKIP_ENV_ACTIVATION=${SKIP_ENV_ACTIVATION:-False}
+if [[ ! "${SKIP_ENV_ACTIVATION}" =~ ^(1|true|TRUE|True|yes|YES|on|ON)$ ]]; then
+  if [ ! -f "${ACTIVATE_SCRIPT}" ]; then
+    echo "ERROR: Torch 2.4 environment activation script not found: ${ACTIVATE_SCRIPT}" >&2
+    exit 2
+  fi
+  set +u
+  source "${ACTIVATE_SCRIPT}"
+  set -u
+fi
+
 if [ -f /usr/local/Ascend/ascend-toolkit/set_env.sh ]; then
   set +u
   source /usr/local/Ascend/ascend-toolkit/set_env.sh
@@ -89,6 +104,7 @@ import sys
 import moxing
 import torch
 import torch_npu
+import torchvision
 import transformers
 
 payload = {
@@ -96,6 +112,7 @@ payload = {
     "python_version": platform.python_version(),
     "torch": torch.__version__,
     "torch_npu": torch_npu.__version__,
+    "torchvision": torchvision.__version__,
     "transformers": transformers.__version__,
     "npu_available": bool(torch.npu.is_available()),
     "npu_count": int(torch.npu.device_count()),
@@ -105,10 +122,12 @@ print(f"[di-like-smoke-preflight] {json.dumps(payload, ensure_ascii=True)}", flu
 failures = []
 if sys.version_info[:2] != (3, 11):
     failures.append(f"python={platform.python_version()} expected 3.11.x")
-if not torch.__version__.startswith("2.7.1"):
-    failures.append(f"torch={torch.__version__} expected 2.7.1")
-if not torch_npu.__version__.startswith("2.7.1"):
-    failures.append(f"torch_npu={torch_npu.__version__} expected 2.7.1")
+if not torch.__version__.startswith("2.4.0"):
+    failures.append(f"torch={torch.__version__} expected 2.4.0")
+if not torch_npu.__version__.startswith("2.4.0"):
+    failures.append(f"torch_npu={torch_npu.__version__} expected 2.4.0")
+if not torchvision.__version__.startswith("0.19.0"):
+    failures.append(f"torchvision={torchvision.__version__} expected 0.19.0")
 if transformers.__version__ != "4.56.2":
     failures.append(f"transformers={transformers.__version__} expected 4.56.2")
 if not payload["moxing_file_api"]:

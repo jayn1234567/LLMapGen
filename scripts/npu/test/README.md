@@ -32,6 +32,10 @@ finds training loss, the required `DI_throughput` line, an ordinary checkpoint
 artifact, and a runtime log proving `images_per_sample=3`. The local256 and
 context512/ROI256 smokes each default to their matching released Raw-Lane + Pose
 800k OBS TAR; `DATASET_OBS_PATH` remains overridable for a replacement package.
+They activate the local Ascend Torch 2.4 environment by default
+(`/home/ma-user/.conda/envs/mllm-infer-torch240-py311`) and verify
+`torch=2.4.0`, `torch_npu=2.4.0`, and `torchvision=0.19.0` before training.
+This does not change the separate DI runtime pinned by formal train scripts.
 
 ## Comment Style
 

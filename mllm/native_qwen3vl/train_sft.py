@@ -354,9 +354,29 @@ def apply_lora(model, model_args: NativeModelArguments):
     return model
 
 
+def configure_gradient_checkpointing(
+    model_args: NativeModelArguments,
+    training_args: NativeTrainingArguments,
+) -> None:
+    """Keep visual LoRA gradients alive through checkpointed vision blocks."""
+    if not training_args.gradient_checkpointing or not model_args.vision_lora_enable:
+        return
+
+    checkpointing_kwargs = training_args.gradient_checkpointing_kwargs
+    if checkpointing_kwargs is None:
+        training_args.gradient_checkpointing_kwargs = {"use_reentrant": False}
+    elif bool(checkpointing_kwargs.get("use_reentrant", True)):
+        raise ValueError(
+            "Native Qwen3-VL visual LoRA requires non-reentrant gradient checkpointing. "
+            "Set --gradient_checkpointing_kwargs '{\"use_reentrant\": false}'."
+        )
+    rank0_print("Native gradient checkpointing: use_reentrant=False (visual LoRA)")
+
+
 def train():
     parser = transformers.HfArgumentParser((NativeModelArguments, NativeDataArguments, NativeTrainingArguments))
     model_args, data_args, training_args = parser.parse_args_into_dataclasses()
+    configure_gradient_checkpointing(model_args, training_args)
 
     if not training_args.use_hf_progress_bar:
         transformers.logging.disable_progress_bar()
@@ -368,7 +388,9 @@ def train():
     if hasattr(model, "config"):
         model.config.use_cache = False
     if training_args.gradient_checkpointing and hasattr(model, "gradient_checkpointing_enable"):
-        model.gradient_checkpointing_enable()
+        model.gradient_checkpointing_enable(
+            gradient_checkpointing_kwargs=training_args.gradient_checkpointing_kwargs
+        )
 
     data_module = make_data_module(processor, data_args, training_args)
     callbacks: list[TrainerCallback] = [

@@ -5,6 +5,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 FORMAL = REPO_ROOT / "scripts/qwen3vl_native/train/train_sft_stage_a_lane_intersection_datasetv2_three_image_local256_800k_qwen3vl8b_lora_npu.sh"
 SMOKE = REPO_ROOT / "scripts/npu/test/smoke_sft_stage_a_lane_intersection_datasetv2_three_image_local256_800k_native_qwen3vl8b_lora_npu.sh"
 SETUP = REPO_ROOT / "scripts/npu/setup/create_mllm_native_qwen3vl_torch240_npu_env_from_infer.sh"
+TRAIN_ENTRY = REPO_ROOT / "mllm/native_qwen3vl/train_sft.py"
 
 
 def _read(path: Path) -> str:
@@ -41,6 +42,16 @@ def test_formal_recipe_trains_all_three_native_lora_groups_without_zero():
     assert "opencv-python-headless==4.11.0.86" in content
     assert "protobuf==4.25.7" in content
     assert "huggingface-hub==0.36.2" not in content
+    assert "--gradient_checkpointing_kwargs '{\"use_reentrant\": false}'" in content
+
+
+def test_visual_lora_forces_non_reentrant_gradient_checkpointing():
+    content = _read(TRAIN_ENTRY)
+
+    assert "configure_gradient_checkpointing(model_args, training_args)" in content
+    assert 'training_args.gradient_checkpointing_kwargs = {"use_reentrant": False}' in content
+    assert "Native Qwen3-VL visual LoRA requires non-reentrant" in content
+    assert "gradient_checkpointing_kwargs=training_args.gradient_checkpointing_kwargs" in content
 
 
 def test_formal_recipe_checks_local256_three_image_contract():
@@ -67,6 +78,7 @@ def test_local_smoke_isolated_torch240_and_checks_merger_adapter():
     assert "PER_DEVICE_TRAIN_BATCH_SIZE=${PER_DEVICE_TRAIN_BATCH_SIZE:-4}" in content
     assert "adapter_config.json" in content
     assert '"merger" in str(name).lower()' in content
+    assert "non-reentrant visual-LoRA checkpointing was not confirmed" in content
 
 
 def test_setup_clones_stable_torch240_environment_without_reinstalling_torch():

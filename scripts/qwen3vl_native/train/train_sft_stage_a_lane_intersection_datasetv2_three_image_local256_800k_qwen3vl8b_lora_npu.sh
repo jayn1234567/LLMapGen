@@ -380,6 +380,7 @@ torchrun \
   --lr_scheduler_type cosine \
   --model_max_length "${MODEL_MAX_LENGTH}" \
   --gradient_checkpointing True \
+  --gradient_checkpointing_kwargs '{"use_reentrant": false}' \
   --dataloader_num_workers 4 \
   --remove_unused_columns false \
   --save_strategy steps \

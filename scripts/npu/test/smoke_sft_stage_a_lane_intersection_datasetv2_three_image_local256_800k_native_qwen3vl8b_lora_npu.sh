@@ -247,6 +247,10 @@ if ! grep -Eq "\[native-multimodal-input\].*images_per_sample=\[3(, 3)*\].*total
   echo "ERROR: the smoke log does not prove that all three ordered images reached native Qwen3-VL." >&2
   exit 1
 fi
+if ! grep -Fq "Native gradient checkpointing: use_reentrant=False (visual LoRA)" "${TRAIN_LOG}"; then
+  echo "ERROR: non-reentrant visual-LoRA checkpointing was not confirmed in the training log." >&2
+  exit 1
+fi
 CHECKPOINT_DIR="${FINAL_OUTPUT}/checkpoint-${MAX_STEPS}"
 if [ ! -f "${CHECKPOINT_DIR}/adapter_config.json" ]; then
   echo "ERROR: LoRA adapter config is missing: ${CHECKPOINT_DIR}/adapter_config.json" >&2

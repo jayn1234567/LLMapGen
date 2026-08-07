@@ -10,6 +10,8 @@ This is the native-Qwen3-VL comparison for the released Raw-Lane + Pose
 three-image local256 dataset. The clean BEV, Raw-Lane, and Pose images are all
 encoded by the original Qwen3-VL-8B vision tower and native multimodal merger.
 LoRA is applied separately to the language model, visual attention, and merger.
+Visual LoRA uses non-reentrant gradient checkpointing so the frozen native
+vision backbone does not detach the checkpointed LoRA branches from autograd.
 It does not load DINOv2, the CapRL-derived text-only LLM, or the project
 `mm_projector`.
 

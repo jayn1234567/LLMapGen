@@ -116,7 +116,10 @@ opens all three image roles from each split, and blocks training if the order,
 aliases, metadata, or three prompt placeholders disagree.
 `multi_image_input.image_roles` is the canonical packaged role-order field;
 the historical `image_order` spelling is also accepted, while conflicting
-values are rejected. Redundant `raw_lane_image` and `pose_image` aliases are
+values are rejected. Released archives may omit the advisory prompt-contract
+version marker; in that case, the preflight validates the complete prompt in
+the sampled records. An explicit non-current contract version is still rejected.
+Redundant `raw_lane_image` and `pose_image` aliases are
 optional when the ordered three-element `images` list and
 `meta.input_image_roles` are valid; the primary `image` alias remains required.
 

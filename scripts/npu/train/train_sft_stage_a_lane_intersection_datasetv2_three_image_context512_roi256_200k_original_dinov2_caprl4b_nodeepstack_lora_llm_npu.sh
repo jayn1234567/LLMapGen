@@ -324,10 +324,11 @@ if metadata_roles is not None and metadata_order is not None and list(metadata_r
 resolved_roles = metadata_roles if metadata_roles is not None else metadata_order
 if list(resolved_roles or []) != expected_roles:
     raise SystemExit(f"Unexpected three-image role order: {multi!r}")
-if payload.get("three_image_prompt_contract_version") != expected_prompt_contract:
+metadata_prompt_contract = payload.get("three_image_prompt_contract_version")
+if metadata_prompt_contract not in (None, "", expected_prompt_contract):
     raise SystemExit(
         "Unexpected three-image prompt contract: "
-        f"{payload.get('three_image_prompt_contract_version')!r}; "
+        f"{metadata_prompt_contract!r}; "
         f"expected {expected_prompt_contract!r}"
     )
 validation_path = root / "three_image_validation.json"
@@ -336,8 +337,14 @@ if not validation_path.is_file():
 validation = json.loads(validation_path.read_text(encoding="utf-8"))
 if validation.get("status") != "passed":
     raise SystemExit(f"Builder validation did not pass: {validation!r}")
-if validation.get("prompt_contract_version") != expected_prompt_contract:
+validation_prompt_contract = validation.get("prompt_contract_version")
+if validation_prompt_contract not in (None, "", expected_prompt_contract):
     raise SystemExit(f"Builder validation uses a stale prompt contract: {validation!r}")
+if not metadata_prompt_contract and not validation_prompt_contract:
+    print(
+        "[three-image-preflight] prompt contract version metadata is missing; "
+        "record-level prompt inspection will enforce the concise three-image contract"
+    )
 print(f"[three-image-preflight] metadata passed: variant={actual_variant} roles={expected_roles}")
 PY
 

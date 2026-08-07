@@ -19,18 +19,28 @@ The explicit `smoke_train_*` entrypoint is the exception: it verifies the
 private DINOv2 segmentation pretraining path before that visual tower is used
 by the SFT recipes.
 
-The Raw-Lane + Pose three-image SFT routes provide two single-node checkpoint
-smokes:
+The Raw-Lane + Pose three-image SFT routes provide matched LoRA and
+full-parameter single-node checkpoint smokes:
 
 ```text
 smoke_sft_stage_a_lane_intersection_datasetv2_three_image_local256_800k_original_dinov2_caprl4b_nodeepstack_lora_llm_npu.sh
 smoke_sft_stage_a_lane_intersection_datasetv2_three_image_context512_roi256_800k_original_dinov2_caprl4b_nodeepstack_lora_llm_npu.sh
+smoke_sft_stage_a_lane_intersection_datasetv2_three_image_local256_800k_original_dinov2_caprl4b_nodeepstack_fullparam_npu.sh
+smoke_sft_stage_a_lane_intersection_datasetv2_three_image_context512_roi256_800k_original_dinov2_caprl4b_nodeepstack_fullparam_npu.sh
 ```
 
-They run five optimizer steps and save at step 5. A smoke passes only when it
+They run five optimizer steps and save at step 5. LoRA smokes default to
+per-device batch 4; full-parameter ZeRO-3 smokes default to per-device batch 1.
+A smoke passes only when it
 finds training loss, the required `DI_throughput` line, an ordinary checkpoint
-artifact, and a runtime log proving `images_per_sample=3`. Supply the matching
-dataset TAR through `DATASET_OBS_PATH`; the scripts never guess its URI.
+artifact of the expected LoRA/full-model form, and a runtime log proving
+`images_per_sample=3`. The local256 and
+context512/ROI256 smokes each default to their matching released Raw-Lane + Pose
+800k OBS TAR; `DATASET_OBS_PATH` remains overridable for a replacement package.
+They activate the local Ascend Torch 2.4 environment by default
+(`/home/ma-user/.conda/envs/mllm-infer-torch240-py311`) and verify
+`torch=2.4.0`, `torch_npu=2.4.0`, and `torchvision=0.19.0` before training.
+This does not change the separate DI runtime pinned by formal train scripts.
 
 ## Comment Style
 

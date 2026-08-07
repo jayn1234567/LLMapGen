@@ -134,6 +134,7 @@ python -m pip install \
   "tokenizers>=0.22.0,<0.23.0" \
   "huggingface-hub==0.36.2" \
   "accelerate==1.6.0" \
+  "deepspeed==0.14.4" \
   "safetensors>=0.4.3" \
   "sentencepiece==0.2.1" \
   "tiktoken==0.13.0" \
@@ -203,6 +204,7 @@ import os
 import sys
 
 import cv2
+import deepspeed
 import filelock
 import numpy
 import torch
@@ -212,6 +214,7 @@ import torchvision
 result = {
     "python": sys.executable,
     "python_version": sys.version.split()[0],
+    "deepspeed": deepspeed.__version__,
     "filelock": filelock.__version__,
     "opencv": cv2.__version__,
     "numpy": numpy.__version__,
@@ -224,6 +227,7 @@ result = {
 print(json.dumps(result, indent=2, ensure_ascii=True))
 
 expected = {
+    "deepspeed": "0.14.4",
     "filelock": "3.22.0",
     "opencv": "4.10.0",
     "torch": "2.4.0",

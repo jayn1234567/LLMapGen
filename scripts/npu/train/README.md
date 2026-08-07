@@ -95,11 +95,14 @@ continue from that checkpoint.
 
 ## Raw-Lane + Pose Three-Image 800k
 
-The paired three-image datasets have two independent formal Stage-A recipes:
+The paired three-image datasets provide matched LoRA and full-parameter
+Stage-A recipes for both views:
 
 ```text
 train_sft_stage_a_lane_intersection_datasetv2_three_image_local256_800k_original_dinov2_caprl4b_nodeepstack_lora_llm_npu.sh
 train_sft_stage_a_lane_intersection_datasetv2_three_image_context512_roi256_800k_original_dinov2_caprl4b_nodeepstack_lora_llm_npu.sh
+train_sft_stage_a_lane_intersection_datasetv2_three_image_local256_800k_original_dinov2_caprl4b_nodeepstack_fullparam_npu.sh
+train_sft_stage_a_lane_intersection_datasetv2_three_image_context512_roi256_800k_original_dinov2_caprl4b_nodeepstack_fullparam_npu.sh
 ```
 
 Both preserve the main Jiangjihua model baseline: original DINOv2-Large at
@@ -112,10 +115,14 @@ The strict preflight scans every JSON target and record contract, uniformly
 opens all three image roles from each split, and blocks training if the order,
 aliases, metadata, or three prompt placeholders disagree.
 
-The recipes default to 8 epochs, LR `2e-4` for Qwen LoRA/projector and `2e-5`
-for DINOv2, global batch 128, per-device batch 4, BF16, gradient checkpointing,
-HCCL DDP without DeepSpeed, and ordinary rank0 LoRA checkpoints. Training-time
-eval loss is disabled. `MODEL_MAX_LENGTH=8192` is intentional: three
+The LoRA recipes default to 8 epochs, LR `2e-4` for Qwen LoRA/projector and
+`2e-5` for DINOv2, global batch 128, per-device batch 4, BF16, gradient
+checkpointing, HCCL DDP without DeepSpeed, and ordinary rank0 LoRA checkpoints.
+The matched full-parameter recipes train Qwen, projector, and DINOv2 at `2e-5`,
+use DeepSpeed ZeRO-3, per-device batch 1, global batch 128, and ordinary rank0
+full-model checkpoints. On 4 nodes x 8 NPUs, the derived gradient accumulation
+is 4. Training-time eval loss is disabled for both variants.
+`MODEL_MAX_LENGTH=8192` is intentional: three
 DINOv2 streams contribute 4107 visual tokens before prompt and target tokens.
 Values below 6144 are rejected instead of silently truncating supervision.
 

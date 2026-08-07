@@ -29,13 +29,8 @@ smoke_sft_stage_a_lane_intersection_datasetv2_three_image_context512_roi256_800k
 
 They run five optimizer steps and save at step 5. A smoke passes only when it
 finds training loss, the required `DI_throughput` line, an ordinary checkpoint
-artifact, and a runtime log proving `images_per_sample=3`. The local256 and
-context512/ROI256 smokes each default to their matching released Raw-Lane + Pose
-800k OBS TAR; `DATASET_OBS_PATH` remains overridable for a replacement package.
-They activate the local Ascend Torch 2.4 environment by default
-(`/home/ma-user/.conda/envs/mllm-infer-torch240-py311`) and verify
-`torch=2.4.0`, `torch_npu=2.4.0`, and `torchvision=0.19.0` before training.
-This does not change the separate DI runtime pinned by formal train scripts.
+artifact, and a runtime log proving `images_per_sample=3`. Supply the matching
+dataset TAR through `DATASET_OBS_PATH`; the scripts never guess its URI.
 
 ## Comment Style
 
@@ -277,6 +272,20 @@ truth and must not be reported as production model performance.
 PREDICTION_DIR=/cache/jn/outputs/<run>/inference/json \
 E2E_DATA_ROOT=/cache/jn/e2e_eval/<run>/e2e_data \
 bash scripts/npu/test/eval_local512_predictions_original_intersection_e2e_npu.sh
+```
+
+When the extracted E2E tree is missing or must not be reused,
+`eval_local512_predictions_fresh_obs_original_intersection_e2e_npu.sh`
+downloads a new `e2e_data.zip` into a timestamped run directory, validates and
+extracts it, and then calls the same intersection-only pipeline. It never runs
+model inference or makes a second copy of the extracted E2E tree. Its default prediction directory is the local512-550k
+checkpoint-34376 result, semantic types retain the numeric mapping above,
+visualization is disabled, and the GT-empty intersection-patch oracle is
+enabled. Override `SUPPRESS_PREDICTIONS_WITHOUT_GT_INTERSECTION=False` for an
+unassisted model metric.
+
+```bash
+bash scripts/npu/test/eval_local512_predictions_fresh_obs_original_intersection_e2e_npu.sh
 ```
 
 The `tif_512_256` directory name is retained for compatibility with the RC

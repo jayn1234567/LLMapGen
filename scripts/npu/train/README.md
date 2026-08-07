@@ -127,7 +127,16 @@ obs://yw-ads-training-2-gy1/data/external/personal/h58801830/jn/data/local256_ra
 
 It accepts the released metadata name `local256_rawlane_pose_800k` and the
 historical three-image aliases. The context512/ROI256 package is intentionally
-not accepted by this launcher. Do not mix the two views in one run. See
+not accepted by this launcher. The separate context512/ROI256 recipe defaults
+to:
+
+```text
+obs://yw-ads-training-2-gy1/data/external/personal/h58801830/jn/data/context512_roi256_rawpos/context512_roi256_rawlane_pose_800k.tar
+```
+
+It accepts `context512_roi256_rawlane_pose_800k` and its historical aliases,
+and verifies that each of the three inputs is 512x512 while target coordinates
+remain relative to the center 256x256 ROI. Do not mix the two views in one run. See
 `docs/DATASET_V2_RAWLANE_POSE_THREE_IMAGE_800K.md` for the record and coordinate
 contracts.
 

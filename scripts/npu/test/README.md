@@ -29,9 +29,9 @@ smoke_sft_stage_a_lane_intersection_datasetv2_three_image_context512_roi256_800k
 
 They run five optimizer steps and save at step 5. A smoke passes only when it
 finds training loss, the required `DI_throughput` line, an ordinary checkpoint
-artifact, and a runtime log proving `images_per_sample=3`. The local256 smoke
-defaults to the released `local256_rawlane_pose_800k.tar` OBS URI; its
-`DATASET_OBS_PATH` remains overridable for a replacement package.
+artifact, and a runtime log proving `images_per_sample=3`. The local256 and
+context512/ROI256 smokes each default to their matching released Raw-Lane + Pose
+800k OBS TAR; `DATASET_OBS_PATH` remains overridable for a replacement package.
 
 ## Comment Style
 

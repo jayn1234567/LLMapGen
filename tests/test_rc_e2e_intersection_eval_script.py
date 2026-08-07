@@ -27,6 +27,7 @@ def test_intersection_e2e_script_uses_native_local512_geometry_and_one_eval_pass
     assert "SUPPRESS_PREDICTIONS_WITHOUT_GT_INTERSECTION=${SUPPRESS_PREDICTIONS_WITHOUT_GT_INTERSECTION:-False}" in text
     assert "suppress_rc_e2e_intersections_without_patch_gt.py" in text
     assert 'E2E_USE_RAW_ROOT_DIRECTLY="${E2E_USE_RAW_ROOT_DIRECTLY}"' in text
+    assert "All formatted intersections map to non-type-1 labels" in text
 
 
 def test_shared_original_evaluator_accepts_a_dedicated_query_name():
@@ -45,7 +46,7 @@ def test_fresh_obs_intersection_entry_reuses_predictions_without_inference():
     assert "--reset" in text
     assert "eval_local512_predictions_original_intersection_e2e_npu.sh" in text
     assert "SUPPRESS_PREDICTIONS_WITHOUT_GT_INTERSECTION=${SUPPRESS_PREDICTIONS_WITHOUT_GT_INTERSECTION:-True}" in text
-    assert "COLLAPSE_INTERSECTION_TYPE_TO_ONE=${COLLAPSE_INTERSECTION_TYPE_TO_ONE:-False}" in text
+    assert "COLLAPSE_INTERSECTION_TYPE_TO_ONE=${COLLAPSE_INTERSECTION_TYPE_TO_ONE:-True}" in text
     assert "EVAL_VIS_FLAG=${EVAL_VIS_FLAG:-False}" in text
     assert "E2E_USE_RAW_ROOT_DIRECTLY=True" in text
     assert "infer_centerline_checkpoint.py" not in text

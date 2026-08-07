@@ -97,6 +97,8 @@ def test_format_and_merge_local512_intersections(tmp_path):
     assert format_report["complete"] is True
     assert payload["intersection"][0]["label"] == "1_1"
     assert payload["intersection"][0]["coords"][1] == [512.0, 0.0]
+    assert format_report["counts"]["intersection_type:common"] == 1
+    assert format_report["counts"].get("missing_intersection_types", 0) == 0
 
     report = build_all(
         e2e_root,

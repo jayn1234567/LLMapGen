@@ -216,7 +216,13 @@ def format_predictions(
                     continue
                 if points[0] != points[-1]:
                     points.append(list(points[0]))
-                intersection_type = str(item.get("intersection_type") or "other").strip().lower()
+                raw_intersection_type = item.get("intersection_type")
+                if raw_intersection_type is None or not str(raw_intersection_type).strip():
+                    counters["missing_intersection_types"] += 1
+                    intersection_type = "other"
+                else:
+                    intersection_type = str(raw_intersection_type).strip().lower()
+                    counters[f"intersection_type:{intersection_type}"] += 1
                 label = evaluation_label(
                     intersection_type,
                     collapse_type_to_one=collapse_type_to_one,

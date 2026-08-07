@@ -1,19 +1,5 @@
 # NPU Test Scripts
 
-## Native Qwen3-VL Local256 800k Smoke
-
-```text
-smoke_sft_stage_a_lane_intersection_datasetv2_three_image_local256_800k_native_qwen3vl8b_lora_npu.sh
-```
-
-This five-step, single-node smoke reuses the formal native-Qwen3-VL launcher.
-It defaults to per-device batch 4 and target global batch 128, checks that all
-three ordered images reach the native processor, and verifies that the saved
-ordinary LoRA adapter includes native-merger targets. Create its isolated local
-Torch 2.4 environment first with
-`scripts/npu/setup/create_mllm_native_qwen3vl_torch240_npu_env_from_infer.sh`.
-The formal DI script retains the managed Torch 2.7 stack.
-
 ## Three-Image 200k Architecture Comparison Smokes
 
 ```text
@@ -33,28 +19,18 @@ The explicit `smoke_train_*` entrypoint is the exception: it verifies the
 private DINOv2 segmentation pretraining path before that visual tower is used
 by the SFT recipes.
 
-The Raw-Lane + Pose three-image SFT routes provide matched LoRA and
-full-parameter single-node checkpoint smokes:
+The Raw-Lane + Pose three-image SFT routes provide two single-node checkpoint
+smokes:
 
 ```text
 smoke_sft_stage_a_lane_intersection_datasetv2_three_image_local256_800k_original_dinov2_caprl4b_nodeepstack_lora_llm_npu.sh
 smoke_sft_stage_a_lane_intersection_datasetv2_three_image_context512_roi256_800k_original_dinov2_caprl4b_nodeepstack_lora_llm_npu.sh
-smoke_sft_stage_a_lane_intersection_datasetv2_three_image_local256_800k_original_dinov2_caprl4b_nodeepstack_fullparam_npu.sh
-smoke_sft_stage_a_lane_intersection_datasetv2_three_image_context512_roi256_800k_original_dinov2_caprl4b_nodeepstack_fullparam_npu.sh
 ```
 
-They run five optimizer steps and save at step 5. LoRA smokes default to
-per-device batch 4; full-parameter ZeRO-3 smokes default to per-device batch 1.
-A smoke passes only when it
+They run five optimizer steps and save at step 5. A smoke passes only when it
 finds training loss, the required `DI_throughput` line, an ordinary checkpoint
-artifact of the expected LoRA/full-model form, and a runtime log proving
-`images_per_sample=3`. The local256 and
-context512/ROI256 smokes each default to their matching released Raw-Lane + Pose
-800k OBS TAR; `DATASET_OBS_PATH` remains overridable for a replacement package.
-They activate the local Ascend Torch 2.4 environment by default
-(`/home/ma-user/.conda/envs/mllm-infer-torch240-py311`) and verify
-`torch=2.4.0`, `torch_npu=2.4.0`, and `torchvision=0.19.0` before training.
-This does not change the separate DI runtime pinned by formal train scripts.
+artifact, and a runtime log proving `images_per_sample=3`. Supply the matching
+dataset TAR through `DATASET_OBS_PATH`; the scripts never guess its URI.
 
 ## Comment Style
 
@@ -302,11 +278,15 @@ When the extracted E2E tree is missing or must not be reused,
 `eval_local512_predictions_fresh_obs_original_intersection_e2e_npu.sh`
 downloads a new `e2e_data.zip` into a timestamped run directory, validates and
 extracts it, and then calls the same intersection-only pipeline. It never runs
-model inference or makes a second copy of the extracted E2E tree. Its default prediction directory is the local512-550k
-checkpoint-34376 result, semantic types retain the numeric mapping above,
+model inference or makes a second copy of the extracted E2E tree. Its default
+prediction directory is the local512-550k checkpoint-34376 result,
 visualization is disabled, and the GT-empty intersection-patch oracle is
-enabled. Override `SUPPRESS_PREDICTIONS_WITHOUT_GT_INTERSECTION=False` for an
-unassisted model metric.
+enabled. This checkpoint's saved predictions do not contain evaluator-visible
+intersection types, so this checkpoint-specific fresh-OBS entry defaults to
+`COLLAPSE_INTERSECTION_TYPE_TO_ONE=True` and reports geometry-only intersection
+metrics. T-intersection precision/recall is not meaningful when the model omits
+the type field. Override `SUPPRESS_PREDICTIONS_WITHOUT_GT_INTERSECTION=False`
+for an unassisted model metric.
 
 ```bash
 bash scripts/npu/test/eval_local512_predictions_fresh_obs_original_intersection_e2e_npu.sh

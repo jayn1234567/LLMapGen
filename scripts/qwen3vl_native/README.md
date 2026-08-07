@@ -23,6 +23,11 @@ base model is downloaded from:
 obs://yw-ads-training-gy1/data/external/personal/h58801830/whu/jjh/checkpoints/Qwen3-VL-8B-Instruct/
 ```
 
+Both the local smoke and formal DI recipe pin `transformers==4.57.3` and
+`peft==0.18.0`. Transformers 4.57.3 includes native Qwen3-VL while retaining a
+Torch-version guard around DTensor imports, so it can be imported with the
+local Torch 2.4 NPU runtime.
+
 The JSONL user prompt is preserved verbatim. Preflight requires the ordered
 roles `bev_road_structure`, `pv_camera_raw_lane`, and
 `historical_vehicle_trajectory`, and rejects stale verbose prompts that describe

@@ -13,7 +13,8 @@ SOURCE_ENV_PREFIX="${SOURCE_ENV_PREFIX:-}"
 ENV_DIR="${ENV_DIR:-/home/ma-user/.conda/envs/mllm-native-qwen3vl-torch240-py311}"
 RECREATE_ENV="${RECREATE_ENV:-false}"
 REQUIRE_NPU="${REQUIRE_NPU:-true}"
-TRANSFORMERS_SPEC="${TRANSFORMERS_SPEC:-transformers>=5.7.0}"
+TRANSFORMERS_SPEC="${TRANSFORMERS_SPEC:-transformers==4.57.3}"
+PEFT_SPEC="${PEFT_SPEC:-peft==0.18.0}"
 
 bool_enabled() {
   [[ "$1" =~ ^(1|true|True|TRUE|yes|YES)$ ]]
@@ -130,7 +131,7 @@ python -m pip install \
   "sentencepiece==0.2.1" \
   "tiktoken==0.13.0" \
   "shortuuid==1.0.13" \
-  "peft>=0.19.1" \
+  "${PEFT_SPEC}" \
   "Pillow>=10.0.0" \
   "pydantic>=2.0" \
   "markdown2[all]" \
@@ -237,8 +238,10 @@ for key, version in expected.items():
         raise SystemExit(f"Expected {key}={version}, got {result[key]}")
 if sys.version_info[:2] != (3, 11):
     raise SystemExit(f"Expected Python 3.11, got {sys.version}")
-if Version(transformers.__version__) < Version("5.7.0"):
-    raise SystemExit(f"Expected Transformers >=5.7.0, got {transformers.__version__}")
+if Version(transformers.__version__) != Version("4.57.3"):
+    raise SystemExit(f"Expected Transformers 4.57.3, got {transformers.__version__}")
+if Version(peft.__version__) != Version("0.18.0"):
+    raise SystemExit(f"Expected PEFT 0.18.0, got {peft.__version__}")
 if not result["moxing_file_api"]:
     raise SystemExit("Huawei moxing-framework with mox.file is required.")
 required = os.environ.get("REQUIRE_NPU", "true").lower() in {"1", "true", "yes"}

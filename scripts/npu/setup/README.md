@@ -13,6 +13,10 @@ local CANN-compatible Torch stack unchanged (`torch=2.4.0`,
 `torch_npu=2.4.0`, `torchvision=0.19.0`) and installs the newer Transformers,
 PEFT, processor, and image dependencies required by native Qwen3-VL-8B.
 
+The native stack is pinned to `transformers==4.57.3` and `peft==0.18.0`.
+Transformers 5.x is intentionally excluded because its unconditional DTensor
+imports require a newer PyTorch than the local CANN-compatible Torch 2.4 build.
+
 The source inference environment is never modified. Set `SOURCE_ENV_NAME` or
 `SOURCE_ENV_PREFIX` when the proven Torch 2.4 environment is stored elsewhere.
 Set `RECREATE_ENV=true` only when the isolated target environment should be

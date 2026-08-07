@@ -123,8 +123,9 @@ export PYTHONPATH="${REPO_ROOT}:${PYTHONPATH:-}"                                
 
 INSTALL_DEPS=${INSTALL_DEPS:-True}                                                # Install dependencies on managed NPU images.
 ENABLE_MOXING_UPGRADE=${ENABLE_MOXING_UPGRADE:-True}                              # Upgrade moxing wheel.
-TRANSFORMERS_SPEC=${TRANSFORMERS_SPEC:-"transformers>=5.7.0"}                     # Native Qwen3-VL-capable transformers build.
+TRANSFORMERS_SPEC=${TRANSFORMERS_SPEC:-"transformers==4.57.3"}                    # Native Qwen3-VL with a Torch-2.4-compatible DTensor guard.
 TOKENIZERS_SPEC=${TOKENIZERS_SPEC:-"tokenizers>=0.22.0"}                          # Tokenizers version aligned with transformers.
+PEFT_SPEC=${PEFT_SPEC:-"peft==0.18.0"}                                            # LoRA version compatible with the pinned Transformers 4.x build.
 if [[ "${ENABLE_MOXING_UPGRADE}" =~ ^(1|true|True|TRUE|yes|YES)$ ]]; then
   USE_MEMARTS=0 python -c "import moxing; moxing.file.copy('obs://yw-ads-training-gy1/data/external/personal/00592907/dataset_index/pkgs/moxing_framework-2.3.8-py2.py3-none-any.250714.whl', '/home/ma-user/moxing_framework-2.3.8-py2.py3-none-any.whl')"
   pip uninstall moxing-framework -y
@@ -140,7 +141,7 @@ if [[ "${INSTALL_DEPS}" =~ ^(1|true|True|TRUE|yes|YES)$ ]]; then
   pip install --force-reinstall /home/ma-user/torch_npu-2.7.1.dev20250724-cp311-cp311-manylinux_2_28_aarch64.whl
   pip install "sentencepiece>=0.1.99" "tiktoken>=0.7.0" "${TRANSFORMERS_SPEC}" "${TOKENIZERS_SPEC}" "qwen-vl-utils>=0.0.10"
   pip install accelerate==1.6.0 "safetensors>=0.4.3" packaging "Pillow>=10.0.0" torchvision==0.22.1
-  pip install shortuuid "peft>=0.19.1" pydantic 'markdown2[all]' numpy==1.26.4 'scipy>=1.10' 'scikit-learn>=1.2'
+  pip install shortuuid "${PEFT_SPEC}" pydantic 'markdown2[all]' numpy==1.26.4 'scipy>=1.10' 'scikit-learn>=1.2'
   pip install requests uvicorn fastapi 'einops>=0.6' 'einops-exts>=0.0.4' 'timm>=0.9.0' opencv-python-headless==4.11.0.86
   pip install 'loguru>=0.7.0' 'shapely>=2.0.0' wandb swanlab protobuf==4.25.7 urllib3==1.26.15
 fi

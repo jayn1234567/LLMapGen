@@ -132,13 +132,15 @@ if not torch_npu.__version__.startswith("2.4.0"):
     failures.append(f"torch_npu={torch_npu.__version__} expected 2.4.0")
 if not torchvision.__version__.startswith("0.19.0"):
     failures.append(f"torchvision={torchvision.__version__} expected 0.19.0")
-version_parts = tuple(int(part) for part in transformers.__version__.split(".")[:2])
-if version_parts < (5, 7):
-    failures.append(f"transformers={transformers.__version__} expected >=5.7")
+if transformers.__version__ != "4.57.3":
+    failures.append(f"transformers={transformers.__version__} expected 4.57.3")
 try:
     import peft
 except ImportError:
     failures.append("peft is required for native Qwen3-VL LoRA")
+else:
+    if peft.__version__ != "0.18.0":
+        failures.append(f"peft={peft.__version__} expected 0.18.0")
 try:
     resolve_native_model_class()
 except Exception as exc:

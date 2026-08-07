@@ -62,6 +62,8 @@ def test_local_smoke_isolated_torch240_and_checks_merger_adapter():
     assert 'torch.__version__.startswith("2.4.0")' in content
     assert 'torch_npu.__version__.startswith("2.4.0")' in content
     assert 'torchvision.__version__.startswith("0.19.0")' in content
+    assert 'transformers.__version__ != "4.57.3"' in content
+    assert 'peft.__version__ != "0.18.0"' in content
     assert "PER_DEVICE_TRAIN_BATCH_SIZE=${PER_DEVICE_TRAIN_BATCH_SIZE:-4}" in content
     assert "adapter_config.json" in content
     assert '"merger" in str(name).lower()' in content
@@ -73,7 +75,7 @@ def test_setup_clones_stable_torch240_environment_without_reinstalling_torch():
     assert "mllm-infer-torch240-py311" in content
     assert "mllm-native-qwen3vl-torch240-py311" in content
     assert 'conda create -y -p "${ENV_DIR}" --clone "${SOURCE_ENV_PREFIX}"' in content
-    assert '"transformers>=5.7.0"' not in content  # The version is supplied through TRANSFORMERS_SPEC.
-    assert 'TRANSFORMERS_SPEC="${TRANSFORMERS_SPEC:-transformers>=5.7.0}"' in content
+    assert 'TRANSFORMERS_SPEC="${TRANSFORMERS_SPEC:-transformers==4.57.3}"' in content
+    assert 'PEFT_SPEC="${PEFT_SPEC:-peft==0.18.0}"' in content
     assert "pip install torch==" not in content
     assert '"opencv-python-headless==4.10.0.84"' in content

@@ -315,7 +315,12 @@ expected_roles = ["bev_road_structure", "pv_camera_raw_lane", "historical_vehicl
 expected_prompt_contract = "three_image_roles_concise_v2"
 if int(multi.get("num_images_per_sample", 0)) != 3:
     raise SystemExit(f"Expected three images per sample, found metadata={multi!r}")
-if list(multi.get("image_order") or []) != expected_roles:
+metadata_roles = multi.get("image_roles")
+metadata_order = multi.get("image_order")
+if metadata_roles is not None and metadata_order is not None and list(metadata_roles) != list(metadata_order):
+    raise SystemExit(f"Conflicting three-image role metadata: {multi!r}")
+resolved_roles = metadata_roles if metadata_roles is not None else metadata_order
+if list(resolved_roles or []) != expected_roles:
     raise SystemExit(f"Unexpected three-image role order: {multi!r}")
 if payload.get("three_image_prompt_contract_version") != expected_prompt_contract:
     raise SystemExit(

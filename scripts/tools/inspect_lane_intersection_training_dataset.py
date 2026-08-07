@@ -440,9 +440,9 @@ def inspect_split(
             if len(image_paths) == 3:
                 if record.get("image") != image_paths[0]:
                     errors.append("image alias does not match images[0]")
-                if record.get("raw_lane_image") != image_paths[1]:
+                if "raw_lane_image" in record and record.get("raw_lane_image") != image_paths[1]:
                     errors.append("raw_lane_image alias does not match images[1]")
-                if record.get("pose_image") != image_paths[2]:
+                if "pose_image" in record and record.get("pose_image") != image_paths[2]:
                     errors.append("pose_image alias does not match images[2]")
             if prompt.count("<image>") != 3:
                 errors.append(f"prompt image token count={prompt.count('<image>')}")

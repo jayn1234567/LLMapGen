@@ -26,6 +26,7 @@ def write_dataset(
     *,
     swap_auxiliary_images: bool = False,
     obsolete_prompt: bool = False,
+    omit_auxiliary_image_aliases: bool = False,
 ) -> None:
     for split in ("train", "eval", "test"):
         paths = [
@@ -44,8 +45,6 @@ def write_dataset(
             "id": f"{split}-sample",
             "image": images[0],
             "images": images,
-            "raw_lane_image": images[1],
-            "pose_image": images[2],
             "meta": {
                 "raw_lane_overlay": False,
                 "raw_lane_separate_image": True,
@@ -76,6 +75,13 @@ def write_dataset(
                 },
             ],
         }
+        if not omit_auxiliary_image_aliases:
+            record.update(
+                {
+                    "raw_lane_image": images[1],
+                    "pose_image": images[2],
+                }
+            )
         phase = root / "phase_a"
         phase.mkdir(parents=True, exist_ok=True)
         (phase / f"{split}.jsonl").write_text(
@@ -129,6 +135,18 @@ def test_three_image_contract_rejects_swapped_auxiliary_images(tmp_path: Path) -
     payload = json.loads(report.read_text(encoding="utf-8"))
     assert payload["status"] == "failed"
     assert "image order/prefix" in json.dumps(payload["failures"])
+
+
+def test_three_image_contract_accepts_missing_redundant_auxiliary_aliases(tmp_path: Path) -> None:
+    dataset = tmp_path / "dataset"
+    report = tmp_path / "report.json"
+    write_dataset(dataset, omit_auxiliary_image_aliases=True)
+
+    result = run_inspector(dataset, report)
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    payload = json.loads(report.read_text(encoding="utf-8"))
+    assert payload["status"] == "passed"
 
 
 def test_three_image_contract_rejects_obsolete_prompt_text(tmp_path: Path) -> None:

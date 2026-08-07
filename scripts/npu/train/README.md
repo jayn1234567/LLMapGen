@@ -114,6 +114,11 @@ three independent inputs in the fixed order clean BEV, Raw-Lane, and Pose.
 The strict preflight scans every JSON target and record contract, uniformly
 opens all three image roles from each split, and blocks training if the order,
 aliases, metadata, or three prompt placeholders disagree.
+`multi_image_input.image_roles` is the canonical packaged role-order field;
+the historical `image_order` spelling is also accepted, while conflicting
+values are rejected. Redundant `raw_lane_image` and `pose_image` aliases are
+optional when the ordered three-element `images` list and
+`meta.input_image_roles` are valid; the primary `image` alias remains required.
 
 The LoRA recipes default to 8 epochs, LR `2e-4` for Qwen LoRA/projector and
 `2e-5` for DINOv2, global batch 128, per-device batch 4, BF16, gradient

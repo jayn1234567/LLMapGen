@@ -46,9 +46,9 @@ fi
 RUN_ID=${RUN_ID:-${DEFAULT_RUN_ID}}                                               # Unique run id for local cache and cloud output folders.
 OBS_CACHE=${OBS_CACHE:-/cache}                                                    # Local worker cache root for models, datasets, checkpoints, and outputs.
 MODEL_OBS_PATH=${MODEL_OBS_PATH:-obs://yw-ads-training-gy1/data/external/personal/h58801830/whu/jjh/checkpoints}  # OBS directory that stores model and vision checkpoint assets.
-DATASET_OBS_PATH=${DATASET_OBS_PATH:?DATASET_OBS_PATH is required}                # Exact OBS URI of rawlane_pose_three_image_local256_800k.tar.
-EXPECTED_DATASET_VARIANTS=${EXPECTED_DATASET_VARIANTS:-rawlane_pose_three_image_local256_800k}  # Exact three-image dataset identity accepted by preflight.
-DATASET_DIR_NAME=${DATASET_DIR_NAME:-rawlane_pose_three_image_local256_800k}      # Expected TAR root; dynamic resolution still handles one nested root.
+DATASET_OBS_PATH=${DATASET_OBS_PATH:-obs://yw-ads-training-2-gy1/data/external/personal/h58801830/jn/data/local256_rawpos/local256_rawlane_pose_800k.tar}  # Final local256 Raw-Lane + Pose three-image 800k package.
+EXPECTED_DATASET_VARIANTS=${EXPECTED_DATASET_VARIANTS:-local256_rawlane_pose_800k,local256_rawlane_pose,rawlane_pose_three_image_local256_800k}  # Accept the released package identity and its historical builder aliases.
+DATASET_DIR_NAME=${DATASET_DIR_NAME:-local256_rawlane_pose_800k}                  # Preferred TAR root; dynamic resolution handles the alternate released root name.
 
 VISION_TOWER=${VISION_TOWER:-${OBS_CACHE}/checkpoints/${VISION_TOWER_NAME}}       # Vision tower path passed to the model loader.
 # Local dataset and output paths for this run.

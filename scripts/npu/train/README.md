@@ -119,10 +119,17 @@ eval loss is disabled. `MODEL_MAX_LENGTH=8192` is intentional: three
 DINOv2 streams contribute 4107 visual tokens before prompt and target tokens.
 Values below 6144 are rejected instead of silently truncating supervision.
 
-The final OBS TAR locations were not part of the dataset handoff, so each
-launcher requires an explicit `DATASET_OBS_PATH`. Do not mix the two datasets
-in one run. See `docs/DATASET_V2_RAWLANE_POSE_THREE_IMAGE_800K.md` for the
-record and coordinate contracts.
+The local256 formal recipe defaults to:
+
+```text
+obs://yw-ads-training-2-gy1/data/external/personal/h58801830/jn/data/local256_rawpos/local256_rawlane_pose_800k.tar
+```
+
+It accepts the released metadata name `local256_rawlane_pose_800k` and the
+historical three-image aliases. The context512/ROI256 package is intentionally
+not accepted by this launcher. Do not mix the two views in one run. See
+`docs/DATASET_V2_RAWLANE_POSE_THREE_IMAGE_800K.md` for the record and coordinate
+contracts.
 
 ## Native Qwen3-VL Baseline
 

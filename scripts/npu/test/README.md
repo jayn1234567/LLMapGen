@@ -1,5 +1,19 @@
 # NPU Test Scripts
 
+## Native Qwen3-VL Local256 800k Smoke
+
+```text
+smoke_sft_stage_a_lane_intersection_datasetv2_three_image_local256_800k_native_qwen3vl8b_lora_npu.sh
+```
+
+This five-step, single-node smoke reuses the formal native-Qwen3-VL launcher.
+It defaults to per-device batch 4 and target global batch 128, checks that all
+three ordered images reach the native processor, and verifies that the saved
+ordinary LoRA adapter includes native-merger targets. Create its isolated local
+Torch 2.4 environment first with
+`scripts/npu/setup/create_mllm_native_qwen3vl_torch240_npu_env_from_infer.sh`.
+The formal DI script retains the managed Torch 2.7 stack.
+
 ## Three-Image 200k Architecture Comparison Smokes
 
 ```text

@@ -104,6 +104,48 @@ def test_prepare_local256_550k_v1_dataset(tmp_path):
     assert Image.open(output_root / record["image"]).size == (256, 256)
 
 
+def test_prepare_local512_550k_v1_dataset(tmp_path):
+    input_root = tmp_path / "raw"
+    tif_dir = (
+        input_root
+        / "scene_001"
+        / "rc_one_patch_release"
+        / "center_line_v2"
+        / "inter_patch_tif"
+    )
+    tif_dir.mkdir(parents=True)
+    Image.fromarray(np.full((512, 512, 3), 63, dtype=np.uint8)).save(tif_dir / "0_inter.tif")
+
+    output_root = tmp_path / "prepared"
+    summary = prepare_dataset(
+        SimpleNamespace(
+            input_root=str(input_root),
+            output_root=str(output_root),
+            view_mode="local512",
+            target_size=512,
+            context_size=512,
+            stride=512,
+            coord_range=1000,
+            prompt_profile="local512_550k_v1",
+            black_ratio_threshold=1.0,
+            include_intersections=True,
+            max_tifs=0,
+            max_patches=0,
+        )
+    )
+
+    assert summary["patch_count"] == 1
+    assert summary["prompt_profile"] == "local512_550k_v1"
+    record = json.loads((output_root / "infer.jsonl").read_text(encoding="utf-8"))
+    assert record["meta"]["target_roi_in_image"] == [0, 0, 512, 512]
+    assert record["meta"]["patch_width"] == 512
+    assert record["meta"]["patch_height"] == 512
+    prompt = record["conversations"][0]["value"]
+    assert "original 512x512 image patch" in prompt
+    assert '"waiting_area"' not in prompt
+    assert Image.open(output_root / record["image"]).size == (512, 512)
+
+
 def test_prepare_rawlane_local256_uses_precomposited_lane_tif(tmp_path):
     input_root = tmp_path / "raw"
     centerline_root = input_root / "scene_rawlane" / "rc_one_patch_release" / "center_line_v2"

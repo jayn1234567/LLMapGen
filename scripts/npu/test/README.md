@@ -250,6 +250,12 @@ scale `0.512`, matching the local512 row/column grid exactly. The shared
 original-engine cache remains unchanged. The 256-grid adapter remains available
 as a diagnostic utility, but is not part of the local512 formal recipe.
 
+The checkpoint-specific raw inference entry
+`run_rc_e2e_local512_550k_checkpoint34376_npu.sh` uses the historical
+three-lane-type local512 prompt, defaults to `MAX_NEW_TOKENS=4096`, and starts
+with `PER_DEVICE_INFER_BATCH_SIZE=8`; run a one-patch NPU smoke before raising
+the batch size.
+
 ### Original whole-map intersection evaluation from local512 predictions
 
 `eval_local512_predictions_original_intersection_e2e_npu.sh` reuses existing

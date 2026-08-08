@@ -5,6 +5,7 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = REPO_ROOT / "scripts/npu/test/run_and_eval_rc_e2e_local512_checkpoint_npu.sh"
+CHECKPOINT_34376_SCRIPT = REPO_ROOT / "scripts/npu/test/run_rc_e2e_local512_550k_checkpoint34376_npu.sh"
 
 
 def test_generic_local512_entry_runs_only_whole_map_metrics() -> None:
@@ -32,3 +33,12 @@ def test_generic_local512_entry_uses_original_metric_directory_names() -> None:
     assert "${OUTPUT_ROOT}/eval_result_all" in text
     assert "${OUTPUT_ROOT}/eval_result_low" in text
     assert "${OUTPUT_ROOT}/eval_result_high" in text
+
+
+def test_local512_550k_checkpoint_entry_uses_legacy_prompt_and_4096_cap() -> None:
+    text = CHECKPOINT_34376_SCRIPT.read_text(encoding="utf-8")
+
+    assert "export E2E_VIEW_MODE=local512" in text
+    assert "export E2E_PROMPT_PROFILE=local512_550k_v1" in text
+    assert "export MAX_NEW_TOKENS=${MAX_NEW_TOKENS:-4096}" in text
+    assert "export PER_DEVICE_INFER_BATCH_SIZE=${PER_DEVICE_INFER_BATCH_SIZE:-8}" in text

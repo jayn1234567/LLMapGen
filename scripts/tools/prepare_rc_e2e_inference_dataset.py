@@ -23,6 +23,7 @@ VIEW_LOCAL512 = "local512"
 VIEW_CONTEXT512_ROI256 = "context512_roi256"
 PROMPT_PROFILE_CURRENT = "current"
 PROMPT_PROFILE_LOCAL256_550K_V1 = "local256_550k_v1"
+PROMPT_PROFILE_LOCAL512_550K_V1 = "local512_550k_v1"
 PROMPT_PROFILE_RAWLANE_LOCAL256_550K_V1 = "rawlane_local256_550k_v1"
 PROMPT_PROFILE_RAWLANE_CONTEXT512_ROI256_200K_V1 = "rawlane_context512_roi256_200k_v1"
 INPUT_RASTER_INTER = "inter"
@@ -41,6 +42,11 @@ Incoming traces JSON:
 
 Incoming intersections JSON:
 []"""
+
+# The true-local512 550k checkpoint was trained before the expanded lane-type
+# taxonomy. Keep its legacy three-way schema byte-for-byte aligned with the
+# local256 550k prompt apart from the complete target-patch size.
+LOCAL512_550K_V1_PROMPT = LOCAL256_550K_V1_PROMPT.replace("256x256", "512x512")
 
 RAWLANE_LOCAL256_550K_V1_PROMPT = """<image>
 Please construct the complete road map in the current BEV (Bird's Eye View) image patch.
@@ -76,6 +82,7 @@ def parse_args() -> argparse.Namespace:
         choices=(
             PROMPT_PROFILE_CURRENT,
             PROMPT_PROFILE_LOCAL256_550K_V1,
+            PROMPT_PROFILE_LOCAL512_550K_V1,
             PROMPT_PROFILE_RAWLANE_LOCAL256_550K_V1,
             PROMPT_PROFILE_RAWLANE_CONTEXT512_ROI256_200K_V1,
         ),
@@ -182,6 +189,19 @@ def dataset_v2_prompt(
                 "and intersections enabled."
             )
         return LOCAL256_550K_V1_PROMPT
+    if prompt_profile == PROMPT_PROFILE_LOCAL512_550K_V1:
+        if (
+            view_mode != VIEW_LOCAL512
+            or target_size != 512
+            or context_size != 512
+            or coord_range != 1000
+            or not include_intersections
+        ):
+            raise ValueError(
+                "local512_550k_v1 requires local512, target_size=512, context_size=512, "
+                "coord_range=1000, and intersections enabled."
+            )
+        return LOCAL512_550K_V1_PROMPT
     if prompt_profile == PROMPT_PROFILE_RAWLANE_LOCAL256_550K_V1:
         if view_mode != VIEW_LOCAL256 or target_size != 256 or coord_range != 1000 or not include_intersections:
             raise ValueError(

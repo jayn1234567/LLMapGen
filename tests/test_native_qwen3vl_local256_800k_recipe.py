@@ -86,6 +86,10 @@ def test_local_smoke_isolated_torch240_and_checks_merger_adapter():
     assert "PER_DEVICE_TRAIN_BATCH_SIZE=${PER_DEVICE_TRAIN_BATCH_SIZE:-4}" in content
     assert "adapter_config.json" in content
     assert 'target_counts = {group: 0 for group in ("language", "vision", "merger")}' in content
+    assert '"merger" in lowered or "linear_fc" in lowered' in content
+    assert 'lowered == "qkv" or lowered.endswith(".qkv")' in content
+    assert 'lowered.endswith("attn.proj")' in content
+    assert "group_for_state_name" in content
     assert "non-reentrant visual-LoRA checkpointing was not confirmed" in content
     assert "one or more LoRA groups never produced a finite non-zero gradient" in content
     assert "Saved LoRA-B weights did not change from zero" in content

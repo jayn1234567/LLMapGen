@@ -301,17 +301,18 @@ targets = config.get("target_modules") or []
 if isinstance(targets, str):
     targets = [targets]
 
-def group_for_name(name):
-    lowered = f".{str(name).lower()}."
-    if ".visual." in lowered and "merger" in lowered:
+def group_for_target_name(name):
+    """Classify PEFT-minimized target suffixes from adapter_config.json."""
+    lowered = str(name).lower()
+    if "merger" in lowered or "linear_fc" in lowered:
         return "merger"
-    if ".visual." in lowered:
+    if lowered == "qkv" or lowered.endswith(".qkv") or lowered.endswith("attn.proj"):
         return "vision"
     return "language"
 
 target_counts = {group: 0 for group in ("language", "vision", "merger")}
 for name in targets:
-    target_counts[group_for_name(name)] += 1
+    target_counts[group_for_target_name(name)] += 1
 missing_targets = [group for group, count in target_counts.items() if count <= 0]
 if missing_targets:
     raise SystemExit(
@@ -333,10 +334,20 @@ else:
     raise SystemExit(f"Adapter weights are missing below {checkpoint_dir}")
 
 updated_lora_b = {group: 0.0 for group in ("language", "vision", "merger")}
+
+def group_for_state_name(name):
+    """Classify full adapter state keys, with minimized-name fallback."""
+    lowered = f".{str(name).lower()}."
+    if "merger" in lowered or "linear_fc" in lowered:
+        return "merger"
+    if ".visual." in lowered:
+        return "vision"
+    return group_for_target_name(name)
+
 for name, tensor in state.items():
     if "lora_b" not in name.lower() or not torch.is_tensor(tensor):
         continue
-    updated_lora_b[group_for_name(name)] += float(tensor.detach().float().abs().sum().item())
+    updated_lora_b[group_for_state_name(name)] += float(tensor.detach().float().abs().sum().item())
 missing_updates = [group for group, magnitude in updated_lora_b.items() if magnitude <= 0.0]
 if missing_updates:
     raise SystemExit(

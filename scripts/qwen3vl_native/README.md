@@ -71,6 +71,33 @@ run, set `RESUME_FROM_CHECKPOINT` to a downloaded `checkpoint-N` directory;
 the directory must include adapter weights, `trainer_state.json`, `optimizer.pt`,
 and `scheduler.pt`.
 
+## Three-Image Context512/ROI256 800k LoRA
+
+```text
+train/train_sft_stage_a_lane_intersection_datasetv2_three_image_context512_roi256_800k_qwen3vl8b_lora_npu.sh
+```
+
+This is the full-data context counterpart of the validated local256 recipe.
+Its only model-data-flow change is the input view: every sample contains three
+512x512 context images, while supervision and norm1000 coordinates remain
+relative to the central 256x256 ROI `[128,128,384,384)`. It uses the same
+native Qwen3-VL-8B base, language/visual-attention/merger LoRA groups, LoRA
+hyperparameters, sequence length 4096, per-device batch 4, target global batch
+128, eight epochs, non-reentrant gradient checkpointing, and ordinary PEFT
+checkpoints as the local256 recipe.
+
+The formal preflight scans all 800,000 records and blocks training if image
+size, context size, target size, ROI, view mode, prompt, taxonomy, or three-image
+order is stale. The matching five-step Ascend smoke is:
+
+```bash
+bash scripts/npu/test/smoke_sft_stage_a_lane_intersection_datasetv2_three_image_context512_roi256_800k_native_qwen3vl8b_lora_npu.sh
+```
+
+Because 512x512 native visual inputs produce more visual tokens than local256,
+run this smoke before submitting the formal DI job even when the local256 smoke
+has already passed.
+
 ## Three-Image Context512/ROI256 200k LoRA
 
 ```text
@@ -105,6 +132,7 @@ NPU launchers default to:
 | Script | Purpose |
 |---|---|
 | `train/train_sft_stage_a_lane_intersection_datasetv2_three_image_local256_800k_qwen3vl8b_lora_npu.sh` | Stage A LoRA on all local256 Raw-Lane + Pose 800k records using the native Qwen3-VL-8B vision tower, merger, and language model. |
+| `train/train_sft_stage_a_lane_intersection_datasetv2_three_image_context512_roi256_800k_qwen3vl8b_lora_npu.sh` | Stage A LoRA on all context512/ROI256 Raw-Lane + Pose 800k records with strict center-ROI coordinate checks. |
 | `train/train_sft_stage_a_lane_intersection_datasetv2_three_image_context512_roi256_200k_qwen3vl8b_lora_npu.sh` | Matched 200k context512/ROI256 native-Qwen3-VL LoRA comparison. |
 | `train/train_sft_stage_a_lane_intersection_qwen3vl_native_npu.sh` | SFT training: Stage A, lane+intersection, native Qwen3-VL architecture. |
 | `train/train_sft_stage_b_lane_intersection_qwen3vl_native_npu.sh` | SFT training: Stage B, lane+intersection, native Qwen3-VL architecture, continued from Stage A. |

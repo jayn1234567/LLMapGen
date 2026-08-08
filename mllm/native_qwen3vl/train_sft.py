@@ -73,6 +73,9 @@ class NativeDataArguments:
     sample_seed: int = field(default=42)
     system_prompt: Optional[str] = field(default=None)
     expected_num_images: int = field(default=0)
+    expected_context_image_size: int = field(default=0)
+    expected_target_size: int = field(default=0)
+    expected_view_mode: Optional[str] = field(default=None)
 
 
 @dataclass
@@ -328,6 +331,9 @@ def make_data_module(processor, data_args: NativeDataArguments, training_args: N
         sample_limit=data_args.train_sample_limit,
         sample_seed=data_args.sample_seed,
         expected_num_images=data_args.expected_num_images,
+        expected_context_image_size=data_args.expected_context_image_size,
+        expected_target_size=data_args.expected_target_size,
+        expected_view_mode=data_args.expected_view_mode,
     )
     eval_dataset = None
     if data_args.eval_data_path:
@@ -337,6 +343,9 @@ def make_data_module(processor, data_args: NativeDataArguments, training_args: N
             sample_limit=data_args.eval_sample_limit,
             sample_seed=data_args.sample_seed,
             expected_num_images=data_args.expected_num_images,
+            expected_context_image_size=data_args.expected_context_image_size,
+            expected_target_size=data_args.expected_target_size,
+            expected_view_mode=data_args.expected_view_mode,
         )
     data_collator = NativeQwen3VLDataCollator(
         processor,
@@ -528,6 +537,12 @@ def train():
     )
     rank0_print(f"train={data_args.data_path}")
     rank0_print(f"expected_num_images={data_args.expected_num_images or 'any'}")
+    rank0_print(
+        "expected_geometry="
+        f"context={data_args.expected_context_image_size or 'any'} "
+        f"target={data_args.expected_target_size or 'any'} "
+        f"view_mode={data_args.expected_view_mode or 'any'}"
+    )
     rank0_print(f"system_prompt={data_args.system_prompt!r}")
     rank0_print(f"output={training_args.output_dir}")
     rank0_print(f"resume_from_checkpoint={training_args.resume_from_checkpoint or None}")
@@ -542,6 +557,9 @@ def train():
             "data_path": data_args.data_path,
             "image_folder": data_args.image_folder,
             "expected_num_images": data_args.expected_num_images,
+            "expected_context_image_size": data_args.expected_context_image_size,
+            "expected_target_size": data_args.expected_target_size,
+            "expected_view_mode": data_args.expected_view_mode,
             "model_max_length": training_args.model_max_length,
             "system_prompt": data_args.system_prompt,
             "lora_enable": model_args.lora_enable,

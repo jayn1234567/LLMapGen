@@ -143,6 +143,44 @@ def test_dataset_runtime_gate_rejects_stale_three_image_prompt(tmp_path):
         raise AssertionError("stale two-token prompt must fail the three-image runtime gate")
 
 
+def test_dataset_runtime_gate_checks_context512_roi256_geometry(tmp_path):
+    jsonl = _write_three_image_record(tmp_path)
+    record = json.loads(jsonl.read_text(encoding="utf-8"))
+    record["meta"] = {
+        "context_image_size": 512,
+        "target_size": 256,
+        "patch_width": 256,
+        "patch_height": 256,
+        "target_roi_in_image": [128, 128, 384, 384],
+        "view_mode": "context512_roi256",
+    }
+    jsonl.write_text(json.dumps(record) + "\n", encoding="utf-8")
+    dataset = NativeQwen3VLDataset(
+        [str(jsonl)],
+        [str(tmp_path)],
+        expected_num_images=3,
+        expected_context_image_size=512,
+        expected_target_size=256,
+        expected_view_mode="context512_roi256,context_center_roi",
+    )
+    assert dataset[0]["record"]["meta"]["target_roi_in_image"] == [128, 128, 384, 384]
+
+    record["meta"]["target_roi_in_image"] = [0, 0, 256, 256]
+    jsonl.write_text(json.dumps(record) + "\n", encoding="utf-8")
+    invalid_dataset = NativeQwen3VLDataset(
+        [str(jsonl)],
+        [str(tmp_path)],
+        expected_context_image_size=512,
+        expected_target_size=256,
+    )
+    try:
+        invalid_dataset[0]
+    except ValueError as exc:
+        assert "target_roi_in_image" in str(exc)
+    else:
+        raise AssertionError("full-image coordinates must fail the center-ROI runtime gate")
+
+
 def test_matched_subset_indices_are_stable_and_source_ordered():
     first = deterministic_sample_indices(total=20, limit=7, seed=42)
     second = deterministic_sample_indices(total=20, limit=7, seed=42)

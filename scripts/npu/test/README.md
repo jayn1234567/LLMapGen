@@ -19,13 +19,14 @@ The explicit `smoke_train_*` entrypoint is the exception: it verifies the
 private DINOv2 segmentation pretraining path before that visual tower is used
 by the SFT recipes.
 
-The Raw-Lane + Pose three-image SFT routes provide three single-node checkpoint
+The Raw-Lane + Pose three-image SFT routes provide four single-node checkpoint
 smokes:
 
 ```text
 smoke_sft_stage_a_lane_intersection_datasetv2_three_image_local256_800k_original_dinov2_caprl4b_nodeepstack_lora_llm_npu.sh
 smoke_sft_stage_a_lane_intersection_datasetv2_three_image_context512_roi256_800k_original_dinov2_caprl4b_nodeepstack_lora_llm_npu.sh
 smoke_sft_stage_a_lane_intersection_datasetv2_three_image_local256_800k_native_qwen3vl8b_lora_npu.sh
+smoke_sft_stage_a_lane_intersection_datasetv2_three_image_context512_roi256_800k_native_qwen3vl8b_lora_npu.sh
 ```
 
 They run five optimizer steps and save at step 5. A smoke passes only when it
@@ -34,10 +35,12 @@ artifact, and a runtime log proving `images_per_sample=3`. Supply the matching
 dataset TAR through `DATASET_OBS_PATH` for the DINOv2 smokes. The native
 local256 smoke has the released 800k TAR as a verified default and still allows
 the URI or a local archive to be overridden.
-The native-Qwen3-VL local256 smoke additionally requires the isolated Torch 2.4
-environment documented in `scripts/npu/setup/README.md`. It verifies non-zero
-language/vision/merger LoRA gradients, non-zero saved LoRA-B updates in all
-three groups, and the files required to resume the PEFT checkpoint.
+The native-Qwen3-VL local256 and context512/ROI256 smokes additionally require
+the isolated Torch 2.4 environment documented in `scripts/npu/setup/README.md`.
+They verify non-zero language/vision/merger LoRA gradients, non-zero saved
+LoRA-B updates in all three groups, and the files required to resume the PEFT
+checkpoint. The context smoke also verifies that the 512x512 input remains
+paired with the central 256x256 ROI coordinate frame.
 
 ## Comment Style
 

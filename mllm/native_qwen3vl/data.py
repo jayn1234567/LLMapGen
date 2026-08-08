@@ -152,6 +152,9 @@ class NativeQwen3VLDataset(Dataset):
         sample_limit: int = 0,
         sample_seed: int = 42,
         expected_num_images: int = 0,
+        expected_context_image_size: int = 0,
+        expected_target_size: int = 0,
+        expected_view_mode: str | None = None,
     ):
         if not data_paths:
             raise ValueError("data_paths must not be empty")
@@ -163,6 +166,13 @@ class NativeQwen3VLDataset(Dataset):
             raise ValueError("image_folders must have length 1 or match data_paths")
         if expected_num_images < 0:
             raise ValueError("expected_num_images must be zero or a positive integer")
+        if expected_context_image_size < 0 or expected_target_size < 0:
+            raise ValueError("expected image and target sizes must be zero or positive integers")
+        if expected_target_size and expected_context_image_size:
+            if expected_target_size > expected_context_image_size:
+                raise ValueError("expected_target_size must not exceed expected_context_image_size")
+            if (expected_context_image_size - expected_target_size) % 2:
+                raise ValueError("expected context and target sizes must define a centered integer ROI")
 
         records: list[dict[str, Any]] = []
         for data_idx, data_path in enumerate(data_paths):
@@ -178,6 +188,13 @@ class NativeQwen3VLDataset(Dataset):
         self.records = records
         self.image_folders = list(image_folders)
         self.expected_num_images = int(expected_num_images)
+        self.expected_context_image_size = int(expected_context_image_size)
+        self.expected_target_size = int(expected_target_size)
+        self.expected_view_modes = {
+            item.strip()
+            for item in str(expected_view_mode or "").split(",")
+            if item.strip()
+        }
 
     def __len__(self) -> int:
         return len(self.records)
@@ -212,6 +229,60 @@ class NativeQwen3VLDataset(Dataset):
                     f"record {sample_id!r} must contain exactly {self.expected_num_images} "
                     f"{IMAGE_TOKEN!r} prompt tokens, found {prompt_image_tokens}"
                 )
+        if (
+            self.expected_context_image_size
+            or self.expected_target_size
+            or self.expected_view_modes
+        ):
+            sample_id = record.get("id", index)
+            meta = record.get("meta")
+            if not isinstance(meta, dict):
+                raise ValueError(f"record {sample_id!r} has no geometry metadata")
+            if self.expected_context_image_size:
+                actual_context_size = int(meta.get("context_image_size", 0) or 0)
+                if actual_context_size != self.expected_context_image_size:
+                    raise ValueError(
+                        f"record {sample_id!r} context_image_size={actual_context_size}, "
+                        f"expected {self.expected_context_image_size}"
+                    )
+            if self.expected_target_size:
+                actual_target_size = int(
+                    meta.get("target_size", meta.get("patch_width", 0)) or 0
+                )
+                patch_width = int(meta.get("patch_width", actual_target_size) or 0)
+                patch_height = int(meta.get("patch_height", actual_target_size) or 0)
+                if (
+                    actual_target_size != self.expected_target_size
+                    or patch_width != self.expected_target_size
+                    or patch_height != self.expected_target_size
+                ):
+                    raise ValueError(
+                        f"record {sample_id!r} target geometry is "
+                        f"target={actual_target_size}, patch={patch_width}x{patch_height}; "
+                        f"expected {self.expected_target_size}x{self.expected_target_size}"
+                    )
+            if self.expected_context_image_size and self.expected_target_size:
+                margin = (
+                    self.expected_context_image_size - self.expected_target_size
+                ) // 2
+                expected_roi = [
+                    margin,
+                    margin,
+                    margin + self.expected_target_size,
+                    margin + self.expected_target_size,
+                ]
+                if meta.get("target_roi_in_image") != expected_roi:
+                    raise ValueError(
+                        f"record {sample_id!r} target_roi_in_image="
+                        f"{meta.get('target_roi_in_image')!r}, expected {expected_roi!r}"
+                    )
+            if self.expected_view_modes:
+                actual_view_mode = str(meta.get("view_mode") or "")
+                if actual_view_mode not in self.expected_view_modes:
+                    raise ValueError(
+                        f"record {sample_id!r} view_mode={actual_view_mode!r}, "
+                        f"expected one of {sorted(self.expected_view_modes)!r}"
+                    )
         image_paths = [resolve_image_path(value, image_folder) for value in image_values]
         return {
             "record": copy.deepcopy(record),

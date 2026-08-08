@@ -23,6 +23,7 @@ def test_formal_recipe_uses_verified_assets_and_requested_batch():
     assert "EXPECTED_SOURCE_TRAIN_SAMPLES=${EXPECTED_SOURCE_TRAIN_SAMPLES:-800000}" in content
     assert "MODEL_MAX_LENGTH=${MODEL_MAX_LENGTH:-4096}" in content
     assert "NUM_EPOCHS=${NUM_EPOCHS:-8}" in content
+    assert "EXPECTED_NUM_IMAGES=${EXPECTED_NUM_IMAGES:-3}" in content
 
 
 def test_formal_recipe_trains_all_three_native_lora_groups_without_zero():
@@ -43,6 +44,10 @@ def test_formal_recipe_trains_all_three_native_lora_groups_without_zero():
     assert "protobuf==4.25.7" in content
     assert "huggingface-hub==0.36.2" not in content
     assert "--gradient_checkpointing_kwargs '{\"use_reentrant\": false}'" in content
+    assert '--expected_num_images "${EXPECTED_NUM_IMAGES}"' in content
+    assert '--verify_lora_gradients "${VERIFY_LORA_GRADIENTS}"' in content
+    assert '--resume_from_checkpoint "${RESUME_FROM_CHECKPOINT}"' in content
+    assert "Native DI runtime preflight failed" in content
 
 
 def test_visual_lora_forces_non_reentrant_gradient_checkpointing():
@@ -52,6 +57,9 @@ def test_visual_lora_forces_non_reentrant_gradient_checkpointing():
     assert 'training_args.gradient_checkpointing_kwargs = {"use_reentrant": False}' in content
     assert "Native Qwen3-VL visual LoRA requires non-reentrant" in content
     assert "gradient_checkpointing_kwargs=training_args.gradient_checkpointing_kwargs" in content
+    assert "trainer.prepare_lora_gradient_audit()" in content
+    assert "trainer.assert_lora_gradients_verified()" in content
+    assert "[native-lora-gradient-check]" in content
 
 
 def test_formal_recipe_checks_local256_three_image_contract():
@@ -77,8 +85,12 @@ def test_local_smoke_isolated_torch240_and_checks_merger_adapter():
     assert 'peft.__version__ != "0.18.0"' in content
     assert "PER_DEVICE_TRAIN_BATCH_SIZE=${PER_DEVICE_TRAIN_BATCH_SIZE:-4}" in content
     assert "adapter_config.json" in content
-    assert '"merger" in str(name).lower()' in content
+    assert 'target_counts = {group: 0 for group in ("language", "vision", "merger")}' in content
     assert "non-reentrant visual-LoRA checkpointing was not confirmed" in content
+    assert "one or more LoRA groups never produced a finite non-zero gradient" in content
+    assert "Saved LoRA-B weights did not change from zero" in content
+    assert "optimizer.pt scheduler.pt" in content
+    assert "EXPECTED_TORCH_PREFIX=2.4.0" in content
 
 
 def test_setup_clones_stable_torch240_environment_without_reinstalling_torch():

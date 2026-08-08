@@ -35,6 +35,42 @@ roles `bev_road_structure`, `pv_camera_raw_lane`, and
 `historical_vehicle_trajectory`, and rejects stale verbose prompts that describe
 white-line rendering.
 
+### Local Ascend smoke before DI
+
+Create the isolated local Torch 2.4 environment once, then run the five-step
+single-node smoke:
+
+```bash
+bash scripts/npu/setup/create_mllm_native_qwen3vl_torch240_npu_env_from_infer.sh
+bash scripts/npu/test/smoke_sft_stage_a_lane_intersection_datasetv2_three_image_local256_800k_native_qwen3vl8b_lora_npu.sh
+```
+
+The smoke defaults to eight visible NPUs and per-device batch 4. Override
+`ASCEND_RT_VISIBLE_DEVICES`, `NPROC_PER_NODE`, model/data paths, or cache paths
+when the local server layout differs. A pass requires all of the following:
+
+- exactly three ordered images reach the native processor for every sampled
+  record;
+- language, visual-attention, and native-merger LoRA targets all resolve;
+- every LoRA group produces a finite non-zero gradient;
+- loss and positive per-NPU `DI_throughput` are logged;
+- `checkpoint-5` contains a resumable Trainer state and PEFT adapter; and
+- saved LoRA-B weights changed from zero in all three groups.
+
+After the smoke passes, launch the formal DI job with the same training entry:
+
+```bash
+bash scripts/qwen3vl_native/train/train_sft_stage_a_lane_intersection_datasetv2_three_image_local256_800k_qwen3vl8b_lora_npu.sh
+```
+
+DI injects `OUTPUT_URL` and topology variables. The formal job installs and
+verifies its separate Torch 2.7 / torch-npu 2.7 stack, runs the full dataset
+preflight, derives gradient accumulation from the actual world size, and trains
+all 800,000 records for eight epochs. To resume an interrupted ordinary PEFT
+run, set `RESUME_FROM_CHECKPOINT` to a downloaded `checkpoint-N` directory;
+the directory must include adapter weights, `trainer_state.json`, `optimizer.pt`,
+and `scheduler.pt`.
+
 ## Three-Image Context512/ROI256 200k LoRA
 
 ```text

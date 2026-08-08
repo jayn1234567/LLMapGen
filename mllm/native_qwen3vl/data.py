@@ -151,6 +151,7 @@ class NativeQwen3VLDataset(Dataset):
         image_folders: Sequence[str],
         sample_limit: int = 0,
         sample_seed: int = 42,
+        expected_num_images: int = 0,
     ):
         if not data_paths:
             raise ValueError("data_paths must not be empty")
@@ -160,6 +161,8 @@ class NativeQwen3VLDataset(Dataset):
             image_folders = list(image_folders) * len(data_paths)
         if len(image_folders) != len(data_paths):
             raise ValueError("image_folders must have length 1 or match data_paths")
+        if expected_num_images < 0:
+            raise ValueError("expected_num_images must be zero or a positive integer")
 
         records: list[dict[str, Any]] = []
         for data_idx, data_path in enumerate(data_paths):
@@ -174,6 +177,7 @@ class NativeQwen3VLDataset(Dataset):
 
         self.records = records
         self.image_folders = list(image_folders)
+        self.expected_num_images = int(expected_num_images)
 
     def __len__(self) -> int:
         return len(self.records)
@@ -195,6 +199,19 @@ class NativeQwen3VLDataset(Dataset):
             raise ValueError(f"record has no image/images: {record.get('id', index)}")
         if not all(isinstance(value, str) and value.strip() for value in image_values):
             raise ValueError(f"record contains invalid image paths: {record.get('id', index)}")
+        if self.expected_num_images:
+            sample_id = record.get("id", index)
+            if len(image_values) != self.expected_num_images:
+                raise ValueError(
+                    f"record {sample_id!r} must contain exactly {self.expected_num_images} "
+                    f"ordered images, found {len(image_values)}"
+                )
+            prompt_image_tokens = str(prompt).count(IMAGE_TOKEN)
+            if prompt_image_tokens != self.expected_num_images:
+                raise ValueError(
+                    f"record {sample_id!r} must contain exactly {self.expected_num_images} "
+                    f"{IMAGE_TOKEN!r} prompt tokens, found {prompt_image_tokens}"
+                )
         image_paths = [resolve_image_path(value, image_folder) for value in image_values]
         return {
             "record": copy.deepcopy(record),
@@ -241,6 +258,21 @@ class NativeQwen3VLDataCollator:
         labels[:prompt_len] = IGNORE_INDEX
         if self.pad_token_id is not None:
             labels[input_ids == self.pad_token_id] = IGNORE_INDEX
+        if not bool(torch.any(labels != IGNORE_INDEX).item()):
+            sample_id = (feature.get("record") or {}).get("id", "<unknown>")
+            raise ValueError(
+                f"record {sample_id!r} has no supervised assistant tokens after "
+                f"model_max_length={self.model_max_length} truncation"
+            )
+
+        image_grid = full_inputs.get("image_grid_thw")
+        if torch.is_tensor(image_grid):
+            processed_images = int(image_grid.reshape(-1, image_grid.shape[-1]).shape[0])
+            if processed_images != len(images):
+                raise ValueError(
+                    "native Qwen3-VL processor image count mismatch: "
+                    f"paths={len(images)} image_grid_thw={processed_images}"
+                )
 
         encoded: dict[str, Any] = {
             "input_ids": input_ids,
@@ -307,10 +339,15 @@ class NativeQwen3VLDataCollator:
                 len(normalize_image_paths(feature.get("image_paths") or feature["image_path"]))
                 for feature in features
             ]
+            processed_image_grids = (
+                int(batch["image_grid_thw"].shape[0])
+                if torch.is_tensor(batch.get("image_grid_thw"))
+                else -1
+            )
             print(
                 "[native-multimodal-input] "
                 f"batch_size={len(features)} images_per_sample={image_counts} "
-                f"total_images={sum(image_counts)}",
+                f"total_images={sum(image_counts)} processed_image_grids={processed_image_grids}",
                 flush=True,
             )
             self._logged_multi_image_shape = True

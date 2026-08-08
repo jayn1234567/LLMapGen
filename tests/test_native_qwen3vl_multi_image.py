@@ -93,7 +93,9 @@ def test_build_messages_preserves_three_image_order():
 
 def test_dataset_and_collator_encode_all_three_images(tmp_path):
     jsonl = _write_three_image_record(tmp_path)
-    dataset = NativeQwen3VLDataset([str(jsonl)], [str(tmp_path)])
+    dataset = NativeQwen3VLDataset(
+        [str(jsonl)], [str(tmp_path)], expected_num_images=3
+    )
     feature = dataset[0]
 
     assert [path.parts[-4] for path in feature["image_paths"]] == [
@@ -122,6 +124,23 @@ def test_collator_concatenates_three_image_grids_across_samples(tmp_path):
     assert batch["input_ids"].shape == (2, 12)
     assert batch["pixel_values"].shape[0] == 6
     assert batch["image_grid_thw"].shape == (6, 3)
+
+
+def test_dataset_runtime_gate_rejects_stale_three_image_prompt(tmp_path):
+    jsonl = _write_three_image_record(tmp_path)
+    record = json.loads(jsonl.read_text(encoding="utf-8"))
+    record["conversations"][0]["value"] = "<image>\n<image>\nDescribe the map."
+    jsonl.write_text(json.dumps(record) + "\n", encoding="utf-8")
+    dataset = NativeQwen3VLDataset(
+        [str(jsonl)], [str(tmp_path)], expected_num_images=3
+    )
+
+    try:
+        dataset[0]
+    except ValueError as exc:
+        assert "exactly 3 '<image>' prompt tokens" in str(exc)
+    else:
+        raise AssertionError("stale two-token prompt must fail the three-image runtime gate")
 
 
 def test_matched_subset_indices_are_stable_and_source_ordered():

@@ -29,6 +29,15 @@ rebuilt. The generated activation script is:
 This local environment recipe does not alter formal DI jobs. Formal DI launchers
 install and verify their separate Torch 2.7 / torch-npu 2.7 runtime.
 
+Create the environment from the repository root with:
+
+```bash
+bash scripts/npu/setup/create_mllm_native_qwen3vl_torch240_npu_env_from_infer.sh
+```
+
+After it passes its version and NPU tensor checks, run the local256 three-image
+training gate documented in `scripts/qwen3vl_native/README.md`.
+
 ## Other Setup Scripts
 
 | Script | Purpose |

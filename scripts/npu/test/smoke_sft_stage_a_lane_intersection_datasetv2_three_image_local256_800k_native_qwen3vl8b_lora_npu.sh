@@ -76,6 +76,7 @@ REUSE_LOCAL_ASSETS=${REUSE_LOCAL_ASSETS:-True}
 SAVE_BEST_TRAIN_LOSS=${SAVE_BEST_TRAIN_LOSS:-False}
 SAVE_BEST_INFER_INDEX=${SAVE_BEST_INFER_INDEX:-False}
 SWANLAB_ENABLE=${SWANLAB_ENABLE:-False}
+VERIFY_LORA_GRADIENTS=${VERIFY_LORA_GRADIENTS:-True}
 
 mkdir -p "${OUTPUT_URL}" "${LOCAL_MODEL_SAVE_ROOT}" "${LOG_ROOT}" \
   "$(dirname "${DATASET_ARCHIVE_PATH}")" "${DATASET_EXTRACT_ROOT}"
@@ -201,6 +202,14 @@ REUSE_LOCAL_ASSETS="${REUSE_LOCAL_ASSETS}" \
 SAVE_BEST_TRAIN_LOSS="${SAVE_BEST_TRAIN_LOSS}" \
 SAVE_BEST_INFER_INDEX="${SAVE_BEST_INFER_INDEX}" \
 SWANLAB_ENABLE="${SWANLAB_ENABLE}" \
+VERIFY_LORA_GRADIENTS="${VERIFY_LORA_GRADIENTS}" \
+EXPECTED_NUM_IMAGES=3 \
+EXPECTED_PYTHON_MAJOR_MINOR=3.11 \
+EXPECTED_TORCH_PREFIX=2.4.0 \
+EXPECTED_TORCH_NPU_PREFIX=2.4.0 \
+EXPECTED_TORCHVISION_PREFIX=0.19.0 \
+EXPECTED_TRANSFORMERS_VERSION=4.57.3 \
+EXPECTED_PEFT_VERSION=0.18.0 \
 NNODES="${NNODES}" \
 NODE_RANK="${NODE_RANK}" \
 NPROC_PER_NODE="${NPROC_PER_NODE}" \
@@ -243,12 +252,24 @@ if ! grep -Fq "DI_throughput:" "${TRAIN_LOG}"; then
   echo "ERROR: required DI_throughput log line is missing." >&2
   exit 1
 fi
-if ! grep -Eq "\[native-multimodal-input\].*images_per_sample=\[3(, 3)*\].*total_images=" "${TRAIN_LOG}"; then
+if ! grep -Eq 'DI_throughput: (0\.[0-9]*[1-9][0-9]*|[1-9][0-9]*(\.[0-9]+)?) samples/s/npu' "${TRAIN_LOG}"; then
+  echo "ERROR: no positive per-NPU DI_throughput measurement was found." >&2
+  exit 1
+fi
+if ! grep -Eq "\[native-multimodal-input\].*images_per_sample=\[3(, 3)*\].*total_images=[1-9][0-9]* processed_image_grids=[1-9][0-9]*" "${TRAIN_LOG}"; then
   echo "ERROR: the smoke log does not prove that all three ordered images reached native Qwen3-VL." >&2
   exit 1
 fi
 if ! grep -Fq "Native gradient checkpointing: use_reentrant=False (visual LoRA)" "${TRAIN_LOG}"; then
   echo "ERROR: non-reentrant visual-LoRA checkpointing was not confirmed in the training log." >&2
+  exit 1
+fi
+if ! grep -Eq 'Native Qwen3-VL LoRA targets: language=[1-9][0-9]*, visual_attention=[1-9][0-9]*, merger=[1-9][0-9]*' "${TRAIN_LOG}"; then
+  echo "ERROR: resolved language, visual-attention, and merger LoRA targets were not all confirmed." >&2
+  exit 1
+fi
+if ! grep -Eq '\[native-lora-gradient-check\].*language=nonzero.*vision=nonzero.*merger=nonzero' "${TRAIN_LOG}"; then
+  echo "ERROR: one or more LoRA groups never produced a finite non-zero gradient." >&2
   exit 1
 fi
 CHECKPOINT_DIR="${FINAL_OUTPUT}/checkpoint-${MAX_STEPS}"
@@ -260,19 +281,73 @@ if ! find "${CHECKPOINT_DIR}" -maxdepth 1 -type f \( -name 'adapter_model.safete
   echo "ERROR: LoRA adapter weights are missing below ${CHECKPOINT_DIR}" >&2
   exit 1
 fi
+for required_file in trainer_state.json optimizer.pt scheduler.pt; do
+  if [ ! -f "${CHECKPOINT_DIR}/${required_file}" ]; then
+    echo "ERROR: resumable checkpoint artifact is missing: ${CHECKPOINT_DIR}/${required_file}" >&2
+    exit 1
+  fi
+done
 CHECKPOINT_DIR="${CHECKPOINT_DIR}" "${PYTHON}" - <<'PY'
 import json
 import os
 from pathlib import Path
 
-config_path = Path(os.environ["CHECKPOINT_DIR"]) / "adapter_config.json"
+import torch
+
+checkpoint_dir = Path(os.environ["CHECKPOINT_DIR"])
+config_path = checkpoint_dir / "adapter_config.json"
 config = json.loads(config_path.read_text(encoding="utf-8"))
 targets = config.get("target_modules") or []
 if isinstance(targets, str):
     targets = [targets]
-if not any("merger" in str(name).lower() for name in targets):
-    raise SystemExit(f"Native merger LoRA targets are missing from {config_path}: {targets}")
-print(f"[native-lora-checkpoint] merger targets={sum('merger' in str(name).lower() for name in targets)}")
+
+def group_for_name(name):
+    lowered = f".{str(name).lower()}."
+    if ".visual." in lowered and "merger" in lowered:
+        return "merger"
+    if ".visual." in lowered:
+        return "vision"
+    return "language"
+
+target_counts = {group: 0 for group in ("language", "vision", "merger")}
+for name in targets:
+    target_counts[group_for_name(name)] += 1
+missing_targets = [group for group, count in target_counts.items() if count <= 0]
+if missing_targets:
+    raise SystemExit(
+        f"Native LoRA targets are missing groups {missing_targets!r} from {config_path}: {targets}"
+    )
+
+safe_path = checkpoint_dir / "adapter_model.safetensors"
+bin_path = checkpoint_dir / "adapter_model.bin"
+if safe_path.is_file():
+    from safetensors.torch import load_file
+
+    state = load_file(str(safe_path), device="cpu")
+elif bin_path.is_file():
+    try:
+        state = torch.load(str(bin_path), map_location="cpu", weights_only=True)
+    except TypeError:
+        state = torch.load(str(bin_path), map_location="cpu")
+else:
+    raise SystemExit(f"Adapter weights are missing below {checkpoint_dir}")
+
+updated_lora_b = {group: 0.0 for group in ("language", "vision", "merger")}
+for name, tensor in state.items():
+    if "lora_b" not in name.lower() or not torch.is_tensor(tensor):
+        continue
+    updated_lora_b[group_for_name(name)] += float(tensor.detach().float().abs().sum().item())
+missing_updates = [group for group, magnitude in updated_lora_b.items() if magnitude <= 0.0]
+if missing_updates:
+    raise SystemExit(
+        "Saved LoRA-B weights did not change from zero for groups "
+        f"{missing_updates!r}: {updated_lora_b!r}"
+    )
+print(
+    "[native-lora-checkpoint] "
+    f"targets={target_counts} updated_lora_b={updated_lora_b}",
+    flush=True,
+)
 PY
 
 FINAL_OUTPUT="${FINAL_OUTPUT}" TRAIN_LOG="${TRAIN_LOG}" NPU_MEMORY_LOG="${NPU_MEMORY_LOG}" \

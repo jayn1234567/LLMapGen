@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+set -eo pipefail
 
 # ============================================================
 # DI/NPU LoRA recipe for the released local256 Raw-Lane + Pose 800k dataset.
@@ -60,11 +61,12 @@ MODEL_MAX_LENGTH=${MODEL_MAX_LENGTH:-4096}                                      
 EXPECTED_SOURCE_TRAIN_SAMPLES=${EXPECTED_SOURCE_TRAIN_SAMPLES:-800000}            # Released source-package train count.
 TRAIN_SAMPLE_LIMIT=${TRAIN_SAMPLE_LIMIT:-0}                                       # Zero consumes all 800k records without resampling.
 SAMPLE_SEED=${SAMPLE_SEED:-42}                                                    # Used only when a positive subset override is requested.
+EXPECTED_NUM_IMAGES=${EXPECTED_NUM_IMAGES:-3}                                    # Runtime loader gate in addition to dataset preflight.
 SAVE_STEPS=${SAVE_STEPS:-1000}                                                    # Regular checkpoint interval.
 SAVE_TOTAL_LIMIT=${SAVE_TOTAL_LIMIT:-15}                                          # Regular checkpoint keep limit.
 LOGGING_STEPS=${LOGGING_STEPS:-10}                                                # Logging interval.
 ENABLE_EVAL=False                                                                 # Keep the architecture comparison focused on SFT throughput and quality.
-SAVE_BEST_TRAIN_LOSS=False                                                        # Regular adapter checkpoints only.
+SAVE_BEST_TRAIN_LOSS=${SAVE_BEST_TRAIN_LOSS:-False}                              # Regular adapter checkpoints only.
 BEST_TRAIN_LOSS_START_STEP=${BEST_TRAIN_LOSS_START_STEP:-5000}                    # Best train-loss starts after this step.
 BEST_CHECKPOINT_KEEP_LIMIT=${BEST_CHECKPOINT_KEEP_LIMIT:-5}                       # Best checkpoint keep limit.
 LORA_ENABLE=True                                                                  # Language-model LoRA.
@@ -76,6 +78,8 @@ LORA_TARGET_MODULES=${LORA_TARGET_MODULES:-q_proj,k_proj,v_proj,o_proj,gate_proj
 VISION_LORA_ENABLE=True                                                           # Adapt native visual attention without full-tower optimizer states.
 VISION_LORA_TARGET_MODULES=${VISION_LORA_TARGET_MODULES:-q_proj,k_proj,v_proj,o_proj,qkv,proj}
 MERGER_LORA_ENABLE=True                                                           # Adapt every Linear layer in the native multimodal merger with LoRA.
+VERIFY_LORA_GRADIENTS=${VERIFY_LORA_GRADIENTS:-True}                             # Require non-zero gradients in all enabled LoRA groups.
+RESUME_FROM_CHECKPOINT=${RESUME_FROM_CHECKPOINT:-}                               # Optional ordinary PEFT checkpoint directory.
 REUSE_LOCAL_ASSETS=${REUSE_LOCAL_ASSETS:-True}
 DATASET_INSPECT_STRICT=${DATASET_INSPECT_STRICT:-True}
 DATASET_INSPECT_MAX_SAMPLES=${DATASET_INSPECT_MAX_SAMPLES:-0}
@@ -126,6 +130,12 @@ ENABLE_MOXING_UPGRADE=${ENABLE_MOXING_UPGRADE:-True}                            
 TRANSFORMERS_SPEC=${TRANSFORMERS_SPEC:-"transformers==4.57.3"}                    # Native Qwen3-VL with a Torch-2.4-compatible DTensor guard.
 TOKENIZERS_SPEC=${TOKENIZERS_SPEC:-"tokenizers>=0.22.0"}                          # Tokenizers version aligned with transformers.
 PEFT_SPEC=${PEFT_SPEC:-"peft==0.18.0"}                                            # LoRA version compatible with the pinned Transformers 4.x build.
+EXPECTED_PYTHON_MAJOR_MINOR=${EXPECTED_PYTHON_MAJOR_MINOR:-3.11}                 # Formal DI Python runtime.
+EXPECTED_TORCH_PREFIX=${EXPECTED_TORCH_PREFIX:-2.7.1}                            # Formal DI torch runtime; smoke overrides to 2.4.0.
+EXPECTED_TORCH_NPU_PREFIX=${EXPECTED_TORCH_NPU_PREFIX:-2.7.1}                    # Formal DI torch-npu runtime.
+EXPECTED_TORCHVISION_PREFIX=${EXPECTED_TORCHVISION_PREFIX:-0.22.1}               # Torch-compatible torchvision runtime.
+EXPECTED_TRANSFORMERS_VERSION=${EXPECTED_TRANSFORMERS_VERSION:-4.57.3}           # Native Qwen3-VL implementation.
+EXPECTED_PEFT_VERSION=${EXPECTED_PEFT_VERSION:-0.18.0}                           # Adapter implementation.
 if [[ "${ENABLE_MOXING_UPGRADE}" =~ ^(1|true|True|TRUE|yes|YES)$ ]]; then
   USE_MEMARTS=0 python -c "import moxing; moxing.file.copy('obs://yw-ads-training-gy1/data/external/personal/00592907/dataset_index/pkgs/moxing_framework-2.3.8-py2.py3-none-any.250714.whl', '/home/ma-user/moxing_framework-2.3.8-py2.py3-none-any.whl')"
   pip uninstall moxing-framework -y
@@ -161,9 +171,79 @@ MASTER_PORT=${MASTER_PORT:-6060}                                                
 export NNODES NODE_RANK NPROC_PER_NODE MASTER_ADDR MASTER_PORT
 export RDZV_ID=${RDZV_ID:-sft_${DATASET_PHASE}_${MAP_TASK}_${MODEL_RECIPE}_${RUN_ID}}  # Rendezvous id.
 
+EXPECTED_PYTHON_MAJOR_MINOR="${EXPECTED_PYTHON_MAJOR_MINOR}" \
+EXPECTED_TORCH_PREFIX="${EXPECTED_TORCH_PREFIX}" \
+EXPECTED_TORCH_NPU_PREFIX="${EXPECTED_TORCH_NPU_PREFIX}" \
+EXPECTED_TORCHVISION_PREFIX="${EXPECTED_TORCHVISION_PREFIX}" \
+EXPECTED_TRANSFORMERS_VERSION="${EXPECTED_TRANSFORMERS_VERSION}" \
+EXPECTED_PEFT_VERSION="${EXPECTED_PEFT_VERSION}" \
+NPROC_PER_NODE="${NPROC_PER_NODE}" python - <<'PY'
+import json
+import os
+import platform
+import sys
+
+import moxing
+import peft
+import torch
+import torch_npu
+import torchvision
+import transformers
+
+from mllm.native_qwen3vl.modeling import resolve_native_model_class
+
+payload = {
+    "python": platform.python_version(),
+    "torch": torch.__version__,
+    "torch_npu": torch_npu.__version__,
+    "torchvision": torchvision.__version__,
+    "transformers": transformers.__version__,
+    "peft": peft.__version__,
+    "npu_available": bool(torch.npu.is_available()),
+    "npu_count": int(torch.npu.device_count()),
+    "moxing_file_api": hasattr(moxing, "file"),
+}
+print(f"[native-di-runtime-preflight] {json.dumps(payload, ensure_ascii=True)}", flush=True)
+failures = []
+if f"{sys.version_info.major}.{sys.version_info.minor}" != os.environ["EXPECTED_PYTHON_MAJOR_MINOR"]:
+    failures.append(
+        f"python={platform.python_version()} expected {os.environ['EXPECTED_PYTHON_MAJOR_MINOR']}.x"
+    )
+for key, expected in (
+    ("torch", os.environ["EXPECTED_TORCH_PREFIX"]),
+    ("torch_npu", os.environ["EXPECTED_TORCH_NPU_PREFIX"]),
+    ("torchvision", os.environ["EXPECTED_TORCHVISION_PREFIX"]),
+):
+    if not str(payload[key]).startswith(expected):
+        failures.append(f"{key}={payload[key]} expected prefix {expected}")
+if transformers.__version__ != os.environ["EXPECTED_TRANSFORMERS_VERSION"]:
+    failures.append(
+        f"transformers={transformers.__version__} expected {os.environ['EXPECTED_TRANSFORMERS_VERSION']}"
+    )
+if peft.__version__ != os.environ["EXPECTED_PEFT_VERSION"]:
+    failures.append(f"peft={peft.__version__} expected {os.environ['EXPECTED_PEFT_VERSION']}")
+if not payload["moxing_file_api"]:
+    failures.append("Huawei moxing-framework with mox.file is required")
+if not payload["npu_available"]:
+    failures.append("NPU runtime is unavailable")
+required_npus = int(os.environ["NPROC_PER_NODE"])
+if payload["npu_count"] < required_npus:
+    failures.append(f"visible NPUs={payload['npu_count']} expected at least {required_npus}")
+try:
+    resolve_native_model_class()
+except Exception as exc:
+    failures.append(f"native Qwen3-VL model class is unavailable: {exc!r}")
+if failures:
+    raise SystemExit("Native DI runtime preflight failed: " + "; ".join(failures))
+PY
+
 mkdir -p "${LOCAL_MODEL_SAVE_PATH}" "${DATASET_EXTRACT_ROOT}"
 OUTPUT_PATH="${LOCAL_MODEL_SAVE_PATH}"                                            # Trainer output dir.
 SWANLAB_LOG_DIR=${SWANLAB_LOG_DIR:-${OUTPUT_PATH}/swanlab}                        # SwanLab local log dir.
+if [ -n "${RESUME_FROM_CHECKPOINT}" ] && [ ! -d "${RESUME_FROM_CHECKPOINT}" ]; then
+  echo "ERROR: RESUME_FROM_CHECKPOINT is not a directory: ${RESUME_FROM_CHECKPOINT}"
+  exit 2
+fi
 
 if [ ! -e "${QWEN3VL_PATH}/config.json" ]; then
   python -c "import moxing as mox; mox.file.copy_parallel('${QWEN3VL_OBS_PATH}', '${QWEN3VL_PATH}')"
@@ -340,10 +420,13 @@ echo "Sequence:     max_length=${MODEL_MAX_LENGTH}"
 echo "Batch:        per_device=${PER_DEVICE_TRAIN_BATCH_SIZE}, accumulation=${GRADIENT_ACCUMULATION_STEPS}, effective=$((MICRO_BATCH * GRADIENT_ACCUMULATION_STEPS))"
 echo "LRs:          language_lora=${LR}, vision_lora=${VISION_LORA_LR}, merger_lora=${MERGER_LORA_LR}"
 echo "Eval loss:    disabled"
+echo "LoRA audit:   ${VERIFY_LORA_GRADIENTS}"
+echo "Resume:       ${RESUME_FROM_CHECKPOINT:-none}"
 echo "Output:       ${OUTPUT_PATH}"
 echo "Cloud output: ${CLOUD_OUTPUT_PATH}"
 echo "============================================================"
 
+set +e
 torchrun \
   --nnodes="${NNODES}" \
   --nproc_per_node="${NPROC_PER_NODE}" \
@@ -356,6 +439,7 @@ torchrun \
   --image_folder "${IMAGE_FOLDER}" \
   --train_sample_limit "${TRAIN_SAMPLE_LIMIT}" \
   --sample_seed "${SAMPLE_SEED}" \
+  --expected_num_images "${EXPECTED_NUM_IMAGES}" \
   --system_prompt "${SYSTEM_PROMPT}" \
   --lora_enable "${LORA_ENABLE}" \
   --lora_r "${LORA_R}" \
@@ -366,6 +450,8 @@ torchrun \
   --vision_lora_enable "${VISION_LORA_ENABLE}" \
   --vision_lora_target_modules "${VISION_LORA_TARGET_MODULES}" \
   --merger_lora_enable "${MERGER_LORA_ENABLE}" \
+  --verify_lora_gradients "${VERIFY_LORA_GRADIENTS}" \
+  --resume_from_checkpoint "${RESUME_FROM_CHECKPOINT}" \
   --bf16 True \
   --output_dir "${OUTPUT_PATH}" \
   --num_train_epochs "${NUM_EPOCHS}" \
@@ -407,6 +493,7 @@ torchrun \
   --ddp_backend hccl
 
 TRAIN_EXIT=$?
+set -e
 if [ "${TRAIN_EXIT}" -ne 0 ]; then echo "Training failed with exit code ${TRAIN_EXIT}"; exit "${TRAIN_EXIT}"; fi
 
 if [[ "${NODE_RANK}" == "0" ]]; then

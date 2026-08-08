@@ -1,5 +1,6 @@
 from dataclasses import dataclass, field
 import json
+import math
 import os
 from pathlib import Path
 import shutil
@@ -71,6 +72,7 @@ class NativeDataArguments:
     eval_sample_limit: int = field(default=0)
     sample_seed: int = field(default=42)
     system_prompt: Optional[str] = field(default=None)
+    expected_num_images: int = field(default=0)
 
 
 @dataclass
@@ -83,6 +85,8 @@ class NativeTrainingArguments(transformers.TrainingArguments):
     best_train_loss_dir: str = field(default="best")
     best_checkpoint_keep_limit: int = field(default=5)
     use_hf_progress_bar: bool = field(default=True)
+    verify_lora_gradients: bool = field(default=False)
+    resume_from_checkpoint: Optional[str] = field(default=None)
 
     swanlab_enable: bool = field(default=False)
     swanlab_project: str = field(default="")
@@ -103,6 +107,8 @@ class JsonlMetricLoggerCallback(TrainerCallback):
         self.output_dir = Path(output_dir)
         self.train_log_path = self.output_dir / "trainer_log.jsonl"
         self.eval_log_path = self.output_dir / "eval_log.jsonl"
+        self._last_train_log_time = time.time()
+        self._last_train_log_step = 0
 
     def _append(self, path: Path, payload: dict):
         if not rank0():
@@ -114,12 +120,26 @@ class JsonlMetricLoggerCallback(TrainerCallback):
     def on_log(self, args, state, control, logs=None, **kwargs):
         if not logs:
             return
-        payload = {"time": time.time(), "global_step": state.global_step, "epoch": state.epoch, **logs}
-        if rank0():
+        now = time.time()
+        payload = {"time": now, "global_step": state.global_step, "epoch": state.epoch, **logs}
+        is_eval_log = "eval_loss" in logs or any(str(key).startswith("eval_") for key in logs)
+        if rank0() and not is_eval_log:
             world_size = max(int(getattr(args, "world_size", 1) or 1), 1)
             throughput = float(logs.get("train_samples_per_second", 0.0) or 0.0) / world_size
+            step_delta = int(state.global_step) - self._last_train_log_step
+            elapsed = now - self._last_train_log_time
+            if throughput <= 0.0 and step_delta > 0 and elapsed > 0.0:
+                throughput = (
+                    step_delta
+                    * int(getattr(args, "per_device_train_batch_size", 1) or 1)
+                    * int(getattr(args, "gradient_accumulation_steps", 1) or 1)
+                    / elapsed
+                )
             print(f"DI_throughput: {throughput:.2f} samples/s/npu", flush=True)
-        if "eval_loss" in logs or any(str(key).startswith("eval_") for key in logs):
+            if step_delta > 0:
+                self._last_train_log_time = now
+                self._last_train_log_step = int(state.global_step)
+        if is_eval_log:
             self._append(self.eval_log_path, payload)
         else:
             self._append(self.train_log_path, payload)
@@ -177,8 +197,86 @@ def _is_native_merger_name(name: str) -> bool:
     return _is_native_visual_name(name) and "merger" in name.lower()
 
 
+LORA_GRADIENT_GROUP_ORDER = ("language", "vision", "merger")
+
+
+def _native_lora_gradient_group(name: str) -> str | None:
+    if "lora_" not in name.lower():
+        return None
+    if _is_native_merger_name(name):
+        return "merger"
+    if _is_native_visual_name(name):
+        return "vision"
+    return "language"
+
+
 class NativeMultimodalTrainer(transformers.Trainer):
     """Trainer with separate language, visual, and merger LoRA learning rates."""
+
+    def prepare_lora_gradient_audit(self) -> None:
+        if not getattr(self.args, "verify_lora_gradients", False):
+            return
+        required = {
+            group
+            for name, parameter in self.model.named_parameters()
+            if parameter.requires_grad
+            for group in [_native_lora_gradient_group(name)]
+            if group is not None
+        }
+        if not required:
+            raise RuntimeError(
+                "LoRA gradient verification was requested, but no trainable LoRA parameters were found"
+            )
+        self._required_lora_gradient_groups = required
+        self._verified_lora_gradient_groups: set[str] = set()
+        rank0_print(
+            "Native LoRA gradient audit required groups: "
+            + ", ".join(group for group in LORA_GRADIENT_GROUP_ORDER if group in required)
+        )
+
+    def training_step(self, model, inputs, *args, **kwargs):
+        loss = super().training_step(model, inputs, *args, **kwargs)
+        if not getattr(self.args, "verify_lora_gradients", False):
+            return loss
+
+        required = getattr(self, "_required_lora_gradient_groups", set())
+        verified = getattr(self, "_verified_lora_gradient_groups", set())
+        missing = required - verified
+        if not missing:
+            return loss
+
+        gradient_sums: dict[str, torch.Tensor] = {}
+        for name, parameter in model.named_parameters():
+            group = _native_lora_gradient_group(name)
+            if group not in missing or parameter.grad is None:
+                continue
+            value = parameter.grad.detach().float().abs().sum()
+            gradient_sums[group] = gradient_sums.get(group, value.new_zeros(())) + value
+        for group, value in gradient_sums.items():
+            magnitude = float(value.item())
+            if math.isfinite(magnitude) and magnitude > 0.0:
+                verified.add(group)
+        self._verified_lora_gradient_groups = verified
+        if required and required.issubset(verified):
+            status = " ".join(
+                f"{group}=nonzero"
+                for group in LORA_GRADIENT_GROUP_ORDER
+                if group in required
+            )
+            rank0_print(f"[native-lora-gradient-check] {status}")
+        return loss
+
+    def assert_lora_gradients_verified(self) -> None:
+        if not getattr(self.args, "verify_lora_gradients", False):
+            return
+        required = getattr(self, "_required_lora_gradient_groups", set())
+        verified = getattr(self, "_verified_lora_gradient_groups", set())
+        missing = required - verified
+        if missing:
+            raise RuntimeError(
+                "Native Qwen3-VL LoRA gradient audit failed; no finite non-zero gradient "
+                f"was observed for groups: {sorted(missing)!r}"
+            )
 
     def create_optimizer(self):
         if self.optimizer is not None:
@@ -229,6 +327,7 @@ def make_data_module(processor, data_args: NativeDataArguments, training_args: N
         _dataset_paths(data_args.image_folder),
         sample_limit=data_args.train_sample_limit,
         sample_seed=data_args.sample_seed,
+        expected_num_images=data_args.expected_num_images,
     )
     eval_dataset = None
     if data_args.eval_data_path:
@@ -237,6 +336,7 @@ def make_data_module(processor, data_args: NativeDataArguments, training_args: N
             _dataset_paths(data_args.eval_image_folder or data_args.image_folder),
             sample_limit=data_args.eval_sample_limit,
             sample_seed=data_args.sample_seed,
+            expected_num_images=data_args.expected_num_images,
         )
     data_collator = NativeQwen3VLDataCollator(
         processor,
@@ -409,6 +509,7 @@ def train():
         **trainer_processor_kwarg(processor),
     }
     trainer = NativeMultimodalTrainer(**trainer_kwargs)
+    trainer.prepare_lora_gradient_audit()
     for callback in callbacks:
         if isinstance(callback, BestTrainLossCallback):
             callback.trainer = trainer
@@ -426,17 +527,21 @@ def train():
         f"merger_lora={model_args.merger_lora_enable}"
     )
     rank0_print(f"train={data_args.data_path}")
+    rank0_print(f"expected_num_images={data_args.expected_num_images or 'any'}")
     rank0_print(f"system_prompt={data_args.system_prompt!r}")
     rank0_print(f"output={training_args.output_dir}")
-    trainer.train(resume_from_checkpoint=training_args.resume_from_checkpoint)
+    rank0_print(f"resume_from_checkpoint={training_args.resume_from_checkpoint or None}")
+    trainer.train(resume_from_checkpoint=training_args.resume_from_checkpoint or None)
+    trainer.assert_lora_gradients_verified()
     trainer.save_model(training_args.output_dir)
-    processor.save_pretrained(training_args.output_dir)
     if rank0():
+        processor.save_pretrained(training_args.output_dir)
         metadata = {
             "backend": "native_qwen3vl",
             "model_name_or_path": model_args.model_name_or_path,
             "data_path": data_args.data_path,
             "image_folder": data_args.image_folder,
+            "expected_num_images": data_args.expected_num_images,
             "model_max_length": training_args.model_max_length,
             "system_prompt": data_args.system_prompt,
             "lora_enable": model_args.lora_enable,
@@ -449,6 +554,8 @@ def train():
             "merger_lora_enable": model_args.merger_lora_enable,
             "vision_lora_learning_rate": training_args.vision_lora_learning_rate,
             "merger_lora_learning_rate": training_args.merger_lora_learning_rate,
+            "verify_lora_gradients": training_args.verify_lora_gradients,
+            "resume_from_checkpoint": training_args.resume_from_checkpoint,
             "global_step": trainer.state.global_step,
         }
         Path(training_args.output_dir, "native_qwen3vl_checkpoint.json").write_text(

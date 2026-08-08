@@ -323,6 +323,12 @@ the RawLane-local256 checkpoint by cropping the aligned
 RawLane overlay; it must not be overlaid a second time. The matching
 `*_inter.tif` remains the reference for the patch grid and black-patch filter.
 
+For the ordinary RawLane-local256 550k `checkpoint-34376` at the 2026-08-05
+OBS path, run
+`eval_rawlane_local256_550k_checkpoint34376_gt_empty_fresh_obs_original_e2e_npu.sh`.
+It downloads fresh E2E data, rebuilds the precomposited Raw-Lane inputs, and
+reports original all/low/high metrics after GT-empty patch suppression.
+
 ## Raw-Lane 200k shared fixed-set comparison
 
 `compare_rawlane_local256_200k_vs_context512_roi256_200k_fixed1100_torch240_npu.sh`

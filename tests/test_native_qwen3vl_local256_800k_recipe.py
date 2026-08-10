@@ -107,3 +107,4 @@ def test_setup_clones_stable_torch240_environment_without_reinstalling_torch():
     assert 'PEFT_SPEC="${PEFT_SPEC:-peft==0.18.0}"' in content
     assert "pip install torch==" not in content
     assert '"opencv-python-headless==4.10.0.84"' in content
+    assert '"rasterio==1.4.4"' in content

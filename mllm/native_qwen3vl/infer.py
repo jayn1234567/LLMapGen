@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+import time
 from typing import Any
 
 import torch
@@ -641,10 +642,13 @@ def main():
     if args.map_task == "lane_intersection":
         args.include_intersections = True
 
+    inference_started = time.perf_counter()
     if args.phase == "phase_b":
         results = run_phase_b(model, processor, indexed_records, args, device)
     else:
         results = run_phase_a(model, processor, indexed_records, args, device)
+    inference_elapsed = max(time.perf_counter() - inference_started, 1e-9)
+    print(f"DI_throughput: {len(results) / inference_elapsed:.2f} samples/s/npu", flush=True)
     summary_path, eval_path = write_outputs(results, args)
     print(f"Native Qwen3-VL inference summary: {summary_path}")
     print(f"Native Qwen3-VL eval summary: {eval_path}")

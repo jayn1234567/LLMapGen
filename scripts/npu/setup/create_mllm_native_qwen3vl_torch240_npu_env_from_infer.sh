@@ -144,6 +144,7 @@ python -m pip install \
   "scipy>=1.10,<2" \
   "scikit-learn>=1.2,<2" \
   "shapely==2.1.2" \
+  "rasterio==1.4.4" \
   "loguru==0.7.3" \
   "urllib3==1.26.15"
 

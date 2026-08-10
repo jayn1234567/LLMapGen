@@ -92,6 +92,15 @@ Native Qwen3-VL inference/eval launchers now live under
 test recipe matrix and evaluate checkpoints trained by
 `mllm.native_qwen3vl.train_sft`.
 
+The formal E2E entry for the three-image local256 800k Qwen3-VL-8B LoRA recipe
+is
+`scripts/qwen3vl_native/test/run_and_eval_rc_e2e_three_image_local256_800k_qwen3vl8b_lora_npu.sh`.
+It requires a job-specific `CHECKPOINT_OBS_PATH`, reconstructs clean BEV,
+Raw-Lane, and Pose inputs from aligned E2E source rasters, runs independent
+single-sample native inference on the requested NPUs, verifies every patch,
+and invokes the original all/low/high evaluator. See the native README for the
+GT-empty oracle policy and exact command.
+
 ## Script Catalog
 
 | Script | Purpose |

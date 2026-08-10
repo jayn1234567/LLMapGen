@@ -1,5 +1,46 @@
 # Native Qwen3-VL Scripts
 
+## Three-Image Local256 800k LoRA E2E
+
+```text
+test/run_and_eval_rc_e2e_three_image_local256_800k_qwen3vl8b_lora_npu.sh
+```
+
+This Ascend entry evaluates a completed checkpoint from the native Qwen3-VL-8B
+three-image local256 800k recipe. `CHECKPOINT_OBS_PATH` is required because the
+training output URI is job-specific. It downloads the matching native
+`Qwen3-VL-8B-Instruct` base, validates the PEFT adapter, and builds each E2E
+record from three aligned source rasters in this fixed order:
+
+1. clean masked BEV from `inter_patch_tif/0_inter.tif`;
+2. binary Raw-Lane image from `patch_tif/0_lane.tif`; and
+3. binary Pose image from `patch_tif/0_pose.tif`.
+
+All three inputs are masked by `patch_tif/0_edit_poly.tif` and cropped on the
+same 256-pixel grid. The builder uses the exact
+`three_image_roles_concise_v2` prompt contract from training and fails before
+model loading if an auxiliary raster is missing or misaligned.
+
+Inference defaults to physical NPUs `2,3,4,5,6,7`. It launches one independent
+native 8B process per NPU and generates one sample at a time; the DINO pipeline's
+`PER_DEVICE_INFER_BATCH_SIZE=32` setting does not apply to this native generator.
+The launcher verifies one-to-one patch completeness, then runs the original RC
+all/low/high road evaluation. `GT_EMPTY_SUPPRESSION=True` is the default for
+continuity with recent project comparisons, but it uses ground truth and must
+be reported as an oracle diagnostic. It builds only a lightweight GT-presence
+reference and does not calculate repository patch metrics. Set the switch to
+`False` for unassisted metrics.
+
+After training finishes, run:
+
+```bash
+CHECKPOINT_OBS_PATH="obs://.../checkpoint-N/" \
+bash scripts/qwen3vl_native/test/run_and_eval_rc_e2e_three_image_local256_800k_qwen3vl8b_lora_npu.sh
+```
+
+The isolated native environment is created only when its activation script is
+absent. Existing environments are reused without reinstalling packages.
+
 ## Three-Image Local256 800k LoRA
 
 ```text
@@ -141,5 +182,6 @@ NPU launchers default to:
 
 | Script | Purpose |
 |---|---|
+| `test/run_and_eval_rc_e2e_three_image_local256_800k_qwen3vl8b_lora_npu.sh` | Full three-image local256 native-Qwen3-VL-8B LoRA E2E inference plus original all/low/high evaluation. |
 | `test/test_stage_a_lane_intersection_qwen3vl_native_npu.sh` | Inference/eval: Stage A, lane+intersection, native Qwen3-VL architecture; writes eval and visualization outputs. |
 | `test/test_stage_b_lane_intersection_qwen3vl_native_npu.sh` | Inference/eval: Stage B, lane+intersection, native Qwen3-VL architecture with sequential state-update incoming hints; writes eval and visualization outputs. |

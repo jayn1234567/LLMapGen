@@ -323,11 +323,25 @@ the RawLane-local256 checkpoint by cropping the aligned
 RawLane overlay; it must not be overlaid a second time. The matching
 `*_inter.tif` remains the reference for the patch grid and black-patch filter.
 
-For the ordinary RawLane-local256 550k `checkpoint-34376` at the 2026-08-05
-OBS path, run
+For the ordinary LLM-LoRA RawLane-local256 550k `checkpoint-34376` at the
+2026-08-05 OBS path, run
 `eval_rawlane_local256_550k_checkpoint34376_gt_empty_fresh_obs_original_e2e_npu.sh`.
+The checkpoint URI is:
+
+```text
+obs://yw-ads-model-training-gy1/model-dev/rc-nn/rc_base_model/2026/08/05/5e26ea0190634699828ff4b28df4c608/output/ma-job-e95d0d2c-ee85-420e-a36f-2785ad6ce6c8/checkpoint-34376/
+```
+
 It downloads fresh E2E data, rebuilds the precomposited Raw-Lane inputs, and
-reports original all/low/high metrics after GT-empty patch suppression.
+reports original all/low/high metrics after GT-empty patch suppression. Before
+inference it requires the complete LoRA layout: `adapter_config.json`, direct
+adapter weights, `config.json`, and `non_lora_trainables.bin`. The latter must
+contain the ordinarily trained DINOv2/projector parameters used alongside the
+Qwen adapter; an incomplete or full-model checkpoint is rejected. For a fresh
+Ascend cache, the same entry also downloads `CapRL-Qwen3VL-4B` and the original
+`facebook_dinov2-large`, extracts the CapRL text LLM to
+`/cache/jn/model/CapRL-Qwen3VL-4B_llm_extracted`, and exports that path as the
+LoRA base-model override before inference.
 
 ## Raw-Lane 200k shared fixed-set comparison
 

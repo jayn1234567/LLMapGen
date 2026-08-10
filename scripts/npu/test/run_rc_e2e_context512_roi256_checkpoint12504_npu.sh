@@ -37,6 +37,7 @@ if [ -z "${CHECKPOINT_DIR:-}" ] && [ -s "${CHECKPOINT_POINTER_FILE}" ]; then
 fi
 CHECKPOINT_DIR=${CHECKPOINT_DIR:-${CHECKPOINT_CACHE_ROOT}/${CHECKPOINT_NAME}}
 REFRESH_CHECKPOINT=${REFRESH_CHECKPOINT:-False}
+CHECKPOINT_EXPECTED_KIND=${CHECKPOINT_EXPECTED_KIND:-auto}
 
 VISION_TOWER=${VISION_TOWER:-/cache/jn/model/facebook_dinov2-large}
 VISION_TOWER_OBS_PATH=${VISION_TOWER_OBS_PATH:-obs://yw-ads-training-gy1/data/external/personal/h58801830/whu/jjh/checkpoints/facebook_dinov2-large}
@@ -76,7 +77,9 @@ has_checkpoint_weights() {
 }
 
 validate_checkpoint_weights() {
-  python scripts/tools/validate_checkpoint_files.py --checkpoint-dir "$1"
+  python scripts/tools/validate_checkpoint_files.py \
+    --checkpoint-dir "$1" \
+    --expected-kind "${CHECKPOINT_EXPECTED_KIND}"
 }
 
 if [ ! -f "${ACTIVATE_SCRIPT}" ]; then
@@ -265,6 +268,7 @@ PY
 echo "============================================================"
 echo "RC E2E data:       ${E2E_DATASET_ROOT}"
 echo "Checkpoint:        ${CHECKPOINT_DIR}"
+echo "Checkpoint kind:   ${CHECKPOINT_EXPECTED_KIND}"
 echo "DINOv2:            ${VISION_TOWER}"
 echo "Output:            ${OUTPUT_ROOT}"
 echo "Visible NPUs:      ${ASCEND_RT_VISIBLE_DEVICES}"

@@ -3,7 +3,11 @@ from pathlib import Path
 
 import torch
 
-from mllm.native_qwen3vl.infer import _completion_token_ids, _merge_native_processor_inputs
+from mllm.native_qwen3vl.infer import (
+    _completion_token_ids,
+    _merge_native_processor_inputs,
+    run_batch,
+)
 from types import SimpleNamespace
 
 import numpy as np
@@ -26,6 +30,45 @@ ENTRY = (
     "run_and_eval_rc_e2e_three_image_local256_800k_qwen3vl8b_lora_npu.sh"
 )
 INFER = REPO_ROOT / "mllm/native_qwen3vl/infer.py"
+
+
+class _BatchProcessor:
+    class _Tokenizer:
+        pad_token_id = 0
+        eos_token_id = 2
+
+    tokenizer = _Tokenizer()
+
+    def apply_chat_template(self, messages, tokenize=False, add_generation_prompt=False):
+        del messages, tokenize, add_generation_prompt
+        return "fake prompt"
+
+    def __call__(self, *, text, images, return_tensors):
+        del text, return_tensors
+        token_count = 2 + len(images)
+        return {
+            "input_ids": torch.arange(1, token_count + 1).unsqueeze(0),
+            "attention_mask": torch.ones(1, token_count, dtype=torch.long),
+            "pixel_values": torch.zeros(len(images), 3, 2, 2),
+            "image_grid_thw": torch.tensor([[1, 16, 16]] * len(images)),
+        }
+
+    def batch_decode(self, token_ids, skip_special_tokens=False):
+        del skip_special_tokens
+        return ['{"lines":[]}'] * int(token_ids.shape[0])
+
+
+class _BatchModel:
+    generation_config = SimpleNamespace(pad_token_id=0, eos_token_id=2)
+
+    def generate(self, **kwargs):
+        input_ids = kwargs["input_ids"]
+        completion = torch.tensor(
+            [[101, 102]] * int(input_ids.shape[0]),
+            dtype=input_ids.dtype,
+            device=input_ids.device,
+        )
+        return torch.cat((input_ids, completion), dim=1)
 
 
 def _source_paths(tmp_path: Path) -> tuple[Path, dict[str, Path]]:
@@ -216,3 +259,55 @@ def test_native_batch_completion_slicing_handles_left_padding():
 
     assert _completion_token_ids(output_ids, input_ids, attention_mask, 0).tolist() == [101, 102]
     assert _completion_token_ids(output_ids, input_ids, attention_mask, 1).tolist() == [201, 202]
+
+
+def test_native_run_batch_preserves_record_order_and_matches_single_sample_results(tmp_path):
+    image_paths = []
+    records = []
+    for index in range(2):
+        image_path = tmp_path / f"sample-{index}.png"
+        Image.new("RGB", (8, 8), color=(index * 50, 0, 0)).save(image_path)
+        image_paths.append(image_path)
+        records.append(
+            (
+                index,
+                {
+                    "id": f"sample-{index}",
+                    "image": image_path.name,
+                    "conversations": [{"from": "human", "value": "<image> map"}],
+                    "meta": {
+                        "coord_mode": "norm1000",
+                        "coord_range": 1000,
+                        "patch_width": 256,
+                        "patch_height": 256,
+                    },
+                },
+            )
+        )
+
+    args = SimpleNamespace(
+        image_folder=str(tmp_path),
+        prompt="<image> map",
+        system_prompt=None,
+        max_new_tokens=16,
+        temperature=0.0,
+        default_patch_size=256,
+        coord_range=1000,
+        coord_mode="auto",
+        map_task="lane_intersection",
+        model_name_or_path="fake-checkpoint",
+    )
+    batched = run_batch(_BatchModel(), _BatchProcessor(), records, args, torch.device("cpu"))
+    singles = [
+        run_batch(
+            _BatchModel(), _BatchProcessor(), [record], args, torch.device("cpu")
+        )[0]
+        for record in records
+    ]
+
+    assert [item["record_id"] for item in batched] == ["sample-0", "sample-1"]
+    assert [item["prediction_json"] for item in batched] == [
+        item["prediction_json"] for item in singles
+    ]
+    assert [item["image"] for item in batched] == [str(path) for path in image_paths]
+    assert all(item["parse_ok"] for item in batched)

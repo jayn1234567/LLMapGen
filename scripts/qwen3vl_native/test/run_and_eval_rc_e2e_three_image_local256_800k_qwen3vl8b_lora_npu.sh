@@ -27,13 +27,17 @@ QWEN3VL_OBS_PATH=${QWEN3VL_OBS_PATH:-${MODEL_OBS_ROOT}/${QWEN3VL_MODEL_NAME}/}
 QWEN3VL_PATH=${QWEN3VL_PATH:-/cache/jn/model/${QWEN3VL_MODEL_NAME}}
 REFRESH_BASE_MODEL=${REFRESH_BASE_MODEL:-False}
 
-E2E_DATA_OBS_PATH=${E2E_DATA_OBS_PATH:-obs://yw-ads-training-2-gy1/data/external/personal/s00008810/RCDATA/E2E_eval/e2e_data.zip}
-E2E_ARCHIVE_PATH=${E2E_ARCHIVE_PATH:-/cache/jn/e2e_eval/e2e_data.zip}
-REFRESH_E2E_ARCHIVE=${REFRESH_E2E_ARCHIVE:-False}
+INFERENCE_E2E_DATA_OBS_PATH=${INFERENCE_E2E_DATA_OBS_PATH:-obs://yw-ads-training-2-gy1/data/external/personal/s00008810/RCDATA/E2E_eval/eval_patches.zip}
+EVALUATION_E2E_DATA_OBS_PATH=${EVALUATION_E2E_DATA_OBS_PATH:-obs://yw-ads-training-2-gy1/data/external/personal/s00008810/RCDATA/E2E_eval/e2e_data.zip}
+INFERENCE_E2E_ARCHIVE_PATH=${INFERENCE_E2E_ARCHIVE_PATH:-/cache/jn/e2e_eval/eval_patches.zip}
+EVALUATION_E2E_ARCHIVE_PATH=${EVALUATION_E2E_ARCHIVE_PATH:-/cache/jn/e2e_eval/e2e_data.zip}
+REFRESH_INFERENCE_E2E_ARCHIVE=${REFRESH_INFERENCE_E2E_ARCHIVE:-False}
+REFRESH_EVALUATION_E2E_ARCHIVE=${REFRESH_EVALUATION_E2E_ARCHIVE:-False}
 
 RUN_ID=${RUN_ID:-three_image_local256_800k_native_qwen3vl8b_lora_${CHECKPOINT_NAME}_e2e_$(date -u +%Y%m%d_%H%M%S)}
 RUN_WORK_ROOT=${RUN_WORK_ROOT:-/cache/jn/e2e_eval/native_qwen3vl_runs/${RUN_ID}}
-E2E_DATA_ROOT=${E2E_DATA_ROOT:-${RUN_WORK_ROOT}/e2e_data}
+INFERENCE_E2E_DATA_ROOT=${INFERENCE_E2E_DATA_ROOT:-${RUN_WORK_ROOT}/eval_patches}
+EVALUATION_E2E_DATA_ROOT=${EVALUATION_E2E_DATA_ROOT:-${RUN_WORK_ROOT}/e2e_data}
 INFERENCE_DATASET_ROOT=${INFERENCE_DATASET_ROOT:-${RUN_WORK_ROOT}/three_image_local256_dataset}
 SHARD_JSONL_ROOT=${SHARD_JSONL_ROOT:-${RUN_WORK_ROOT}/inference_shards}
 ACTIVE_INFER_JSONL=${ACTIVE_INFER_JSONL:-${SHARD_JSONL_ROOT}/selected.jsonl}
@@ -112,6 +116,25 @@ mox.file.copy_parallel(os.environ["SOURCE"], os.environ["DESTINATION"])
 PY
 }
 
+download_obs_file() {
+  local source=$1
+  local destination=$2
+  local refresh=$3
+  mkdir -p "$(dirname "${destination}")"
+  if ! is_true "${refresh}" && [ -s "${destination}" ]; then
+    echo "[native-three-image-e2e] reuse archive: ${destination}"
+    return
+  fi
+  rm -f "${destination}"
+  SOURCE="${source}" DESTINATION="${destination}" python - <<'PY'
+import os
+import moxing as mox
+
+print(f"download {os.environ['SOURCE']} -> {os.environ['DESTINATION']}", flush=True)
+mox.file.copy(os.environ["SOURCE"], os.environ["DESTINATION"])
+PY
+}
+
 has_native_base_model() {
   local root=$1
   [ -s "${root}/config.json" ] && \
@@ -177,14 +200,16 @@ if not torch.npu.is_available():
     raise SystemExit("NPU is unavailable in the native Qwen3-VL inference environment")
 PY
 
-mkdir -p "$(dirname "${E2E_ARCHIVE_PATH}")" "${RUN_WORK_ROOT}" "${OUTPUT_ROOT}" \
+mkdir -p "$(dirname "${INFERENCE_E2E_ARCHIVE_PATH}")" \
+  "$(dirname "${EVALUATION_E2E_ARCHIVE_PATH}")" "${RUN_WORK_ROOT}" "${OUTPUT_ROOT}" \
   "${CHECKPOINT_CACHE_ROOT}" "$(dirname "${QWEN3VL_PATH}")"
 
 echo "============================================================"
 echo "NATIVE QWEN3-VL-8B THREE-IMAGE LOCAL256 800K E2E"
 echo "Checkpoint OBS:     ${CHECKPOINT_OBS_PATH}"
 echo "Native base OBS:    ${QWEN3VL_OBS_PATH}"
-echo "E2E OBS:            ${E2E_DATA_OBS_PATH}"
+echo "Inference E2E OBS:  ${INFERENCE_E2E_DATA_OBS_PATH}"
+echo "Evaluation E2E OBS: ${EVALUATION_E2E_DATA_OBS_PATH}"
 echo "Run work root:      ${RUN_WORK_ROOT}"
 echo "Output root:        ${OUTPUT_ROOT}"
 echo "Visible NPUs:       ${ASCEND_RT_VISIBLE_DEVICES}"
@@ -200,29 +225,30 @@ echo "Intersection types: only_type1=${INTERSECTION_EVAL_ONLY_TYPE1} collapse=${
 echo "Intersection oracle:${INTERSECTION_GT_EMPTY_SUPPRESSION}"
 echo "============================================================"
 
-echo "[native-three-image-e2e] stage 1/7: prepare clean E2E source"
-if is_true "${REFRESH_E2E_ARCHIVE}" || [ ! -s "${E2E_ARCHIVE_PATH}" ]; then
-  rm -f "${E2E_ARCHIVE_PATH}"
-  SOURCE="${E2E_DATA_OBS_PATH}" DESTINATION="${E2E_ARCHIVE_PATH}" python - <<'PY'
-import os
-import moxing as mox
-
-print(f"download {os.environ['SOURCE']} -> {os.environ['DESTINATION']}", flush=True)
-mox.file.copy(os.environ["SOURCE"], os.environ["DESTINATION"])
-PY
-else
-  echo "[native-three-image-e2e] reuse E2E archive: ${E2E_ARCHIVE_PATH}"
-fi
+echo "[native-three-image-e2e] stage 1/7: prepare Pose-bearing inference source and GT evaluation source"
+download_obs_file \
+  "${INFERENCE_E2E_DATA_OBS_PATH}" \
+  "${INFERENCE_E2E_ARCHIVE_PATH}" \
+  "${REFRESH_INFERENCE_E2E_ARCHIVE}"
+download_obs_file \
+  "${EVALUATION_E2E_DATA_OBS_PATH}" \
+  "${EVALUATION_E2E_ARCHIVE_PATH}" \
+  "${REFRESH_EVALUATION_E2E_ARCHIVE}"
 
 python scripts/tools/prepare_rc_e2e_original_run_data.py \
-  --archive "${E2E_ARCHIVE_PATH}" \
-  --destination "${E2E_DATA_ROOT}" \
+  --archive "${INFERENCE_E2E_ARCHIVE_PATH}" \
+  --destination "${INFERENCE_E2E_DATA_ROOT}" \
+  --allowed-root /cache/jn/e2e_eval/native_qwen3vl_runs
+python scripts/tools/prepare_rc_e2e_original_run_data.py \
+  --archive "${EVALUATION_E2E_ARCHIVE_PATH}" \
+  --destination "${EVALUATION_E2E_DATA_ROOT}" \
   --allowed-root /cache/jn/e2e_eval/native_qwen3vl_runs
 
 echo "[native-three-image-e2e] stage 2/7: build aligned local256 image triplets"
 if is_true "${REBUILD_E2E_DATASET}" || [ ! -s "${INFERENCE_DATASET_ROOT}/infer.jsonl" ]; then
   python scripts/tools/prepare_rc_e2e_three_image_local256_dataset.py \
-    --input-root "${E2E_DATA_ROOT}" \
+    --input-root "${INFERENCE_E2E_DATA_ROOT}" \
+    --evaluation-root "${EVALUATION_E2E_DATA_ROOT}" \
     --output-root "${INFERENCE_DATASET_ROOT}" \
     --patch-size 256 \
     --stride 256 \
@@ -246,6 +272,8 @@ if summary.get("num_images_per_sample") != 3 or summary.get("input_image_roles")
     raise SystemExit(f"Unexpected three-image role contract: {summary}")
 if summary.get("prompt_contract_version") != "three_image_roles_concise_v2":
     raise SystemExit(f"Unexpected prompt contract: {summary}")
+if not (summary.get("evaluation_alignment") or {}).get("ok"):
+    raise SystemExit(f"Inference/GT E2E alignment was not verified: {summary}")
 if int(summary.get("patch_count", 0)) <= 0:
     raise SystemExit("Three-image E2E dataset contains no inference patches")
 with (root / "infer.jsonl").open(encoding="utf-8") as handle:
@@ -403,7 +431,7 @@ echo "[native-three-image-e2e] stage 5/7: optional lane GT-empty suppression and
 if is_true "${GT_EMPTY_SUPPRESSION}"; then
   mkdir -p "${POSTPROCESS_ROOT}"
   python scripts/tools/build_rc_e2e_patch_gt_presence.py \
-    --raw-e2e-root "${E2E_DATA_ROOT}" \
+    --raw-e2e-root "${EVALUATION_E2E_DATA_ROOT}" \
     --prediction-dir "${RAW_RESULT_DIR}" \
     --output-jsonl "${PATCH_REFERENCE_JSONL}" \
     --report-json "${PATCH_REFERENCE_REPORT}" \
@@ -424,8 +452,8 @@ fi
 PREDICTION_CACHE="${EVALUATED_PREDICTIONS}" \
 REUSE_PREDICTIONS=True \
 E2E_DATA_SOURCE=raw_direct \
-E2E_RAW_ROOT="${E2E_DATA_ROOT}" \
-E2E_DATA_ROOT="${E2E_DATA_ROOT}" \
+E2E_RAW_ROOT="${EVALUATION_E2E_DATA_ROOT}" \
+E2E_DATA_ROOT="${EVALUATION_E2E_DATA_ROOT}" \
 RUN_ID="${RUN_ID}_original_pipeline" \
 RUN_WORK_ROOT="${RUN_WORK_ROOT}/original_pipeline" \
 RESULT_ROOT="${OUTPUT_ROOT}/original_pipeline_metrics" \
@@ -451,7 +479,7 @@ bash "${NPU_TEST_DIR}/eval_rc_e2e_context512_roi256_checkpoint12504_original_pip
 echo "[native-three-image-e2e] stage 6/7: original RC intersection evaluation"
 if is_true "${RUN_INTERSECTION_E2E}"; then
   PREDICTION_DIR="${RAW_RESULT_DIR}" \
-  E2E_DATA_ROOT="${E2E_DATA_ROOT}" \
+  E2E_DATA_ROOT="${EVALUATION_E2E_DATA_ROOT}" \
   QUERY_NAME="${INTERSECTION_QUERY_NAME}" \
   RUN_ID="${RUN_ID}_intersection_original_pipeline" \
   RESULT_ROOT="${INTERSECTION_RESULT_ROOT}" \

@@ -19,6 +19,7 @@ from scripts.tools.prepare_rc_e2e_three_image_local256_dataset import (
     PROMPT_CONTRACT_VERSION,
     prepare_dataset,
     required_auxiliary_tifs,
+    validate_evaluation_alignment,
 )
 from scripts.tools.split_jsonl_for_inference import split_jsonl
 
@@ -71,13 +72,15 @@ class _BatchModel:
         return torch.cat((input_ids, completion), dim=1)
 
 
-def _source_paths(tmp_path: Path) -> tuple[Path, dict[str, Path]]:
+def _source_paths(tmp_path: Path) -> tuple[Path, dict[str, Path | None]]:
     centerline = tmp_path / "scene_001" / "rc_one_patch_release" / "center_line_v2"
     inter = centerline / "inter_patch_tif" / "0_inter.tif"
     inter.parent.mkdir(parents=True)
     inter.touch()
     auxiliary = required_auxiliary_tifs(inter)
-    for path in auxiliary.values():
+    for role in ("raw_lane", "pose"):
+        path = auxiliary[role]
+        assert path is not None
         path.parent.mkdir(parents=True, exist_ok=True)
         path.touch()
     return inter, auxiliary
@@ -118,7 +121,11 @@ def test_three_image_e2e_builder_preserves_training_order_and_prompt(monkeypatch
     record = json.loads((output / "infer.jsonl").read_text(encoding="utf-8"))
     assert summary["patch_count"] == 1
     assert summary["prompt_contract_version"] == PROMPT_CONTRACT_VERSION
+    assert summary["evaluation_root"] is None
     assert record["meta"]["input_image_roles"] == list(IMAGE_ROLES)
+    assert record["meta"]["mask_tif"] is None
+    assert record["meta"]["raw_lane_image_source"] == "patch_tif/0_lane.tif"
+    assert record["meta"]["pose_image_source"] == "lane_patch_tif/0_pose.tif"
     assert [Path(path).parts[0] for path in record["images"]] == [
         "images",
         "raw_lane_images",
@@ -134,6 +141,7 @@ def test_three_image_e2e_builder_preserves_training_order_and_prompt(monkeypatch
 
 def test_three_image_e2e_builder_rejects_missing_pose(tmp_path):
     inter, auxiliary = _source_paths(tmp_path)
+    assert auxiliary["pose"] is not None
     auxiliary["pose"].unlink()
     args = SimpleNamespace(
         input_root=tmp_path,
@@ -148,6 +156,40 @@ def test_three_image_e2e_builder_rejects_missing_pose(tmp_path):
 
     with pytest.raises(FileNotFoundError, match="missing auxiliary TIFs"):
         prepare_dataset(args)
+
+
+def test_inference_and_evaluation_raster_alignment_is_required(monkeypatch, tmp_path):
+    import scripts.tools.prepare_rc_e2e_three_image_local256_dataset as module
+
+    inference_tif, _ = _source_paths(tmp_path / "inference")
+    evaluation_tif, _ = _source_paths(tmp_path / "evaluation")
+
+    def fake_discover(root):
+        return [evaluation_tif] if Path(root) == tmp_path / "evaluation" else [inference_tif]
+
+    metadata = {
+        "width": 512,
+        "height": 256,
+        "crs": "EPSG:32650",
+        "transform": [0.2, 0.0, 1.0, 0.0, -0.2, 2.0, 0.0, 0.0, 1.0],
+        "bounds": [1.0, -49.2, 103.4, 2.0],
+        "grid_rows": 1,
+        "grid_cols": 2,
+    }
+    monkeypatch.setattr(module, "discover_inter_tifs", fake_discover)
+    monkeypatch.setattr(module, "_raster_grid_metadata", lambda *_: metadata)
+
+    report = validate_evaluation_alignment(
+        [inference_tif], tmp_path / "evaluation", patch_size=256, require_exact_keys=True
+    )
+    assert report["ok"] is True
+    assert report["matched_tif_count"] == 1
+
+    monkeypatch.setattr(module, "discover_inter_tifs", lambda _: [])
+    with pytest.raises(ValueError, match="alignment failed"):
+        validate_evaluation_alignment(
+            [inference_tif], tmp_path / "evaluation", patch_size=256, require_exact_keys=True
+        )
 
 
 def test_split_and_merge_native_shards_are_complete(tmp_path):
@@ -194,6 +236,11 @@ def test_formal_three_image_e2e_entry_requires_checkpoint_and_runs_original_metr
     assert "CHECKPOINT_OBS_PATH=${1:-${CHECKPOINT_OBS_PATH:-}}" in content
     assert "Set CHECKPOINT_OBS_PATH" in content
     assert "Qwen3-VL-8B-Instruct" in content
+    assert "eval_patches.zip" in content
+    assert "e2e_data.zip" in content
+    assert "INFERENCE_E2E_DATA_OBS_PATH" in content
+    assert "EVALUATION_E2E_DATA_OBS_PATH" in content
+    assert '--evaluation-root "${EVALUATION_E2E_DATA_ROOT}"' in content
     assert "prepare_rc_e2e_three_image_local256_dataset.py" in content
     assert "split_jsonl_for_inference.py" in content
     assert "merge_native_qwen3vl_inference_shards.py" in content

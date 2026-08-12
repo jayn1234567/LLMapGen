@@ -10,14 +10,20 @@ This Ascend entry evaluates a completed checkpoint from the native Qwen3-VL-8B
 three-image local256 800k recipe. `CHECKPOINT_OBS_PATH` is required because the
 training output URI is job-specific. It downloads the matching native
 `Qwen3-VL-8B-Instruct` base, validates the PEFT adapter, and builds each E2E
-record from three aligned source rasters in this fixed order:
+record from the Pose-bearing `eval_patches.zip` inference source in this fixed
+order:
 
-1. clean masked BEV from `inter_patch_tif/0_inter.tif`;
+1. clean BEV from `inter_patch_tif/0_inter.tif`;
 2. binary Raw-Lane image from `patch_tif/0_lane.tif`; and
-3. binary Pose image from `patch_tif/0_pose.tif`.
+3. binary Pose image from `lane_patch_tif/0_pose.tif`.
 
-All three inputs are masked by `patch_tif/0_edit_poly.tif` and cropped on the
-same 256-pixel grid. The builder uses the exact
+An `edit_poly` mask is applied only when it exists; it is not required because
+the inference archive is already prepared for model input. All three rasters
+are cropped on the same 256-pixel grid. The separate GT-bearing `e2e_data.zip`
+is used only for GT-empty suppression and the original lane/intersection
+evaluation. Before model loading, the builder requires a one-to-one
+`scene_id + tif_prefix` match between both archives and verifies raster size,
+CRS, affine transform, bounds, and patch grid. The builder uses the exact
 `three_image_roles_concise_v2` prompt contract from training and fails before
 model loading if an auxiliary raster is missing or misaligned.
 
@@ -50,6 +56,13 @@ After training finishes, run:
 ```bash
 CHECKPOINT_OBS_PATH="obs://.../checkpoint-N/" \
 bash scripts/qwen3vl_native/test/run_and_eval_rc_e2e_three_image_local256_800k_qwen3vl8b_lora_npu.sh
+```
+
+The launcher defaults to these two independent sources:
+
+```text
+INFERENCE_E2E_DATA_OBS_PATH=obs://yw-ads-training-2-gy1/data/external/personal/s00008810/RCDATA/E2E_eval/eval_patches.zip
+EVALUATION_E2E_DATA_OBS_PATH=obs://yw-ads-training-2-gy1/data/external/personal/s00008810/RCDATA/E2E_eval/e2e_data.zip
 ```
 
 The isolated native environment is created only when its activation script is

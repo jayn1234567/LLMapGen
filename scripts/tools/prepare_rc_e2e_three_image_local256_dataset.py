@@ -31,6 +31,15 @@ IMAGE_ROLES = (
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--input-root", type=Path, required=True)
+    parser.add_argument(
+        "--evaluation-root",
+        type=Path,
+        default=None,
+        help=(
+            "Optional GT-bearing E2E root. Every inference raster must have an aligned "
+            "scene/prefix raster here before records are generated."
+        ),
+    )
     parser.add_argument("--output-root", type=Path, required=True)
     parser.add_argument("--patch-size", type=int, default=256)
     parser.add_argument("--stride", type=int, default=256)
@@ -41,21 +50,45 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def _resolve_auxiliary_tif(inter_tif: Path, suffix: str) -> Path:
+def _resolve_auxiliary_tif(
+    inter_tif: Path,
+    suffix: str,
+    *,
+    directory: str,
+) -> Path:
     prefix = inter_tif.stem.removesuffix("_inter")
-    patch_root = inter_tif.parent.parent / "patch_tif"
-    candidates = (patch_root / f"{prefix}_{suffix}.tif", patch_root / f"0_{suffix}.tif")
+    centerline_root = inter_tif.parent.parent
+    candidates = tuple(
+        centerline_root / directory / filename
+        for filename in (f"{prefix}_{suffix}.tif", f"0_{suffix}.tif")
+    )
     for candidate in candidates:
         if candidate.is_file():
             return candidate
     return candidates[0]
 
 
-def required_auxiliary_tifs(inter_tif: Path) -> dict[str, Path]:
+def _resolve_optional_mask_tif(inter_tif: Path) -> Path | None:
+    prefix = inter_tif.stem.removesuffix("_inter")
+    centerline_root = inter_tif.parent.parent
+    candidates = (
+        centerline_root / "patch_tif" / f"{prefix}_edit_poly.tif",
+        centerline_root / "patch_tif" / "0_edit_poly.tif",
+        centerline_root / "lane_patch_tif" / f"{prefix}_edit_poly.tif",
+        centerline_root / "lane_patch_tif" / "0_edit_poly.tif",
+    )
+    return next((candidate for candidate in candidates if candidate.is_file()), None)
+
+
+def required_auxiliary_tifs(inter_tif: Path) -> dict[str, Path | None]:
     return {
-        "mask": _resolve_auxiliary_tif(inter_tif, "edit_poly"),
-        "raw_lane": _resolve_auxiliary_tif(inter_tif, "lane"),
-        "pose": _resolve_auxiliary_tif(inter_tif, "pose"),
+        "mask": _resolve_optional_mask_tif(inter_tif),
+        "raw_lane": _resolve_auxiliary_tif(
+            inter_tif, "lane", directory="patch_tif"
+        ),
+        "pose": _resolve_auxiliary_tif(
+            inter_tif, "pose", directory="lane_patch_tif"
+        ),
     }
 
 
@@ -81,8 +114,10 @@ def _read_chw(path: Path) -> np.ndarray:
         return source.read()
 
 
-def _read_masked_clean(image_path: Path, mask_path: Path) -> np.ndarray:
+def _read_masked_clean(image_path: Path, mask_path: Path | None) -> np.ndarray:
     image = _read_chw(image_path)
+    if mask_path is None:
+        return image
     mask = _read_chw(mask_path)
     if image.shape[-2:] != mask.shape[-2:]:
         raise ValueError(
@@ -91,15 +126,18 @@ def _read_masked_clean(image_path: Path, mask_path: Path) -> np.ndarray:
     return np.where((mask > 0).any(axis=0, keepdims=True), image, 0)
 
 
-def _read_masked_binary(image_path: Path, mask_path: Path) -> np.ndarray:
+def _read_masked_binary(image_path: Path, mask_path: Path | None) -> np.ndarray:
     image = _read_chw(image_path)
-    mask = _read_chw(mask_path)
-    if image.shape[-2:] != mask.shape[-2:]:
-        raise ValueError(
-            f"Auxiliary/mask shape mismatch: image={image.shape[-2:]} mask={mask.shape[-2:]}"
-        )
     positive = (image > 0).any(axis=0)
-    valid = (mask > 0).any(axis=0)
+    if mask_path is None:
+        valid = np.ones(image.shape[-2:], dtype=bool)
+    else:
+        mask = _read_chw(mask_path)
+        if image.shape[-2:] != mask.shape[-2:]:
+            raise ValueError(
+                f"Auxiliary/mask shape mismatch: image={image.shape[-2:]} mask={mask.shape[-2:]}"
+            )
+        valid = (mask > 0).any(axis=0)
     output = np.zeros((3, image.shape[-2], image.shape[-1]), dtype=np.uint8)
     output[:, positive & valid] = 255
     return output
@@ -135,11 +173,120 @@ def _relative_image(role_root: str, scene_id: str, tif_stem: str, row: int, col:
     return Path(role_root) / scene_id / tif_stem / f"{row}_{col}.png"
 
 
+def _source_path_label(path: Path | None) -> str | None:
+    if path is None:
+        return None
+    return f"{path.parent.name}/{path.name}"
+
+
+def _tif_key(path: Path) -> tuple[str, str]:
+    return scene_id_for_tif(path), path.stem.removesuffix("_inter")
+
+
+def _raster_grid_metadata(path: Path, patch_size: int) -> dict[str, Any]:
+    with rasterio.open(path) as source:
+        return {
+            "width": int(source.width),
+            "height": int(source.height),
+            "crs": source.crs.to_string() if source.crs is not None else None,
+            "transform": [float(value) for value in tuple(source.transform)],
+            "bounds": [float(value) for value in tuple(source.bounds)],
+            "grid_rows": int(math.ceil(source.height / patch_size)),
+            "grid_cols": int(math.ceil(source.width / patch_size)),
+        }
+
+
+def _close_sequence(left: list[float], right: list[float]) -> bool:
+    return len(left) == len(right) and all(
+        math.isclose(a, b, rel_tol=1e-9, abs_tol=1e-6)
+        for a, b in zip(left, right)
+    )
+
+
+def validate_evaluation_alignment(
+    inference_tifs: list[Path],
+    evaluation_root: Path,
+    *,
+    patch_size: int,
+    require_exact_keys: bool,
+) -> dict[str, Any]:
+    evaluation_tifs = discover_inter_tifs(evaluation_root)
+    inference_by_key = {_tif_key(path): path for path in inference_tifs}
+    evaluation_by_key = {_tif_key(path): path for path in evaluation_tifs}
+    duplicate_inference = len(inference_by_key) != len(inference_tifs)
+    duplicate_evaluation = len(evaluation_by_key) != len(evaluation_tifs)
+    missing_keys = sorted(set(inference_by_key) - set(evaluation_by_key))
+    unexpected_keys = (
+        sorted(set(evaluation_by_key) - set(inference_by_key)) if require_exact_keys else []
+    )
+    mismatches: list[dict[str, Any]] = []
+
+    for key in sorted(set(inference_by_key) & set(evaluation_by_key)):
+        inference_meta = _raster_grid_metadata(inference_by_key[key], patch_size)
+        evaluation_meta = _raster_grid_metadata(evaluation_by_key[key], patch_size)
+        errors: list[str] = []
+        for field in ("width", "height", "crs", "grid_rows", "grid_cols"):
+            if inference_meta[field] != evaluation_meta[field]:
+                errors.append(
+                    f"{field} mismatch: inference={inference_meta[field]!r} "
+                    f"evaluation={evaluation_meta[field]!r}"
+                )
+        for field in ("transform", "bounds"):
+            if not _close_sequence(inference_meta[field], evaluation_meta[field]):
+                errors.append(
+                    f"{field} mismatch: inference={inference_meta[field]} "
+                    f"evaluation={evaluation_meta[field]}"
+                )
+        if errors:
+            mismatches.append(
+                {
+                    "scene_id": key[0],
+                    "tif_prefix": key[1],
+                    "inference_tif": str(inference_by_key[key]),
+                    "evaluation_tif": str(evaluation_by_key[key]),
+                    "errors": errors,
+                }
+            )
+
+    ok = not (
+        duplicate_inference
+        or duplicate_evaluation
+        or missing_keys
+        or unexpected_keys
+        or mismatches
+    )
+    report = {
+        "ok": ok,
+        "evaluation_root": str(evaluation_root),
+        "inference_tif_count": len(inference_tifs),
+        "evaluation_tif_count": len(evaluation_tifs),
+        "matched_tif_count": len(set(inference_by_key) & set(evaluation_by_key)),
+        "require_exact_keys": bool(require_exact_keys),
+        "duplicate_inference_keys": duplicate_inference,
+        "duplicate_evaluation_keys": duplicate_evaluation,
+        "missing_in_evaluation": [
+            {"scene_id": scene_id, "tif_prefix": prefix}
+            for scene_id, prefix in missing_keys
+        ],
+        "unexpected_in_evaluation": [
+            {"scene_id": scene_id, "tif_prefix": prefix}
+            for scene_id, prefix in unexpected_keys
+        ],
+        "mismatches": mismatches,
+    }
+    if not ok:
+        raise ValueError(
+            "Inference/evaluation E2E raster alignment failed: "
+            + json.dumps(report, ensure_ascii=False)[:8000]
+        )
+    return report
+
+
 def _build_record(
     *,
     scene_id: str,
     inter_tif: Path,
-    aux: dict[str, Path],
+    aux: dict[str, Path | None],
     image_paths: list[Path],
     row: int,
     col: int,
@@ -165,7 +312,7 @@ def _build_record(
             "tif_stem": inter_tif.stem,
             "tif_prefix": prefix,
             "source_tif": str(inter_tif),
-            "mask_tif": str(aux["mask"]),
+            "mask_tif": str(aux["mask"]) if aux["mask"] is not None else None,
             "raw_lane_tif": str(aux["raw_lane"]),
             "pose_tif": str(aux["pose"]),
             "row": row,
@@ -190,11 +337,11 @@ def _build_record(
             "padded_source_image_size": [padded_width, padded_height],
             "raw_lane_overlay": False,
             "raw_lane_auxiliary_image": True,
-            "raw_lane_image_source": "patch_tif/0_lane.tif",
+            "raw_lane_image_source": _source_path_label(aux["raw_lane"]),
             "raw_lane_image_role": "pv_camera_raw_lane",
             "raw_lane_active_model_input": True,
             "raw_lane_separate_image": True,
-            "pose_image_source": "patch_tif/0_pose.tif",
+            "pose_image_source": _source_path_label(aux["pose"]),
             "input_image_roles": list(IMAGE_ROLES),
             "three_image_prompt_contract_version": PROMPT_CONTRACT_VERSION,
         },
@@ -219,10 +366,23 @@ def prepare_dataset(args: argparse.Namespace) -> dict[str, Any]:
     if not inter_tifs:
         raise FileNotFoundError(f"No source *_inter.tif files found below {input_root}")
 
+    evaluation_root_value = getattr(args, "evaluation_root", None)
+    evaluation_root = (
+        Path(evaluation_root_value).resolve() if evaluation_root_value is not None else None
+    )
+    alignment_report = None
+    if evaluation_root is not None:
+        alignment_report = validate_evaluation_alignment(
+            inter_tifs,
+            evaluation_root,
+            patch_size=patch_size,
+            require_exact_keys=int(args.max_tifs) <= 0,
+        )
+
     missing: list[dict[str, str]] = []
     for inter_tif in inter_tifs:
         for role, path in required_auxiliary_tifs(inter_tif).items():
-            if not path.is_file():
+            if role != "mask" and (path is None or not path.is_file()):
                 missing.append({"inter_tif": str(inter_tif), "role": role, "expected": str(path)})
     if missing:
         raise FileNotFoundError(
@@ -246,6 +406,8 @@ def prepare_dataset(args: argparse.Namespace) -> dict[str, Any]:
         for tif_index, inter_tif in enumerate(inter_tifs, start=1):
             aux = required_auxiliary_tifs(inter_tif)
             clean = _read_masked_clean(inter_tif, aux["mask"])
+            if aux["raw_lane"] is None or aux["pose"] is None:
+                raise AssertionError(f"Required auxiliary TIF resolution failed for {inter_tif}")
             raw_lane = _read_masked_binary(aux["raw_lane"], aux["mask"])
             pose = _read_masked_binary(aux["pose"], aux["mask"])
             shapes = {tuple(array.shape[-2:]) for array in (clean, raw_lane, pose)}
@@ -335,6 +497,7 @@ def prepare_dataset(args: argparse.Namespace) -> dict[str, Any]:
     manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     summary = {
         "input_root": str(input_root),
+        "evaluation_root": str(evaluation_root) if evaluation_root is not None else None,
         "output_root": str(output_root),
         "view_mode": "local256",
         "patch_size": patch_size,
@@ -351,6 +514,7 @@ def prepare_dataset(args: argparse.Namespace) -> dict[str, Any]:
         "skipped_black": skipped_black,
         "infer_jsonl": str(output_jsonl),
         "manifest_json": str(manifest_path),
+        "evaluation_alignment": alignment_report,
     }
     (output_root / "dataset_summary.json").write_text(
         json.dumps(summary, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"

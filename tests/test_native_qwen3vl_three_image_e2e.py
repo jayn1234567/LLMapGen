@@ -101,7 +101,7 @@ def test_three_image_e2e_builder_preserves_training_order_and_prompt(monkeypatch
     monkeypatch.setattr(
         module,
         "_read_masked_binary",
-        lambda path, _: raw_lane if path.name.endswith("lane.tif") else pose,
+        lambda path, _: raw_lane if path.name.endswith("_rawlane.tif") else pose,
     )
 
     output = tmp_path / "prepared"
@@ -124,7 +124,7 @@ def test_three_image_e2e_builder_preserves_training_order_and_prompt(monkeypatch
     assert summary["evaluation_root"] is None
     assert record["meta"]["input_image_roles"] == list(IMAGE_ROLES)
     assert record["meta"]["mask_tif"] is None
-    assert record["meta"]["raw_lane_image_source"] == "lane_patch_tif/0_lane.tif"
+    assert record["meta"]["raw_lane_image_source"] == "lane_patch_tif/0_rawlane.tif"
     assert record["meta"]["pose_image_source"] == "lane_patch_tif/0_pose.tif"
     assert [Path(path).parts[0] for path in record["images"]] == [
         "images",

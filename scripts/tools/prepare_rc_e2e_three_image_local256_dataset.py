@@ -84,7 +84,7 @@ def required_auxiliary_tifs(inter_tif: Path) -> dict[str, Path | None]:
     return {
         "mask": _resolve_optional_mask_tif(inter_tif),
         "raw_lane": _resolve_auxiliary_tif(
-            inter_tif, "lane", directory="lane_patch_tif"
+            inter_tif, "rawlane", directory="lane_patch_tif"
         ),
         "pose": _resolve_auxiliary_tif(
             inter_tif, "pose", directory="lane_patch_tif"

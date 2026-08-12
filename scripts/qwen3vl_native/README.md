@@ -14,7 +14,7 @@ record from the Pose-bearing `eval_patches.zip` inference source in this fixed
 order:
 
 1. clean BEV from `inter_patch_tif/0_inter.tif`;
-2. binary Raw-Lane image from `lane_patch_tif/0_lane.tif`; and
+2. binary Raw-Lane image from `lane_patch_tif/0_rawlane.tif`; and
 3. binary Pose image from `lane_patch_tif/0_pose.tif`.
 
 An `edit_poly` mask is applied only when it exists; it is not required because

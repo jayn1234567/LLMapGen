@@ -49,6 +49,7 @@ FILTER_REPORT=${FILTER_REPORT:-${POSTPROCESS_ROOT}/filter_report.json}
 
 ASCEND_RT_VISIBLE_DEVICES=${ASCEND_RT_VISIBLE_DEVICES:-2,3,4,5,6,7}
 NPROC_PER_NODE=${NPROC_PER_NODE:-6}
+PER_DEVICE_INFER_BATCH_SIZE=${PER_DEVICE_INFER_BATCH_SIZE:-1}
 NUM_SAMPLES=${NUM_SAMPLES:-0}
 MAX_NEW_TOKENS=${MAX_NEW_TOKENS:-4096}
 LOAD_STAGGER_SECONDS=${LOAD_STAGGER_SECONDS:-10}
@@ -188,6 +189,7 @@ echo "Run work root:      ${RUN_WORK_ROOT}"
 echo "Output root:        ${OUTPUT_ROOT}"
 echo "Visible NPUs:       ${ASCEND_RT_VISIBLE_DEVICES}"
 echo "NPU processes:      ${NPROC_PER_NODE}"
+echo "Per-device batch:   ${PER_DEVICE_INFER_BATCH_SIZE}"
 echo "Images per sample:  3 (clean BEV, Raw-Lane, Pose)"
 echo "View/coordinates:   local256 / norm1000"
 echo "Generation cap:     ${MAX_NEW_TOKENS}"
@@ -349,6 +351,7 @@ for rank in "${!DEVICE_IDS[@]}"; do
       --coord-mode auto \
       --coord-range 1000 \
       --default-patch-size 256 \
+      --per-device-infer-batch-size "${PER_DEVICE_INFER_BATCH_SIZE}" \
       --device npu:0 \
       --bf16 \
       --include-intersections \

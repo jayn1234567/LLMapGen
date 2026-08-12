@@ -10,6 +10,7 @@ import sys
 import time
 from typing import Any
 
+from PIL import Image
 import torch
 
 from infer_index.line_eval import evaluate_lane_intersection_records, evaluate_records
@@ -25,8 +26,14 @@ from mllm.coord_utils import (
 from mllm.reward.map_schema import extract_json_payload, parse_map_json
 from mllm.torch_runtime import maybe_disable_cudnn_from_env
 
-from .data import load_json_or_jsonl, strip_image_token
-from .modeling import generate_one, load_native_model, load_processor, select_device
+from .data import build_qwen3vl_messages, load_json_or_jsonl, strip_image_token
+from .modeling import (
+    generate_one,
+    load_native_model,
+    load_processor,
+    move_inputs_to_device,
+    select_device,
+)
 
 
 maybe_disable_cudnn_from_env(torch)
@@ -398,27 +405,185 @@ def run_one(model, processor, record, idx, prompt, args, device):
     return image_paths, generated
 
 
-def run_phase_a(model, processor, records, args, device):
-    results = []
-    for idx, record in records:
-        coord_cfg = resolve_coord(record, args)
+def _merge_native_processor_inputs(processor_inputs, pad_token_id: int):
+    """Merge single-example native processor outputs like the training collator."""
+    sequence_keys = {"input_ids", "attention_mask", "token_type_ids", "mm_token_type_ids", "position_ids"}
+    # Keep this list aligned with NativeQwen3VLDataCollator: image/grid
+    # tensors are flattened in sample order, while other tensors with equal
+    # shapes retain a batch dimension.
+    image_keys = {"pixel_values", "pixel_values_videos", "image_grid_thw", "video_grid_thw"}
+    if not processor_inputs:
+        raise ValueError("Cannot merge an empty native inference batch")
+
+    def squeeze_sequence(value):
+        if value.ndim >= 2 and value.shape[0] == 1:
+            return value[0]
+        return value
+
+    input_lengths = []
+    merged = {}
+    keys = sorted(set().union(*(item.keys() for item in processor_inputs)))
+    for key in keys:
+        values = [item[key] for item in processor_inputs if key in item]
+        if len(values) != len(processor_inputs):
+            raise ValueError(f"Native processor input {key!r} is missing from some samples")
+        if not torch.is_tensor(values[0]):
+            continue
+        if key in sequence_keys:
+            sequences = [squeeze_sequence(value) for value in values]
+            if any(value.ndim != 1 for value in sequences):
+                raise ValueError(f"Native sequence input {key!r} is not one-dimensional")
+            width = max(int(value.numel()) for value in sequences)
+            padding_value = pad_token_id if key == "input_ids" else 0
+            padded = [
+                torch.nn.functional.pad(value, (width - int(value.numel()), 0), value=padding_value)
+                for value in sequences
+            ]
+            merged[key] = torch.stack(padded, dim=0)
+            if key == "input_ids":
+                input_lengths = [int(value.numel()) for value in sequences]
+        elif key in image_keys:
+            if key.endswith("grid_thw"):
+                values = [
+                    value[0]
+                    if value.ndim == 3 and value.shape[0] == 1
+                    else value
+                    for value in values
+                ]
+            merged[key] = torch.cat(values, dim=0)
+        elif all(value.shape == values[0].shape for value in values):
+            merged[key] = torch.stack(values, dim=0)
+        else:
+            raise ValueError(
+                f"Cannot merge native processor input {key!r}: "
+                f"{[tuple(value.shape) for value in values]}"
+            )
+    if not input_lengths:
+        raise ValueError("Native processor output has no input_ids")
+    return merged, input_lengths
+
+
+def _completion_token_ids(output_ids, input_ids, attention_mask, row_index: int):
+    """Extract one completion for padded, unpadded, or completion-only outputs."""
+    output = output_ids[row_index] if output_ids.ndim == 2 else output_ids
+    padded_prompt = input_ids[row_index] if input_ids.ndim == 2 else input_ids
+    mask = attention_mask[row_index] if attention_mask is not None and attention_mask.ndim == 2 else attention_mask
+    prompt = padded_prompt[mask.bool()] if mask is not None else padded_prompt
+    for candidate in (padded_prompt, prompt):
+        if output.numel() >= candidate.numel() and torch.equal(output[:candidate.numel()], candidate):
+            return output[candidate.numel():]
+    return output
+
+
+def run_batch(model, processor, batch_records, args, device):
+    """Run one native generate call for a phase-A batch."""
+    prompts = []
+    image_paths_batch = []
+    rendered_prompts = []
+    processor_inputs = []
+    for idx, record in batch_records:
+        image_values = record.get("images")
+        if image_values is None:
+            image_values = record.get("image")
+        if isinstance(image_values, str):
+            image_values = [image_values]
+        if not isinstance(image_values, list) or not image_values:
+            raise ValueError(f"record has no image/images: {record.get('id', idx)}")
+        image_paths = [resolve_image_path(value, args.image_folder) for value in image_values]
         prompt = record["conversations"][0]["value"] if record.get("conversations") else args.prompt
-        image_paths, generated = run_one(model, processor, record, idx, prompt, args, device)
+        images = []
+        for path in image_paths:
+            with Image.open(path) as image:
+                images.append(image.convert("RGB"))
+        messages = build_qwen3vl_messages(prompt, image_paths, None, args.system_prompt)
+        rendered_prompt = processor.apply_chat_template(
+            messages,
+            tokenize=False,
+            add_generation_prompt=True,
+        )
+        processor_input = processor(
+            text=[rendered_prompt],
+            images=images,
+            return_tensors="pt",
+        )
+        prompts.append(prompt)
+        image_paths_batch.append(image_paths)
+        rendered_prompts.append(rendered_prompt)
+        processor_inputs.append(processor_input)
+
+    tokenizer = getattr(processor, "tokenizer", processor)
+    pad_token_id = getattr(tokenizer, "pad_token_id", None)
+    if pad_token_id is None:
+        pad_token_id = getattr(tokenizer, "eos_token_id", None)
+    pad_token_id = int(pad_token_id if pad_token_id is not None else 0)
+    inputs, input_lengths = _merge_native_processor_inputs(processor_inputs, pad_token_id)
+    padded_input_len = int(inputs["input_ids"].shape[1])
+    inputs = move_inputs_to_device(inputs, device)
+
+    generation_config = getattr(model, "generation_config", None)
+    generation_pad_id = getattr(generation_config, "pad_token_id", None) or pad_token_id
+    eos_token_id = getattr(generation_config, "eos_token_id", None) or getattr(tokenizer, "eos_token_id", None)
+    kwargs = {
+        **inputs,
+        "max_new_tokens": args.max_new_tokens,
+        "use_cache": True,
+        "do_sample": args.temperature > 0,
+        "num_beams": 1,
+        "pad_token_id": generation_pad_id,
+    }
+    if eos_token_id is not None:
+        kwargs["eos_token_id"] = eos_token_id
+    if args.temperature > 0:
+        kwargs["temperature"] = args.temperature
+
+    with torch.inference_mode():
+        output_ids = model.generate(**kwargs)
+    if output_ids.ndim == 1:
+        output_ids = output_ids.unsqueeze(0)
+    if int(output_ids.shape[0]) != len(batch_records):
+        raise RuntimeError(
+            "Native generate returned an unexpected batch dimension: "
+            f"expected={len(batch_records)}, actual={int(output_ids.shape[0])}"
+        )
+    results = []
+    for row, (idx, record) in enumerate(batch_records):
+        coord_cfg = resolve_coord(record, args)
+        completion_ids = _completion_token_ids(
+            output_ids,
+            inputs["input_ids"],
+            inputs.get("attention_mask"),
+            row,
+        )
+        if hasattr(processor, "batch_decode"):
+            decoded = processor.batch_decode(completion_ids.unsqueeze(0), skip_special_tokens=False)[0]
+        else:
+            decoded = tokenizer.batch_decode(completion_ids.unsqueeze(0), skip_special_tokens=False)[0]
+        raw_prediction = normalize_prediction_text(decoded)
         results.append(build_result(
             record=record,
             idx=idx,
-            image_path=image_paths[0],
-            image_paths=image_paths,
-            prompt=prompt,
-            rendered_prompt=generated["rendered_prompt"],
-            raw_prediction=generated["raw_prediction"],
-            input_token_len=generated["input_token_len"],
-            output_token_len=generated["output_token_len"],
-            decoded_token_len=generated["decoded_token_len"],
+            image_path=image_paths_batch[row][0],
+            image_paths=image_paths_batch[row],
+            prompt=prompts[row],
+            rendered_prompt=rendered_prompts[row],
+            raw_prediction=raw_prediction,
+            input_token_len=input_lengths[row],
+            output_token_len=input_lengths[row] + int(completion_ids.numel()),
+            decoded_token_len=int(completion_ids.numel()),
             coord_cfg=coord_cfg,
             map_task=args.map_task,
             checkpoint_dir=args.model_name_or_path,
         ))
+    return results
+
+
+def run_phase_a(model, processor, records, args, device):
+    results = []
+    batch_size = int(args.per_device_infer_batch_size)
+    if batch_size < 1:
+        raise ValueError("--per-device-infer-batch-size must be >= 1")
+    for start in range(0, len(records), batch_size):
+        results.extend(run_batch(model, processor, records[start:start + batch_size], args, device))
     return results
 
 
@@ -588,6 +753,12 @@ def parse_args():
     parser.add_argument("--prompt", default="<image>\nPlease construct the complete road map in the current BEV image patch.")
     parser.add_argument("--system-prompt", default=None)
     parser.add_argument("--num-samples", type=int, default=0)
+    parser.add_argument(
+        "--per-device-infer-batch-size",
+        type=int,
+        default=int(os.environ.get("PER_DEVICE_INFER_BATCH_SIZE", "1")),
+        help="Number of samples passed to one generate() call on each device.",
+    )
     parser.add_argument("--max-new-tokens", type=int, default=2048)
     parser.add_argument("--temperature", type=float, default=0.0)
     parser.add_argument("--coord-mode", choices=["auto", "pixel", "norm1000"], default="auto")
@@ -641,6 +812,8 @@ def main():
     model.eval()
     if args.map_task == "lane_intersection":
         args.include_intersections = True
+    if args.per_device_infer_batch_size < 1:
+        raise ValueError("--per-device-infer-batch-size must be >= 1")
 
     inference_started = time.perf_counter()
     if args.phase == "phase_b":
@@ -648,6 +821,7 @@ def main():
     else:
         results = run_phase_a(model, processor, indexed_records, args, device)
     inference_elapsed = max(time.perf_counter() - inference_started, 1e-9)
+    print(f"[native-infer] per-device batch size: {args.per_device_infer_batch_size}", flush=True)
     print(f"DI_throughput: {len(results) / inference_elapsed:.2f} samples/s/npu", flush=True)
     summary_path, eval_path = write_outputs(results, args)
     print(f"Native Qwen3-VL inference summary: {summary_path}")

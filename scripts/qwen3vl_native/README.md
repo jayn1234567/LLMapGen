@@ -22,10 +22,11 @@ same 256-pixel grid. The builder uses the exact
 model loading if an auxiliary raster is missing or misaligned.
 
 Inference defaults to physical NPUs `2,3,4,5,6,7`. It launches one independent
-native 8B process per NPU and generates one sample at a time; the DINO pipeline's
-`PER_DEVICE_INFER_BATCH_SIZE=32` setting does not apply to this native generator.
-The launcher verifies one-to-one patch completeness, then runs the original RC
-all/low/high road evaluation. `GT_EMPTY_SUPPRESSION=True` is the default for
+native 8B process per NPU. `PER_DEVICE_INFER_BATCH_SIZE` controls the number of
+three-image samples passed to one native `generate()` call on each NPU; the
+default is `1`, and it can be raised when device memory allows. The launcher
+verifies one-to-one patch completeness, then runs the original RC all/low/high
+road evaluation. `GT_EMPTY_SUPPRESSION=True` is the default for
 continuity with recent project comparisons, but it uses ground truth and must
 be reported as an oracle diagnostic. It builds only a lightweight GT-presence
 reference and does not calculate repository patch metrics. Set the switch to

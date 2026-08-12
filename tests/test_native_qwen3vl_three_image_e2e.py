@@ -1,5 +1,9 @@
 import json
 from pathlib import Path
+
+import torch
+
+from mllm.native_qwen3vl.infer import _completion_token_ids, _merge_native_processor_inputs
 from types import SimpleNamespace
 
 import numpy as np
@@ -153,7 +157,8 @@ def test_formal_three_image_e2e_entry_requires_checkpoint_and_runs_original_metr
     assert "ASCEND_RT_VISIBLE_DEVICES=${ASCEND_RT_VISIBLE_DEVICES:-2,3,4,5,6,7}" in content
     assert "--model-base \"${QWEN3VL_PATH}\"" in content
     assert "--max-new-tokens \"${MAX_NEW_TOKENS}\"" in content
-    assert "PER_DEVICE_INFER_BATCH_SIZE" not in content
+    assert "PER_DEVICE_INFER_BATCH_SIZE=${PER_DEVICE_INFER_BATCH_SIZE:-1}" in content
+    assert '--per-device-infer-batch-size "${PER_DEVICE_INFER_BATCH_SIZE}"' in content
     assert "RUN_ALL_EVAL=True" in content
     assert "RUN_LOW_EVAL=True" in content
     assert "RUN_HIGH_EVAL=True" in content
@@ -175,3 +180,39 @@ def test_formal_three_image_e2e_entry_requires_checkpoint_and_runs_original_metr
 def test_native_infer_reports_di_throughput():
     content = INFER.read_text(encoding="utf-8")
     assert 'print(f"DI_throughput: {len(results) / inference_elapsed:.2f} samples/s/npu"' in content
+    assert "--per-device-infer-batch-size" in content
+
+
+def test_native_processor_inputs_merge_with_left_padding_and_image_grids():
+    first = {
+        "input_ids": torch.tensor([[11, 12]]),
+        "attention_mask": torch.tensor([[1, 1]]),
+        "pixel_values": torch.tensor([[1.0]]),
+        "image_grid_thw": torch.tensor([[[1, 2, 3], [4, 5, 6], [7, 8, 9]]]),
+    }
+    second = {
+        "input_ids": torch.tensor([[21, 22, 23]]),
+        "attention_mask": torch.tensor([[1, 1, 1]]),
+        "pixel_values": torch.tensor([[2.0]]),
+        "image_grid_thw": torch.tensor([[[10, 11, 12], [13, 14, 15], [16, 17, 18]]]),
+    }
+
+    merged, lengths = _merge_native_processor_inputs([first, second], pad_token_id=0)
+
+    assert lengths == [2, 3]
+    assert merged["input_ids"].tolist() == [[0, 11, 12], [21, 22, 23]]
+    assert merged["attention_mask"].tolist() == [[0, 1, 1], [1, 1, 1]]
+    assert merged["pixel_values"].shape == (2, 1)
+    assert merged["image_grid_thw"].shape == (6, 3)
+
+
+def test_native_batch_completion_slicing_handles_left_padding():
+    input_ids = torch.tensor([[0, 11, 12], [21, 22, 23]])
+    attention_mask = torch.tensor([[0, 1, 1], [1, 1, 1]])
+    output_ids = torch.tensor([
+        [0, 11, 12, 101, 102],
+        [21, 22, 23, 201, 202],
+    ])
+
+    assert _completion_token_ids(output_ids, input_ids, attention_mask, 0).tolist() == [101, 102]
+    assert _completion_token_ids(output_ids, input_ids, attention_mask, 1).tolist() == [201, 202]

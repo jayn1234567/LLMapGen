@@ -124,7 +124,7 @@ def test_three_image_e2e_builder_preserves_training_order_and_prompt(monkeypatch
     assert summary["evaluation_root"] is None
     assert record["meta"]["input_image_roles"] == list(IMAGE_ROLES)
     assert record["meta"]["mask_tif"] is None
-    assert record["meta"]["raw_lane_image_source"] == "patch_tif/0_lane.tif"
+    assert record["meta"]["raw_lane_image_source"] == "lane_patch_tif/0_lane.tif"
     assert record["meta"]["pose_image_source"] == "lane_patch_tif/0_pose.tif"
     assert [Path(path).parts[0] for path in record["images"]] == [
         "images",

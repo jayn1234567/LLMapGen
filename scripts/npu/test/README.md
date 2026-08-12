@@ -324,6 +324,13 @@ The `tif_512_256` directory name is retained for compatibility with the RC
 intersection project. It does not define the offset for this recipe: the
 window, stride, and row/column offset are all `512`.
 
+The same intersection formatter/evaluator also accepts a local256 geometry
+contract through `WINDOW_SIZE=256`, `INTERSECTION_STRIDE=256`,
+`ORIGINAL_E2E_LANE_GRID_SIZE=256`, and `PREDICTION_COORD_SCALE=0.256`. The
+native three-image local256 Qwen3-VL E2E launcher applies these overrides after
+its centerline all/low/high stage and reuses its original, unfiltered inference
+JSON for the intersection metric.
+
 # RawLane local256 full E2E evaluation
 
 `run_and_eval_rc_e2e_rawlane_local256_checkpoint12504_full_npu.sh` evaluates

@@ -31,6 +31,19 @@ be reported as an oracle diagnostic. It builds only a lightweight GT-presence
 reference and does not calculate repository patch metrics. Set the switch to
 `False` for unassisted metrics.
 
+After centerline all/low/high completes, the launcher automatically reuses the
+same raw per-patch inference JSON for one original whole-map intersection
+evaluation. It does not run the model a second time and does not reuse the
+centerline GT-empty-filtered JSON, because that copy can remove valid
+intersection predictions from centerline-empty patches. Polygon coordinates
+are restored with the local256 `256/1000` scale and 256-pixel row/column grid,
+then written to the original RC `inter512/tif_512_256` compatibility layout and
+merged into per-scene `Intersection.geojson`. All GT and prediction types are
+evaluated by default. Use `INTERSECTION_COLLAPSE_TYPE_TO_ONE=True` for a
+geometry-only diagnostic, `INTERSECTION_GT_EMPTY_SUPPRESSION=True` for the
+separately labelled GT-assisted intersection oracle, or
+`RUN_INTERSECTION_E2E=False` to skip the intersection stage.
+
 After training finishes, run:
 
 ```bash

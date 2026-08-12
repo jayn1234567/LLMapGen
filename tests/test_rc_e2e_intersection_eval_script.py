@@ -11,7 +11,7 @@ def test_intersection_e2e_script_uses_native_local512_geometry_and_one_eval_pass
     text = SCRIPT.read_text(encoding="utf-8")
     assert "WINDOW_SIZE=${WINDOW_SIZE:-512}" in text
     assert "INTERSECTION_STRIDE=${INTERSECTION_STRIDE:-512}" in text
-    assert "ENGINE_EXTRACT_ROOT=${ENGINE_EXTRACT_ROOT:-${RUN_WORK_ROOT}/original_engine_grid512}" in text
+    assert "ENGINE_EXTRACT_ROOT=${ENGINE_EXTRACT_ROOT:-${RUN_WORK_ROOT}/original_engine_grid${ORIGINAL_E2E_LANE_GRID_SIZE}}" in text
     assert "INTER_RESULT_SUBDIR=${INTER_RESULT_SUBDIR:-inter512/tif_512_256}" in text
     assert "QUERY_NAME=${QUERY_NAME:-output_llm_intersection_jn}" in text
     assert "RUN_ALL_EVAL=True" in text
@@ -22,13 +22,21 @@ def test_intersection_e2e_script_uses_native_local512_geometry_and_one_eval_pass
     assert "EVAL_SIMPLIFY_PATH=False" in text
     assert "COLLAPSE_INTERSECTION_TYPE_TO_ONE=${COLLAPSE_INTERSECTION_TYPE_TO_ONE:-False}" in text
     assert "--collapse-type-to-one" in text
-    assert "PREDICTION_COORD_SCALE=0.512" in text
-    assert "ORIGINAL_E2E_LANE_GRID_SIZE=512" in text
+    assert "PREDICTION_COORD_SCALE=${PREDICTION_COORD_SCALE:-0.${WINDOW_SIZE}}" in text
+    assert 'ORIGINAL_E2E_LANE_GRID_SIZE="${ORIGINAL_E2E_LANE_GRID_SIZE}"' in text
     assert "SUPPRESS_PREDICTIONS_WITHOUT_GT_INTERSECTION=${SUPPRESS_PREDICTIONS_WITHOUT_GT_INTERSECTION:-False}" in text
     assert "suppress_rc_e2e_intersections_without_patch_gt.py" in text
     assert 'E2E_USE_RAW_ROOT_DIRECTLY="${E2E_USE_RAW_ROOT_DIRECTLY}"' in text
     assert "All formatted intersections map to non-type-1 labels" in text
     assert 'EVAL_INTERSECTION_ONLY_TYPE1="${EVAL_INTERSECTION_ONLY_TYPE1}"' in text
+
+
+def test_intersection_e2e_script_allows_local256_geometry_overrides():
+    text = SCRIPT.read_text(encoding="utf-8")
+    assert "ORIGINAL_E2E_LANE_GRID_SIZE=${ORIGINAL_E2E_LANE_GRID_SIZE:-${WINDOW_SIZE}}" in text
+    assert "PREDICTION_COORD_SCALE=${PREDICTION_COORD_SCALE:-0.${WINDOW_SIZE}}" in text
+    assert 'PREDICTION_COORD_SCALE="${PREDICTION_COORD_SCALE}"' in text
+    assert 'ORIGINAL_E2E_LANE_GRID_SIZE="${ORIGINAL_E2E_LANE_GRID_SIZE}"' in text
 
 
 def test_shared_original_evaluator_accepts_a_dedicated_query_name():

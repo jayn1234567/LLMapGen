@@ -160,6 +160,16 @@ def test_formal_three_image_e2e_entry_requires_checkpoint_and_runs_original_metr
     assert "GT_EMPTY_SUPPRESSION=${GT_EMPTY_SUPPRESSION:-True}" in content
     assert "build_rc_e2e_patch_gt_presence.py" in content
     assert "eval_rc_e2e_context512_roi256_checkpoint12504_patch_metrics.sh" not in content
+    assert "RUN_INTERSECTION_E2E=${RUN_INTERSECTION_E2E:-True}" in content
+    assert 'PREDICTION_DIR="${RAW_RESULT_DIR}"' in content
+    assert "WINDOW_SIZE=256" in content
+    assert "INTERSECTION_STRIDE=256" in content
+    assert "ORIGINAL_E2E_LANE_GRID_SIZE=256" in content
+    assert "PREDICTION_COORD_SCALE=0.256" in content
+    assert "INTERSECTION_EVAL_ONLY_TYPE1=${INTERSECTION_EVAL_ONLY_TYPE1:-False}" in content
+    assert "INTERSECTION_GT_EMPTY_SUPPRESSION=${INTERSECTION_GT_EMPTY_SUPPRESSION:-False}" in content
+    assert "eval_local512_predictions_original_intersection_e2e_npu.sh" in content
+    assert "RESET_EXISTING_MODEL_OUTPUTS=False" in content
 
 
 def test_native_infer_reports_di_throughput():

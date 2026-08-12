@@ -63,6 +63,19 @@ EVAL_VIS_FLAG=${EVAL_VIS_FLAG:-False}
 EXPECTED_E2E_SCENES=${EXPECTED_E2E_SCENES:-110}
 RESULT_OBS_PATH=${RESULT_OBS_PATH:-}
 
+# Reuse the raw model JSON for intersection evaluation. The lane GT-empty
+# filtered copy must not be reused because it removes every category in a
+# centerline-empty patch, including valid intersection predictions.
+RUN_INTERSECTION_E2E=${RUN_INTERSECTION_E2E:-True}
+INTERSECTION_COLLAPSE_TYPE_TO_ONE=${INTERSECTION_COLLAPSE_TYPE_TO_ONE:-False}
+INTERSECTION_EVAL_ONLY_TYPE1=${INTERSECTION_EVAL_ONLY_TYPE1:-False}
+INTERSECTION_GT_EMPTY_SUPPRESSION=${INTERSECTION_GT_EMPTY_SUPPRESSION:-False}
+INTERSECTION_EVAL_VIS_FLAG=${INTERSECTION_EVAL_VIS_FLAG:-False}
+INTERSECTION_QUERY_NAME=${INTERSECTION_QUERY_NAME:-output_llm_intersection_jn}
+INTERSECTION_RESULT_ROOT=${INTERSECTION_RESULT_ROOT:-${OUTPUT_ROOT}/intersection_pipeline_metrics}
+INTERSECTION_RUN_WORK_ROOT=${INTERSECTION_RUN_WORK_ROOT:-${RUN_WORK_ROOT}/intersection_original_pipeline}
+INTERSECTION_ENGINE_EXTRACT_ROOT=${INTERSECTION_ENGINE_EXTRACT_ROOT:-${INTERSECTION_RUN_WORK_ROOT}/original_engine_grid256}
+
 DEFAULT_SYSTEM_PROMPT=$'You are a road-map reconstruction assistant designed to process BEV (Bird\'s Eye View) images generated from LiDAR data.\nPredict the complete road map from the current patch in the BEV image.\nReturn only valid JSON in the required schema.\nDo not output markdown fences or extra explanation.\nKeep all coordinates in the patch-local coordinate system.'
 SYSTEM_PROMPT=${SYSTEM_PROMPT:-${DEFAULT_SYSTEM_PROMPT}}
 
@@ -180,9 +193,12 @@ echo "View/coordinates:   local256 / norm1000"
 echo "Generation cap:     ${MAX_NEW_TOKENS}"
 echo "GT-empty suppression:${GT_EMPTY_SUPPRESSION}"
 echo "Evaluations:        original all + low + high"
+echo "Intersection E2E:   ${RUN_INTERSECTION_E2E} (reuse raw inference JSON)"
+echo "Intersection types: only_type1=${INTERSECTION_EVAL_ONLY_TYPE1} collapse=${INTERSECTION_COLLAPSE_TYPE_TO_ONE}"
+echo "Intersection oracle:${INTERSECTION_GT_EMPTY_SUPPRESSION}"
 echo "============================================================"
 
-echo "[native-three-image-e2e] stage 1/6: prepare clean E2E source"
+echo "[native-three-image-e2e] stage 1/7: prepare clean E2E source"
 if is_true "${REFRESH_E2E_ARCHIVE}" || [ ! -s "${E2E_ARCHIVE_PATH}" ]; then
   rm -f "${E2E_ARCHIVE_PATH}"
   SOURCE="${E2E_DATA_OBS_PATH}" DESTINATION="${E2E_ARCHIVE_PATH}" python - <<'PY'
@@ -201,7 +217,7 @@ python scripts/tools/prepare_rc_e2e_original_run_data.py \
   --destination "${E2E_DATA_ROOT}" \
   --allowed-root /cache/jn/e2e_eval/native_qwen3vl_runs
 
-echo "[native-three-image-e2e] stage 2/6: build aligned local256 image triplets"
+echo "[native-three-image-e2e] stage 2/7: build aligned local256 image triplets"
 if is_true "${REBUILD_E2E_DATASET}" || [ ! -s "${INFERENCE_DATASET_ROOT}/infer.jsonl" ]; then
   python scripts/tools/prepare_rc_e2e_three_image_local256_dataset.py \
     --input-root "${E2E_DATA_ROOT}" \
@@ -237,7 +253,7 @@ if len(first.get("images") or []) != 3 or first["conversations"][0]["value"].cou
 print(f"[native-three-image-e2e] dataset preflight passed: patches={summary['patch_count']}")
 PY
 
-echo "[native-three-image-e2e] stage 3/6: prepare native base and LoRA checkpoint"
+echo "[native-three-image-e2e] stage 3/7: prepare native base and LoRA checkpoint"
 if is_true "${REFRESH_BASE_MODEL}" || ! has_native_base_model "${QWEN3VL_PATH}"; then
   if [ -e "${QWEN3VL_PATH}" ]; then
     QWEN3VL_PATH="${QWEN3VL_PATH}.validated_$(date -u +%Y%m%d_%H%M%S)"
@@ -293,7 +309,7 @@ print(json.dumps({
 }, indent=2))
 PY
 
-echo "[native-three-image-e2e] stage 4/6: split and run independent NPU inference shards"
+echo "[native-three-image-e2e] stage 4/7: split and run independent NPU inference shards"
 IFS=',' read -r -a DEVICE_IDS <<< "${ASCEND_RT_VISIBLE_DEVICES}"
 if [ "${#DEVICE_IDS[@]}" -ne "${NPROC_PER_NODE}" ]; then
   echo "ERROR: NPROC_PER_NODE=${NPROC_PER_NODE}, but visible devices=${ASCEND_RT_VISIBLE_DEVICES}" >&2
@@ -380,7 +396,7 @@ python scripts/tools/verify_e2e_inference_completeness.py \
   --prediction-dir "${RAW_RESULT_DIR}" \
   --output-json "${INFERENCE_ROOT}/completeness.json"
 
-echo "[native-three-image-e2e] stage 5/6: optional GT-empty suppression and original RC evaluation"
+echo "[native-three-image-e2e] stage 5/7: optional lane GT-empty suppression and centerline evaluation"
 if is_true "${GT_EMPTY_SUPPRESSION}"; then
   mkdir -p "${POSTPROCESS_ROOT}"
   python scripts/tools/build_rc_e2e_patch_gt_presence.py \
@@ -424,12 +440,39 @@ FILL_MISSING_SCENE_PREDICTIONS=True \
 FAIL_ON_INVALID_PREDICTIONS=False \
 INSTALL_ENGINE_DEPS=True \
 REUSE_ENGINE_ARCHIVE=True \
-RESET_EXISTING_MODEL_OUTPUTS=True \
+RESET_EXISTING_MODEL_OUTPUTS=False \
 RULE_WORKERS="${RULE_WORKERS}" \
 UPLOAD_RESULTS=False \
 bash "${NPU_TEST_DIR}/eval_rc_e2e_context512_roi256_checkpoint12504_original_pipeline_npu.sh"
 
-echo "[native-three-image-e2e] stage 6/6: optional OBS upload"
+echo "[native-three-image-e2e] stage 6/7: original RC intersection evaluation"
+if is_true "${RUN_INTERSECTION_E2E}"; then
+  PREDICTION_DIR="${RAW_RESULT_DIR}" \
+  E2E_DATA_ROOT="${E2E_DATA_ROOT}" \
+  QUERY_NAME="${INTERSECTION_QUERY_NAME}" \
+  RUN_ID="${RUN_ID}_intersection_original_pipeline" \
+  RESULT_ROOT="${INTERSECTION_RESULT_ROOT}" \
+  RUN_WORK_ROOT="${INTERSECTION_RUN_WORK_ROOT}" \
+  ENGINE_EXTRACT_ROOT="${INTERSECTION_ENGINE_EXTRACT_ROOT}" \
+  WINDOW_SIZE=256 \
+  INTERSECTION_STRIDE=256 \
+  ORIGINAL_E2E_LANE_GRID_SIZE=256 \
+  PREDICTION_COORD_SCALE=0.256 \
+  COORD_RANGE=1000 \
+  COLLAPSE_INTERSECTION_TYPE_TO_ONE="${INTERSECTION_COLLAPSE_TYPE_TO_ONE}" \
+  EVAL_INTERSECTION_ONLY_TYPE1="${INTERSECTION_EVAL_ONLY_TYPE1}" \
+  SUPPRESS_PREDICTIONS_WITHOUT_GT_INTERSECTION="${INTERSECTION_GT_EMPTY_SUPPRESSION}" \
+  E2E_USE_RAW_ROOT_DIRECTLY=True \
+  EVAL_VIS_FLAG="${INTERSECTION_EVAL_VIS_FLAG}" \
+  EXPECTED_E2E_SCENES="${EXPECTED_E2E_SCENES}" \
+  INSTALL_ENGINE_DEPS=False \
+  UPLOAD_RESULTS=False \
+  bash "${NPU_TEST_DIR}/eval_local512_predictions_original_intersection_e2e_npu.sh"
+else
+  echo "[native-three-image-e2e] skip intersection E2E: RUN_INTERSECTION_E2E=${RUN_INTERSECTION_E2E}"
+fi
+
+echo "[native-three-image-e2e] stage 7/7: optional OBS upload"
 if [ -n "${RESULT_OBS_PATH}" ]; then
   SOURCE="${OUTPUT_ROOT}" DESTINATION="${RESULT_OBS_PATH}" python - <<'PY'
 import os
@@ -449,6 +492,10 @@ echo "Completeness:     ${INFERENCE_ROOT}/completeness.json"
 echo "All roads:        ${OUTPUT_ROOT}/original_pipeline_metrics/eval_result_all"
 echo "Low roads:        ${OUTPUT_ROOT}/original_pipeline_metrics/eval_result_low"
 echo "High roads:       ${OUTPUT_ROOT}/original_pipeline_metrics/eval_result_high"
+if is_true "${RUN_INTERSECTION_E2E}"; then
+  echo "Intersections:    ${INTERSECTION_RESULT_ROOT}/eval_result_all"
+  echo "Intersection log: ${INTERSECTION_RESULT_ROOT}/logs/03_eval_all.log"
+fi
 if is_true "${GT_EMPTY_SUPPRESSION}"; then
   echo "Oracle audit:     ${FILTER_REPORT}"
   echo "WARNING: GT-empty suppression is an oracle diagnostic."

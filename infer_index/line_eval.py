@@ -27,6 +27,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from mllm.coord_utils import COORD_MODE_PIXEL, convert_payload_text, record_coord_config
+from infer_index.map_semantic_eval import evaluate_intersection_iou_records, evaluate_lane_type_records
 
 
 def line_match_matric(line1: LineString, line2: LineString, buffer) -> float:
@@ -88,10 +89,9 @@ def safe_div(num, den):
 
 
 def convert_str_2_linestring(data: str, categories=None) -> list[LineString]:
-    res = convert_QA_data(data, categories=categories) # 把QA标签和大模型infer结果转换成几何
-    res = convert_img_coord_to_meter(res, Parameter.METER_PER_PIXEL) # 像素单位转成米
-    res = [LineString(i) for i in res] # 转成linestring
-    return res
+    res = convert_QA_data(data, categories=categories)
+    res = convert_img_coord_to_meter(res, Parameter.METER_PER_PIXEL)
+    return [LineString(points) for points in res]
 
 
 def _first_text(record: dict, keys: list[str], default: str = "[]") -> str:
@@ -220,12 +220,25 @@ def line_eval_res_from_summary(summary) -> LineEvalRes:
 
 
 def print_eval_table(summary, logger=None, title: str = None) -> None:
+    if isinstance(summary, dict) and isinstance(summary.get("summary"), dict):
+        summary = summary["summary"]
+    if isinstance(summary, dict) and summary.get("backend") == "infer_index.polygon_iou":
+        text = summary.get("table", "")
+        if logger is None:
+            print(text)
+        else:
+            logger.info("\n" + text)
+        return
     if title is None and isinstance(summary, dict):
         title = summary.get("eval_name")
     line_eval_res_from_summary(summary).show_res(logger, title=title or "Line Evaluation Results")
 
 
 def format_eval_table(summary, title: str = None) -> str:
+    if isinstance(summary, dict) and isinstance(summary.get("summary"), dict):
+        summary = summary["summary"]
+    if isinstance(summary, dict) and summary.get("backend") == "infer_index.polygon_iou":
+        return summary.get("table", "")
     if title is None and isinstance(summary, dict):
         title = summary.get("eval_name")
     return line_eval_res_from_summary(summary).table_text(title=title or "Line Evaluation Results")
@@ -236,37 +249,46 @@ def evaluate_lane_intersection_records(
     meter_per_pixel: float = Parameter.METER_PER_PIXEL,
     buffer_size: float = 1.0,
     match_threshold: float = 0.33,
+    intersection_iou_threshold: float = 0.5,
     include_samples: bool = False,
     **kwargs,
 ):
+    lane = evaluate_records(
+        records,
+        meter_per_pixel=meter_per_pixel,
+        buffer_size=buffer_size,
+        match_threshold=match_threshold,
+        include_samples=include_samples,
+        categories="lane",
+        eval_name="Lane Evaluation Results",
+    )
+    intersection = evaluate_intersection_iou_records(
+        records,
+        iou_threshold=intersection_iou_threshold,
+        include_samples=include_samples,
+    )
+    lane_intersection = evaluate_records(
+        records,
+        meter_per_pixel=meter_per_pixel,
+        buffer_size=buffer_size,
+        match_threshold=match_threshold,
+        include_samples=include_samples,
+        categories="all",
+        eval_name="Lane + Intersection Legacy Line Evaluation Results",
+    )
+    lane_type = evaluate_lane_type_records(
+        records,
+        meter_per_pixel=meter_per_pixel,
+        buffer_size=buffer_size,
+        match_threshold=match_threshold,
+    )
+    intersection_summary = intersection.get("summary", intersection)
     return {
-        "lane": evaluate_records(
-            records,
-            meter_per_pixel=meter_per_pixel,
-            buffer_size=buffer_size,
-            match_threshold=match_threshold,
-            include_samples=include_samples,
-            categories="lane",
-            eval_name="Lane Evaluation Results",
-        ),
-        "intersection": evaluate_records(
-            records,
-            meter_per_pixel=meter_per_pixel,
-            buffer_size=buffer_size,
-            match_threshold=match_threshold,
-            include_samples=include_samples,
-            categories="intersection",
-            eval_name="Intersection Evaluation Results",
-        ),
-        "lane_intersection": evaluate_records(
-            records,
-            meter_per_pixel=meter_per_pixel,
-            buffer_size=buffer_size,
-            match_threshold=match_threshold,
-            include_samples=include_samples,
-            categories="all",
-            eval_name="Lane + Intersection Evaluation Results",
-        ),
+        "lane": lane,
+        "intersection": intersection,
+        "lane_intersection": lane_intersection,
+        "lane_type": lane_type,
+        "intersection_type": intersection_summary.get("type_accuracy", {}),
     }
 
 
@@ -274,6 +296,17 @@ def print_lane_intersection_eval_tables(payload, logger=None) -> None:
     for key in ("lane", "intersection", "lane_intersection"):
         if isinstance(payload, dict) and key in payload:
             print_eval_table(payload[key], logger=logger)
+    for key in ("lane_type", "intersection_type"):
+        summary = payload.get(key) if isinstance(payload, dict) else None
+        if not isinstance(summary, dict):
+            continue
+        text = summary.get("table", "")
+        if not text:
+            continue
+        if logger is None:
+            print(text)
+        else:
+            logger.info("\n" + text)
 
 
 def evaluate_one_sample(

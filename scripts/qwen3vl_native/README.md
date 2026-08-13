@@ -233,5 +233,38 @@ NPU launchers default to:
 | Script | Purpose |
 |---|---|
 | `test/run_and_eval_rc_e2e_three_image_local256_800k_qwen3vl8b_lora_npu.sh` | Full three-image local256 native-Qwen3-VL-8B LoRA E2E inference plus original all/low/high evaluation. |
+| `test/test_local_stage_a_lane_intersection_three_image_local256_800k_qwen3vl8b_lora_fixed1100_npu.sh` | Ascend patch evaluation that builds and freezes a 300/300/300/200 difficulty-balanced 1100-sample three-image set, evaluates checkpoint-36000 and checkpoint-50000 sequentially, and writes an explicit comparison report. |
 | `test/test_stage_a_lane_intersection_qwen3vl_native_npu.sh` | Inference/eval: Stage A, lane+intersection, native Qwen3-VL architecture; writes eval and visualization outputs. |
 | `test/test_stage_b_lane_intersection_qwen3vl_native_npu.sh` | Inference/eval: Stage B, lane+intersection, native Qwen3-VL architecture with sequential state-update incoming hints; writes eval and visualization outputs. |
+
+### Local256 800k fixed-1100 checkpoint comparison
+
+```bash
+bash scripts/qwen3vl_native/test/test_local_stage_a_lane_intersection_three_image_local256_800k_qwen3vl8b_lora_fixed1100_npu.sh
+```
+
+The default checkpoint list is `checkpoint-36000,checkpoint-50000` from the
+2026-08-08 native-Qwen3-VL-8B LoRA run. The launcher defaults to physical NPUs
+`0,1,2,3`, four independent inference processes, and per-device generation
+batch 32. These are runtime defaults rather than hard-coded model behavior;
+override `ASCEND_RT_VISIBLE_DEVICES`, `NPROC_PER_NODE`, or
+`PER_DEVICE_INFER_BATCH_SIZE` when the local server differs or memory is
+insufficient.
+
+The evaluation set is created once from the released three-image dataset's
+`phase_a/eval.jsonl` with `easy=300,medium=300,hard=300,very_hard=200` and
+seed 42. The saved set includes the source JSONL hash and every split hash.
+Later runs refuse to reuse it against a different source dataset and do not
+silently resample. Each record must keep three ordered image paths, three
+`<image>` tokens, and a structured assistant target. By default the launcher
+extracts only the selected 3,300 image assets from the 800k TAR instead of
+unpacking the complete training dataset.
+
+Each checkpoint is generated once over all 1,100 records using deterministic
+per-device JSONL shards. The postprocessor writes all-selected and per-
+difficulty centerline, polygon-IoU intersection, and matched typed-GT semantic
+metrics. `comparison/comparison.json` preserves every raw comparison value;
+`comparison/comparison.md` names per-metric winners and also reports a declared
+balanced score over centerline instance F1, centerline length F1, intersection
+instance F1, and intersection micro-area IoU. Use the per-metric results when
+the release target prioritizes one task rather than that balanced macro.

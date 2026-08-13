@@ -149,6 +149,18 @@ run, set `RESUME_FROM_CHECKPOINT` to a downloaded `checkpoint-N` directory;
 the directory must include adapter weights, `trainer_state.json`, `optimizer.pt`,
 and `scheduler.pt`.
 
+### Local256 800k LoRA with max length 3072
+
+```text
+train/train_sft_stage_a_lane_intersection_datasetv2_three_image_local256_800k_qwen3vl8b_lora_maxlen3072_npu.sh
+```
+
+This memory-reduced formal recipe is identical to the local256 800k native
+Qwen3-VL-8B LoRA baseline above except that its default maximum sequence length
+is `3072` instead of `4096`. It keeps per-device batch `4`, target global batch
+`128`, all three LoRA groups, eight epochs, and ordinary non-ZeRO checkpoints.
+The launcher prints the resolved sequence length before starting `torchrun`.
+
 ## Three-Image Context512/ROI256 800k LoRA
 
 ```text
@@ -210,6 +222,7 @@ NPU launchers default to:
 | Script | Purpose |
 |---|---|
 | `train/train_sft_stage_a_lane_intersection_datasetv2_three_image_local256_800k_qwen3vl8b_lora_npu.sh` | Stage A LoRA on all local256 Raw-Lane + Pose 800k records using the native Qwen3-VL-8B vision tower, merger, and language model. |
+| `train/train_sft_stage_a_lane_intersection_datasetv2_three_image_local256_800k_qwen3vl8b_lora_maxlen3072_npu.sh` | Memory-reduced local256 800k native-Qwen3-VL LoRA recipe with max length 3072 and the same per-device/global batches. |
 | `train/train_sft_stage_a_lane_intersection_datasetv2_three_image_context512_roi256_800k_qwen3vl8b_lora_npu.sh` | Stage A LoRA on all context512/ROI256 Raw-Lane + Pose 800k records with strict center-ROI coordinate checks. |
 | `train/train_sft_stage_a_lane_intersection_datasetv2_three_image_context512_roi256_200k_qwen3vl8b_lora_npu.sh` | Matched 200k context512/ROI256 native-Qwen3-VL LoRA comparison. |
 | `train/train_sft_stage_a_lane_intersection_qwen3vl_native_npu.sh` | SFT training: Stage A, lane+intersection, native Qwen3-VL architecture. |

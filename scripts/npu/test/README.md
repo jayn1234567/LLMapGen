@@ -408,3 +408,19 @@ and does not suppress empty-GT patches or clip predictions using ground truth.
 Malformed prediction JSON is recorded in `invalid_predictions.json` and counts
 as no prediction by default; set `FAIL_ON_INVALID_PREDICTIONS=True` to stop
 instead. A repeated run with the same `RUN_ID` reuses a completed extraction.
+
+### Clean local256 DINOv2 end-to-end baseline
+
+`run_and_eval_rc_e2e_clean_local256_550k_checkpoint34376_npu.sh` is the formal
+no-RawLane counterpart for the original DINOv2-Large local256-550k route. It
+downloads GT-bearing E2E data, crops only `inter_patch_tif/*_inter.tif`, uses
+the immutable `local256_550k_v1` prompt, runs checkpoint-34376 inference,
+suppresses predictions in lane-GT-empty patches, and runs original lane
+all/low/high plus whole-map intersection evaluation. Before post-processing,
+the dataset summary must report `input_raster=inter` and
+`raw_lane_overlay=false`. A compatible checkpoint OBS directory can be passed
+as the first argument.
+
+```bash
+bash scripts/npu/test/run_and_eval_rc_e2e_clean_local256_550k_checkpoint34376_npu.sh
+```

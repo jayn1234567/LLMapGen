@@ -59,7 +59,7 @@ MAX_NEW_TOKENS=${MAX_NEW_TOKENS:-4096}
 LOAD_STAGGER_SECONDS=${LOAD_STAGGER_SECONDS:-10}
 BLACK_RATIO_THRESHOLD=${BLACK_RATIO_THRESHOLD:-1.0}
 REBUILD_E2E_DATASET=${REBUILD_E2E_DATASET:-True}
-MISSING_AUX_POLICY=${MISSING_AUX_POLICY:-skip}
+MISSING_AUX_POLICY=${MISSING_AUX_POLICY:-evaluation_rawlane_black_pose}
 
 # This keeps historical E2E comparisons aligned. It is a GT-assisted oracle
 # diagnostic and can be disabled for an unassisted production metric.

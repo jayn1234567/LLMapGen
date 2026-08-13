@@ -47,11 +47,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--black-ratio-threshold", type=float, default=1.0)
     parser.add_argument(
         "--missing-aux-policy",
-        choices=("error", "skip"),
+        choices=("error", "skip", "evaluation_rawlane_black_pose"),
         default="error",
         help=(
             "How to handle a source TIF that cannot provide both dedicated RawLane and "
-            "Pose rasters. 'skip' records every omission in dataset_summary.json."
+            "Pose rasters. 'skip' records every omission in dataset_summary.json. "
+            "'evaluation_rawlane_black_pose' takes the aligned dedicated RawLane raster "
+            "from --evaluation-root and supplies a labelled synthetic-black Pose."
         ),
     )
     parser.add_argument("--max-tifs", type=int, default=0)
@@ -117,6 +119,77 @@ def partition_inter_tifs_by_auxiliary(
         if not tif_missing:
             usable.append(inter_tif)
     return usable, missing
+
+
+def build_auxiliary_plan(
+    inter_tifs: list[Path],
+    *,
+    evaluation_root: Path | None,
+    missing_aux_policy: str,
+) -> tuple[list[dict[str, Any]], list[dict[str, str]]]:
+    evaluation_by_key = (
+        {_tif_key(path): path for path in discover_inter_tifs(evaluation_root)}
+        if evaluation_root is not None
+        else {}
+    )
+    plan: list[dict[str, Any]] = []
+    unresolved: list[dict[str, str]] = []
+
+    for inter_tif in inter_tifs:
+        aux = required_auxiliary_tifs(inter_tif)
+        provenance = {
+            "raw_lane": "inference",
+            "pose": "inference",
+        }
+        raw_lane = aux["raw_lane"]
+        pose = aux["pose"]
+        if missing_aux_policy == "evaluation_rawlane_black_pose":
+            if raw_lane is None or not raw_lane.is_file():
+                evaluation_inter = evaluation_by_key.get(_tif_key(inter_tif))
+                if evaluation_inter is not None:
+                    candidate = _resolve_auxiliary_tif(
+                        evaluation_inter, "rawlane", directory="lane_patch_tif"
+                    )
+                    if candidate.is_file():
+                        aux["raw_lane"] = candidate
+                        provenance["raw_lane"] = "evaluation_fallback"
+            if pose is None or not pose.is_file():
+                aux["pose"] = None
+                provenance["pose"] = "synthetic_black"
+
+        item_missing: list[dict[str, str]] = []
+        raw_lane = aux["raw_lane"]
+        if raw_lane is None or not raw_lane.is_file():
+            item_missing.append(
+                {
+                    "inter_tif": str(inter_tif),
+                    "role": "raw_lane",
+                    "expected": str(raw_lane),
+                }
+            )
+        pose = aux["pose"]
+        if provenance["pose"] != "synthetic_black" and (
+            pose is None or not pose.is_file()
+        ):
+            item_missing.append(
+                {
+                    "inter_tif": str(inter_tif),
+                    "role": "pose",
+                    "expected": str(pose),
+                }
+            )
+        if item_missing:
+            unresolved.extend(item_missing)
+            if missing_aux_policy == "skip":
+                continue
+        plan.append(
+            {
+                "inter_tif": inter_tif,
+                "aux": aux,
+                "provenance": provenance,
+            }
+        )
+    return plan, unresolved
 
 
 def _pad_chw(array: np.ndarray, patch_size: int) -> np.ndarray:
@@ -230,6 +303,61 @@ def _close_sequence(left: list[float], right: list[float]) -> bool:
     )
 
 
+def _raster_grid_errors(
+    reference_meta: dict[str, Any], candidate_meta: dict[str, Any]
+) -> list[str]:
+    errors: list[str] = []
+    for field in ("width", "height", "crs", "grid_rows", "grid_cols"):
+        if reference_meta[field] != candidate_meta[field]:
+            errors.append(
+                f"{field} mismatch: reference={reference_meta[field]!r} "
+                f"candidate={candidate_meta[field]!r}"
+            )
+    for field in ("transform", "bounds"):
+        if not _close_sequence(reference_meta[field], candidate_meta[field]):
+            errors.append(
+                f"{field} mismatch: reference={reference_meta[field]} "
+                f"candidate={candidate_meta[field]}"
+            )
+    return errors
+
+
+def validate_fallback_auxiliary_alignment(
+    auxiliary_plan: list[dict[str, Any]], *, patch_size: int
+) -> dict[str, Any]:
+    checked: list[dict[str, str]] = []
+    mismatches: list[dict[str, Any]] = []
+    for item in auxiliary_plan:
+        if item["provenance"]["raw_lane"] != "evaluation_fallback":
+            continue
+        inter_tif = item["inter_tif"]
+        raw_lane_tif = item["aux"]["raw_lane"]
+        if raw_lane_tif is None:
+            raise AssertionError(f"Fallback RawLane was not resolved for {inter_tif}")
+        reference_meta = _raster_grid_metadata(inter_tif, patch_size)
+        candidate_meta = _raster_grid_metadata(raw_lane_tif, patch_size)
+        errors = _raster_grid_errors(reference_meta, candidate_meta)
+        record = {
+            "inter_tif": str(inter_tif),
+            "raw_lane_tif": str(raw_lane_tif),
+        }
+        checked.append(record)
+        if errors:
+            mismatches.append({**record, "errors": errors})
+    report = {
+        "ok": not mismatches,
+        "checked_tif_count": len(checked),
+        "checked": checked,
+        "mismatches": mismatches,
+    }
+    if mismatches:
+        raise ValueError(
+            "Evaluation RawLane fallback alignment failed: "
+            + json.dumps(report, ensure_ascii=False)[:8000]
+        )
+    return report
+
+
 def validate_evaluation_alignment(
     inference_tifs: list[Path],
     evaluation_root: Path,
@@ -251,19 +379,7 @@ def validate_evaluation_alignment(
     for key in sorted(set(inference_by_key) & set(evaluation_by_key)):
         inference_meta = _raster_grid_metadata(inference_by_key[key], patch_size)
         evaluation_meta = _raster_grid_metadata(evaluation_by_key[key], patch_size)
-        errors: list[str] = []
-        for field in ("width", "height", "crs", "grid_rows", "grid_cols"):
-            if inference_meta[field] != evaluation_meta[field]:
-                errors.append(
-                    f"{field} mismatch: inference={inference_meta[field]!r} "
-                    f"evaluation={evaluation_meta[field]!r}"
-                )
-        for field in ("transform", "bounds"):
-            if not _close_sequence(inference_meta[field], evaluation_meta[field]):
-                errors.append(
-                    f"{field} mismatch: inference={inference_meta[field]} "
-                    f"evaluation={evaluation_meta[field]}"
-                )
+        errors = _raster_grid_errors(inference_meta, evaluation_meta)
         if errors:
             mismatches.append(
                 {
@@ -314,6 +430,7 @@ def _build_record(
     scene_id: str,
     inter_tif: Path,
     aux: dict[str, Path | None],
+    auxiliary_provenance: dict[str, str],
     image_paths: list[Path],
     row: int,
     col: int,
@@ -341,7 +458,9 @@ def _build_record(
             "source_tif": str(inter_tif),
             "mask_tif": str(aux["mask"]) if aux["mask"] is not None else None,
             "raw_lane_tif": str(aux["raw_lane"]),
-            "pose_tif": str(aux["pose"]),
+            "pose_tif": str(aux["pose"]) if aux["pose"] is not None else None,
+            "raw_lane_source_dataset": auxiliary_provenance["raw_lane"],
+            "pose_source_dataset": auxiliary_provenance["pose"],
             "row": row,
             "col": col,
             "patch_row": row,
@@ -369,6 +488,7 @@ def _build_record(
             "raw_lane_active_model_input": True,
             "raw_lane_separate_image": True,
             "pose_image_source": _source_path_label(aux["pose"]),
+            "pose_is_synthetic_black": auxiliary_provenance["pose"] == "synthetic_black",
             "input_image_roles": list(IMAGE_ROLES),
             "three_image_prompt_contract_version": PROMPT_CONTRACT_VERSION,
         },
@@ -394,26 +514,7 @@ def prepare_dataset(args: argparse.Namespace) -> dict[str, Any]:
         raise FileNotFoundError(f"No source *_inter.tif files found below {input_root}")
     source_tif_count = len(inter_tifs)
 
-    usable_inter_tifs, missing = partition_inter_tifs_by_auxiliary(inter_tifs)
     missing_aux_policy = str(getattr(args, "missing_aux_policy", "error"))
-    if missing and missing_aux_policy == "error":
-        raise FileNotFoundError(
-            "The E2E source cannot reproduce the 800k three-image training contract; "
-            f"missing auxiliary TIFs={len(missing)}, examples={missing[:10]}"
-        )
-    if missing:
-        skipped_tifs = len({item["inter_tif"] for item in missing})
-        print(
-            "[three-image-e2e-data] WARNING: skipping "
-            f"{skipped_tifs}/{source_tif_count} source TIFs with missing dedicated "
-            f"RawLane/Pose inputs; missing_files={len(missing)} examples={missing[:10]}",
-            flush=True,
-        )
-        inter_tifs = usable_inter_tifs
-    if not inter_tifs:
-        raise FileNotFoundError(
-            "No source TIF can provide the complete clean-BEV/RawLane/Pose input triplet."
-        )
 
     evaluation_root_value = getattr(args, "evaluation_root", None)
     evaluation_root = (
@@ -425,8 +526,35 @@ def prepare_dataset(args: argparse.Namespace) -> dict[str, Any]:
             inter_tifs,
             evaluation_root,
             patch_size=patch_size,
-            require_exact_keys=int(args.max_tifs) <= 0 and not missing,
+            require_exact_keys=int(args.max_tifs) <= 0,
         )
+
+    auxiliary_plan, unresolved = build_auxiliary_plan(
+        inter_tifs,
+        evaluation_root=evaluation_root,
+        missing_aux_policy=missing_aux_policy,
+    )
+    if unresolved and missing_aux_policy != "skip":
+        raise FileNotFoundError(
+            "The E2E source cannot reproduce the 800k three-image training contract; "
+            f"missing auxiliary TIFs={len(unresolved)}, examples={unresolved[:10]}"
+        )
+    if unresolved:
+        skipped_tifs = len({item["inter_tif"] for item in unresolved})
+        print(
+            "[three-image-e2e-data] WARNING: skipping "
+            f"{skipped_tifs}/{source_tif_count} source TIFs with missing dedicated "
+            f"RawLane/Pose inputs; missing_files={len(unresolved)} examples={unresolved[:10]}",
+            flush=True,
+        )
+    if not auxiliary_plan:
+        raise FileNotFoundError(
+            "No source TIF can provide the complete clean-BEV/RawLane/Pose input triplet."
+        )
+    inter_tifs = [item["inter_tif"] for item in auxiliary_plan]
+    fallback_alignment_report = validate_fallback_auxiliary_alignment(
+        auxiliary_plan, patch_size=patch_size
+    )
 
     prompt = three_image_prompt(patch_size, int(args.coord_range))
     if prompt.count("<image>") != 3:
@@ -441,13 +569,20 @@ def prepare_dataset(args: argparse.Namespace) -> dict[str, Any]:
     stop = False
 
     with output_jsonl.open("w", encoding="utf-8") as jsonl_handle:
-        for tif_index, inter_tif in enumerate(inter_tifs, start=1):
-            aux = required_auxiliary_tifs(inter_tif)
+        for tif_index, plan_item in enumerate(auxiliary_plan, start=1):
+            inter_tif = plan_item["inter_tif"]
+            aux = plan_item["aux"]
+            provenance = plan_item["provenance"]
             clean = _read_masked_clean(inter_tif, aux["mask"])
-            if aux["raw_lane"] is None or aux["pose"] is None:
+            if aux["raw_lane"] is None:
                 raise AssertionError(f"Required auxiliary TIF resolution failed for {inter_tif}")
             raw_lane = _read_masked_binary(aux["raw_lane"], aux["mask"])
-            pose = _read_masked_binary(aux["pose"], aux["mask"])
+            if provenance["pose"] == "synthetic_black":
+                pose = np.zeros((3, clean.shape[-2], clean.shape[-1]), dtype=np.uint8)
+            else:
+                if aux["pose"] is None:
+                    raise AssertionError(f"Pose TIF resolution failed for {inter_tif}")
+                pose = _read_masked_binary(aux["pose"], aux["mask"])
             shapes = {tuple(array.shape[-2:]) for array in (clean, raw_lane, pose)}
             if len(shapes) != 1:
                 raise ValueError(
@@ -497,6 +632,7 @@ def prepare_dataset(args: argparse.Namespace) -> dict[str, Any]:
                         scene_id=scene_id,
                         inter_tif=inter_tif,
                         aux=aux,
+                        auxiliary_provenance=provenance,
                         image_paths=relative_paths,
                         row=row,
                         col=col,
@@ -521,6 +657,8 @@ def prepare_dataset(args: argparse.Namespace) -> dict[str, Any]:
                             "black_ratio": ratio,
                             "images": [path.as_posix() for path in relative_paths],
                             "input_image_roles": list(IMAGE_ROLES),
+                            "raw_lane_source_dataset": provenance["raw_lane"],
+                            "pose_source_dataset": provenance["pose"],
                         }
                     )
                     patch_count += 1
@@ -550,16 +688,27 @@ def prepare_dataset(args: argparse.Namespace) -> dict[str, Any]:
         "source_tif_count": source_tif_count,
         "tif_count": len(inter_tifs),
         "missing_aux_policy": missing_aux_policy,
-        "skipped_missing_auxiliary_tif_count": len(
-            {item["inter_tif"] for item in missing}
+        "skipped_missing_auxiliary_tif_count": (
+            len({item["inter_tif"] for item in unresolved})
+            if missing_aux_policy == "skip"
+            else 0
         ),
-        "missing_auxiliary_file_count": len(missing),
-        "missing_auxiliary_files": missing,
+        "missing_auxiliary_file_count": len(unresolved),
+        "missing_auxiliary_files": unresolved,
+        "evaluation_rawlane_fallback_tif_count": sum(
+            item["provenance"]["raw_lane"] == "evaluation_fallback"
+            for item in auxiliary_plan
+        ),
+        "synthetic_black_pose_tif_count": sum(
+            item["provenance"]["pose"] == "synthetic_black"
+            for item in auxiliary_plan
+        ),
         "patch_count": patch_count,
         "skipped_black": skipped_black,
         "infer_jsonl": str(output_jsonl),
         "manifest_json": str(manifest_path),
         "evaluation_alignment": alignment_report,
+        "fallback_auxiliary_alignment": fallback_alignment_report,
     }
     (output_root / "dataset_summary.json").write_text(
         json.dumps(summary, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"

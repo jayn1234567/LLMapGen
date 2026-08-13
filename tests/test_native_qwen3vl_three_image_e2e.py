@@ -12,6 +12,7 @@ from types import SimpleNamespace
 
 import numpy as np
 import pytest
+from PIL import Image
 
 from scripts.tools.merge_native_qwen3vl_inference_shards import merge_shards
 from scripts.tools.prepare_rc_e2e_three_image_local256_dataset import (
@@ -262,7 +263,7 @@ def test_formal_three_image_e2e_entry_requires_checkpoint_and_runs_original_metr
     assert "--model-base \"${QWEN3VL_PATH}\"" in content
     assert "--max-new-tokens \"${MAX_NEW_TOKENS}\"" in content
     assert "PER_DEVICE_INFER_BATCH_SIZE=${PER_DEVICE_INFER_BATCH_SIZE:-1}" in content
-    assert "MISSING_AUX_POLICY=${MISSING_AUX_POLICY:-skip}" in content
+    assert "MISSING_AUX_POLICY=${MISSING_AUX_POLICY:-evaluation_rawlane_black_pose}" in content
     assert '--missing-aux-policy "${MISSING_AUX_POLICY}"' in content
     assert '--per-device-infer-batch-size "${PER_DEVICE_INFER_BATCH_SIZE}"' in content
     assert "RUN_ALL_EVAL=True" in content
@@ -281,6 +282,67 @@ def test_formal_three_image_e2e_entry_requires_checkpoint_and_runs_original_metr
     assert "INTERSECTION_GT_EMPTY_SUPPRESSION=${INTERSECTION_GT_EMPTY_SUPPRESSION:-False}" in content
     assert "eval_local512_predictions_original_intersection_e2e_npu.sh" in content
     assert "RESET_EXISTING_MODEL_OUTPUTS=False" in content
+
+
+def test_builder_can_use_evaluation_rawlane_and_black_pose(monkeypatch, tmp_path):
+    import scripts.tools.prepare_rc_e2e_three_image_local256_dataset as module
+
+    inference_inter, inference_aux = _source_paths(tmp_path / "inference")
+    assert inference_aux["raw_lane"] is not None and inference_aux["pose"] is not None
+    inference_aux["raw_lane"].unlink()
+    inference_aux["pose"].unlink()
+    evaluation_inter, evaluation_aux = _source_paths(tmp_path / "evaluation")
+    assert evaluation_aux["raw_lane"] is not None
+
+    def fake_discover(root):
+        return [evaluation_inter] if Path(root).resolve() == (tmp_path / "evaluation").resolve() else [inference_inter]
+
+    raster_meta = {
+        "width": 256,
+        "height": 256,
+        "crs": "EPSG:32650",
+        "transform": [0.2, 0.0, 1.0, 0.0, -0.2, 2.0, 0.0, 0.0, 1.0],
+        "bounds": [1.0, -49.2, 52.2, 2.0],
+        "grid_rows": 1,
+        "grid_cols": 1,
+    }
+    clean = np.full((3, 256, 256), 17, dtype=np.uint8)
+    raw_lane = np.zeros((3, 256, 256), dtype=np.uint8)
+    raw_lane[:, 20:24, 30:34] = 255
+    monkeypatch.setattr(module, "discover_inter_tifs", fake_discover)
+    monkeypatch.setattr(module, "scene_id_for_tif", lambda _: "scene_001")
+    monkeypatch.setattr(module, "_raster_grid_metadata", lambda *_: raster_meta)
+    monkeypatch.setattr(module, "_read_masked_clean", lambda *_: clean)
+    monkeypatch.setattr(module, "_read_masked_binary", lambda *_: raw_lane)
+
+    output = tmp_path / "prepared"
+    summary = prepare_dataset(
+        SimpleNamespace(
+            input_root=tmp_path / "inference",
+            evaluation_root=tmp_path / "evaluation",
+            output_root=output,
+            patch_size=256,
+            stride=256,
+            coord_range=1000,
+            black_ratio_threshold=1.0,
+            missing_aux_policy="evaluation_rawlane_black_pose",
+            max_tifs=0,
+            max_patches=0,
+        )
+    )
+
+    record = json.loads((output / "infer.jsonl").read_text(encoding="utf-8"))
+    pose_image = np.asarray(Image.open(output / record["pose_image"]))
+    assert summary["patch_count"] == 1
+    assert summary["evaluation_rawlane_fallback_tif_count"] == 1
+    assert summary["synthetic_black_pose_tif_count"] == 1
+    assert summary["fallback_auxiliary_alignment"]["ok"] is True
+    assert record["meta"]["raw_lane_tif"] == str(evaluation_aux["raw_lane"])
+    assert record["meta"]["pose_tif"] is None
+    assert record["meta"]["raw_lane_source_dataset"] == "evaluation_fallback"
+    assert record["meta"]["pose_source_dataset"] == "synthetic_black"
+    assert record["meta"]["pose_is_synthetic_black"] is True
+    assert not pose_image.any()
 
 
 def test_native_infer_reports_di_throughput():

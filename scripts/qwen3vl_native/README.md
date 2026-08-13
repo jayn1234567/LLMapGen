@@ -27,11 +27,15 @@ CRS, affine transform, bounds, and patch grid. The builder uses the exact
 `three_image_roles_concise_v2` prompt contract from training and fails before
 model loading if an auxiliary raster is missing or misaligned.
 
-The formal launcher sets `MISSING_AUX_POLICY=skip`: a source TIF that lacks
-either dedicated RawLane or Pose is omitted rather than receiving a fabricated
-input, and every omitted file is recorded in `dataset_summary.json`. The Python
-builder itself defaults to `error`; set `MISSING_AUX_POLICY=error` on the
-launcher when complete source coverage is mandatory.
+The formal launcher sets
+`MISSING_AUX_POLICY=evaluation_rawlane_black_pose`. When an inference-source TIF
+lacks either auxiliary raster, its aligned dedicated
+`lane_patch_tif/<prefix>_rawlane.tif` is read from the GT evaluation archive and
+Pose is supplied as an explicitly labelled, same-size black image. Counts and
+per-record provenance are written to `dataset_summary.json` and inference JSONL
+metadata. No `*_lane.tif` composited BEV fallback is allowed. The Python builder
+itself defaults to `error`; set `MISSING_AUX_POLICY=error` when synthetic Pose
+must be forbidden, or `skip` to omit incomplete TIFs.
 
 Inference defaults to physical NPUs `2,3,4,5,6,7`. It launches one independent
 native 8B process per NPU. `PER_DEVICE_INFER_BATCH_SIZE` controls the number of

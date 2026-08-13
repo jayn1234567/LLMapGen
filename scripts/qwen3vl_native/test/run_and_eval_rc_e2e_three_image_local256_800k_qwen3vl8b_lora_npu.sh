@@ -59,6 +59,7 @@ MAX_NEW_TOKENS=${MAX_NEW_TOKENS:-4096}
 LOAD_STAGGER_SECONDS=${LOAD_STAGGER_SECONDS:-10}
 BLACK_RATIO_THRESHOLD=${BLACK_RATIO_THRESHOLD:-1.0}
 REBUILD_E2E_DATASET=${REBUILD_E2E_DATASET:-True}
+MISSING_AUX_POLICY=${MISSING_AUX_POLICY:-skip}
 
 # This keeps historical E2E comparisons aligned. It is a GT-assisted oracle
 # diagnostic and can be disabled for an unassisted production metric.
@@ -216,6 +217,7 @@ echo "Visible NPUs:       ${ASCEND_RT_VISIBLE_DEVICES}"
 echo "NPU processes:      ${NPROC_PER_NODE}"
 echo "Per-device batch:   ${PER_DEVICE_INFER_BATCH_SIZE}"
 echo "Images per sample:  3 (clean BEV, Raw-Lane, Pose)"
+echo "Missing aux policy:  ${MISSING_AUX_POLICY}"
 echo "View/coordinates:   local256 / norm1000"
 echo "Generation cap:     ${MAX_NEW_TOKENS}"
 echo "GT-empty suppression:${GT_EMPTY_SUPPRESSION}"
@@ -253,7 +255,8 @@ if is_true "${REBUILD_E2E_DATASET}" || [ ! -s "${INFERENCE_DATASET_ROOT}/infer.j
     --patch-size 256 \
     --stride 256 \
     --coord-range 1000 \
-    --black-ratio-threshold "${BLACK_RATIO_THRESHOLD}"
+    --black-ratio-threshold "${BLACK_RATIO_THRESHOLD}" \
+    --missing-aux-policy "${MISSING_AUX_POLICY}"
 else
   echo "[native-three-image-e2e] reuse inference dataset: ${INFERENCE_DATASET_ROOT}"
 fi

@@ -45,6 +45,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--stride", type=int, default=256)
     parser.add_argument("--coord-range", type=int, default=1000)
     parser.add_argument("--black-ratio-threshold", type=float, default=1.0)
+    parser.add_argument(
+        "--missing-aux-policy",
+        choices=("error", "skip"),
+        default="error",
+        help=(
+            "How to handle a source TIF that cannot provide both dedicated RawLane and "
+            "Pose rasters. 'skip' records every omission in dataset_summary.json."
+        ),
+    )
     parser.add_argument("--max-tifs", type=int, default=0)
     parser.add_argument("--max-patches", type=int, default=0)
     return parser.parse_args()
@@ -90,6 +99,24 @@ def required_auxiliary_tifs(inter_tif: Path) -> dict[str, Path | None]:
             inter_tif, "pose", directory="lane_patch_tif"
         ),
     }
+
+
+def partition_inter_tifs_by_auxiliary(
+    inter_tifs: list[Path],
+) -> tuple[list[Path], list[dict[str, str]]]:
+    usable: list[Path] = []
+    missing: list[dict[str, str]] = []
+    for inter_tif in inter_tifs:
+        tif_missing = False
+        for role, path in required_auxiliary_tifs(inter_tif).items():
+            if role != "mask" and (path is None or not path.is_file()):
+                tif_missing = True
+                missing.append(
+                    {"inter_tif": str(inter_tif), "role": role, "expected": str(path)}
+                )
+        if not tif_missing:
+            usable.append(inter_tif)
+    return usable, missing
 
 
 def _pad_chw(array: np.ndarray, patch_size: int) -> np.ndarray:
@@ -365,6 +392,28 @@ def prepare_dataset(args: argparse.Namespace) -> dict[str, Any]:
         inter_tifs = inter_tifs[: args.max_tifs]
     if not inter_tifs:
         raise FileNotFoundError(f"No source *_inter.tif files found below {input_root}")
+    source_tif_count = len(inter_tifs)
+
+    usable_inter_tifs, missing = partition_inter_tifs_by_auxiliary(inter_tifs)
+    missing_aux_policy = str(getattr(args, "missing_aux_policy", "error"))
+    if missing and missing_aux_policy == "error":
+        raise FileNotFoundError(
+            "The E2E source cannot reproduce the 800k three-image training contract; "
+            f"missing auxiliary TIFs={len(missing)}, examples={missing[:10]}"
+        )
+    if missing:
+        skipped_tifs = len({item["inter_tif"] for item in missing})
+        print(
+            "[three-image-e2e-data] WARNING: skipping "
+            f"{skipped_tifs}/{source_tif_count} source TIFs with missing dedicated "
+            f"RawLane/Pose inputs; missing_files={len(missing)} examples={missing[:10]}",
+            flush=True,
+        )
+        inter_tifs = usable_inter_tifs
+    if not inter_tifs:
+        raise FileNotFoundError(
+            "No source TIF can provide the complete clean-BEV/RawLane/Pose input triplet."
+        )
 
     evaluation_root_value = getattr(args, "evaluation_root", None)
     evaluation_root = (
@@ -376,18 +425,7 @@ def prepare_dataset(args: argparse.Namespace) -> dict[str, Any]:
             inter_tifs,
             evaluation_root,
             patch_size=patch_size,
-            require_exact_keys=int(args.max_tifs) <= 0,
-        )
-
-    missing: list[dict[str, str]] = []
-    for inter_tif in inter_tifs:
-        for role, path in required_auxiliary_tifs(inter_tif).items():
-            if role != "mask" and (path is None or not path.is_file()):
-                missing.append({"inter_tif": str(inter_tif), "role": role, "expected": str(path)})
-    if missing:
-        raise FileNotFoundError(
-            "The E2E source cannot reproduce the 800k three-image training contract; "
-            f"missing auxiliary TIFs={len(missing)}, examples={missing[:10]}"
+            require_exact_keys=int(args.max_tifs) <= 0 and not missing,
         )
 
     prompt = three_image_prompt(patch_size, int(args.coord_range))
@@ -509,7 +547,14 @@ def prepare_dataset(args: argparse.Namespace) -> dict[str, Any]:
         "prompt_contract_version": PROMPT_CONTRACT_VERSION,
         "black_ratio_threshold": float(args.black_ratio_threshold),
         "black_ratio_comparison": ">=",
+        "source_tif_count": source_tif_count,
         "tif_count": len(inter_tifs),
+        "missing_aux_policy": missing_aux_policy,
+        "skipped_missing_auxiliary_tif_count": len(
+            {item["inter_tif"] for item in missing}
+        ),
+        "missing_auxiliary_file_count": len(missing),
+        "missing_auxiliary_files": missing,
         "patch_count": patch_count,
         "skipped_black": skipped_black,
         "infer_jsonl": str(output_jsonl),

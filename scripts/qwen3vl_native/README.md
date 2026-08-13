@@ -27,6 +27,12 @@ CRS, affine transform, bounds, and patch grid. The builder uses the exact
 `three_image_roles_concise_v2` prompt contract from training and fails before
 model loading if an auxiliary raster is missing or misaligned.
 
+The formal launcher sets `MISSING_AUX_POLICY=skip`: a source TIF that lacks
+either dedicated RawLane or Pose is omitted rather than receiving a fabricated
+input, and every omitted file is recorded in `dataset_summary.json`. The Python
+builder itself defaults to `error`; set `MISSING_AUX_POLICY=error` on the
+launcher when complete source coverage is mandatory.
+
 Inference defaults to physical NPUs `2,3,4,5,6,7`. It launches one independent
 native 8B process per NPU. `PER_DEVICE_INFER_BATCH_SIZE` controls the number of
 three-image samples passed to one native `generate()` call on each NPU; the

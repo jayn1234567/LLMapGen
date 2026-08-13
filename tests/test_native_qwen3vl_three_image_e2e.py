@@ -18,6 +18,7 @@ from scripts.tools.prepare_rc_e2e_three_image_local256_dataset import (
     IMAGE_ROLES,
     PROMPT_CONTRACT_VERSION,
     prepare_dataset,
+    partition_inter_tifs_by_auxiliary,
     required_auxiliary_tifs,
     validate_evaluation_alignment,
 )
@@ -158,6 +159,19 @@ def test_three_image_e2e_builder_rejects_missing_pose(tmp_path):
         prepare_dataset(args)
 
 
+def test_three_image_e2e_builder_can_explicitly_skip_incomplete_source_tif(tmp_path):
+    complete, _ = _source_paths(tmp_path / "complete")
+    incomplete, auxiliary = _source_paths(tmp_path / "incomplete")
+    assert auxiliary["pose"] is not None
+    auxiliary["pose"].unlink()
+
+    usable, missing = partition_inter_tifs_by_auxiliary([complete, incomplete])
+    assert usable == [complete]
+    assert len(missing) == 1
+    assert missing[0]["inter_tif"] == str(incomplete)
+    assert missing[0]["role"] == "pose"
+
+
 def test_inference_and_evaluation_raster_alignment_is_required(monkeypatch, tmp_path):
     import scripts.tools.prepare_rc_e2e_three_image_local256_dataset as module
 
@@ -248,6 +262,8 @@ def test_formal_three_image_e2e_entry_requires_checkpoint_and_runs_original_metr
     assert "--model-base \"${QWEN3VL_PATH}\"" in content
     assert "--max-new-tokens \"${MAX_NEW_TOKENS}\"" in content
     assert "PER_DEVICE_INFER_BATCH_SIZE=${PER_DEVICE_INFER_BATCH_SIZE:-1}" in content
+    assert "MISSING_AUX_POLICY=${MISSING_AUX_POLICY:-skip}" in content
+    assert '--missing-aux-policy "${MISSING_AUX_POLICY}"' in content
     assert '--per-device-infer-batch-size "${PER_DEVICE_INFER_BATCH_SIZE}"' in content
     assert "RUN_ALL_EVAL=True" in content
     assert "RUN_LOW_EVAL=True" in content

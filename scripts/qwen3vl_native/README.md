@@ -78,6 +78,38 @@ EVALUATION_E2E_DATA_OBS_PATH=obs://yw-ads-training-2-gy1/data/external/personal/
 The isolated native environment is created only when its activation script is
 absent. Existing environments are reused without reinstalling packages.
 
+## Three-Image Context512/ROI256 800k LoRA Maxlen3072 E2E
+
+```text
+test/run_and_eval_rc_e2e_three_image_context512_roi256_800k_qwen3vl8b_lora_maxlen3072_npu.sh
+```
+
+This is the end-to-end entry for the completed three-image context512/ROI256
+800k native-Qwen3-VL-8B LoRA run trained with `MODEL_MAX_LENGTH=3072`. It
+requires `CHECKPOINT_OBS_PATH` (or accepts the checkpoint OBS URI as its first
+argument), downloads the native base and LoRA adapter, and runs four independent
+NPU shards by default on physical devices `0,1,2,3`. Per-device generation batch
+defaults to `32` and remains configurable with `PER_DEVICE_INFER_BATCH_SIZE`.
+
+The clean BEV, Raw-Lane, and Pose rasters are aligned before cropping. Every
+model input is a 512x512 context crop centered on the current 256x256 target
+cell; the supervised ROI is `[128,128,384,384)`. Black-ratio filtering is based
+only on the target ROI. Model coordinates remain norm1000 relative to ROI256,
+so original-E2E formatting intentionally keeps `PREDICTION_COORD_SCALE=0.256`
+and a 256-pixel placement grid. Using `0.512` here would shift and enlarge the
+whole-map geometry.
+
+The pipeline verifies inference/evaluation raster alignment, exact three-image
+roles and prompt tokens, and complete merged shard output. It then applies the
+same optional lane GT-empty suppression as the local256 entry, runs untouched
+original all/low/high lane evaluation, and evaluates intersections from the raw
+prediction JSON without a second model pass.
+
+```bash
+CHECKPOINT_OBS_PATH="obs://.../checkpoint-N/" \
+bash scripts/qwen3vl_native/test/run_and_eval_rc_e2e_three_image_context512_roi256_800k_qwen3vl8b_lora_maxlen3072_npu.sh
+```
+
 ## Three-Image Local256 800k LoRA
 
 ```text
@@ -233,6 +265,7 @@ NPU launchers default to:
 | Script | Purpose |
 |---|---|
 | `test/run_and_eval_rc_e2e_three_image_local256_800k_qwen3vl8b_lora_npu.sh` | Full three-image local256 native-Qwen3-VL-8B LoRA E2E inference plus original all/low/high evaluation. |
+| `test/run_and_eval_rc_e2e_three_image_context512_roi256_800k_qwen3vl8b_lora_maxlen3072_npu.sh` | Full three-image context512/center-ROI256 native-Qwen3-VL-8B LoRA maxlen3072 E2E inference, original all/low/high lane evaluation, and intersection evaluation. |
 | `test/test_local_stage_a_lane_intersection_three_image_local256_800k_qwen3vl8b_lora_fixed1100_npu.sh` | Ascend patch evaluation that builds and freezes a 300/300/300/200 difficulty-balanced 1100-sample three-image set, evaluates checkpoint-36000 and checkpoint-50000 sequentially, and writes an explicit comparison report. |
 | `test/test_stage_a_lane_intersection_qwen3vl_native_npu.sh` | Inference/eval: Stage A, lane+intersection, native Qwen3-VL architecture; writes eval and visualization outputs. |
 | `test/test_stage_b_lane_intersection_qwen3vl_native_npu.sh` | Inference/eval: Stage B, lane+intersection, native Qwen3-VL architecture with sequential state-update incoming hints; writes eval and visualization outputs. |

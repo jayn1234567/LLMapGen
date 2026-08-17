@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build the three-image local256 native-Qwen3-VL E2E inference dataset."""
+"""Build three-image local256 or context512/ROI256 native-Qwen3-VL E2E data."""
 
 from __future__ import annotations
 
@@ -13,7 +13,11 @@ import numpy as np
 from PIL import Image
 import rasterio
 
-from data_process.state_update_dataset_common import make_prompt
+from data_process.state_update_dataset_common import (
+    centered_target_roi,
+    extract_centered_context,
+    make_prompt,
+)
 from scripts.tools.prepare_rc_e2e_inference_dataset import (
     discover_inter_tifs,
     scene_id_for_tif,
@@ -21,6 +25,8 @@ from scripts.tools.prepare_rc_e2e_inference_dataset import (
 
 
 PROMPT_CONTRACT_VERSION = "three_image_roles_concise_v2"
+VIEW_LOCAL256 = "local256"
+VIEW_CONTEXT512_ROI256 = "context512_roi256"
 IMAGE_ROLES = (
     "bev_road_structure",
     "pv_camera_raw_lane",
@@ -41,7 +47,13 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument("--output-root", type=Path, required=True)
+    parser.add_argument(
+        "--view-mode",
+        choices=(VIEW_LOCAL256, VIEW_CONTEXT512_ROI256),
+        default=VIEW_LOCAL256,
+    )
     parser.add_argument("--patch-size", type=int, default=256)
+    parser.add_argument("--context-size", type=int, default=512)
     parser.add_argument("--stride", type=int, default=256)
     parser.add_argument("--coord-range", type=int, default=1000)
     parser.add_argument("--black-ratio-threshold", type=float, default=1.0)
@@ -253,7 +265,7 @@ def _image_chunk_to_pil(chunk: np.ndarray) -> Image.Image:
     return Image.fromarray(array)
 
 
-def three_image_prompt(patch_size: int, coord_range: int) -> str:
+def three_image_prompt(patch_size: int, context_size: int, coord_range: int) -> str:
     return make_prompt(
         True,
         [],
@@ -262,7 +274,7 @@ def three_image_prompt(patch_size: int, coord_range: int) -> str:
         coord_mode="norm1000",
         coord_range=coord_range,
         patch_size=patch_size,
-        context_size=patch_size,
+        context_size=context_size,
         raw_lane_overlay=False,
         raw_lane_separate_image=True,
         pose_second_image=True,
@@ -435,6 +447,8 @@ def _build_record(
     row: int,
     col: int,
     patch_size: int,
+    context_size: int,
+    view_mode: str,
     coord_range: int,
     source_width: int,
     source_height: int,
@@ -444,6 +458,7 @@ def _build_record(
 ) -> dict[str, Any]:
     prefix = inter_tif.stem.removesuffix("_inter")
     sample_id = f"{scene_id}_{prefix}_{row}_{col}"
+    target_roi = centered_target_roi(patch_size, context_size)
     return {
         "id": sample_id,
         "image": image_paths[0].as_posix(),
@@ -472,10 +487,11 @@ def _build_record(
             "patch_width": patch_size,
             "patch_height": patch_size,
             "target_size": patch_size,
-            "context_image_size": patch_size,
-            "input_image_size": patch_size,
-            "target_roi_in_image": [0, 0, patch_size, patch_size],
-            "view_mode": "local256",
+            "context_size": context_size,
+            "context_image_size": context_size,
+            "input_image_size": context_size,
+            "target_roi_in_image": target_roi,
+            "view_mode": view_mode,
             "coord_mode": "norm1000",
             "coord_system": f"patch_norm{coord_range}",
             "coord_range": coord_range,
@@ -500,8 +516,19 @@ def prepare_dataset(args: argparse.Namespace) -> dict[str, Any]:
     input_root = Path(args.input_root).resolve()
     output_root = Path(args.output_root).resolve()
     patch_size = int(args.patch_size)
+    view_mode = str(getattr(args, "view_mode", VIEW_LOCAL256))
+    context_size = (
+        patch_size
+        if view_mode == VIEW_LOCAL256
+        else int(getattr(args, "context_size", 512))
+    )
     if patch_size != 256 or int(args.stride) != patch_size:
-        raise ValueError("The 800k three-image local256 recipe requires patch-size=stride=256.")
+        raise ValueError("The 800k three-image recipes require patch-size=stride=256.")
+    if view_mode not in {VIEW_LOCAL256, VIEW_CONTEXT512_ROI256}:
+        raise ValueError(f"Unsupported three-image E2E view mode: {view_mode}")
+    if view_mode == VIEW_CONTEXT512_ROI256 and context_size != 512:
+        raise ValueError("context512_roi256 requires --context-size=512.")
+    centered_target_roi(patch_size, context_size)
     if int(args.coord_range) != 1000:
         raise ValueError("The 800k three-image local256 recipe requires coord-range=1000.")
     if not 0.0 <= float(args.black_ratio_threshold) <= 1.0:
@@ -556,7 +583,7 @@ def prepare_dataset(args: argparse.Namespace) -> dict[str, Any]:
         auxiliary_plan, patch_size=patch_size
     )
 
-    prompt = three_image_prompt(patch_size, int(args.coord_range))
+    prompt = three_image_prompt(patch_size, context_size, int(args.coord_range))
     if prompt.count("<image>") != 3:
         raise AssertionError("Three-image inference prompt must contain exactly three <image> tokens.")
 
@@ -614,9 +641,15 @@ def prepare_dataset(args: argparse.Namespace) -> dict[str, Any]:
                         skipped_black += 1
                         continue
                     chunks = (
-                        clean_patch,
-                        raw_lane[:, y0 : y0 + patch_size, x0 : x0 + patch_size],
-                        pose[:, y0 : y0 + patch_size, x0 : x0 + patch_size],
+                        extract_centered_context(
+                            clean, x0, y0, patch_size, context_size
+                        ),
+                        extract_centered_context(
+                            raw_lane, x0, y0, patch_size, context_size
+                        ),
+                        extract_centered_context(
+                            pose, x0, y0, patch_size, context_size
+                        ),
                     )
                     relative_paths = [
                         _relative_image("images", scene_id, inter_tif.stem, row, col),
@@ -637,6 +670,8 @@ def prepare_dataset(args: argparse.Namespace) -> dict[str, Any]:
                         row=row,
                         col=col,
                         patch_size=patch_size,
+                        context_size=context_size,
+                        view_mode=view_mode,
                         coord_range=int(args.coord_range),
                         source_width=source_width,
                         source_height=source_height,
@@ -675,8 +710,11 @@ def prepare_dataset(args: argparse.Namespace) -> dict[str, Any]:
         "input_root": str(input_root),
         "evaluation_root": str(evaluation_root) if evaluation_root is not None else None,
         "output_root": str(output_root),
-        "view_mode": "local256",
+        "view_mode": view_mode,
         "patch_size": patch_size,
+        "target_size": patch_size,
+        "context_size": context_size,
+        "target_roi_in_image": centered_target_roi(patch_size, context_size),
         "stride": patch_size,
         "coord_mode": "norm1000",
         "coord_range": int(args.coord_range),

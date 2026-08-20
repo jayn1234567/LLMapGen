@@ -377,7 +377,8 @@ for rank in "${!DEVICE_IDS[@]}"; do
     export ASCEND_RT_VISIBLE_DEVICES="${device}"
     export ASCEND_VISIBLE_DEVICES="${device}"
     export NPU_VISIBLE_DEVICES="${device}"
-    python -m mllm.native_qwen3vl.infer \
+    set -o pipefail
+    python -u -m mllm.native_qwen3vl.infer \
       --model-name-or-path "${CHECKPOINT_DIR}" \
       --model-base "${QWEN3VL_PATH}" \
       --test-json "${shard_jsonl}" \
@@ -396,8 +397,8 @@ for rank in "${!DEVICE_IDS[@]}"; do
       --include-intersections \
       --system-prompt "${SYSTEM_PROMPT}" \
       --skip-eval \
-      --skip-visualize
-  ) >"${shard_log}" 2>&1 &
+      --skip-visualize 2>&1 | sed -u "s/^/[native-infer rank=${rank} npu=${device}] /" | tee "${shard_log}"
+  ) &
   pids+=("$!")
   echo "[native-three-image-e2e] launched rank=${rank} physical_npu=${device} pid=$! log=${shard_log}"
   if [ "${LOAD_STAGGER_SECONDS}" -gt 0 ] && [ "${rank}" -lt "$((NPROC_PER_NODE - 1))" ]; then

@@ -475,8 +475,17 @@ def _completion_token_ids(output_ids, input_ids, attention_mask, row_index: int)
     return output
 
 
-def run_batch(model, processor, batch_records, args, device):
+def run_batch(model, processor, batch_records, args, device, *, batch_number=1, total_batches=1):
     """Run one native generate call for a phase-A batch."""
+    batch_size = len(batch_records)
+    image_count = 0
+    first_id = batch_records[0][1].get("id", batch_records[0][0]) if batch_records else "none"
+    print(
+        f"[native-infer] batch={batch_number}/{total_batches} prepare_start "
+        f"samples={batch_size} first_id={first_id}",
+        flush=True,
+    )
+    prepare_started = time.perf_counter()
     prompts = []
     image_paths_batch = []
     rendered_prompts = []
@@ -489,6 +498,7 @@ def run_batch(model, processor, batch_records, args, device):
             image_values = [image_values]
         if not isinstance(image_values, list) or not image_values:
             raise ValueError(f"record has no image/images: {record.get('id', idx)}")
+        image_count += len(image_values)
         image_paths = [resolve_image_path(value, args.image_folder) for value in image_values]
         prompt = record["conversations"][0]["value"] if record.get("conversations") else args.prompt
         images = []
@@ -519,6 +529,13 @@ def run_batch(model, processor, batch_records, args, device):
     inputs, input_lengths = _merge_native_processor_inputs(processor_inputs, pad_token_id)
     padded_input_len = int(inputs["input_ids"].shape[1])
     inputs = move_inputs_to_device(inputs, device)
+    prepare_elapsed = time.perf_counter() - prepare_started
+    print(
+        f"[native-infer] batch={batch_number}/{total_batches} prepare_done "
+        f"samples={batch_size} images={image_count} padded_input_tokens={padded_input_len} "
+        f"elapsed={prepare_elapsed:.2f}s",
+        flush=True,
+    )
 
     generation_config = getattr(model, "generation_config", None)
     generation_pad_id = getattr(generation_config, "pad_token_id", None) or pad_token_id
@@ -536,8 +553,20 @@ def run_batch(model, processor, batch_records, args, device):
     if args.temperature > 0:
         kwargs["temperature"] = args.temperature
 
+    print(
+        f"[native-infer] batch={batch_number}/{total_batches} generate_start "
+        f"samples={batch_size} max_new_tokens={args.max_new_tokens}",
+        flush=True,
+    )
+    generate_started = time.perf_counter()
     with torch.inference_mode():
         output_ids = model.generate(**kwargs)
+    generate_elapsed = time.perf_counter() - generate_started
+    print(
+        f"[native-infer] batch={batch_number}/{total_batches} generate_done "
+        f"samples={batch_size} elapsed={generate_elapsed:.2f}s",
+        flush=True,
+    )
     if output_ids.ndim == 1:
         output_ids = output_ids.unsqueeze(0)
     if int(output_ids.shape[0]) != len(batch_records):
@@ -582,8 +611,27 @@ def run_phase_a(model, processor, records, args, device):
     batch_size = int(args.per_device_infer_batch_size)
     if batch_size < 1:
         raise ValueError("--per-device-infer-batch-size must be >= 1")
-    for start in range(0, len(records), batch_size):
-        results.extend(run_batch(model, processor, records[start:start + batch_size], args, device))
+    total_records = len(records)
+    total_batches = math.ceil(total_records / batch_size) if total_records else 0
+    phase_started = time.perf_counter()
+    for batch_number, start in enumerate(range(0, total_records, batch_size), start=1):
+        batch_results = run_batch(
+            model,
+            processor,
+            records[start:start + batch_size],
+            args,
+            device,
+            batch_number=batch_number,
+            total_batches=total_batches,
+        )
+        results.extend(batch_results)
+        elapsed = max(time.perf_counter() - phase_started, 1e-9)
+        print(
+            f"[native-infer] progress processed={len(results)}/{total_records} "
+            f"batch={batch_number}/{total_batches} "
+            f"throughput={len(results) / elapsed:.2f} samples/s/npu",
+            flush=True,
+        )
     return results
 
 
@@ -814,6 +862,12 @@ def main():
         args.include_intersections = True
     if args.per_device_infer_batch_size < 1:
         raise ValueError("--per-device-infer-batch-size must be >= 1")
+
+    print(
+        f"[native-infer] model_ready device={device} samples={len(indexed_records)} "
+        f"batch_size={args.per_device_infer_batch_size} phase={args.phase}",
+        flush=True,
+    )
 
     inference_started = time.perf_counter()
     if args.phase == "phase_b":

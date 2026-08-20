@@ -26,6 +26,7 @@ ENTRY = (
     "run_and_eval_rc_e2e_three_image_context512_roi256_800k_"
     "qwen3vl8b_lora_maxlen3072_npu.sh"
 )
+NATIVE_INFER = REPO_ROOT / "mllm/native_qwen3vl/infer.py"
 
 
 def _source_paths(tmp_path: Path) -> Path:
@@ -153,3 +154,23 @@ def test_context512_maxlen3072_entry_preserves_original_roi256_grid_contract():
     assert "RUN_HIGH_EVAL=True" in content
     assert "GT_EMPTY_SUPPRESSION=${GT_EMPTY_SUPPRESSION:-True}" in content
     assert 'PREDICTION_DIR="${RAW_RESULT_DIR}"' in content
+
+
+def test_context512_entry_streams_each_native_shard_log_to_the_terminal():
+    content = ENTRY.read_text(encoding="utf-8")
+
+    assert "python -u -m mllm.native_qwen3vl.infer" in content
+    assert 'sed -u "s/^/[native-infer rank=${rank} npu=${device}] /"' in content
+    assert '| tee "${shard_log}"' in content
+    assert ') >"${shard_log}" 2>&1 &' not in content
+
+
+def test_native_infer_reports_first_batch_stages_and_cumulative_progress():
+    content = NATIVE_INFER.read_text(encoding="utf-8")
+
+    assert "prepare_start" in content
+    assert "prepare_done" in content
+    assert "generate_start" in content
+    assert "generate_done" in content
+    assert "progress processed=" in content
+    assert "model_ready device=" in content

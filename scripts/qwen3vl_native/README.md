@@ -90,6 +90,11 @@ requires `CHECKPOINT_OBS_PATH` (or accepts the checkpoint OBS URI as its first
 argument), downloads the native base and LoRA adapter, and runs four independent
 NPU shards by default on physical devices `0,1,2,3`. Per-device generation batch
 defaults to `32` and remains configurable with `PER_DEVICE_INFER_BATCH_SIZE`.
+Each shard is still saved under `inference/logs/shard_*.log`, while the same
+output is streamed to the job terminal with its rank and physical-NPU prefix.
+The native inference loop reports image preparation, generation start/end, and
+cumulative `processed/total` progress for every batch, including the first NPU
+compile-heavy batch.
 
 The clean BEV, Raw-Lane, and Pose rasters are aligned before cropping. Every
 model input is a 512x512 context crop centered on the current 256x256 target

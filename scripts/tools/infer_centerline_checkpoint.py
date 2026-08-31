@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import argparse
+import heapq
 import json
 import sys
 import time
@@ -87,6 +88,145 @@ def silence_non_primary_rank_output():
 
 def rank_json_path(path: Path, rank: int) -> Path:
     return path.with_name(f"{path.stem}_rank{rank:05d}{path.suffix}")
+
+
+def resolve_record_image(record: dict) -> str:
+    """Resolve the single image consumed by the Stage-A inference engine."""
+    image = record.get("image")
+    if image is None:
+        images = record.get("images")
+        if isinstance(images, str):
+            image = images
+        elif isinstance(images, list):
+            if len(images) != 1:
+                raise ValueError(
+                    "Stage-A checkpoint inference expects one image per record; "
+                    f"got {len(images)} in record {record.get('id', '<unknown>')}."
+                )
+            image = images[0]
+    if not isinstance(image, str) or not image.strip():
+        raise ValueError(
+            "Inference record has no usable image path in 'image' or single-item 'images': "
+            f"{record.get('id', '<unknown>')}"
+        )
+    return image.strip()
+
+
+def iter_json_records(path: Path):
+    """Yield indexed JSON records without materializing a JSONL file."""
+    with path.open("r", encoding="utf-8-sig") as handle:
+        first = handle.read(1)
+        while first and first.isspace():
+            first = handle.read(1)
+        handle.seek(0)
+        if first == "[":
+            payload = json.load(handle)
+            if not isinstance(payload, list):
+                raise ValueError(f"Expected a JSON array in {path}")
+            for index, record in enumerate(payload):
+                if not isinstance(record, dict):
+                    raise ValueError(f"Record {index} in {path} is not an object")
+                yield index, record
+            return
+
+        index = 0
+        for line_number, raw_line in enumerate(handle, start=1):
+            if not raw_line.strip():
+                continue
+            try:
+                record = json.loads(raw_line)
+            except json.JSONDecodeError as exc:
+                raise ValueError(f"Invalid JSON at line {line_number} in {path}") from exc
+            if not isinstance(record, dict):
+                raise ValueError(f"Record {index} in {path} is not an object")
+            yield index, record
+            index += 1
+
+
+def load_completed_jsonl_indices(path: Path) -> set[int]:
+    """Read completed stream rows and truncate only an incomplete final row."""
+    if not path.is_file():
+        return set()
+    completed: set[int] = set()
+    with path.open("rb+") as handle:
+        while True:
+            offset = handle.tell()
+            raw_line = handle.readline()
+            if not raw_line:
+                break
+            if not raw_line.strip():
+                continue
+            try:
+                payload = json.loads(raw_line.decode("utf-8"))
+            except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+                if not raw_line.endswith(b"\n"):
+                    handle.seek(offset)
+                    handle.truncate()
+                    break
+                raise ValueError(f"Malformed completed inference row in {path}") from exc
+            if not isinstance(payload, dict) or not isinstance(payload.get("idx"), int):
+                raise ValueError(f"Completed inference row has no integer idx: {path}")
+            index = int(payload["idx"])
+            if index in completed:
+                raise ValueError(f"Duplicate completed inference idx={index}: {path}")
+            completed.add(index)
+    return completed
+
+
+def merge_rank_jsonl(output_path: Path, world_size: int) -> int:
+    """Merge rank-local streams in input order with bounded memory."""
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    handles = []
+    heap = []
+
+    def read_next(handle, rank: int):
+        for raw_line in handle:
+            if not raw_line.strip():
+                continue
+            try:
+                payload = json.loads(raw_line)
+            except json.JSONDecodeError as exc:
+                raise ValueError(f"Malformed rank inference row: {handle.name}") from exc
+            if not isinstance(payload, dict) or not isinstance(payload.get("idx"), int):
+                raise ValueError(f"Rank inference row has no integer idx: {handle.name}")
+            return int(payload["idx"]), rank, payload
+        return None
+
+    temporary = output_path.with_name(f".{output_path.name}.tmp.{os.getpid()}")
+    count = 0
+    last_idx = None
+    try:
+        for rank in range(world_size):
+            rank_path = rank_json_path(output_path, rank)
+            if not rank_path.is_file():
+                raise FileNotFoundError(f"Missing rank inference output: {rank_path}")
+            handle = rank_path.open("r", encoding="utf-8")
+            handles.append(handle)
+            first = read_next(handle, rank)
+            if first is not None:
+                heapq.heappush(heap, first)
+
+        with temporary.open("w", encoding="utf-8") as destination:
+            while heap:
+                index, rank, payload = heapq.heappop(heap)
+                if last_idx is not None and index <= last_idx:
+                    raise ValueError(f"Duplicate or unsorted inference idx={index}")
+                destination.write(json.dumps(payload, ensure_ascii=False, separators=(",", ":")))
+                destination.write("\n")
+                count += 1
+                last_idx = index
+                next_item = read_next(handles[rank], rank)
+                if next_item is not None:
+                    heapq.heappush(heap, next_item)
+            destination.flush()
+            os.fsync(destination.fileno())
+        temporary.replace(output_path)
+    finally:
+        for handle in handles:
+            handle.close()
+        if temporary.exists():
+            temporary.unlink()
+    return count
 
 
 def write_json_atomic(path: Path, payload) -> None:
@@ -239,8 +379,14 @@ def completion_token_ids(
 
 
 def iter_batches(items, batch_size: int):
-    for start in range(0, len(items), batch_size):
-        yield items[start:start + batch_size]
+    batch = []
+    for item in items:
+        batch.append(item)
+        if len(batch) == batch_size:
+            yield batch
+            batch = []
+    if batch:
+        yield batch
 
 
 def left_pad_token_sequences(sequences: list[torch.Tensor], pad_token_id: int, device):
@@ -1025,6 +1171,22 @@ def main():
     parser.add_argument("--temperature", type=float, default=0.0)
     parser.add_argument("--output-json", default="")
     parser.add_argument(
+        "--output-jsonl",
+        default="",
+        help="Stream one result object per line; rank files are merged on rank 0.",
+    )
+    parser.add_argument(
+        "--resume-output-jsonl",
+        action="store_true",
+        help="Resume a JSONL stream by skipping indices already written by this rank.",
+    )
+    parser.add_argument(
+        "--stream-fsync-every",
+        type=int,
+        default=100,
+        help="fsync interval for streamed output rows; 0 disables periodic fsync.",
+    )
+    parser.add_argument(
         "--distributed-merge-timeout",
         type=int,
         default=int(os.environ.get("INFER_DISTRIBUTED_MERGE_TIMEOUT", "1800")),
@@ -1032,7 +1194,23 @@ def main():
     )
     parser.add_argument("--output-dir", default="")
     parser.add_argument("--sample-json-dir", default="", help="Directory for per-sample JSON files. Defaults to output-dir.")
+    parser.add_argument(
+        "--no-sample-json",
+        action="store_true",
+        help="Do not write one auxiliary JSON file per sample.",
+    )
     parser.add_argument("--print-full-output", action="store_true")
+    parser.add_argument(
+        "--progress-every",
+        type=int,
+        default=1,
+        help="Print one progress line every N newly processed records.",
+    )
+    parser.add_argument(
+        "--quiet-samples",
+        action="store_true",
+        help="Print compact progress lines instead of prediction previews.",
+    )
     parser.add_argument("--vision_tower", default="")
     parser.add_argument("--vision_tower_checkpoint", default="")
     parser.add_argument("--mm_vision_tower_type", default="")
@@ -1066,6 +1244,12 @@ def main():
         raise ValueError("--per-device-infer-batch-size must be >= 1")
     if args.distributed_merge_timeout < 1:
         raise ValueError("--distributed-merge-timeout must be >= 1")
+    if args.stream_fsync_every < 0:
+        raise ValueError("--stream-fsync-every must be non-negative")
+    if args.progress_every <= 0:
+        raise ValueError("--progress-every must be positive")
+    if args.output_jsonl and args.eval_centerline:
+        raise ValueError("--eval-centerline is not supported with streaming --output-jsonl")
     args.device = device_str
     if distributed and args.output_json:
         rank_json_path(Path(args.output_json), rank).unlink(missing_ok=True)
@@ -1122,35 +1306,59 @@ def main():
         model.config.tokenizer_padding_side = "left"
     print(f"[infer] per-device batch size: {args.per_device_infer_batch_size}")
     if args.test_json:
-        with open(args.test_json, "r", encoding="utf-8") as f:
-            first_char = f.read(1)
-            f.seek(0)
-            if first_char == '[':
-                records = json.load(f)
-            else:
-                records = [json.loads(line) for line in f if line.strip()]
         if not args.image_folder:
             raise ValueError("--image-folder is required when using --test-json")
         start = max(0, args.sample_offset)
-        end = start + (args.num_samples if args.num_samples > 0 else len(records) - start)
-        records = records[start:end]
-        indexed_records = list(enumerate(records, start=start))
-        if distributed:
-            indexed_records = indexed_records[rank::world_size]
+        end = start + args.num_samples if args.num_samples > 0 else None
+
+        def selected_records():
+            selected_position = 0
+            for index, record in iter_json_records(Path(args.test_json)):
+                if index < start:
+                    continue
+                if end is not None and index >= end:
+                    break
+                if selected_position % world_size == rank:
+                    yield index, record
+                selected_position += 1
+
+        indexed_records = selected_records()
     else:
         if not args.image:
             raise ValueError("Provide either --image or --test-json")
-        indexed_records = [(0, {"id": "single_image", "image": args.image, "conversations": [{"value": args.prompt}]})]
+        indexed_records = iter([(0, {"id": "single_image", "image": args.image, "conversations": [{"value": args.prompt}]})])
 
     output_dir = Path(args.output_dir) if args.output_dir else None
     if output_dir is not None:
         output_dir.mkdir(parents=True, exist_ok=True)
-    sample_json_dir = Path(args.sample_json_dir) if args.sample_json_dir else output_dir
+    sample_json_dir = None
+    if not args.no_sample_json:
+        sample_json_dir = Path(args.sample_json_dir) if args.sample_json_dir else output_dir
     if sample_json_dir is not None:
         sample_json_dir.mkdir(parents=True, exist_ok=True)
     rank_suffix = ""
     if distributed:
         rank_suffix = f"rank{rank}_"
+
+    stream_output_path = Path(args.output_jsonl) if args.output_jsonl else None
+    stream_rank_handle = None
+    stream_completed = set()
+    if stream_output_path is not None:
+        stream_output_path.parent.mkdir(parents=True, exist_ok=True)
+        stream_rank_path = rank_json_path(stream_output_path, rank)
+        if args.resume_output_jsonl:
+            stream_completed = load_completed_jsonl_indices(stream_rank_path)
+            stream_rank_handle = stream_rank_path.open("a", encoding="utf-8")
+            print(
+                f"[infer] resume stream rank={rank} completed={len(stream_completed)} "
+                f"path={stream_rank_path}"
+            )
+        else:
+            stream_rank_handle = stream_rank_path.open("w", encoding="utf-8")
+            if rank == 0 and stream_output_path.exists():
+                stream_output_path.unlink()
+        if distributed:
+            torch.distributed.barrier()
 
     generation_config = getattr(model, "generation_config", None)
     pad_token_id = getattr(generation_config, "pad_token_id", None)
@@ -1168,13 +1376,21 @@ def main():
     dtype = vision_tower.dtype if vision_tower is not None else next(model.parameters()).dtype
     image_device = vision_tower.device if vision_tower is not None else model.device
 
+    pending_records = (
+        (idx, record)
+        for idx, record in indexed_records
+        if stream_rank_handle is None or idx not in stream_completed
+    )
     results = []
-    for batch_entries in iter_batches(indexed_records, args.per_device_infer_batch_size):
+    processed_count = 0
+    stream_write_count = 0
+    for batch_entries in iter_batches(pending_records, args.per_device_infer_batch_size):
         contexts = []
         images = []
         token_sequences = []
         for idx, record in batch_entries:
-            image_path = Path(record["image"])
+            image_relpath = resolve_record_image(record)
+            image_path = Path(image_relpath)
             if args.test_json:
                 image_path = Path(args.image_folder) / image_path
             image_path = image_path.resolve()
@@ -1199,7 +1415,7 @@ def main():
                 return_tensors="pt",
             )
             token_sequences.append(token_sequence)
-            contexts.append((idx, record, image_path, image.size, prompt))
+            contexts.append((idx, record, image_path, image_relpath, image.size, prompt))
 
         images_tensor = process_images(images, image_processor, model.config)
         if isinstance(images_tensor, list):
@@ -1215,7 +1431,7 @@ def main():
         generate_kwargs = {
             "attention_mask": attention_mask,
             "images": images_tensor,
-            "image_sizes": [context[3] for context in contexts],
+            "image_sizes": [context[4] for context in contexts],
             "max_new_tokens": args.max_new_tokens,
             "use_cache": True,
             "do_sample": args.temperature > 0,
@@ -1236,7 +1452,7 @@ def main():
                 f"expected={len(contexts)}, actual={int(output_ids.shape[0])}"
             )
 
-        for batch_row, (idx, record, image_path, _, prompt) in enumerate(contexts):
+        for batch_row, (idx, record, image_path, image_relpath, _, prompt) in enumerate(contexts):
             decoded_ids, decoded_mode = completion_token_ids(
                 output_ids,
                 input_ids,
@@ -1297,6 +1513,7 @@ def main():
                 "idx": idx,
                 "checkpoint_dir": str(checkpoint_dir),
                 "image": str(image_path),
+                "image_relpath": image_relpath,
                 "record_id": record.get("id", f"sample_{idx}"),
                 "tile_id": tile_id,
                 "row": row,
@@ -1326,8 +1543,14 @@ def main():
                 "decoded_token_len": int(decoded_ids.numel()),
                 "decoded_mode": decoded_mode,
                 "per_device_infer_batch_size": args.per_device_infer_batch_size,
-                "manifest": manifest,
             }
+            if stream_rank_handle is None:
+                # Preserve the legacy per-sample payload for small JSON-array runs.
+                result["manifest"] = manifest
+            else:
+                # Store the manifest once in the launcher output tree instead of
+                # repeating it in every large streamed row.
+                result["manifest_source"] = manifest.get("manifest_source", "")
             if len(record.get("conversations", [])) > 1:
                 result["ground_truth"] = record["conversations"][1]["value"]
                 try:
@@ -1351,31 +1574,57 @@ def main():
                         buffer_size=args.eval_buffer_size,
                         match_threshold=args.eval_match_threshold,
                     ))
-            results.append(result)
+            if stream_rank_handle is None:
+                results.append(result)
+
+            if stream_rank_handle is not None:
+                stream_rank_handle.write(
+                    json.dumps(result, ensure_ascii=False, separators=(",", ":")) + "\n"
+                )
+                stream_rank_handle.flush()
+                stream_write_count += 1
+                if args.stream_fsync_every and stream_write_count % args.stream_fsync_every == 0:
+                    os.fsync(stream_rank_handle.fileno())
 
             if sample_json_dir is not None:
                 sample_path = sample_json_dir / f"{rank_suffix}{idx:03d}_{sanitize_filename(str(result['record_id']))}.json"
                 sample_path.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
 
-            print(
-                json.dumps(
-                    {
-                        "idx": idx,
-                        "record_id": result["record_id"],
-                        "image": result["image"],
-                        "parse_ok": parse_ok,
-                        "num_items": result["num_items"],
-                        "parse_error": parse_error,
-                        "prediction_preview": prediction_preview(prediction),
-                        "decoded_mode": result["decoded_mode"],
-                        "input_token_len": result["input_token_len"],
-                        "output_token_len": result["output_token_len"],
-                        "decoded_token_len": result["decoded_token_len"],
-                        "per_device_infer_batch_size": args.per_device_infer_batch_size,
-                    },
-                    ensure_ascii=False,
-                )
-            )
+            processed_count += 1
+            if processed_count == 1 or processed_count % args.progress_every == 0:
+                if args.quiet_samples:
+                    print(
+                        json.dumps(
+                            {
+                                "progress": processed_count,
+                                "last_idx": idx,
+                                "last_record_id": result["record_id"],
+                                "parse_ok": parse_ok,
+                                "num_items": result["num_items"],
+                            },
+                            ensure_ascii=False,
+                        )
+                    )
+                else:
+                    print(
+                        json.dumps(
+                            {
+                                "idx": idx,
+                                "record_id": result["record_id"],
+                                "image": result["image"],
+                                "parse_ok": parse_ok,
+                                "num_items": result["num_items"],
+                                "parse_error": parse_error,
+                                "prediction_preview": prediction_preview(prediction),
+                                "decoded_mode": result["decoded_mode"],
+                                "input_token_len": result["input_token_len"],
+                                "output_token_len": result["output_token_len"],
+                                "decoded_token_len": result["decoded_token_len"],
+                                "per_device_infer_batch_size": args.per_device_infer_batch_size,
+                            },
+                            ensure_ascii=False,
+                        )
+                    )
             if args.print_full_output:
                 print("RAW_PREDICTION_START")
                 print(raw_prediction)
@@ -1383,6 +1632,24 @@ def main():
                 print("NORMALIZED_PREDICTION_START")
                 print(prediction)
                 print("NORMALIZED_PREDICTION_END")
+
+    if stream_rank_handle is not None:
+        stream_rank_handle.flush()
+        os.fsync(stream_rank_handle.fileno())
+        stream_rank_handle.close()
+        print(f"[infer] rank processed new rows={processed_count}")
+        if distributed:
+            torch.distributed.barrier()
+            if rank == 0:
+                merged_count = merge_rank_jsonl(
+                    stream_output_path,
+                    world_size,
+                )
+                print(f"[infer] merged streamed JSONL rows={merged_count}: {stream_output_path}")
+            torch.distributed.barrier()
+        else:
+            merged_count = merge_rank_jsonl(stream_output_path, 1)
+            print(f"[infer] merged streamed JSONL rows={merged_count}: {stream_output_path}")
 
     if args.output_json:
         output_json_path = Path(args.output_json)

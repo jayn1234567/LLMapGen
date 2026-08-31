@@ -10,7 +10,8 @@ python scripts/tools/<tool>.py --help
 
 | 脚本 | 作用 | 关键参数 |
 |---|---|---|
-| `infer_centerline_checkpoint.py` | Stage A checkpoint 推理引擎；支持 LoRA、全参和 HF 分片权重 | `--checkpoint-dir`, `--test-json`, `--image-folder`, `--device`, `--max-new-tokens`, `--map-task`, `--coord-mode` |
+| `infer_centerline_checkpoint.py` | Stage A checkpoint 推理引擎；支持 LoRA、全参、HF 分片权重，以及单卡多样本 batch 推理 | `--checkpoint-dir`, `--test-json`, `--image-folder`, `--device`, `--max-new-tokens`, `--per-device-infer-batch-size`, `--map-task`, `--coord-mode` |
+| `validate_stream_inference_output.py` | 校验全量流式推理 JSONL 是否覆盖输入、顺序和 ID，并生成可审计 manifest | `--expected-jsonl`, `--prediction-jsonl`, `--output-manifest`, `--expected-count` |
 | `infer_centerline_state_update.py` | Stage B 顺序状态更新推理 | `--checkpoint-dir`, `--patch-json`, `--image-folder`, `--vision_tower`, `--include-intersections` 及 trace 参数 |
 | `centerline_eval_metrics.py` | 从推理 summary 计算单类别中心线指标 | `--summary-json`, `--meter-per-pixel`, `--buffer-size`, `--match-threshold`, `--category` |
 | `summarize_centerline_eval.py` | 计算 lane、intersection、联合指标和类型准确率 | `--summary-json`, `--output-json`, `--map-task`, `--intersection-iou-threshold` |
@@ -31,6 +32,8 @@ python scripts/tools/infer_centerline_checkpoint.py \
   --map-task lane_intersection \
   --output-dir /path/to/output
 ```
+
+大规模训练集推理可使用 `infer_centerline_checkpoint.py --output-jsonl`。该模式按 rank 写入 `*_rankNNNNN.jsonl`，结束后由 rank 0 以有界内存合并；`--per-device-infer-batch-size` 控制每张 NPU 一次 `generate()` 的样本数；`--resume-output-jsonl` 会跳过已经完整写入的 `idx`，适合长任务中断后续跑。合并后使用 `validate_stream_inference_output.py` 检查输入数量、记录 ID、解析成功数和预测文件 SHA256。
 
 ## 2. 难度分析与结构检查
 

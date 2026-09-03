@@ -155,6 +155,18 @@ remain relative to the center 256x256 ROI. Do not mix the two views in one run. 
 `docs/DATASET_V2_RAWLANE_POSE_THREE_IMAGE_800K.md` for the record and coordinate
 contracts.
 
+The released stride-256-all archive has a dedicated DI launcher:
+
+```text
+train_sft_stage_a_lane_intersection_datasetv2_three_image_local256_stride256_all_original_dinov2_caprl4b_nodeepstack_lora_llm_npu.sh
+```
+
+Its default archive is
+`obs://yw-ads-training-2-gy1/data/external/personal/h58801830/jn/data/context512_roi256_three_image/rawlane_pose_three_image_local256_stride256_all.tar`.
+Despite the parent prefix, this package is local256: all three images are
+256x256, targets use local `norm1000` coordinates, and the package's actual
+train count is used without assuming the filename's historical `800k` label.
+
 ## Native Qwen3-VL Baseline
 
 Native Qwen3-VL baseline launchers now live under

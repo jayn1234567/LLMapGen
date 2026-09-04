@@ -2,7 +2,8 @@
 set -euo pipefail
 
 # DI / Ascend inference for the context512_roi256 200k training subset.
-# Results are written as resumable JSONL streams, validated, and uploaded.
+# Results are written as resumable JSONL streams, validated, and optionally
+# uploaded.  The 550k profile enables fail-closed OBS upload verification.
 
 echo "[di-entry] reached context512_roi256 200k train-set inference launcher"
 echo "[di-entry] utc=$(date -u +%Y-%m-%dT%H:%M:%SZ) host=$(hostname) pid=$$"
@@ -12,6 +13,7 @@ SCRIPT_PATH=$(readlink -f "$0")
 SCRIPT_DIR=$(dirname "${SCRIPT_PATH}")
 REPO_ROOT=$(readlink -f "${SCRIPT_DIR}/../../..")
 cd "${REPO_ROOT}"
+export PYTHONPATH="${REPO_ROOT}:${PYTHONPATH:-}"
 
 is_true() {
   case "${1:-}" in
@@ -27,8 +29,9 @@ safe_source() {
   set -u
 }
 
-# DI supplies the pinned torch/torch_npu environment.  No package installation
-# is performed here; ACTIVATE_SCRIPT is only for local reproduction.
+# DI supplies the pinned torch/torch_npu environment.  We never reinstall or
+# upgrade the accelerator stack here.  Shapely is optional for this prediction-
+# only path; geometry evaluation can request it explicitly after inference.
 if [ -n "${ACTIVATE_SCRIPT:-}" ]; then
   [ -f "${ACTIVATE_SCRIPT}" ] || { echo "ERROR: missing ACTIVATE_SCRIPT=${ACTIVATE_SCRIPT}" >&2; exit 2; }
   safe_source "${ACTIVATE_SCRIPT}"
@@ -36,7 +39,74 @@ fi
 if [ -f /usr/local/Ascend/ascend-toolkit/set_env.sh ]; then
   safe_source /usr/local/Ascend/ascend-toolkit/set_env.sh
 fi
-export PYTHONPATH="${REPO_ROOT}:${PYTHONPATH:-}"
+
+INSTALL_INFER_DEPS=${INSTALL_INFER_DEPS:-False}
+REQUIRE_SHAPELY=${REQUIRE_SHAPELY:-False}
+SHAPELY_SPEC=${SHAPELY_SPEC:-shapely==2.1.2}
+
+echo "[di-infer] python=$(command -v python)"
+python - <<'PY'
+import importlib.util
+import sys
+
+required = ("torch", "torch_npu", "transformers", "PIL", "moxing")
+missing = [name for name in required if importlib.util.find_spec(name) is None]
+if missing:
+    raise SystemExit(f"Missing DI runtime modules: {missing}; use the DI-provided image/environment.")
+import torch
+import torch_npu  # noqa: F401
+import transformers
+import moxing
+if not hasattr(moxing, "file"):
+    raise SystemExit(
+        "The imported moxing package has no file API; install Huawei "
+        "moxing-framework instead of the unrelated PyPI package named moxing."
+    )
+missing_moxing_api = [name for name in ("copy", "copy_parallel", "exists") if not hasattr(moxing.file, name)]
+if missing_moxing_api:
+    raise SystemExit(f"moxing.file is missing required APIs: {missing_moxing_api}")
+print(f"[di-infer] python={sys.executable}", flush=True)
+print(f"[di-infer] torch={torch.__version__}", flush=True)
+print(f"[di-infer] torch_npu={getattr(torch_npu, '__version__', 'unknown')}", flush=True)
+print(f"[di-infer] transformers={transformers.__version__}", flush=True)
+print(f"[di-infer] moxing={moxing.__file__}", flush=True)
+PY
+
+if python -c "import shapely" >/dev/null 2>&1; then
+  python - <<'PY'
+import shapely
+
+print(f"[di-infer] shapely={shapely.__version__}", flush=True)
+PY
+elif is_true "${REQUIRE_SHAPELY}"; then
+  if ! is_true "${INSTALL_INFER_DEPS}"; then
+    echo "ERROR: shapely is required but missing; set INSTALL_INFER_DEPS=True or install ${SHAPELY_SPEC}." >&2
+    exit 2
+  fi
+  echo "[di-infer] shapely is missing; installing ${SHAPELY_SPEC} without dependency resolution"
+  python -m pip install --no-cache-dir --no-deps "${SHAPELY_SPEC}"
+  python -c "import shapely; print('[di-infer] shapely=' + shapely.__version__, flush=True)"
+else
+  echo "[di-infer] shapely=missing (optional for prediction-only inference)"
+fi
+python - <<'PY'
+import numpy
+
+if int(numpy.__version__.split(".", 1)[0]) >= 2:
+    raise SystemExit(
+        f"NumPy {numpy.__version__} is incompatible with the validated CANN runtime; "
+        "keep NumPy <2.0."
+    )
+print(f"[di-infer] numpy={numpy.__version__}", flush=True)
+PY
+
+python - <<'PY'
+from mllm.model.builder import load_pretrained_model  # noqa: F401
+from mllm.reward.map_schema import parse_map_json  # noqa: F401
+
+print("[di-infer] project inference imports=ok", flush=True)
+PY
+
 export TOKENIZERS_PARALLELISM=${TOKENIZERS_PARALLELISM:-false}
 export MLLM_LOG_RANK0_ONLY=${MLLM_LOG_RANK0_ONLY:-1}
 export OMP_NUM_THREADS=${OMP_NUM_THREADS:-1}
@@ -46,7 +116,12 @@ export HCCL_EXEC_TIMEOUT=${HCCL_EXEC_TIMEOUT:-7200}
 export HCCL_WHITELIST_DISABLE=${HCCL_WHITELIST_DISABLE:-1}
 export HCCL_ASYNC_ERROR_HANDLING=${HCCL_ASYNC_ERROR_HANDLING:-0}
 
-RUN_ID=${RUN_ID:-context512_roi256_200k_trainset_infer_$(date -u +%Y%m%d_%H%M%S)}
+if [ -n "${MA_VJ_NAME:-}" ]; then
+  DEFAULT_RUN_ID=$(printf '%s' "${MA_VJ_NAME}" | tr -c 'A-Za-z0-9_.-' '_')
+else
+  DEFAULT_RUN_ID=context512_roi256_200k_trainset_infer_$(date -u +%Y%m%d_%H%M%S)
+fi
+RUN_ID=${RUN_ID:-${DEFAULT_RUN_ID}}
 OBS_CACHE=${OBS_CACHE:-/cache}
 REUSE_LOCAL_ASSETS=${REUSE_LOCAL_ASSETS:-True}
 
@@ -87,10 +162,11 @@ CHECKPOINT_DOWNLOAD_ROOT=${CHECKPOINT_DOWNLOAD_ROOT:-${OBS_CACHE}/checkpoints/co
 LOCAL_OUTPUT_ROOT=${LOCAL_OUTPUT_ROOT:-${OBS_CACHE}/outputs/${RUN_ID}}
 PREDICTION_JSONL=${PREDICTION_JSONL:-${LOCAL_OUTPUT_ROOT}/train_predictions.jsonl}
 INFERENCE_CONFIG_PATH=${INFERENCE_CONFIG_PATH:-${LOCAL_OUTPUT_ROOT}/inference_config.json}
-RESULT_OBS_ROOT=${RESULT_OBS_ROOT:-${OUTPUT_URL:-}}
 RESULT_OBS_PATH=${RESULT_OBS_PATH:-}
+RESULT_OBS_ROOT=${RESULT_OBS_ROOT:-${OBS_OUTPUT_URL:-${OUTPUT_URL:-}}}
 [ -z "${RESULT_OBS_PATH}" ] || RESULT_OBS_ROOT=${RESULT_OBS_PATH}
 UPLOAD_RESULTS=${UPLOAD_RESULTS:-True}
+REQUIRE_OBS_UPLOAD=${REQUIRE_OBS_UPLOAD:-False}
 KEEP_RANK_JSONL=${KEEP_RANK_JSONL:-True}
 RESUME_INFERENCE=${RESUME_INFERENCE:-True}
 STREAM_FSYNC_EVERY=${STREAM_FSYNC_EVERY:-100}
@@ -103,6 +179,26 @@ PER_DEVICE_INFER_BATCH_SIZE=${PER_DEVICE_INFER_BATCH_SIZE:-32}
 MAP_TASK=${MAP_TASK:-lane_intersection}
 COORD_MODE=${COORD_MODE:-auto}
 COORD_RANGE=${COORD_RANGE:-1000}
+
+if is_true "${REQUIRE_OBS_UPLOAD}"; then
+  if ! is_true "${UPLOAD_RESULTS}"; then
+    echo "ERROR: OBS upload is required but UPLOAD_RESULTS=${UPLOAD_RESULTS}." >&2
+    echo "Set UPLOAD_RESULTS=True or disable REQUIRE_OBS_UPLOAD explicitly." >&2
+    exit 2
+  fi
+  case "${RESULT_OBS_ROOT}" in
+    obs://*) ;;
+    "")
+      echo "ERROR: OBS upload is required but no OBS output root was provided." >&2
+      echo "Set OUTPUT_URL, OBS_OUTPUT_URL, or RESULT_OBS_ROOT to an obs:// URI." >&2
+      exit 2
+      ;;
+    *)
+      echo "ERROR: OBS upload is required, but output root is not an obs:// URI: ${RESULT_OBS_ROOT}" >&2
+      exit 2
+      ;;
+  esac
+fi
 
 if [ -n "${MA_VJ_NAME:-}" ] || [ -n "${MA_NUM_HOSTS:-}" ]; then
   NNODES=${NNODES:-${MA_NUM_HOSTS:-1}}
@@ -145,6 +241,28 @@ export NPU_VISIBLE_DEVICES=${NPU_VISIBLE_DEVICES:-${ASCEND_RT_VISIBLE_DEVICES}}
 export GLOO_SOCKET_IFNAME=${GLOO_SOCKET_IFNAME:-eth0}
 export HCCL_SOCKET_IFNAME=${HCCL_SOCKET_IFNAME:-eth0}
 
+python - "${NPROC_PER_NODE}" <<'PY'
+import os
+import sys
+
+import torch
+import torch_npu  # noqa: F401
+
+expected = int(sys.argv[1])
+available = bool(hasattr(torch, "npu") and torch.npu.is_available())
+count = int(torch.npu.device_count()) if hasattr(torch, "npu") else 0
+print(
+    "[di-infer] npu preflight: "
+    f"available={available} count={count} expected_local_processes={expected} "
+    f"visible={os.environ.get('ASCEND_RT_VISIBLE_DEVICES', '')}",
+    flush=True,
+)
+if not available:
+    raise SystemExit("NPU backend is unavailable in the selected Python environment.")
+if count < expected:
+    raise SystemExit(f"Only {count} NPU devices are visible, but NPROC_PER_NODE={expected}.")
+PY
+
 mkdir -p "${LOCAL_OUTPUT_ROOT}" "${CHECKPOINT_DOWNLOAD_ROOT}" \
   "$(dirname "${DATASET_ARCHIVE_PATH}")" "${DATASET_EXTRACT_ROOT}"
 
@@ -155,6 +273,111 @@ import os
 import moxing as mox
 print(f"[obs] copy {os.environ['SOURCE']} -> {os.environ['TARGET']} threads={os.environ['THREADS']}", flush=True)
 mox.file.copy_parallel(os.environ["SOURCE"], os.environ["TARGET"], threads=int(os.environ["THREADS"]))
+PY
+}
+copy_file() {
+  local source="$1" target="$2"
+  SOURCE="${source}" TARGET="${target}" python - <<'PY'
+import os
+import moxing as mox
+
+print(f"[obs] file copy {os.environ['SOURCE']} -> {os.environ['TARGET']}", flush=True)
+mox.file.copy(os.environ["SOURCE"], os.environ["TARGET"])
+PY
+}
+verify_obs_result_tree() {
+  local remote_root="$1" require_final="${2:-False}" expected_prediction_sha256="${3:-}"
+  OBS_OUTPUT_DIR="${remote_root}" OBS_REQUIRE_FINAL="${require_final}" \
+  OBS_EXPECTED_RUN_ID="${RUN_ID}" OBS_EXPECTED_SAMPLES="${EXPECTED_TRAIN_SAMPLES}" \
+  OBS_EXPECTED_PREDICTION_SHA256="${expected_prediction_sha256}" python - <<'PY'
+import json
+import os
+import tempfile
+import time
+from pathlib import Path
+
+import moxing as mox
+
+root = os.environ["OBS_OUTPUT_DIR"].rstrip("/")
+require_final = os.environ.get("OBS_REQUIRE_FINAL", "False").lower() in {"1", "true", "yes", "on"}
+expected_run_id = os.environ.get("OBS_EXPECTED_RUN_ID", "")
+expected_samples = int(os.environ.get("OBS_EXPECTED_SAMPLES", "0") or 0)
+expected_prediction_sha256 = os.environ.get("OBS_EXPECTED_PREDICTION_SHA256", "")
+required = [
+    "inference_config.json",
+    "checkpoint_inventory.json",
+    "train_predictions.jsonl",
+    "inference_manifest.json",
+    "inference_complete.json",
+    "obs_upload_manifest.json",
+]
+if require_final:
+    required.extend(("obs_upload_verified.json", "_SUCCESS"))
+
+def missing_files():
+    return [f"{root}/{name}" for name in required if not mox.file.exists(f"{root}/{name}")]
+
+missing = []
+for attempt in range(6):
+    missing = missing_files()
+    if not missing:
+        break
+    if attempt < 5:
+        time.sleep(2 ** attempt)
+if missing:
+    raise SystemExit(f"OBS result verification failed; missing remote artifacts: {missing}")
+
+def read_remote_json(name):
+    remote_path = f"{root}/{name}"
+    with tempfile.NamedTemporaryFile(prefix="llmapgen_obs_verify_", suffix=".json", delete=False) as handle:
+        local_path = handle.name
+    try:
+        mox.file.copy(remote_path, local_path)
+        return json.loads(Path(local_path).read_text(encoding="utf-8"))
+    finally:
+        Path(local_path).unlink(missing_ok=True)
+
+complete = read_remote_json("inference_complete.json")
+if complete.get("status") != "complete":
+    raise SystemExit(f"Remote inference_complete.json is not complete: {complete}")
+if expected_run_id and complete.get("run_id") != expected_run_id:
+    raise SystemExit(
+        f"Remote result run_id mismatch: {complete.get('run_id')!r} != {expected_run_id!r}"
+    )
+if expected_samples > 0:
+    for field in ("expected_samples", "predicted_samples"):
+        if int(complete.get(field, -1)) != expected_samples:
+            raise SystemExit(
+                f"Remote result {field} mismatch: {complete.get(field)!r} != {expected_samples}"
+            )
+manifest = read_remote_json("inference_manifest.json")
+if manifest.get("status") != "complete":
+    raise SystemExit(f"Remote inference_manifest.json is not complete: {manifest}")
+upload_manifest = read_remote_json("obs_upload_manifest.json")
+if upload_manifest.get("status") != "prepared":
+    raise SystemExit(f"Remote obs_upload_manifest.json is not prepared: {upload_manifest}")
+if expected_run_id and upload_manifest.get("run_id") != expected_run_id:
+    raise SystemExit(
+        f"Remote upload manifest run_id mismatch: {upload_manifest.get('run_id')!r} != {expected_run_id!r}"
+    )
+if (
+    complete.get("prediction_sha256")
+    and manifest.get("prediction_sha256")
+    and complete.get("prediction_sha256") != manifest.get("prediction_sha256")
+):
+    raise SystemExit("Remote completion and inference manifest prediction hashes differ")
+if expected_prediction_sha256:
+    for name, payload in (("inference_complete.json", complete), ("inference_manifest.json", manifest)):
+        if payload.get("prediction_sha256") != expected_prediction_sha256:
+            raise SystemExit(
+                f"Remote {name} prediction hash differs from the local result: "
+                f"{payload.get('prediction_sha256')!r} != {expected_prediction_sha256!r}"
+            )
+if require_final:
+    verified = read_remote_json("obs_upload_verified.json")
+    if verified.get("status") != "verified":
+        raise SystemExit(f"Remote obs_upload_verified.json is not verified: {verified}")
+print(f"[infer] verified remote result tree: {root} ({len(required)} required files)", flush=True)
 PY
 }
 archive_is_valid() {
@@ -216,7 +439,7 @@ if [ -z "${DATASET_ROOT}" ]; then
   else
     rm -f "${DATASET_ARCHIVE_PATH}"
     echo "[dataset] downloading ${DATASET_OBS_PATH} -> ${DATASET_ARCHIVE_PATH}"
-    copy_parallel "${DATASET_OBS_PATH}" "${DATASET_ARCHIVE_PATH}" 128
+    copy_file "${DATASET_OBS_PATH}" "${DATASET_ARCHIVE_PATH}"
   fi
   archive_is_valid "${DATASET_ARCHIVE_PATH}" || { echo "ERROR: invalid dataset archive" >&2; exit 2; }
   DATASET_MARKER="${DATASET_EXTRACT_ROOT}/.extract_complete"
@@ -366,6 +589,14 @@ else:
 PY
 )
 
+if [ "${CHECKPOINT_MODE}" = lora ]; then
+  python - <<'PY'
+import peft
+
+print(f"[di-infer] peft={peft.__version__} (LoRA checkpoint)", flush=True)
+PY
+fi
+
 if ! is_true "${REUSE_LOCAL_ASSETS}" || ! model_asset_is_complete "${VISION_TOWER}"; then
   mkdir -p "${VISION_TOWER}"
   copy_parallel "${DINOV2_MODEL_OBS_PATH}" "${VISION_TOWER}" 128
@@ -414,11 +645,26 @@ fi
 
 SUCCESS_MARKER="${LOCAL_OUTPUT_ROOT}/_SUCCESS"
 if is_true "${RESUME_INFERENCE}" && [ -f "${SUCCESS_MARKER}" ]; then
-  echo "[infer] successful output already exists: ${LOCAL_OUTPUT_ROOT}"
-  exit 0
+  if [ ! -s "${PREDICTION_JSONL}" ]; then
+    echo "[infer] local _SUCCESS exists but prediction JSONL is missing or empty; refusing to resume as complete." >&2
+    rm -f "${SUCCESS_MARKER}"
+  else
+    if is_true "${UPLOAD_RESULTS}" && [[ "${RESULT_OBS_ROOT}" == obs://* ]]; then
+      RESUME_PREDICTION_SHA256=$(sha256_file "${PREDICTION_JSONL}")
+      if verify_obs_result_tree "${RESULT_OBS_ROOT%/}/${RUN_ID}" True "${RESUME_PREDICTION_SHA256}"; then
+        echo "[infer] local and OBS outputs are already complete: ${LOCAL_OUTPUT_ROOT}"
+        exit 0
+      fi
+      echo "[infer] local _SUCCESS exists but OBS final verification failed; resuming upload/inference." >&2
+    else
+      echo "[infer] successful output already exists: ${LOCAL_OUTPUT_ROOT}"
+      exit 0
+    fi
+  fi
 fi
 export RUN_ID DATASET_OBS_PATH DATASET_ROOT TRAIN_JSON TRAIN_SELECTION_MODE ACTUAL_TRAIN_SAMPLES
 export CHECKPOINT_OBS_PATH CHECKPOINT_DIR CHECKPOINT_MODE VISION_TOWER INPUT_IMAGE_SIZE MAP_TASK COORD_RANGE MAX_NEW_TOKENS RESUME_INFERENCE PER_DEVICE_INFER_BATCH_SIZE
+export RESULT_OBS_ROOT UPLOAD_RESULTS REQUIRE_OBS_UPLOAD
 
 if [ "${NODE_RANK}" -eq 0 ]; then
   TRAIN_JSON_SHA256=$(sha256_file "${TRAIN_JSON}")
@@ -440,6 +686,8 @@ if [ "${NODE_RANK}" -eq 0 ]; then
   COORD_MODE="${COORD_MODE}" COORD_RANGE="${COORD_RANGE}" MAX_NEW_TOKENS="${MAX_NEW_TOKENS}" \
   TEMPERATURE="${TEMPERATURE}" PER_DEVICE_INFER_BATCH_SIZE="${PER_DEVICE_INFER_BATCH_SIZE}" \
   NNODES="${NNODES}" NPROC_PER_NODE="${NPROC_PER_NODE}" \
+  RESULT_OBS_ROOT="${RESULT_OBS_ROOT}" UPLOAD_RESULTS="${UPLOAD_RESULTS}" \
+  REQUIRE_OBS_UPLOAD="${REQUIRE_OBS_UPLOAD}" \
   python - <<'PY'
 import json
 import os
@@ -477,6 +725,9 @@ payload = {
     "max_new_tokens": int(os.environ["MAX_NEW_TOKENS"]),
     "temperature": float(os.environ["TEMPERATURE"]),
     "per_device_infer_batch_size": int(os.environ["PER_DEVICE_INFER_BATCH_SIZE"]),
+    "result_obs_root": os.environ["RESULT_OBS_ROOT"],
+    "upload_results": os.environ["UPLOAD_RESULTS"],
+    "require_obs_upload": os.environ["REQUIRE_OBS_UPLOAD"],
     "topology": {
         "nnodes": int(os.environ["NNODES"]),
         "nproc_per_node": int(os.environ["NPROC_PER_NODE"]),
@@ -503,6 +754,8 @@ echo "Canvas / target:   512x512 / centered ROI 256x256"
 echo "Checkpoint:        ${CHECKPOINT_DIR} (${CHECKPOINT_MODE})"
 echo "DINOv2:            ${VISION_TOWER} input=${INPUT_IMAGE_SIZE} layer=-2"
 echo "Output JSONL:      ${PREDICTION_JSONL}"
+echo "OBS output root:   ${RESULT_OBS_ROOT:-<unset>}"
+echo "OBS upload:        ${UPLOAD_RESULTS} (required=${REQUIRE_OBS_UPLOAD})"
 echo "Per-device batch:  ${PER_DEVICE_INFER_BATCH_SIZE}"
 echo "Topology:          nnodes=${NNODES} node_rank=${NODE_RANK} nproc=${NPROC_PER_NODE}"
 echo "Visible NPUs:      ${ASCEND_RT_VISIBLE_DEVICES}"
@@ -536,7 +789,7 @@ if is_true "${RESUME_INFERENCE}"; then infer_args+=(--resume-output-jsonl); fi
 
 INFER_START_NS=$(date +%s%N)
 set +e
-torchrun --nnodes="${NNODES}" --nproc_per_node="${NPROC_PER_NODE}" \
+python -m torch.distributed.run --nnodes="${NNODES}" --nproc_per_node="${NPROC_PER_NODE}" \
   --node_rank="${NODE_RANK}" --master_addr="${MASTER_ADDR}" --master_port="${MASTER_PORT}" \
   scripts/tools/infer_centerline_checkpoint.py "${infer_args[@]}"
 INFER_EXIT=$?
@@ -621,9 +874,45 @@ if config_path.is_file():
 print(f"DI_throughput: {throughput:.2f} samples/s/npu", flush=True)
 PY
 
+LOCAL_PREDICTION_SHA256=$(sha256_file "${PREDICTION_JSONL}")
+
 echo "[infer] COMPLETE: ${LOCAL_OUTPUT_ROOT}"
 echo "[infer] prediction JSONL: ${PREDICTION_JSONL}"
 echo "[infer] validator: ${LOCAL_OUTPUT_ROOT}/inference_manifest.json"
+
+# Write a small inventory before the copy so the remote tree can be checked
+# independently of the platform's job-level output synchronization.
+UPLOAD_MANIFEST_PATH="${LOCAL_OUTPUT_ROOT}/obs_upload_manifest.json"
+python - "${LOCAL_OUTPUT_ROOT}" "${UPLOAD_MANIFEST_PATH}" "${RUN_ID}" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+root = Path(sys.argv[1]).resolve()
+output = Path(sys.argv[2])
+required = [
+    "inference_config.json",
+    "checkpoint_inventory.json",
+    "train_predictions.jsonl",
+    "inference_manifest.json",
+    "inference_complete.json",
+]
+missing = [name for name in required if not (root / name).is_file()]
+if missing:
+    raise SystemExit(f"Cannot prepare OBS upload; local artifacts are missing: {missing}")
+files = []
+for path in sorted(p for p in root.rglob("*") if p.is_file()):
+    files.append({"path": str(path.relative_to(root)), "bytes": path.stat().st_size})
+payload = {
+    "status": "prepared",
+    "run_id": sys.argv[3],
+    "required_files": required,
+    "file_count": len(files),
+    "files": files,
+}
+output.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+print(f"[infer] upload inventory: {len(files)} local files; required artifacts present", flush=True)
+PY
 
 if is_true "${UPLOAD_RESULTS}" && [ -n "${RESULT_OBS_ROOT}" ]; then
   CLOUD_OUTPUT_DIR="${RESULT_OBS_ROOT%/}/${RUN_ID}"
@@ -634,12 +923,51 @@ import os
 import moxing as mox
 mox.file.copy_parallel(os.environ["SOURCE"], os.environ["TARGET"], threads=128)
 PY
+
+    verify_obs_result_tree "${CLOUD_OUTPUT_DIR}" False "${LOCAL_PREDICTION_SHA256}"
+
+    python - "${LOCAL_OUTPUT_ROOT}/obs_upload_verified.json" "${CLOUD_OUTPUT_DIR}" "${RUN_ID}" <<'PY'
+import datetime
+import json
+import sys
+from pathlib import Path
+
+Path(sys.argv[1]).write_text(
+    json.dumps(
+        {
+            "status": "verified",
+            "run_id": sys.argv[3],
+            "remote_output_dir": sys.argv[2],
+            "verified_at_utc": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        },
+        ensure_ascii=False,
+        indent=2,
+    )
+    + "\n",
+    encoding="utf-8",
+)
+PY
+    SOURCE="${LOCAL_OUTPUT_ROOT}/obs_upload_verified.json" TARGET="${CLOUD_OUTPUT_DIR}/obs_upload_verified.json" python - <<'PY'
+import os
+import moxing as mox
+mox.file.copy(os.environ["SOURCE"], os.environ["TARGET"])
+if not mox.file.exists(os.environ["TARGET"]):
+    raise SystemExit(f"OBS verification record was not found: {os.environ['TARGET']}")
+PY
   else
+    if is_true "${REQUIRE_OBS_UPLOAD}"; then
+      echo "ERROR: OBS upload is required, but resolved target is not obs://: ${CLOUD_OUTPUT_DIR}" >&2
+      exit 2
+    fi
     mkdir -p "${CLOUD_OUTPUT_DIR}"
     cp -a "${LOCAL_OUTPUT_ROOT}/." "${CLOUD_OUTPUT_DIR}/"
   fi
-  echo "[infer] saved result tree: ${CLOUD_OUTPUT_DIR}"
+  echo "[infer] saved and verified result tree: ${CLOUD_OUTPUT_DIR}"
 else
+  if is_true "${REQUIRE_OBS_UPLOAD}"; then
+    echo "ERROR: OBS upload is required but no OBS output root was provided." >&2
+    exit 2
+  fi
   echo "[infer] upload skipped; local result tree is authoritative."
 fi
 
@@ -654,10 +982,19 @@ if is_true "${UPLOAD_RESULTS}" && [ -n "${RESULT_OBS_ROOT}" ]; then
 import os
 import moxing as mox
 mox.file.copy(os.environ["SOURCE"], os.environ["TARGET"])
+if not mox.file.exists(os.environ["TARGET"]):
+    raise SystemExit(f"OBS success marker was not found: {os.environ['TARGET']}")
 PY
   else
+    if is_true "${REQUIRE_OBS_UPLOAD}"; then
+      echo "ERROR: OBS upload is required, but success target is not obs://: ${CLOUD_OUTPUT_DIR}" >&2
+      exit 2
+    fi
     cp "${SUCCESS_PENDING}" "${CLOUD_OUTPUT_DIR}/_SUCCESS"
   fi
+fi
+if is_true "${UPLOAD_RESULTS}" && [[ "${RESULT_OBS_ROOT}" == obs://* ]]; then
+  verify_obs_result_tree "${RESULT_OBS_ROOT%/}/${RUN_ID}" True "${LOCAL_PREDICTION_SHA256}"
 fi
 mv "${SUCCESS_PENDING}" "${SUCCESS_MARKER}"
 echo "[infer] success marker: ${SUCCESS_MARKER}"

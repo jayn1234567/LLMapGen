@@ -130,9 +130,11 @@ The matched full-parameter recipes train Qwen, projector, and DINOv2 at `2e-5`,
 use DeepSpeed ZeRO-3, per-device batch 1, global batch 128, and ordinary rank0
 full-model checkpoints. On 4 nodes x 8 NPUs, the derived gradient accumulation
 is 4. Training-time eval loss is disabled for both variants.
-`MODEL_MAX_LENGTH=8192` is intentional: three
-DINOv2 streams contribute 4107 visual tokens before prompt and target tokens.
-Values below 6144 are rejected instead of silently truncating supervision.
+The context512/ROI256 three-image launcher keeps `MODEL_MAX_LENGTH=8192`.
+The local256 stride-256-all launcher defaults to `MODEL_MAX_LENGTH=3072` as an
+OOM-oriented experiment. Three DINOv2 streams still contribute 4107 visual
+tokens before prompt and target tokens, so that local256 setting can truncate
+visual or target tokens; the launcher emits a warning instead of blocking.
 
 The local256 formal recipe defaults to:
 

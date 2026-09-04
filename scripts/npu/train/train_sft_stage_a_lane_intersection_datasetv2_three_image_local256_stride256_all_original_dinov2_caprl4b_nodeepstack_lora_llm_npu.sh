@@ -98,10 +98,12 @@ LORA_BIAS=${LORA_BIAS:-none}                                                    
 DDP_FIND_UNUSED_PARAMETERS=${DDP_FIND_UNUSED_PARAMETERS:-True}                    # Required because penultimate-layer/no-DeepStack leaves registered visual parameters outside the loss graph.
 WEIGHT_DECAY=${WEIGHT_DECAY:-0.0}                                                 # Weight decay used by the trainer.
 WARMUP_RATIO=${WARMUP_RATIO:-0.03}                                                # Warmup ratio for the cosine learning-rate schedule.
-MODEL_MAX_LENGTH=${MODEL_MAX_LENGTH:-8192}                                        # Must exceed 3x1369 visual tokens plus prompt and assistant JSON target.
+# 3072 is the OOM-oriented default requested for this local256 three-image run.
+# Each 518px DINOv2 image contributes 1369 patch tokens, so the multimodal
+# model may truncate visual or target tokens when the cap is below 3x1369.
+MODEL_MAX_LENGTH=${MODEL_MAX_LENGTH:-3072}
 if [ "${MODEL_MAX_LENGTH}" -lt 6144 ]; then
-  echo "ERROR: MODEL_MAX_LENGTH=${MODEL_MAX_LENGTH} is too short for three DINOv2 streams (3x1369 visual tokens) plus the JSON target."
-  exit 2
+  echo "WARNING: MODEL_MAX_LENGTH=${MODEL_MAX_LENGTH} is below the three-image visual-token budget (3x1369); visual or target tokens may be truncated."
 fi
 SAVE_STEPS=${SAVE_STEPS:-1000}                                                    # Match the v9 best checkpoint interval.
 SAVE_TOTAL_LIMIT=${SAVE_TOTAL_LIMIT:-15}                                          # Maximum number of regular checkpoints to keep.

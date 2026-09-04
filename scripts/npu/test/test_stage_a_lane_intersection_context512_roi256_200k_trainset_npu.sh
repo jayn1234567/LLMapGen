@@ -40,6 +40,12 @@ if [ -f /usr/local/Ascend/ascend-toolkit/set_env.sh ]; then
   safe_source /usr/local/Ascend/ascend-toolkit/set_env.sh
 fi
 
+# Keep the DI-provided runtime isolated from user-site packages and use the
+# same moxing/Ascend startup switches as the validated NPU recipes.
+export PYTHONNOUSERSITE=${PYTHONNOUSERSITE:-1}
+export USE_MEMARTS=${USE_MEMARTS:-0}
+export COMBINED_ENABLE=${COMBINED_ENABLE:-1}
+
 INSTALL_INFER_DEPS=${INSTALL_INFER_DEPS:-False}
 REQUIRE_SHAPELY=${REQUIRE_SHAPELY:-False}
 SHAPELY_SPEC=${SHAPELY_SPEC:-shapely==2.1.2}

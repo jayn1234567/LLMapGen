@@ -4,9 +4,11 @@ set -euo pipefail
 # One-command DI entry for full Context512/ROI256 550k train-set inference.
 # The implementation lives in the resumable Stage-A launcher next to this
 # profile; all experiment-specific values are fixed here for reproducibility.
-# DI must provide OUTPUT_URL as an obs:// URI (or the caller may set
-# OBS_OUTPUT_URL/RESULT_OBS_ROOT); the delegated launcher verifies the remote
-# result tree before declaring success.
+# DI normally provides OUTPUT_URL as a local output mount.  Like the training
+# launchers, the delegated script stages results locally and rank 0 moves the
+# finished tree to OUTPUT_URL/<RUN_ID>; DI then collects that directory.  A
+# direct OBS destination can still be supplied with OBS_OUTPUT_URL or
+# RESULT_OBS_ROOT and is verified through moxing.
 
 SCRIPT_PATH=$(readlink -f "$0")
 SCRIPT_DIR=$(dirname "${SCRIPT_PATH}")
@@ -27,6 +29,8 @@ export DATASET_OBS_PATH="${DATASET_OBS_PATH:-obs://yw-ads-training-2-gy1/data/ex
 export CHECKPOINT_OBS_PATH="${CHECKPOINT_OBS_PATH:-obs://yw-ads-model-training-gy1/model-dev/rc-nn/rc_base_model/2026/07/24/4f735c63da7a4f86829b26246143e219/output/ma-job-81341482-55b8-4c28-887b-0e4166776561/checkpoint-12504/}"
 export INSTALL_INFER_DEPS="${INSTALL_INFER_DEPS:-False}"
 export REQUIRE_SHAPELY="${REQUIRE_SHAPELY:-False}"
+# Keep the fail-closed behavior: the result must be persisted either to the
+# DI output mount or to a direct obs:// destination before this entry exits.
 export REQUIRE_OBS_UPLOAD=True
 export UPLOAD_RESULTS="${UPLOAD_RESULTS:-True}"
 export RESUME_INFERENCE="${RESUME_INFERENCE:-True}"

@@ -168,7 +168,12 @@ CHECKPOINT_OBS_PATH=${CHECKPOINT_OBS_PATH:-obs://yw-ads-model-training-gy1/model
 CHECKPOINT_DIR=${CHECKPOINT_DIR:-}
 CHECKPOINT_DOWNLOAD_ROOT=${CHECKPOINT_DOWNLOAD_ROOT:-${OBS_CACHE}/checkpoints/context512_roi256_200k_infer}
 
-LOCAL_OUTPUT_ROOT=${LOCAL_OUTPUT_ROOT:-${OBS_CACHE}/outputs/${RUN_ID}}
+# Match the training launchers: inference first writes to a per-run local
+# staging directory, then rank 0 moves the finished tree to the DI output
+# directory.  An explicit LOCAL_OUTPUT_ROOT still takes precedence for local
+# resume/debug runs.
+LOCAL_INFER_SAVE_ROOT=${LOCAL_INFER_SAVE_ROOT:-${OBS_CACHE}/local_infer_save_path}
+LOCAL_OUTPUT_ROOT=${LOCAL_OUTPUT_ROOT:-${LOCAL_INFER_SAVE_ROOT}/${RUN_ID}}
 PREDICTION_JSONL=${PREDICTION_JSONL:-${LOCAL_OUTPUT_ROOT}/train_predictions.jsonl}
 INFERENCE_CONFIG_PATH=${INFERENCE_CONFIG_PATH:-${LOCAL_OUTPUT_ROOT}/inference_config.json}
 RESULT_OBS_PATH=${RESULT_OBS_PATH:-}
@@ -176,6 +181,19 @@ RESULT_OBS_ROOT=${RESULT_OBS_ROOT:-${OBS_OUTPUT_URL:-${OUTPUT_URL:-}}}
 [ -z "${RESULT_OBS_PATH}" ] || RESULT_OBS_ROOT=${RESULT_OBS_PATH}
 UPLOAD_RESULTS=${UPLOAD_RESULTS:-True}
 REQUIRE_OBS_UPLOAD=${REQUIRE_OBS_UPLOAD:-False}
+# `OUTPUT_URL` in a DI job is commonly a POSIX output mount, despite the
+# historical name.  Direct obs:// destinations continue to use moxing.
+CLOUD_OUTPUT_PATH=${CLOUD_OUTPUT_PATH:-}
+if [ -z "${CLOUD_OUTPUT_PATH}" ] && [ -n "${RESULT_OBS_ROOT}" ]; then
+  CLOUD_OUTPUT_PATH="${RESULT_OBS_ROOT%/}/${RUN_ID}"
+fi
+OUTPUT_PERSISTENCE_MODE=none
+case "${CLOUD_OUTPUT_PATH}" in
+  obs://*) OUTPUT_PERSISTENCE_MODE=obs ;;
+  /*) OUTPUT_PERSISTENCE_MODE=di_local ;;
+  "") ;;
+  *) OUTPUT_PERSISTENCE_MODE=unsupported ;;
+esac
 KEEP_RANK_JSONL=${KEEP_RANK_JSONL:-True}
 RESUME_INFERENCE=${RESUME_INFERENCE:-True}
 STREAM_FSYNC_EVERY=${STREAM_FSYNC_EVERY:-100}
@@ -191,22 +209,30 @@ COORD_RANGE=${COORD_RANGE:-1000}
 
 if is_true "${REQUIRE_OBS_UPLOAD}"; then
   if ! is_true "${UPLOAD_RESULTS}"; then
-    echo "ERROR: OBS upload is required but UPLOAD_RESULTS=${UPLOAD_RESULTS}." >&2
+    echo "ERROR: final result persistence is required but UPLOAD_RESULTS=${UPLOAD_RESULTS}." >&2
     echo "Set UPLOAD_RESULTS=True or disable REQUIRE_OBS_UPLOAD explicitly." >&2
     exit 2
   fi
-  case "${RESULT_OBS_ROOT}" in
-    obs://*) ;;
+  case "${OUTPUT_PERSISTENCE_MODE}" in
+    obs|di_local) ;;
     "")
-      echo "ERROR: OBS upload is required but no OBS output root was provided." >&2
-      echo "Set OUTPUT_URL, OBS_OUTPUT_URL, or RESULT_OBS_ROOT to an obs:// URI." >&2
+      echo "ERROR: final result persistence is required but no output root was provided." >&2
+      echo "Set DI OUTPUT_URL (local mount), OBS_OUTPUT_URL, or RESULT_OBS_ROOT." >&2
       exit 2
       ;;
     *)
-      echo "ERROR: OBS upload is required, but output root is not an obs:// URI: ${RESULT_OBS_ROOT}" >&2
+      echo "ERROR: unsupported final output target: ${CLOUD_OUTPUT_PATH}" >&2
       exit 2
       ;;
   esac
+fi
+
+# A completed DI run is already durable below OUTPUT_URL.  Reusing it should
+# be a cheap, explicit no-op rather than starting another expensive inference.
+if is_true "${RESUME_INFERENCE}" && [ "${OUTPUT_PERSISTENCE_MODE}" = "di_local" ] && \
+   [ -f "${CLOUD_OUTPUT_PATH}/_SUCCESS" ]; then
+  echo "[infer] final DI output already complete: ${CLOUD_OUTPUT_PATH}"
+  exit 0
 fi
 
 if [ -n "${MA_VJ_NAME:-}" ] || [ -n "${MA_NUM_HOSTS:-}" ]; then
@@ -658,9 +684,9 @@ if is_true "${RESUME_INFERENCE}" && [ -f "${SUCCESS_MARKER}" ]; then
     echo "[infer] local _SUCCESS exists but prediction JSONL is missing or empty; refusing to resume as complete." >&2
     rm -f "${SUCCESS_MARKER}"
   else
-    if is_true "${UPLOAD_RESULTS}" && [[ "${RESULT_OBS_ROOT}" == obs://* ]]; then
+    if is_true "${UPLOAD_RESULTS}" && [ "${OUTPUT_PERSISTENCE_MODE}" = "obs" ]; then
       RESUME_PREDICTION_SHA256=$(sha256_file "${PREDICTION_JSONL}")
-      if verify_obs_result_tree "${RESULT_OBS_ROOT%/}/${RUN_ID}" True "${RESUME_PREDICTION_SHA256}"; then
+      if verify_obs_result_tree "${CLOUD_OUTPUT_PATH}" True "${RESUME_PREDICTION_SHA256}"; then
         echo "[infer] local and OBS outputs are already complete: ${LOCAL_OUTPUT_ROOT}"
         exit 0
       fi
@@ -673,7 +699,7 @@ if is_true "${RESUME_INFERENCE}" && [ -f "${SUCCESS_MARKER}" ]; then
 fi
 export RUN_ID DATASET_OBS_PATH DATASET_ROOT TRAIN_JSON TRAIN_SELECTION_MODE ACTUAL_TRAIN_SAMPLES
 export CHECKPOINT_OBS_PATH CHECKPOINT_DIR CHECKPOINT_MODE VISION_TOWER INPUT_IMAGE_SIZE MAP_TASK COORD_RANGE MAX_NEW_TOKENS RESUME_INFERENCE PER_DEVICE_INFER_BATCH_SIZE
-export RESULT_OBS_ROOT UPLOAD_RESULTS REQUIRE_OBS_UPLOAD
+export RESULT_OBS_ROOT CLOUD_OUTPUT_PATH OUTPUT_PERSISTENCE_MODE UPLOAD_RESULTS REQUIRE_OBS_UPLOAD
 
 if [ "${NODE_RANK}" -eq 0 ]; then
   TRAIN_JSON_SHA256=$(sha256_file "${TRAIN_JSON}")
@@ -695,7 +721,8 @@ if [ "${NODE_RANK}" -eq 0 ]; then
   COORD_MODE="${COORD_MODE}" COORD_RANGE="${COORD_RANGE}" MAX_NEW_TOKENS="${MAX_NEW_TOKENS}" \
   TEMPERATURE="${TEMPERATURE}" PER_DEVICE_INFER_BATCH_SIZE="${PER_DEVICE_INFER_BATCH_SIZE}" \
   NNODES="${NNODES}" NPROC_PER_NODE="${NPROC_PER_NODE}" \
-  RESULT_OBS_ROOT="${RESULT_OBS_ROOT}" UPLOAD_RESULTS="${UPLOAD_RESULTS}" \
+  RESULT_OBS_ROOT="${RESULT_OBS_ROOT}" CLOUD_OUTPUT_PATH="${CLOUD_OUTPUT_PATH}" \
+  OUTPUT_PERSISTENCE_MODE="${OUTPUT_PERSISTENCE_MODE}" UPLOAD_RESULTS="${UPLOAD_RESULTS}" \
   REQUIRE_OBS_UPLOAD="${REQUIRE_OBS_UPLOAD}" \
   python - <<'PY'
 import json
@@ -735,6 +762,8 @@ payload = {
     "temperature": float(os.environ["TEMPERATURE"]),
     "per_device_infer_batch_size": int(os.environ["PER_DEVICE_INFER_BATCH_SIZE"]),
     "result_obs_root": os.environ["RESULT_OBS_ROOT"],
+    "cloud_output_path": os.environ["CLOUD_OUTPUT_PATH"],
+    "output_persistence_mode": os.environ["OUTPUT_PERSISTENCE_MODE"],
     "upload_results": os.environ["UPLOAD_RESULTS"],
     "require_obs_upload": os.environ["REQUIRE_OBS_UPLOAD"],
     "topology": {
@@ -763,8 +792,10 @@ echo "Canvas / target:   512x512 / centered ROI 256x256"
 echo "Checkpoint:        ${CHECKPOINT_DIR} (${CHECKPOINT_MODE})"
 echo "DINOv2:            ${VISION_TOWER} input=${INPUT_IMAGE_SIZE} layer=-2"
 echo "Output JSONL:      ${PREDICTION_JSONL}"
+echo "Output staging:    ${LOCAL_OUTPUT_ROOT}"
+echo "Final output path: ${CLOUD_OUTPUT_PATH:-<unset>} (${OUTPUT_PERSISTENCE_MODE})"
 echo "OBS output root:   ${RESULT_OBS_ROOT:-<unset>}"
-echo "OBS upload:        ${UPLOAD_RESULTS} (required=${REQUIRE_OBS_UPLOAD})"
+echo "Result persist:    ${UPLOAD_RESULTS} (required=${REQUIRE_OBS_UPLOAD})"
 echo "Per-device batch:  ${PER_DEVICE_INFER_BATCH_SIZE}"
 echo "Topology:          nnodes=${NNODES} node_rank=${NODE_RANK} nproc=${NPROC_PER_NODE}"
 echo "Visible NPUs:      ${ASCEND_RT_VISIBLE_DEVICES}"
@@ -923,19 +954,24 @@ output.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", enco
 print(f"[infer] upload inventory: {len(files)} local files; required artifacts present", flush=True)
 PY
 
-if is_true "${UPLOAD_RESULTS}" && [ -n "${RESULT_OBS_ROOT}" ]; then
-  CLOUD_OUTPUT_DIR="${RESULT_OBS_ROOT%/}/${RUN_ID}"
-  echo "[infer] uploading result tree -> ${CLOUD_OUTPUT_DIR}"
-  if [[ "${CLOUD_OUTPUT_DIR}" == obs://* ]]; then
-    SOURCE="${LOCAL_OUTPUT_ROOT}" TARGET="${CLOUD_OUTPUT_DIR}" python - <<'PY'
+FINAL_LOCAL_OUTPUT_DIR="${LOCAL_OUTPUT_ROOT}"
+
+# Persist exactly like the training recipes when OUTPUT_URL is a DI-mounted
+# POSIX path: rank 0 moves the complete staging directory after validation.
+# A real obs:// target remains supported through Huawei moxing.
+if is_true "${UPLOAD_RESULTS}" && [ -n "${CLOUD_OUTPUT_PATH}" ]; then
+  case "${OUTPUT_PERSISTENCE_MODE}" in
+    obs)
+      echo "[infer] uploading result tree -> ${CLOUD_OUTPUT_PATH}"
+      SOURCE="${LOCAL_OUTPUT_ROOT}" TARGET="${CLOUD_OUTPUT_PATH}" python - <<'PY'
 import os
 import moxing as mox
 mox.file.copy_parallel(os.environ["SOURCE"], os.environ["TARGET"], threads=128)
 PY
 
-    verify_obs_result_tree "${CLOUD_OUTPUT_DIR}" False "${LOCAL_PREDICTION_SHA256}"
+      verify_obs_result_tree "${CLOUD_OUTPUT_PATH}" False "${LOCAL_PREDICTION_SHA256}"
 
-    python - "${LOCAL_OUTPUT_ROOT}/obs_upload_verified.json" "${CLOUD_OUTPUT_DIR}" "${RUN_ID}" <<'PY'
+      python - "${LOCAL_OUTPUT_ROOT}/obs_upload_verified.json" "${CLOUD_OUTPUT_PATH}" "${RUN_ID}" <<'PY'
 import datetime
 import json
 import sys
@@ -956,57 +992,99 @@ Path(sys.argv[1]).write_text(
     encoding="utf-8",
 )
 PY
-    SOURCE="${LOCAL_OUTPUT_ROOT}/obs_upload_verified.json" TARGET="${CLOUD_OUTPUT_DIR}/obs_upload_verified.json" python - <<'PY'
+      SOURCE="${LOCAL_OUTPUT_ROOT}/obs_upload_verified.json" TARGET="${CLOUD_OUTPUT_PATH}/obs_upload_verified.json" python - <<'PY'
 import os
 import moxing as mox
 mox.file.copy(os.environ["SOURCE"], os.environ["TARGET"])
 if not mox.file.exists(os.environ["TARGET"]):
     raise SystemExit(f"OBS verification record was not found: {os.environ['TARGET']}")
 PY
-  else
-    if is_true "${REQUIRE_OBS_UPLOAD}"; then
-      echo "ERROR: OBS upload is required, but resolved target is not obs://: ${CLOUD_OUTPUT_DIR}" >&2
+      ;;
+    di_local)
+      if [ "${CLOUD_OUTPUT_PATH}" = "${LOCAL_OUTPUT_ROOT}" ]; then
+        echo "ERROR: final DI output path must differ from LOCAL_OUTPUT_ROOT: ${CLOUD_OUTPUT_PATH}" >&2
+        exit 2
+      fi
+      if [ -e "${CLOUD_OUTPUT_PATH}" ]; then
+        echo "ERROR: final DI output path already exists, refusing to overwrite: ${CLOUD_OUTPUT_PATH}" >&2
+        exit 2
+      fi
+      if [ ! -e "${LOCAL_OUTPUT_ROOT}" ]; then
+        echo "ERROR: local inference output path does not exist: ${LOCAL_OUTPUT_ROOT}" >&2
+        exit 2
+      fi
+      mkdir -p "$(dirname "${CLOUD_OUTPUT_PATH}")"
+      echo "Moving rank0 local output to cloud output: ${LOCAL_OUTPUT_ROOT} -> ${CLOUD_OUTPUT_PATH}"
+      mv "${LOCAL_OUTPUT_ROOT}" "${CLOUD_OUTPUT_PATH}"
+      FINAL_LOCAL_OUTPUT_DIR="${CLOUD_OUTPUT_PATH}"
+      echo "Final cloud output path: ${CLOUD_OUTPUT_PATH}"
+      ;;
+    *)
+      echo "ERROR: unsupported final output target: ${CLOUD_OUTPUT_PATH}" >&2
       exit 2
-    fi
-    mkdir -p "${CLOUD_OUTPUT_DIR}"
-    cp -a "${LOCAL_OUTPUT_ROOT}/." "${CLOUD_OUTPUT_DIR}/"
-  fi
-  echo "[infer] saved and verified result tree: ${CLOUD_OUTPUT_DIR}"
+      ;;
+  esac
 else
   if is_true "${REQUIRE_OBS_UPLOAD}"; then
-    echo "ERROR: OBS upload is required but no OBS output root was provided." >&2
+    echo "ERROR: final result persistence is required but no output target is configured." >&2
     exit 2
   fi
-  echo "[infer] upload skipped; local result tree is authoritative."
+  echo "[infer] upload skipped; local result tree is authoritative: ${LOCAL_OUTPUT_ROOT}"
 fi
 
-# Mark success only after the optional cloud copy has completed.  A failed
-# upload must remain resumable instead of looking complete on the next run.
-SUCCESS_PENDING="${SUCCESS_MARKER}.pending"
+# Mark success only after validation and persistence.  For a DI-local target,
+# the marker travels with the moved directory; for OBS it is uploaded last.
+SUCCESS_PENDING="${FINAL_LOCAL_OUTPUT_DIR}/_SUCCESS.pending"
 printf 'status=complete\nrun_id=%s\n' "${RUN_ID}" > "${SUCCESS_PENDING}"
-if is_true "${UPLOAD_RESULTS}" && [ -n "${RESULT_OBS_ROOT}" ]; then
-  CLOUD_OUTPUT_DIR="${RESULT_OBS_ROOT%/}/${RUN_ID}"
-  if [[ "${CLOUD_OUTPUT_DIR}" == obs://* ]]; then
-    SOURCE="${SUCCESS_PENDING}" TARGET="${CLOUD_OUTPUT_DIR}/_SUCCESS" python - <<'PY'
+
+if [ "${OUTPUT_PERSISTENCE_MODE}" = "di_local" ] && is_true "${UPLOAD_RESULTS}"; then
+  FINAL_OUTPUT_DIR="${FINAL_LOCAL_OUTPUT_DIR}" FINAL_TARGET="${CLOUD_OUTPUT_PATH}" \
+  RUN_ID="${RUN_ID}" PREDICTION_SHA256="${LOCAL_PREDICTION_SHA256}" python - <<'PY'
+import datetime
+import json
+import os
+from pathlib import Path
+
+root = Path(os.environ["FINAL_OUTPUT_DIR"])
+required = (
+    "inference_config.json",
+    "checkpoint_inventory.json",
+    "train_predictions.jsonl",
+    "inference_manifest.json",
+    "inference_complete.json",
+)
+missing = [name for name in required if not (root / name).is_file()]
+if missing:
+    raise SystemExit(f"DI output verification failed; missing: {missing}")
+payload = {
+    "status": "verified",
+    "run_id": os.environ["RUN_ID"],
+    "persistence_mode": "di_local_output_url",
+    "final_output_path": os.environ["FINAL_TARGET"],
+    "prediction_sha256": os.environ["PREDICTION_SHA256"],
+    "verified_at_utc": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+    "required_files": list(required),
+}
+(root / "di_output_verified.json").write_text(
+    json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+)
+PY
+  mv "${SUCCESS_PENDING}" "${FINAL_LOCAL_OUTPUT_DIR}/_SUCCESS"
+elif [ "${OUTPUT_PERSISTENCE_MODE}" = "obs" ] && is_true "${UPLOAD_RESULTS}"; then
+  SOURCE="${SUCCESS_PENDING}" TARGET="${CLOUD_OUTPUT_PATH}/_SUCCESS" python - <<'PY'
 import os
 import moxing as mox
 mox.file.copy(os.environ["SOURCE"], os.environ["TARGET"])
 if not mox.file.exists(os.environ["TARGET"]):
     raise SystemExit(f"OBS success marker was not found: {os.environ['TARGET']}")
 PY
-  else
-    if is_true "${REQUIRE_OBS_UPLOAD}"; then
-      echo "ERROR: OBS upload is required, but success target is not obs://: ${CLOUD_OUTPUT_DIR}" >&2
-      exit 2
-    fi
-    cp "${SUCCESS_PENDING}" "${CLOUD_OUTPUT_DIR}/_SUCCESS"
-  fi
+  verify_obs_result_tree "${CLOUD_OUTPUT_PATH}" True "${LOCAL_PREDICTION_SHA256}"
+  mv "${SUCCESS_PENDING}" "${FINAL_LOCAL_OUTPUT_DIR}/_SUCCESS"
+else
+  mv "${SUCCESS_PENDING}" "${FINAL_LOCAL_OUTPUT_DIR}/_SUCCESS"
 fi
-if is_true "${UPLOAD_RESULTS}" && [[ "${RESULT_OBS_ROOT}" == obs://* ]]; then
-  verify_obs_result_tree "${RESULT_OBS_ROOT%/}/${RUN_ID}" True "${LOCAL_PREDICTION_SHA256}"
-fi
-mv "${SUCCESS_PENDING}" "${SUCCESS_MARKER}"
-echo "[infer] success marker: ${SUCCESS_MARKER}"
+
+echo "[infer] success marker: ${FINAL_LOCAL_OUTPUT_DIR}/_SUCCESS"
 if ! is_true "${KEEP_RANK_JSONL}"; then
-  find "${LOCAL_OUTPUT_ROOT}" -maxdepth 1 -type f -name 'train_predictions_rank*.jsonl' -delete
+  find "${FINAL_LOCAL_OUTPUT_DIR}" -maxdepth 1 -type f -name 'train_predictions_rank*.jsonl' -delete
 fi

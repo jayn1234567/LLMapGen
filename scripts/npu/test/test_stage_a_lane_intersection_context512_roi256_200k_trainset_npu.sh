@@ -14,6 +14,8 @@ SCRIPT_DIR=$(dirname "${SCRIPT_PATH}")
 REPO_ROOT=$(readlink -f "${SCRIPT_DIR}/../../..")
 cd "${REPO_ROOT}"
 export PYTHONPATH="${REPO_ROOT}:${PYTHONPATH:-}"
+REPO_COMMIT=$(git rev-parse --short HEAD 2>/dev/null || printf 'unknown')
+echo "[di-entry] repo=${REPO_ROOT} commit=${REPO_COMMIT}"
 
 is_true() {
   case "${1:-}" in
@@ -45,6 +47,7 @@ fi
 export PYTHONNOUSERSITE=${PYTHONNOUSERSITE:-1}
 export USE_MEMARTS=${USE_MEMARTS:-0}
 export COMBINED_ENABLE=${COMBINED_ENABLE:-1}
+echo "[di-infer] runtime switches PYTHONNOUSERSITE=${PYTHONNOUSERSITE} USE_MEMARTS=${USE_MEMARTS} COMBINED_ENABLE=${COMBINED_ENABLE}"
 
 INSTALL_INFER_DEPS=${INSTALL_INFER_DEPS:-False}
 REQUIRE_SHAPELY=${REQUIRE_SHAPELY:-False}

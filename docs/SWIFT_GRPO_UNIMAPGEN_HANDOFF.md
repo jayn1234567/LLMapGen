@@ -103,8 +103,11 @@ reward = 0.75 * line_f1
 
 ## 5. DI 入口
 
-DI 镜像中需要预装并固定可用的 `ms-swift`，入口不会在运行时改写 torch、
-torch_npu 或 CANN。下面是 smoke 示例；路径必须替换成 DI 实际挂载路径：
+DI 镜像中可能没有 `ms-swift`。入口会在硬件预检通过后自动安装并固定
+`ms-swift==4.0.0`，同时比较安装前后的 `torch`、`torch_npu` 和
+`transformers` 版本；如果 pip 改动这三个 DI 运行时版本，入口会直接失败。
+入口不会安装或覆盖 torch、torch_npu 或 CANN。下面是 smoke 示例；路径必须替换成
+DI 实际挂载路径：
 
 ```bash
 INFERENCE_JSONL=/cache/outputs/<train-inference>/train_predictions.jsonl \
@@ -177,9 +180,10 @@ DI_throughput: ... samples/s/npu
 尚未在本 Windows 工作站完成真实 Swift + Ascend NPU/DI 运行。因此第一次
 上 DI 必须先使用 `MAX_STEPS=20` 的 smoke，重点确认：
 
-1. Swift 能导入 external plugin 并看到 `unimapgen_qwen3_dinov2`。
-2. 模型日志显示 DINOv2 tower、projector 和正确的 NPU device。
-3. ORM 收到 `solution`、`coord_config`，并打印非恒定 reward。
-4. 首个 checkpoint 能正常写出，且输出包含 GRPO adapter。
+1. 入口成功安装或复用 `ms-swift==4.0.0`，并通过注册 API 预检。
+2. Swift 能导入 external plugin 并看到 `unimapgen_qwen3_dinov2`。
+3. 模型日志显示 DINOv2 tower、projector 和正确的 NPU device。
+4. ORM 收到 `solution`、`coord_config`，并打印非恒定 reward。
+5. 首个 checkpoint 能正常写出，且输出包含 GRPO adapter。
 
 真实 smoke 通过后再扩大样本量或开启更长训练。

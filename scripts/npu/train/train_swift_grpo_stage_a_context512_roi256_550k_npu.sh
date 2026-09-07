@@ -63,6 +63,27 @@ export HCCL_EXEC_TIMEOUT=${HCCL_EXEC_TIMEOUT:-7200}
 export HCCL_WHITELIST_DISABLE=${HCCL_WHITELIST_DISABLE:-1}
 
 echo "[swift-grpo] python=$(command -v python)"
+MS_SWIFT_VERSION=${MS_SWIFT_VERSION:-4.0.0}
+INSTALL_MS_SWIFT=${INSTALL_MS_SWIFT:-True}
+MS_SWIFT_SPEC="ms-swift==${MS_SWIFT_VERSION}"
+
+# Check the accelerator stack before pip is allowed to install Swift.  The
+# ms-swift package itself has no torch dependency, but its resolver can still
+# change transitive Python packages; the before/after fingerprint below keeps
+# the DI torch/CANN ABI visible and fail-closed.
+HARDWARE_STACK_BEFORE=$(python - <<'PY'
+import torch
+import torch_npu
+import transformers
+
+print("|".join([
+    f"torch={torch.__version__}",
+    f"torch_npu={getattr(torch_npu, '__version__', 'unknown')}",
+    f"transformers={transformers.__version__}",
+]))
+PY
+)
+
 python - <<'PY'
 import importlib.util
 import sys
@@ -71,16 +92,9 @@ required = ("torch", "torch_npu", "transformers", "PIL", "mllm")
 missing = [name for name in required if importlib.util.find_spec(name) is None]
 if missing:
     raise SystemExit(f"Missing project/NPU modules: {missing}")
-if importlib.util.find_spec("swift") is None:
-    raise SystemExit(
-        "ms-swift is not installed in this environment. Install the pinned DI "
-        "Swift package in the image, then rerun; this launcher does not mutate "
-        "the accelerator environment."
-    )
 import torch
 import torch_npu  # noqa: F401
 import transformers
-import swift
 
 npu = getattr(torch, "npu", None)
 available = bool(npu is not None and npu.is_available())
@@ -89,10 +103,73 @@ print(f"[swift-grpo] python={sys.executable}", flush=True)
 print(f"[swift-grpo] torch={torch.__version__}", flush=True)
 print(f"[swift-grpo] torch_npu={getattr(torch_npu, '__version__', 'unknown')}", flush=True)
 print(f"[swift-grpo] transformers={transformers.__version__}", flush=True)
-print(f"[swift-grpo] swift={getattr(swift, '__version__', 'unknown')}", flush=True)
 print(f"[swift-grpo] npu_available={available} npu_count={count}", flush=True)
 if not available:
     raise SystemExit("NPU is unavailable; run this entry point in a DI/Ascend NPU environment.")
+PY
+
+if ! python - "${MS_SWIFT_VERSION}" <<'PY'
+import importlib.metadata
+import sys
+
+expected = sys.argv[1]
+try:
+    actual = importlib.metadata.version("ms-swift")
+except importlib.metadata.PackageNotFoundError:
+    raise SystemExit(1)
+if actual != expected:
+    print(f"[swift-grpo] installed ms-swift={actual}, expected={expected}", flush=True)
+    raise SystemExit(1)
+PY
+then
+  if ! is_true "${INSTALL_MS_SWIFT}"; then
+    echo "ERROR: ms-swift==${MS_SWIFT_VERSION} is missing/mismatched and INSTALL_MS_SWIFT is disabled." >&2
+    exit 2
+  fi
+  echo "[swift-grpo] installing ${MS_SWIFT_SPEC} (accelerator packages are protected)"
+  python -m pip install \
+    --disable-pip-version-check \
+    --no-cache-dir \
+    --upgrade-strategy only-if-needed \
+    "${MS_SWIFT_SPEC}"
+fi
+
+HARDWARE_STACK_AFTER=$(python - <<'PY'
+import torch
+import torch_npu
+import transformers
+
+print("|".join([
+    f"torch={torch.__version__}",
+    f"torch_npu={getattr(torch_npu, '__version__', 'unknown')}",
+    f"transformers={transformers.__version__}",
+]))
+PY
+)
+if [ "${HARDWARE_STACK_BEFORE}" != "${HARDWARE_STACK_AFTER}" ]; then
+  echo "ERROR: ms-swift installation changed the protected DI runtime:" >&2
+  echo "  before: ${HARDWARE_STACK_BEFORE}" >&2
+  echo "  after:  ${HARDWARE_STACK_AFTER}" >&2
+  exit 2
+fi
+
+python - "${MS_SWIFT_VERSION}" <<'PY'
+import importlib.metadata
+import sys
+
+expected = sys.argv[1]
+actual = importlib.metadata.version("ms-swift")
+if actual != expected:
+    raise SystemExit(f"ms-swift version mismatch: expected {expected}, got {actual}")
+import swift
+from swift.model import ModelLoader, ModelMeta, MultiModelKeys, register_model, register_model_arch
+from swift.rewards import ORM, orms
+from swift.template import StdTemplateInputs, Template, TemplateMeta, register_template
+from swift.utils import Processor
+
+del ModelLoader, ModelMeta, MultiModelKeys, register_model, register_model_arch
+del ORM, orms, StdTemplateInputs, Template, TemplateMeta, register_template, Processor
+print(f"[swift-grpo] ms-swift={actual} registration-api=ok", flush=True)
 PY
 
 RUN_ID=${RUN_ID:-swift_grpo_context512_roi256_550k_$(date -u +%Y%m%d_%H%M%S)}
@@ -348,7 +425,7 @@ LOGGING_STEPS=${LOGGING_STEPS:-1}
 if command -v swift >/dev/null 2>&1; then
   SWIFT_CMD=(swift)
 else
-  SWIFT_CMD=(python -m swift.cli)
+  SWIFT_CMD=(python -m swift.cli.main)
 fi
 
 COMMAND_FILE="${WORK_ROOT}/swift_command.txt"

@@ -122,8 +122,8 @@ OUTPUT_DIR=/cache/outputs/unimapgen_swift_grpo_smoke \
 bash scripts/npu/train/train_swift_grpo_stage_a_context512_roi256_550k_npu.sh
 ```
 
-正式实验将 `MAX_STEPS` 改为 `-1`，并显式设置 epoch、输出目录和所需的
-`PER_DEVICE_TRAIN_BATCH_SIZE`。入口默认值为：
+正式入口默认使用完整数据集的 1 epoch，不需要额外参数。只有第一次做 smoke
+时才临时设置 `MAX_STEPS=20`。入口默认值为：
 
 | 参数 | 默认值 |
 |---|---:|
@@ -133,7 +133,7 @@ bash scripts/npu/train/train_swift_grpo_stage_a_context512_roi256_550k_npu.sh
 | `MAX_LENGTH` | 4096 |
 | `MAX_COMPLETION_LENGTH` | 2048 |
 | `LEARNING_RATE` | 1e-6 |
-| `MAX_STEPS` | 20 |
+| `MAX_STEPS` | -1 |
 | `NUM_TRAIN_EPOCHS` | 1 |
 | `SAVE_STEPS` | 100 |
 

@@ -422,11 +422,9 @@ OUTPUT_DIR=${OUTPUT_DIR:-${OUTPUT_ROOT}/swift_grpo_output}
 SAVE_STEPS=${SAVE_STEPS:-100}
 LOGGING_STEPS=${LOGGING_STEPS:-1}
 
-if command -v swift >/dev/null 2>&1; then
-  SWIFT_CMD=(swift)
-else
-  SWIFT_CMD=(python -m swift.cli.main)
-fi
+# Use the active DI interpreter explicitly.  A stale `swift` executable in
+# PATH could otherwise point at a different Python environment than pip above.
+SWIFT_CMD=(python -m swift.cli.main)
 
 COMMAND_FILE="${WORK_ROOT}/swift_command.txt"
 printf '%q ' "${SWIFT_CMD[@]}" rlhf \
